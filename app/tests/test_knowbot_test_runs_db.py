@@ -210,6 +210,33 @@ async def test_unmet_expectations_fail_the_case(db):
         await fake.close()
 
 
+async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
+    """受理关口（账 130）：测试里没人点「照做」，记失败，并写明专家认为问题不归它、理由是什么。"""
+    decline = json.dumps(
+        {"out_of_scope": True, "reason": "这是在问天气", "suggestion": "直接问"},
+        ensure_ascii=False,
+    )
+    fake = ScriptedAppServer([decline])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-0009"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        done = await status(db, "knowlab-run-0009")
+        assert done["status"] == "failed"
+        case = done["cases"][0]
+        assert case["status"] == "failed"
+        assert "out of its scope" in case["note"] and "这是在问天气" in case["note"]
+    finally:
+        await close(runner)
+        await fake.close()
+
+
 async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()

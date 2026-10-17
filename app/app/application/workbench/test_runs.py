@@ -491,6 +491,14 @@ class KnowbotTestConductor:
         interaction = await repo.get_interaction(str(task["active_interaction_id"]))
         if interaction["kind"] not in ("tool_approval", "question"):
             # 验收不过、返工用完要交人，或别的要人拍板的：测试里不让人放过，记 failed
+            subject = (interaction.get("prompt") or {}).get("subject") or {}
+            note = f"stopped for a decision in the workbench ({interaction['kind']})"
+            if subject.get("out_of_scope"):
+                # 受理关口（账 130）：专家认为用例的问题不归它。多半是用例问错了，不是运行出错
+                note = (
+                    "the expert judged the question out of its scope: "
+                    f"{subject.get('reason') or '(no reason given)'}"
+                )
             await cancel_task(repo, str(task["id"]), owner_actor_id=account.actor_id)
             await self._record(
                 repo,
@@ -499,7 +507,7 @@ class KnowbotTestConductor:
                 row,
                 await repo.get_task(str(task["id"])),
                 account,
-                note=f"stopped for a decision in the workbench ({interaction['kind']})",
+                note=note,
             )
             return
         if await self._respond_if_ready(repo, run, case, interaction, account):
