@@ -64,6 +64,9 @@ class KnowbotTestConfig:
     subject: str | None
     workspace_root: str | None
     monthly_limit: Decimal = Decimal("1000")
+    # 同时在跑的测试最多几个，其余按受理先后排队（账 129）：只有一台测试电脑、一个沙箱、一把 key，
+    # 一起跑会互相拖慢、超时，也会在同一个工作区里看到彼此的产出
+    max_running: int = 1
 
 
 @dataclass(frozen=True)
@@ -324,6 +327,10 @@ class KnowbotTestConductor:
     async def tick(self) -> int:
         async with self.stores() as repo:
             runs = await repo.list_test_runs(statuses=ACTIVE)
+        # 已经开跑的接着推；空出来的位子按受理先后给排队的
+        started = [r for r in runs if r["started_at"] is not None]
+        free = max(0, self.config.max_running - len(started))
+        runs = started + [r for r in runs if r["started_at"] is None][:free]
         moved = 0
         for run in runs:
             try:

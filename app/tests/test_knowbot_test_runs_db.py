@@ -237,6 +237,40 @@ async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
         await fake.close()
 
 
+async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
+    """账 129：同时只跑一个测试；后受理的排队，不开对话、不计时，前一个结束才开始。"""
+    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-0010"))
+        await accept(db, request("knowlab-run-0011"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        await conductor.tick()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            first = await repo.get_test_run("knowlab-run-0010")
+            second = await repo.get_test_run("knowlab-run-0011")
+            assert first["started_at"] is not None
+            assert second["started_at"] is None and second["status"] == "accepted"
+            assert not any(
+                c.get("task_id") for c in await repo.list_test_cases("knowlab-run-0011")
+            )
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        assert (await status(db, "knowlab-run-0010"))["status"] == "passed"
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        assert (await status(db, "knowlab-run-0011"))["status"] == "passed"
+    finally:
+        await close(runner)
+        await fake.close()
+
+
 async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()
