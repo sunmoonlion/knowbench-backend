@@ -23,6 +23,8 @@ from app.domain.workbench.errors import NotFound
 from app.domain.workbench.library import parse_item_id
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
+
 MCP = "/api/mcp/workbench"
 
 

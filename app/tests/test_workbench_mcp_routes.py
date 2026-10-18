@@ -24,6 +24,8 @@ from app.interfaces.endpoints.workbench_routes import (
 from app.interfaces.mcp.workbench_mcp import limiter, records_enabled, records_rate
 from core.config import Settings
 
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
+
 URL = "/api/mcp/workbench"
 ISSUER = TokenIssuer(generate_private_key_pem())
 SOMEONE_ELSE = TokenIssuer(generate_private_key_pem())

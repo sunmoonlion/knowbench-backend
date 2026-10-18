@@ -269,10 +269,8 @@ async def test_jwt_identity_and_rotation(make_client, db):  # noqa: F811
     assert agent_claims["sub"] == user and agent_claims["role"] == "agent"
     spec = fake_api.specs[0]
     assert verify(spec["relay_token"], pub, audience="relay")["role"] == "sandbox"
-    assert (
-        verify(spec["knowbase_mcp_token"], pub, audience="knowbase")["sandbox"]
-        == user
-    )
+    # 沙箱不再拿 knowbase 的令牌：平台的数到不了用户的沙箱（数据拓扑，待办账 111）
+    assert "knowbase_mcp_token" not in spec
     assert (
         relay.public_keys == [pub]
         and relay.tokens[user][0] == body["relay"]["agent_token"]
@@ -441,7 +439,7 @@ async def test_the_records_tools_are_given_to_the_sandbox_only_when_configured(
         except ValueError:
             continue
         raise AssertionError(audience)
-    assert issuer.owner_of_records_token(spec["knowbase_mcp_token"]) is None
+    assert "knowbase_mcp_token" not in spec
 
 
 async def test_identity_operation_rejects_concurrency_and_releases_after_error(db):

@@ -13,8 +13,10 @@ MAX_LENGTH = 512
 _FORBIDDEN_HOSTS = {"localhost", "localhost.localdomain", "0.0.0.0", "::1"}
 _FORBIDDEN_SUFFIXES = (".localhost", ".local", ".internal", ".lan", ".home.arpa")
 
-# 用户的所有 MCP 来源开关；键不在这里的拒绝
-MCP_SOURCES: tuple[str, ...] = ("knowbase",)
+# 用户的所有 MCP 来源开关；键不在这里的拒绝。knowbase 2026-10-18 撤掉（数据拓扑：平台不给用户
+# 数据，用户的沙箱到不了平台的数；待办账 111），库里旧偏好里还留着的这个键读写时都忽略
+MCP_SOURCES: tuple[str, ...] = ()
+RETIRED_MCP_SOURCES = frozenset({"knowbase"})
 
 
 def validate_provider_base_url(value: str) -> str:
@@ -55,10 +57,10 @@ def validate_provider_base_url(value: str) -> str:
 
 
 def normalize_mcp_sources(value: dict[str, bool] | None) -> dict[str, bool]:
-    """空 = 全开；键只认 MCP_SOURCES 里的。"""
+    """空 = 全开；键只认 MCP_SOURCES 里的；撤掉的来源忽略。"""
     if value is None:
         return dict.fromkeys(MCP_SOURCES, True)
-    unknown = set(value) - set(MCP_SOURCES)
+    unknown = set(value) - set(MCP_SOURCES) - RETIRED_MCP_SOURCES
     if unknown:
         raise ValueError(f"unknown mcp source: {', '.join(sorted(unknown))}")
     return {name: bool(value.get(name, True)) for name in MCP_SOURCES}

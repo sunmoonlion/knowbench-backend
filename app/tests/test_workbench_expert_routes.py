@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 from sqlalchemy import text
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_project_routes import machine, project
 from test_workbench_routes import A, B
 from test_workbench_routes import make_client as make_client  # noqa: F401
+
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
 
 QUESTION = "恒瑞医药 2023 到 2025 年的盈利能力怎么样？"
 

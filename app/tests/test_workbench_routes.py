@@ -334,20 +334,17 @@ async def test_credentials_take_a_public_https_base_url_only(make_client, db):  
 async def test_prefs_carry_mcp_source_switches(make_client):
     http = make_client(A)
     r = await http.get("/api/workbench/prefs")
-    assert r.json()["mcp_sources"] == {"knowbase": True}
+    assert r.json()["mcp_sources"] == {}  # knowbase 撤了（数据拓扑）
+    # 旧页面还会送 knowbase 的开关：收下但不起作用
     r = await http.put(
         "/api/workbench/prefs",
         json={"approval_policy": "on-request", "mcp_sources": {"knowbase": False}},
     )
-    assert r.status_code == 200 and r.json()["mcp_sources"] == {"knowbase": False}
-    # 不带开关只改模型：开关保持
+    assert r.status_code == 200 and r.json()["mcp_sources"] == {}
     r = await http.put(
         "/api/workbench/prefs", json={"model": "kimi-k3", "approval_policy": "never"}
     )
-    assert (
-        r.json()["mcp_sources"] == {"knowbase": False}
-        and r.json()["model"] == "kimi-k3"
-    )
+    assert r.json()["mcp_sources"] == {} and r.json()["model"] == "kimi-k3"
     r = await http.put(
         "/api/workbench/prefs",
         json={"approval_policy": "on-request", "mcp_sources": {"records": True}},

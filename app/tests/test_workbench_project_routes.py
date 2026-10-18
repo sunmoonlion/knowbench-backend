@@ -10,6 +10,8 @@ from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_routes import A, B
 from test_workbench_routes import make_client as make_client  # noqa: F401
 
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
+
 ROOT = "/home/u/research"
 
 

@@ -22,7 +22,8 @@ LISTED = [p.profile_id for p in listed_packs()]
 
 def test_the_smoke_pack_is_ours_and_not_listed():
     assert SMOKE.internal
-    assert LISTED == ["DATA_QUERY", "FIN_REVIEW", "FIN_FORECAST"]
+    # 2026-10-18 内置专家全部撤下（待办账 111，数据拓扑）：给用户看的清单是空的
+    assert LISTED == []
 
 
 @pytest.mark.parametrize("pack_id", LISTED)
@@ -265,7 +266,11 @@ def test_the_preparing_expert_is_listed_but_cannot_be_asked(monkeypatch):
     from app.domain.workbench.packs import FIN_FORECAST
 
     preparing = FIN_FORECAST.model_copy(
-        update={"status": "preparing", "preparing_note": "数据和方法正在接入。"}
+        update={
+            "status": "preparing",
+            "preparing_note": "数据和方法正在接入。",
+            "internal": False,  # 内置的已撤下，借一个对外的副本来验这一档
+        }
     )
     monkeypatch.setitem(BUILTIN_PACKS, "FIN_FORECAST", preparing)
     view = pack_view(preparing)
@@ -273,15 +278,14 @@ def test_the_preparing_expert_is_listed_but_cannot_be_asked(monkeypatch):
     assert view["name"] == "财务分析与预测" and len(view["steps"]) == 5
     with pytest.raises(ExpertNotReady):
         expert_on_offer("FIN_FORECAST")
-    assert expert_on_offer("FIN_REVIEW").profile_id == "FIN_REVIEW"
 
 
-def test_the_forecasting_expert_can_be_asked():
-    """所有者 2026-10-13 要演示：财务分析与预测切成可用、版本 1。"""
+def test_the_builtin_forecasting_expert_is_withdrawn():
+    """10-13 切成可用的内置版，10-18 撤下（待办账 111）：改由我们以普通用户经 knowlab 孵化。"""
     from app.application.workbench.delegation import expert_on_offer
+    from app.domain.workbench.errors import NoSuchExpert
     from app.domain.workbench.packs import FIN_FORECAST
 
-    view = pack_view(FIN_FORECAST)
-    assert view["status"] == "ready" and not view["preparing_note"]
-    assert "筹备中" not in FIN_FORECAST.title and FIN_FORECAST.version == "2"
-    assert expert_on_offer("FIN_FORECAST") is FIN_FORECAST
+    assert FIN_FORECAST.internal and FIN_FORECAST.version == "2"
+    with pytest.raises(NoSuchExpert):
+        expert_on_offer("FIN_FORECAST")

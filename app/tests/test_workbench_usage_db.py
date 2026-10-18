@@ -7,6 +7,7 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
 from preview_replay import HANG, Plan, ReplayAppServer
 from preview_samples import HENGRUI, fin_review_tools
 from sqlalchemy import text
@@ -19,6 +20,8 @@ from test_workbench_routes import make_client as make_client  # noqa: F401
 from app.bootstrap.workbench import build_runner
 from app.domain.workbench.pricing import parse_prices
 from app.infrastructure.workbench.publisher import RedisPublisher
+
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
 
 TAPES = json.loads(
     (Path(__file__).parent / "preview_tapes" / "conversations.json").read_text()

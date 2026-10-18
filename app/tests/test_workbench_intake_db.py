@@ -180,7 +180,8 @@ def test_out_of_scope_reply_is_read_only_when_it_says_so():
 
 def test_intake_scope_comes_from_the_six_answers_unless_written():
     assert SMOKE.intake_scope() is None  # 只给我们自己用的不设关口
-    fc = packs.FIN_FORECAST
+    # 内置的财务分析与预测 10-18 撤下、标成内部；这里只借它的六问核推法
+    fc = packs.FIN_FORECAST.model_copy(update={"internal": False})
     scope = fc.intake_scope()
     assert scope is not None
     assert scope.does == fc.answers["解决什么"]
@@ -189,6 +190,21 @@ def test_intake_scope_comes_from_the_six_answers_unless_written():
     assert bare.intake_scope() == Scope(does=f"{SMOKE.name}；{SMOKE.tagline}")
     written = Scope(does="只答天气", does_not="别的", elsewhere="对话里问")
     assert bare.model_copy(update={"scope": written}).intake_scope() == written
+
+
+def test_builtin_experts_are_withdrawn_from_users():
+    """待办账 111、数据拓扑：平台不带自己的投资逻辑与数据，内置专家用户看不到、请不了。"""
+    import pytest
+
+    from app.application.workbench.catalog import builtin_on_offer, builtin_on_view
+    from app.domain.workbench.errors import NoSuchExpert
+
+    assert packs.listed_packs() == []
+    for pid in ("DATA_QUERY", "FIN_REVIEW", "FIN_FORECAST"):
+        assert packs.find_pack(pid) is not None  # 历史委托还能显示
+        for look in (builtin_on_view, builtin_on_offer):
+            with pytest.raises(NoSuchExpert):
+                look(pid)
 
 
 def test_every_listed_expert_has_an_intake():

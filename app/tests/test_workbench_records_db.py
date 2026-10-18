@@ -27,6 +27,8 @@ from app.domain.workbench.errors import NotFound, RecordsRefused
 from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
+
 WORKSPACE = "/home/u/research"
 STRANGER = str(uuid.uuid4())
 

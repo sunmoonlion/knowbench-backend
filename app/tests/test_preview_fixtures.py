@@ -19,6 +19,7 @@ from typing import Any
 from unittest.mock import patch
 
 import httpx
+import pytest
 from cryptography.fernet import Fernet
 from preview_agent_download import preview_download
 from preview_recorder import Recorder
@@ -50,6 +51,8 @@ from app.interfaces.endpoints.workbench_routes import (
     provisioning_backends,
 )
 from core.config import get_settings
+
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
 
 WORKSPACE = "/home/demo/research"
 TAPES = json.loads(

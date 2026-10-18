@@ -306,6 +306,9 @@ DATA_QUERY = ExpertPack(
     title="问数（第 23–25 课五阶段）",
     name="问数",
     tagline="对已有的数据问一个数",
+    # 2026-10-18 撤下（待办账 111，数据拓扑）：平台不带自己的投资逻辑与数据，用户看不到、请不了；
+    # 留着只为历史委托还能显示。「财务分析与预测」改由我们以普通用户经 knowlab 孵化
+    internal=True,
     requires_tools=True,
     dossier=(
         DossierBlock(
@@ -562,6 +565,9 @@ FIN_REVIEW = ExpertPack(
     title="财报体检（先验数据，再算指标，不下结论）",
     name="财报体检",
     tagline="先验数据，再算指标，不下结论",
+    # 2026-10-18 撤下（待办账 111，数据拓扑）：平台不带自己的投资逻辑与数据，用户看不到、请不了；
+    # 留着只为历史委托还能显示。「财务分析与预测」改由我们以普通用户经 knowlab 孵化
+    internal=True,
     requires_tools=True,
     dossier=(
         DossierBlock(
@@ -1309,6 +1315,9 @@ FIN_FORECAST = ExpertPack(
     title="财务分析与预测（先定口径，再看走势，带区间预测）",
     name="财务分析与预测",
     tagline="看清收入、成本、现金流的走势，给出可核对的预测",
+    # 2026-10-18 撤下（待办账 111，数据拓扑）：平台不带自己的投资逻辑与数据，用户看不到、请不了；
+    # 留着只为历史委托还能显示。「财务分析与预测」改由我们以普通用户经 knowlab 孵化
+    internal=True,
     requires_tools=True,
     dossier=(
         DossierBlock(

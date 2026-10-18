@@ -23,7 +23,6 @@ from app.application.ports.workbench import (
 )
 from app.application.workbench.tokens import TokenIssuer, jti_of
 from app.domain.workbench.errors import RelayIdentityChanged, WorkbenchError
-from app.domain.workbench.provider_url import normalize_mcp_sources
 
 log = logging.getLogger(__name__)
 
@@ -252,13 +251,7 @@ class SandboxProvisioning:
             "relay_token": sandbox_token,
             "relay_user": identity["relay_user"],
         }
-        sources = normalize_mcp_sources(
-            (await self.repo.get_prefs(owner)).get("mcp_sources")
-        )
-        if self.issuer is not None and sources.get("knowbase", True):
-            spec["knowbase_mcp_token"] = self.issuer.knowbase_token(
-                identity["relay_user"], sandbox=identity["relay_user"]
-            ).token
+        # 不再发 knowbase 的令牌：用户的沙箱到不了平台的数（数据拓扑，待办账 111）
         if self.issuer is not None:
             if self.records_url:
                 # 专家读本项目别的对话与底稿的工具服务。供给器认得这两项之后才会配进沙箱

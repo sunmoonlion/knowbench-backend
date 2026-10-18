@@ -50,9 +50,10 @@ def test_private_local_or_malformed_endpoints_are_refused(url):
         validate_provider_base_url(url)
 
 
-def test_mcp_sources_default_to_all_on_and_refuse_unknown_keys():
-    assert normalize_mcp_sources(None) == {"knowbase": True}
-    assert normalize_mcp_sources({"knowbase": False}) == {"knowbase": False}
-    assert normalize_mcp_sources({}) == {"knowbase": True}
+def test_no_mcp_sources_are_left_and_the_retired_knowbase_key_is_ignored():
+    # knowbase 撤了（数据拓扑）：旧偏好里的键不报错，也不再出现
+    assert normalize_mcp_sources(None) == {}
+    assert normalize_mcp_sources({"knowbase": True}) == {}
+    assert normalize_mcp_sources({}) == {}
     with pytest.raises(ValueError):
         normalize_mcp_sources({"records": True})

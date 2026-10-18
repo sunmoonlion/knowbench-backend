@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from decimal import Decimal
 
+import pytest
 from test_fin_review_advisor_db import ALL, say
 from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_ledger_db import OWNER
@@ -16,6 +17,8 @@ from app.application.workbench.project_service import ProjectService
 from app.bootstrap.workbench import build_runner
 from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.repository import WorkbenchRepository
+
+pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
 
 WORKSPACE = "/home/u/research"
 
