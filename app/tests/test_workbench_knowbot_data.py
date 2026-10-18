@@ -222,3 +222,18 @@ async def test_not_found_and_unavailable_are_told_apart() -> None:
         await odd.list(PURPOSE)
     with pytest.raises(UserDataUnavailable):
         await KnowlabDataClient({}).list(PURPOSE)  # 没配：不去连
+
+
+def test_reading_user_data_waits_long_enough_for_a_big_annual_report() -> None:
+    """knowlab 第一次抽一份两百页的年报要十几、二十秒：读数的超时要比它长，又要短于模型调工具的
+    60 秒（K19 预演）。"""
+    from app.bootstrap.workbench import KNOWLAB_DATA_TIMEOUT, knowbot_data_source
+
+    knowbot_data_source.cache_clear()
+    try:
+        client = knowbot_data_source()
+        assert isinstance(client, KnowlabDataClient)
+        assert client._options == {"timeout": KNOWLAB_DATA_TIMEOUT}
+        assert 20 < KNOWLAB_DATA_TIMEOUT < 60
+    finally:
+        knowbot_data_source.cache_clear()

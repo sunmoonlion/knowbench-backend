@@ -59,10 +59,15 @@ def knowmart_summoner() -> KnowmartSummoner:
     return KnowmartSummonClient()
 
 
+# 读用户数据的超时：knowlab 第一次读一份两百页的年报要抽十几、二十秒文字，默认 20 秒卡在线上；
+# 放宽到 45 秒，仍在模型调用工具的 60 秒以内（K19 预演）
+KNOWLAB_DATA_TIMEOUT = 45.0
+
+
 @lru_cache(maxsize=1)
 def knowbot_data_source() -> KnowbotDataSource:
     """向 knowlab 读分身绑定的用户数据（0027 §3.5；令牌缓存在里面，进程内共用）。"""
-    return KnowlabDataClient()
+    return KnowlabDataClient(timeout=KNOWLAB_DATA_TIMEOUT)
 
 
 def workbench_store(session: AsyncSession) -> WorkbenchStore:
