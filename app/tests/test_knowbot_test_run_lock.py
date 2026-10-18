@@ -137,6 +137,18 @@ def test_requests_we_accept_and_results_we_return_fit_the_contract() -> None:
         ],
     }
     jsonschema.validate(waiting, result_schema)
+    # 没结论时带进度（待办账 135）：形状同 KnowbotTestService.progress
+    progress = {
+        "case_id": "c1",
+        "cases_done": 0,
+        "cases_total": 1,
+        "step": 1,
+        "steps_total": 2,
+        "step_title": "定范围",
+        "attempt": 1,
+        "spent": "0.000000",
+    }
+    jsonschema.validate(waiting | {"progress": progress}, result_schema)
     answers = {
         "contract": "knowbot-test-run/v1",
         "answers": [

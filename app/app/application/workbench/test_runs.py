@@ -244,6 +244,44 @@ class KnowbotTestService:
             "finished_at": _iso(run.get("finished_at")),
             "questions": questions,
             "waited_seconds": int(run.get("waited_seconds") or 0),
+            **(
+                {"progress": progress}
+                if run["status"] not in FINAL
+                and (progress := await self.progress(run, cases)) is not None
+                else {}
+            ),
+        }
+
+    async def progress(
+        self, run: dict[str, Any], cases: list[dict[str, Any]]
+    ) -> dict[str, Any] | None:
+        """跑着的那条用例走到哪了（待办账 135）：第几条、第几步、步名、这一步第几次、到现在花了
+        多少（跑完的几条加上跑着的这条）。只有编号、计数和钱，不含交回物内容（C-L5）。"""
+        current = next(
+            (c for c in cases if not c.get("result") and c.get("task_id")), None
+        )
+        if current is None:
+            return None
+        task = await self.repo.get_task(str(current["task_id"]))
+        view = await ExpertDesk(self.repo).steps(
+            str(task["id"]), owner_actor_id=str(task["owner_actor_id"])
+        )
+        at = view["position"] or {"step": 0, "of": 0, "title": ""}
+        steps = view["steps"]
+        attempt = (
+            int(steps[at["step"] - 1]["times"]) if 0 < at["step"] <= len(steps) else 0
+        )
+        used = Decimal(str((task.get("budget") or {}).get("used") or "0"))
+        spent = (Decimal(run["spent"]) + used).quantize(Decimal("0.000001"))
+        return {
+            "case_id": current["case_id"],
+            "cases_done": sum(1 for c in cases if c.get("result")),
+            "cases_total": len(cases),
+            "step": at["step"],
+            "steps_total": at["of"],
+            "step_title": str(at["title"])[:200],
+            "attempt": min(attempt, 100),
+            "spent": str(spent),
         }
 
     async def open_questions(

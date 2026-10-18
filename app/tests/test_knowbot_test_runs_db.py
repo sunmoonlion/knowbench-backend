@@ -165,6 +165,7 @@ async def test_a_draft_runs_on_the_real_engine_and_passes(db):
         await conductor.tick()  # 全部用例都有结果：收尾
         done = await status(db, "knowlab-run-0001")
         assert done["status"] == "passed", done
+        assert "progress" not in done  # 有结论就不带进度
         [case] = done["cases"]
         assert case["status"] == "passed"
         assert [s["step_id"] for s in case["steps"]] == ["plan", "answer"]
@@ -482,6 +483,19 @@ async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
         await drive(runner)
         waiting = await status(db, "knowlab-run-0003")
         assert waiting["status"] == "waiting", waiting
+        # 没结论时带进度（待办账 135）：第 1 条、第 1 步第 1 次（开步前就停下问了），没花钱
+        progress = waiting["progress"]
+        assert {k: progress[k] for k in ("case_id", "cases_done", "cases_total")} == {
+            "case_id": "c1",
+            "cases_done": 0,
+            "cases_total": 1,
+        }
+        assert (progress["step"], progress["steps_total"], progress["attempt"]) == (
+            1,
+            2,
+            1,
+        )
+        assert progress["step_title"] and progress["spent"] == "0.000000"
         [q] = waiting["questions"]
         assert q["kind"] == "ask_before" and q["key"] == "period"
         assert q["case_id"] == "c1" and q["options"] == [
