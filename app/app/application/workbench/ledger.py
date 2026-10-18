@@ -13,7 +13,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
-from app.application.workbench.catalog import PinnedPack, pinned_pack
+from app.application.workbench.catalog import PinnedPack, pack_for_task, pinned_pack
 from app.domain.workbench.errors import (
     BudgetExhausted,
     EnvironmentOffline,
@@ -52,6 +52,12 @@ def _budget(row: dict[str, Any]) -> Budget:
         reserved=Decimal(str(b.get("reserved", "0"))),
         used=Decimal(str(b.get("used", "0"))),
     )
+
+
+def writes_files(task: dict[str, Any]) -> bool:
+    """这件委托的专家会不会往项目里写成稿文件（0015 §3.3）。认不出专家包时按会写算，照旧指向底稿。"""
+    pack = pack_for_task(task)
+    return pack is None or bool(pack.deliverable_files())
 
 
 class Ledger:
@@ -333,6 +339,9 @@ class Ledger:
                             "final_state": target,
                             # 对话里交回那一行要说清为什么停：打回是根本没开工，不能叫人去看底稿
                             "reason_text": reason_text(target, reason),
+                            # 这位专家写不写成稿文件：不写的（只回结构化结果的分身）不叫人去「工作底稿」看
+                            # （qwen-005 走查：交回行指向右栏底稿，右栏却是空的）
+                            "writes_files": writes_files(task),
                         },
                         task_id=task_id,
                     )

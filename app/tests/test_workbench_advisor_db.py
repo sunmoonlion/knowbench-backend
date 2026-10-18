@@ -194,6 +194,13 @@ async def test_happy_path_two_steps(db):
                 and types.count("step/accepted") == 2
                 and "wheel/return" in types
             )
+            back = [
+                e
+                for e in await repo.list_events(session_id=sid)
+                if e["type"] == "wheel/return"
+            ]
+            # 机制烟测写成稿文件：交回那一行照旧指向「工作底稿」
+            assert back[-1]["payload"]["writes_files"] is True
             attempts = await repo.list_attempts(t)
             assert [a["status"] for a in attempts] == ["COMPLETED", "COMPLETED"]
             hb = await repo.get_artifact(task_id=t, name="handback")
@@ -496,3 +503,26 @@ def test_judge_tolerates_fences_and_flags_missing_keys():
     assert not v.ok and any("required_keys" in f for f in v.failures)
     assert not judge("nope", rules).ok
     assert judge(json.dumps({"plan": ["a"]}), SMOKE.workflow[0].acceptance).ok
+
+
+def test_writes_files_follows_the_pack():
+    from app.application.workbench.ledger import writes_files
+
+    assert writes_files({"profile_id": "SMOKE", "profile_version": SMOKE.version})
+    # 只回结构化结果、不写成稿文件的分身（快照里每一步都没有 output_file）
+    bare = SMOKE.model_copy(
+        update={
+            "workflow": tuple(
+                st.model_copy(update={"output_file": None}) for st in SMOKE.workflow
+            )
+        }
+    )
+    snapshot = {
+        "pack_source": "knowlab-test",
+        "pack_snapshot": bare.model_dump(mode="json"),
+        "pack_digest": "d-no-files",
+        "profile_id": "knowbot-test-x",
+    }
+    assert writes_files(snapshot) is False
+    # 认不出专家包（旧版已下架）：按会写算，照旧指向底稿
+    assert writes_files({"profile_id": "FIN_FORECAST", "profile_version": "0"}) is True
