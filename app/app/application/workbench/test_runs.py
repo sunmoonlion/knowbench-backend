@@ -407,7 +407,9 @@ class KnowbotTestConductor:
             if run is None or run["status"] not in ACTIVE:
                 return
             now = self.now()
-            folder = run_folder(run)
+            # 隔离打开时每次测试用自己的目录；没打开（测试电脑的代理还不支持建目录）就在
+            # 工作区本身里跑，结果里写明没有隔离（账 129，所有者 2026-10-18 选甲）
+            folder = run_folder(run) if self.folders is not None else ""
             try:
                 account = await self._account(repo, folder)
             except KnowbotTestUnconfigured as exc:
@@ -709,6 +711,11 @@ class KnowbotTestConductor:
         )
         if note and result["status"] != "passed":
             result["note"] = note[:1000]
+        if self.folders is None:
+            shared = "本次测试没有隔离：测试电脑的本地代理还不支持建、删目录，在共用的工作区里跑"
+            result["note"] = (
+                f"{result['note']}；{shared}" if result.get("note") else shared
+            )[:1000]
         # 排查不用翻库：哪次测试、哪条用例、哪一步、为什么没过（审读第 3 条）
         for line in result["steps"]:
             for detail in line.get("details") or []:
@@ -787,6 +794,13 @@ class KnowbotTestConductor:
                 finished_at=now,
                 cleanup_after=now + KEEP,
             )
+        # 排查不用翻库：测试怎么结束的（qwen-007 走查：出错结束时 runner 一行日志都没有）
+        log.info(
+            "knowbot test run finished run=%s status=%s error=%s",
+            run["run_id"],
+            status,
+            error or "",
+        )
         # 测完就删这次的目录（账 129）；删不掉的，下一个测试开跑前还会再删
         if self.folders is not None and self.config.workspace_root:
             actor = await repo.actor_for_subject(str(self.config.subject))

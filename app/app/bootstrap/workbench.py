@@ -213,10 +213,11 @@ def build_test_conductor(
 def build_test_folders(
     session_factory: async_sessionmaker[AsyncSession], settings
 ) -> TestFolders | None:
-    """账 129：经会合点服务流请测试电脑建、删每次测试的目录；没配会合点或签名私钥就不建。"""
+    """账 129：经会合点服务流请测试电脑建、删每次测试的目录；没打开隔离、没配会合点或签名私钥
+    就不建，测试在共用的工作区里跑。"""
     relay_url = settings.workbench_relay_admin_url
     signing_key = settings.workbench_token_signing_key
-    if not (relay_url and signing_key):
+    if not (settings.knowbot_test_isolate and relay_url and signing_key):
         return None
     from app.application.workbench.test_folders import AgentTestFolders
     from app.application.workbench.tokens import TokenIssuer

@@ -328,6 +328,34 @@ async def test_each_test_gets_its_own_folder_made_before_and_removed_after(db):
         await fake.close()
 
 
+async def test_without_isolation_the_test_runs_in_the_workspace_and_says_so(db):
+    """测试电脑的代理还不支持建目录（0.5.0 服务流只读）：隔离没打开，就在工作区本身里跑，
+    每条用例写明没有隔离（账 129，所有者 2026-10-18 选甲）。"""
+    fake = ScriptedAppServer([PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-0015"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        assert (await status(db, "knowlab-run-0015"))["status"] == "passed"
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            (case,) = await repo.list_test_cases("knowlab-run-0015")
+            project = await repo.get_project(
+                str(case["project_id"]), owner_actor_id=OWNER
+            )
+            assert project["path"] == ""
+            assert "没有隔离" in case["result"]["note"]
+    finally:
+        await close(runner)
+        await fake.close()
+
+
 async def test_no_clean_folder_means_no_start_and_then_an_error(db):
     """测试电脑给不出干净的目录：不开跑；过了这次测试的时限还不行，报错结束。"""
     fake = ScriptedAppServer([PLAN, ANSWER])

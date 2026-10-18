@@ -283,6 +283,12 @@ class Settings(BaseSettings):
     knowbot_test_poll_seconds: float = Field(
         default=5.0, ge=1, le=300, validation_alias="KNOWBOT_TEST_POLL_SECONDS"
     )
+    # 每次测试用自己的目录（账 129）：要测试电脑的本地代理能经服务流建、删 runs/ 下的目录。
+    # 0.5.0 的服务流只读（service.ts 只认读的三个方法），所以默认关、在共用的工作区里跑；
+    # 测试电脑换上支持的代理（0.5.1）再打开（所有者 2026-10-18 选甲）
+    knowbot_test_isolate: bool = Field(
+        default=False, validation_alias="KNOWBOT_TEST_ISOLATE"
+    )
     # D10：签发代理/沙箱/知识令牌的 ES256 私钥（PEM）；未配置时退回不透明随机令牌（会合点静态表/管理通道）
     workbench_token_signing_key: str | None = Field(
         default=None, validation_alias="WORKBENCH_TOKEN_SIGNING_KEY"
