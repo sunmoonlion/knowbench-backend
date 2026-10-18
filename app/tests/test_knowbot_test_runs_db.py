@@ -271,6 +271,89 @@ async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
         await fake.close()
 
 
+class Folders:
+    """测试电脑上的目录：记下建了哪个、删了哪个；ready=False 时建不出干净目录。"""
+
+    def __init__(self, ready: bool = True) -> None:
+        self.ready = ready
+        self.calls: list[tuple[str, str]] = []
+
+    async def prepare(self, *, owner, root, folder):
+        assert root == WORKSPACE
+        self.calls.append(("prepare", folder))
+        return self.ready
+
+    async def remove(self, *, owner, root, folder):
+        self.calls.append(("remove", folder))
+
+
+async def test_each_test_gets_its_own_folder_made_before_and_removed_after(db):
+    """账 129：每次测试一个项目、一个目录；开跑前建好，测完删掉，下一个才开跑。"""
+    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    folders = Folders()
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-0012"))
+        await accept(db, request("knowlab-run-0013"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, folders=folders)
+        for _ in range(2):
+            await conductor.tick()
+            await drive(runner)
+            await conductor.tick()
+            await conductor.tick()
+        assert (await status(db, "knowlab-run-0013"))["status"] == "passed"
+        first, second = (c[1] for c in folders.calls if c[0] == "prepare")
+        assert first.startswith("runs/") and first.endswith("-knowlab-run-0012")
+        assert second.endswith("-knowlab-run-0013")
+        assert folders.calls == [
+            ("prepare", first),
+            ("remove", first),
+            ("prepare", second),
+            ("remove", second),
+        ]
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            paths = set()
+            for run_id in ("knowlab-run-0012", "knowlab-run-0013"):
+                (case,) = await repo.list_test_cases(run_id)
+                project = await repo.get_project(
+                    str(case["project_id"]), owner_actor_id=OWNER
+                )
+                paths.add(project["path"])
+            assert paths == {first, second}
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+async def test_no_clean_folder_means_no_start_and_then_an_error(db):
+    """测试电脑给不出干净的目录：不开跑；过了这次测试的时限还不行，报错结束。"""
+    fake = ScriptedAppServer([PLAN, ANSWER])
+    await fake.start()
+    clock = Clock()
+    folders = Folders(ready=False)
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-0014"))
+        conductor = KnowbotTestConductor(
+            workbench_stores(db), CONFIG, folders=folders, now=clock
+        )
+        await conductor.tick()
+        async with db() as s:
+            run = await WorkbenchRepository(s).get_test_run("knowlab-run-0014")
+            assert run["started_at"] is None and run["status"] == "accepted"
+        clock.at += timedelta(seconds=3601)
+        await conductor.tick()
+        assert (await status(db, "knowlab-run-0014"))["status"] == "error"
+        async with db() as s:
+            run = await WorkbenchRepository(s).get_test_run("knowlab-run-0014")
+            assert "clean folder" in run["error"]
+    finally:
+        await fake.close()
+
+
 async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()

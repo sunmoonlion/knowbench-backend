@@ -172,6 +172,7 @@ def build_machine_sync(
 if TYPE_CHECKING:
     from app.application.workbench.agent_service import AgentService
     from app.application.workbench.deliverable_check import DeliverableCheck
+    from app.application.workbench.test_folders import TestFolders
     from app.application.workbench.tokens import TokenIssuer
 
 
@@ -202,4 +203,28 @@ def build_test_conductor(
     config = test_runtime_config(settings)
     if not config.subject or not config.workspace_root:
         return None
-    return KnowbotTestConductor(workbench_stores(session_factory), config)
+    return KnowbotTestConductor(
+        workbench_stores(session_factory),
+        config,
+        folders=build_test_folders(session_factory, settings),
+    )
+
+
+def build_test_folders(
+    session_factory: async_sessionmaker[AsyncSession], settings
+) -> TestFolders | None:
+    """账 129：经会合点服务流请测试电脑建、删每次测试的目录；没配会合点或签名私钥就不建。"""
+    relay_url = settings.workbench_relay_admin_url
+    signing_key = settings.workbench_token_signing_key
+    if not (relay_url and signing_key):
+        return None
+    from app.application.workbench.test_folders import AgentTestFolders
+    from app.application.workbench.tokens import TokenIssuer
+
+    return AgentTestFolders(
+        build_agent_service(
+            relay_url,
+            TokenIssuer(signing_key, issuer=settings.workbench_token_issuer),
+        ),
+        workbench_stores(session_factory),
+    )

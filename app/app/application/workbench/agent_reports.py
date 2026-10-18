@@ -24,8 +24,12 @@ class PermissionReport(BaseModel):
     id: Annotated[str, Field(pattern=UUID_TEXT, min_length=36, max_length=36)]
     conn: Annotated[str, Field(pattern=r"^[0-9a-f]{8}$", min_length=8, max_length=8)]
     threadId: Annotated[str, Field(pattern=UUID_TEXT, min_length=36, max_length=36)]
-    requestDigest: Annotated[str, Field(pattern=DIGEST_TEXT, min_length=64, max_length=64)]
-    permissionDigest: Annotated[str, Field(pattern=DIGEST_TEXT, min_length=64, max_length=64)]
+    requestDigest: Annotated[
+        str, Field(pattern=DIGEST_TEXT, min_length=64, max_length=64)
+    ]
+    permissionDigest: Annotated[
+        str, Field(pattern=DIGEST_TEXT, min_length=64, max_length=64)
+    ]
     decision: Literal["approved", "denied"]
     scope: Scope
     expiresAt: int
@@ -39,7 +43,9 @@ class PermissionReport(BaseModel):
 
 class ReportEnvelope(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
-    receipt: Annotated[str, Field(pattern=r"^[0-9a-f]{32}$", min_length=32, max_length=32)]
+    receipt: Annotated[
+        str, Field(pattern=r"^[0-9a-f]{32}$", min_length=32, max_length=32)
+    ]
     report: PermissionReport
 
 

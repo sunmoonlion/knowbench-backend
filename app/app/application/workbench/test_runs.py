@@ -29,6 +29,7 @@ from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.interactions import answer_interaction, cancel_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
+from app.application.workbench.test_folders import TestFolders, run_folder
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
     KnowbotTestBudgetExhausted,
@@ -319,10 +320,13 @@ class KnowbotTestConductor:
         config: KnowbotTestConfig,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        folders: TestFolders | None = None,
     ) -> None:
         self.stores = stores
         self.config = config
         self.now = now
+        # 每次测试自己的目录，开跑前建好、测完删掉（账 129）；没配会合点服务流时为 None，只分项目不建目录
+        self.folders = folders
 
     async def tick(self) -> int:
         async with self.stores() as repo:
@@ -341,7 +345,7 @@ class KnowbotTestConductor:
         await self.cleanup()
         return moved
 
-    async def _account(self, repo: WorkbenchStore) -> Account:
+    async def _account(self, repo: WorkbenchStore, folder: str) -> Account:
         if not self.config.subject or not self.config.workspace_root:
             raise KnowbotTestUnconfigured("the test account or computer is not set up")
         actor = await repo.actor_for_subject(self.config.subject)
@@ -358,11 +362,12 @@ class KnowbotTestConductor:
         )
         if env is None:
             raise KnowbotTestUnconfigured("the test computer is not paired")
+        # 每次测试一个项目，目录是工作区下这次测试自己的子目录（账 129）
         project = await repo.find_project(
             owner_actor_id=actor,
             environment_id=str(env["id"]),
             workspace_root=root,
-            path="",
+            path=folder,
         )
         if project is None:
             async with repo.transaction():
@@ -370,7 +375,7 @@ class KnowbotTestConductor:
                     owner_actor_id=actor,
                     environment_id=str(env["id"]),
                     workspace_root=root,
-                    path="",
+                    path=folder,
                     title="分身测试",
                 )
         else:
@@ -385,12 +390,29 @@ class KnowbotTestConductor:
             if run is None or run["status"] not in ACTIVE:
                 return
             now = self.now()
+            folder = run_folder(run)
             try:
-                account = await self._account(repo)
+                account = await self._account(repo, folder)
             except KnowbotTestUnconfigured as exc:
                 await self._finish(repo, run, status="error", error=exc.message)
                 return
             if run["started_at"] is None:
+                if self.folders is not None and not await self.folders.prepare(
+                    owner=account.actor_id,
+                    root=str(self.config.workspace_root),
+                    folder=folder,
+                ):
+                    # 测试电脑没法给出一个干净的目录（离线、删不掉别人的）：不开跑，下一轮再试；
+                    # 等过了这次测试的时限还不行，就报错结束，不一直挂着
+                    waited = (now - run["created_at"]).total_seconds()
+                    if waited > run["timeout_seconds"]:
+                        await self._finish(
+                            repo,
+                            run,
+                            status="error",
+                            error="the test computer could not prepare a clean folder",
+                        )
+                    return
                 async with repo.transaction():
                     await repo.update_test_run(run_id, status="running", started_at=now)
                 run = await repo.get_test_run(run_id)
@@ -708,6 +730,15 @@ class KnowbotTestConductor:
                 finished_at=now,
                 cleanup_after=now + KEEP,
             )
+        # 测完就删这次的目录（账 129）；删不掉的，下一个测试开跑前还会再删
+        if self.folders is not None and self.config.workspace_root:
+            actor = await repo.actor_for_subject(str(self.config.subject))
+            if actor is not None:
+                await self.folders.remove(
+                    owner=actor,
+                    root=self.config.workspace_root,
+                    folder=run_folder(run),
+                )
 
     async def run_forever(self, stop: Any, interval_seconds: float) -> None:
         """runner 进程里的一条线：隔一会儿推一次在跑的测试、清一次到期的产出。"""

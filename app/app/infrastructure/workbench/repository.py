@@ -1463,6 +1463,16 @@ class WorkbenchRepository:
         ]
         for session_id in sessions:
             await self.delete_session_tree(session_id)
+        # 每次测试一个项目（账 129）：到期一起收起，测试账号的项目列表不越积越长
+        await self.session.execute(
+            text(
+                """update workbench_projects set archived_at = now()
+                   where archived_at is null and id in (
+                     select project_id from workbench_test_cases
+                     where run_id = :r and project_id is not null)"""
+            ),
+            {"r": run_id},
+        )
         await self.session.execute(
             text(
                 """update workbench_test_cases set session_id = null, task_id = null

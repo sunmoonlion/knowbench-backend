@@ -141,7 +141,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "camera=(), microphone=(), geolocation=()"
         )
         if request.url.path.startswith(
-            ("/api/auth/", "/api/workbench/", "/api/agent-pairing/", "/api/agent-install/")
+            (
+                "/api/auth/",
+                "/api/workbench/",
+                "/api/agent-pairing/",
+                "/api/agent-install/",
+            )
         ) or request.url.path == ("/api/internal/v1/delivery/metrics"):
             response.headers["Cache-Control"] = "no-store"
         return response
