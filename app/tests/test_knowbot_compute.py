@@ -372,3 +372,89 @@ async def test_sourced_without_a_data_source_does_not_pass() -> None:
         source=None,
     )
     assert not v.ok and "cannot be read here" in v.checks[-1]["detail"]
+    # 取不到数是平台的事，不是数对不上（审读第 3 条）
+    assert v.checks[-1]["platform"] is True
+
+
+async def test_a_wrong_number_is_not_a_platform_error() -> None:
+    records, tool = world()
+    rules = (rule("sourced", "raw"),)
+    text = f'{{"raw": [{{"address": "{at("营业成本", "2024-06-30")}", "value": 150}}]}}'
+    v = await verdict_of(text, rules, records)
+    assert not v.ok and "platform" not in v.checks[-1]
+
+
+def _step(checks: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "step_id": "answer",
+        "status": "rejected",
+        "attempts": [{"outcome": "rejected", "checks": checks}],
+    }
+
+
+def test_a_case_says_why_a_step_failed_and_platform_trouble_is_an_error() -> None:
+    from app.domain.workbench.test_runs import RunCase, case_result
+
+    case = RunCase.model_validate(
+        {
+            "case_id": "c1",
+            "input": {"question": "q"},
+            "expectations": [
+                {"artifact": "a", "path": "x", "kind": "equals", "value": 1}
+            ],
+        }
+    )
+    wrong = {
+        "rule": "sourced",
+        "label": "取出的数与表里一致",
+        "pass": False,
+        "detail": "#0 d!data!营收@2024 says 150 but the data has -150",
+    }
+    failed = case_result(
+        case=case, task={"state": "FAILED"}, steps=[_step([wrong])], artifacts={}
+    )
+    assert failed["status"] == "failed"
+    assert failed["steps"][0]["failed_checks"] == ["取出的数与表里一致"]
+    assert failed["steps"][0]["details"] == [
+        "取出的数与表里一致: #0 d!data!营收@2024 says 150 but the data has -150"
+    ]
+    unread = wrong | {
+        "detail": "user_data_unavailable: reading the user's data is not configured",
+        "platform": True,
+    }
+    broken = case_result(
+        case=case, task={"state": "FAILED"}, steps=[_step([unread])], artifacts={}
+    )
+    assert broken["status"] == "error"
+    assert "could not check a step" in broken["note"]
+    assert "not configured" in broken["note"]
+    long = wrong | {"detail": "长" * 500}
+    cut = case_result(
+        case=case, task={"state": "FAILED"}, steps=[_step([long])], artifacts={}
+    )
+    assert len(cut["steps"][0]["details"][0]) == 200
+
+
+@pytest.mark.parametrize(
+    ("kind", "want", "value", "met"),
+    [
+        ("equals", 12, "12%", False),  # 带百分号的不当数（与 knowlab 一致）
+        ("equals", "12%", "12%", True),  # 要比就写成字符串
+        ("approx", 0.12, "12%", False),
+        ("approx", 0.12, "0.1201", True),
+        ("equals", True, "true", True),  # 交回物写成字符串也算
+        ("equals", True, True, True),
+        ("equals", False, "true", False),
+    ],
+)
+def test_percent_signs_and_booleans_compare_the_same_way(kind, want, value, met):
+    from app.domain.workbench.test_runs import Expectation, expectation_met
+
+    expectation = Expectation(
+        artifact="a",
+        path="x",
+        kind=kind,
+        value=want,
+        tolerance=0.01 if kind == "approx" else None,
+    )
+    assert expectation_met(expectation, {"a": {"x": value}}) is met

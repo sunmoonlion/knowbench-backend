@@ -6,7 +6,11 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
 from app.application.workbench.agent_service import AgentRefused
-from app.application.workbench.test_folders import AgentTestFolders, run_folder
+from app.application.workbench.test_folders import (
+    AgentTestFolders,
+    FolderRefused,
+    run_folder,
+)
 from app.domain.workbench.errors import WorkbenchError
 
 
@@ -21,8 +25,9 @@ async def stores():
 
 
 class Service:
-    def __init__(self, entries=None, refuse=None, fail=None):
+    def __init__(self, entries=None, refuse=None, fail=None, deny=None):
         self.entries, self.refuse, self.fail = entries, refuse, fail
+        self.deny = deny
         self.calls: list[tuple[str, dict]] = []
 
     async def call(self, relay_user, method, params=None):
@@ -30,6 +35,8 @@ class Service:
         self.calls.append((method, params))
         if method == self.fail:
             raise WorkbenchError("agent offline")
+        if method == self.deny:
+            raise AgentRefused(-32010, "outside the whitelist")
         if method == "fs/readDirectory":
             if self.refuse:
                 raise AgentRefused(
@@ -87,6 +94,23 @@ async def test_prepare_fails_closed_when_the_computer_cannot_be_reached_or_clean
     assert not await AgentTestFolders(Service(), stores).prepare(
         owner="nobody", root="/workspace", folder="runs/a"
     )
+
+
+async def test_a_refused_remove_says_which_folder_at_once():
+    """代理拒了删（不是离线）：等下去也不会好，立刻说是哪个目录（审读第 15 条）。"""
+    dirty = Service(
+        entries=[{"fileName": "other", "isDirectory": True, "isFile": False}],
+        deny="fs/remove",
+    )
+    try:
+        await AgentTestFolders(dirty, stores).prepare(
+            owner="tester", root="/workspace", folder="runs/a"
+        )
+    except FolderRefused as exc:
+        assert exc.message.startswith("/workspace/runs/other: ")
+    else:
+        raise AssertionError("expected FolderRefused")
+    assert not any(m == "fs/createDirectory" for m, _ in dirty.calls)
 
 
 async def test_remove_never_raises():

@@ -30,7 +30,11 @@ from app.application.workbench.interactions import answer_interaction, cancel_ta
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.project_service import ONLINE
 from app.application.workbench.session_service import SessionService
-from app.application.workbench.test_folders import TestFolders, run_folder
+from app.application.workbench.test_folders import (
+    FolderRefused,
+    TestFolders,
+    run_folder,
+)
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
     KnowbotTestBudgetExhausted,
@@ -423,11 +427,22 @@ class KnowbotTestConductor:
                             )
                         await self._finish(repo, run, status="error", error=error)
                     return
-                if self.folders is not None and not await self.folders.prepare(
-                    owner=account.actor_id,
-                    root=str(self.config.workspace_root),
-                    folder=folder,
-                ):
+                try:
+                    ready = self.folders is None or await self.folders.prepare(
+                        owner=account.actor_id,
+                        root=str(self.config.workspace_root),
+                        folder=folder,
+                    )
+                except FolderRefused as exc:
+                    await self._finish(
+                        repo,
+                        run,
+                        status="error",
+                        error="the test computer refused to prepare a clean folder: "
+                        + exc.message,
+                    )
+                    return
+                if not ready:
                     # 测试电脑没法给出一个干净的目录（离线、删不掉别人的）：不开跑，下一轮再试；
                     # 等过了这次测试的时限还不行，就报错结束，不一直挂着
                     waited = (now - run["created_at"]).total_seconds()
@@ -694,6 +709,16 @@ class KnowbotTestConductor:
         )
         if note and result["status"] != "passed":
             result["note"] = note[:1000]
+        # 排查不用翻库：哪次测试、哪条用例、哪一步、为什么没过（审读第 3 条）
+        for line in result["steps"]:
+            for detail in line.get("details") or []:
+                log.info(
+                    "knowbot test check failed run=%s case=%s step=%s detail=%s",
+                    run["run_id"],
+                    case.case_id,
+                    line["step_id"],
+                    detail,
+                )
         spent = Decimal(str((task.get("budget") or {}).get("used") or "0"))
         async with repo.transaction():
             await repo.update_test_case(run["run_id"], case.case_id, result=result)
@@ -736,8 +761,14 @@ class KnowbotTestConductor:
         request: RunRequest,
         cases: list[dict[str, Any]],
     ) -> None:
-        passed = all((c.get("result") or {}).get("status") == "passed" for c in cases)
-        await self._finish(repo, run, status="passed" if passed else "failed")
+        statuses = [(c.get("result") or {}).get("status") for c in cases]
+        if all(s == "passed" for s in statuses):
+            status = "passed"
+        elif "failed" not in statuses and "error" in statuses:
+            status = "error"  # 没有一条是数不对，是平台没能验（审读第 3 条）
+        else:
+            status = "failed"
+        await self._finish(repo, run, status=status)
 
     async def _finish(
         self,

@@ -116,12 +116,17 @@ def _walk(content: Any, path: str) -> tuple[bool, Any]:
 
 
 def _number(value: Any) -> Decimal | None:
+    """带百分号的不当数（与 knowlab 读表一致，审读第 8 条）：要比就写成字符串期望。"""
     if isinstance(value, bool):
         return None
+    text = str(value).strip()
+    if text.endswith("%"):
+        return None
     try:
-        return Decimal(str(value).strip().rstrip("%"))
+        number = Decimal(text)
     except (InvalidOperation, ValueError):
         return None
+    return number if number.is_finite() else None
 
 
 def expectation_met(expectation: Expectation, artifacts: dict[str, Any]) -> bool:
@@ -134,7 +139,8 @@ def expectation_met(expectation: Expectation, artifacts: dict[str, Any]) -> bool
     want = expectation.value
     if expectation.kind == "equals":
         if isinstance(want, bool) or isinstance(value, bool):
-            return value is want
+            # 交回物里写成 "true" 也算（审读第 12 条）
+            return str(value).strip().lower() == str(want).lower()
         if isinstance(want, int | float):
             got = _number(value)
             return got is not None and got == Decimal(str(want))
@@ -153,6 +159,19 @@ def expectation_met(expectation: Expectation, artifacts: dict[str, Any]) -> bool
 
 
 # ---------- 一条用例的结果 ----------
+DETAIL_CHARS = 200
+
+
+def _detail(check: dict[str, Any]) -> str:
+    """没过的验收为什么没过：哪一格、说了多少、实际多少（审读第 3 条）。
+
+    数是用户自己数据里的，不是分析内容（C-L5）。"""
+    text = (
+        f"{check.get('label') or check.get('rule') or ''}: {check.get('detail') or ''}"
+    )
+    return text.strip(": ")[:DETAIL_CHARS]
+
+
 def case_result(
     *,
     case: RunCase,
@@ -162,31 +181,38 @@ def case_result(
     needs_human: bool = False,
     error: str | None = None,
 ) -> dict[str, Any]:
-    """每步验收通过与否、没过的验收名、期望满足与否。不放任何交回物的内容（C-L5）。"""
+    """每步验收通过与否、没过的验收名与原因、期望满足与否。不放交回物的内容（C-L5）。
+
+    验收没能做（读不到用户的数据这类平台的事）记成用例出错，不记成没过（审读第 3 条）。
+    """
     lines = []
+    platform: list[str] = []
     for step in steps:
         accepted = step.get("status") == "accepted"
-        failed: list[str] = []
+        failed: list[dict[str, Any]] = []
         for attempt in reversed(step.get("attempts") or []):
             if attempt.get("outcome") in ("accepted", "rejected"):
                 failed = [
-                    str(c.get("label") or "")
-                    for c in attempt.get("checks") or []
-                    if c.get("pass") is False
+                    c for c in attempt.get("checks") or [] if c.get("pass") is False
                 ]
                 break
+        platform += [_detail(c) for c in failed if c.get("platform")]
         if step.get("attempts"):
             lines.append(
                 {
                     "step_id": str(step.get("step_id")),
                     "accepted": accepted,
-                    "failed_checks": failed[:64],
+                    "failed_checks": [str(c.get("label") or "") for c in failed][:64],
+                    "details": [_detail(c) for c in failed][:64],
                 }
             )
     met = [expectation_met(e, artifacts) for e in case.expectations]
     state = (task or {}).get("state")
     if error is not None:
         status, note = "error", error
+    elif platform and not (state == "SUCCEEDED" and all(met)):
+        status = "error"
+        note = f"the platform could not check a step: {platform[0]}"
     elif needs_human:
         status, note = "needs_human", "a question waited too long or the run stopped"
     elif state == "SUCCEEDED" and all(met):

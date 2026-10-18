@@ -12,9 +12,10 @@ from app.infrastructure.messaging.delivery_observation import (
 )
 from app.infrastructure.messaging.delivery_observers import get_delivery_observers
 from app.infrastructure.storage.postgres import get_postgres
+from app.interfaces.http.internal.host_guard import internal_host_only
 from app.interfaces.http.middleware.auth import require_internal_scopes
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(internal_host_only)])
 # Immediate admission, not a queue of DB scans. Per process, not a cluster lock.
 _collection_slot = BoundedSemaphore(1)
 

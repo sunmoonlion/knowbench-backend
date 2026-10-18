@@ -50,12 +50,18 @@ async def test_without_the_relation_configured_everything_is_refused(
         if key.startswith("SERVICE_AUTH_TESTRUN"):
             monkeypatch.delenv(key)
     async with AsyncClient(
-        transport=ASGITransport(app=client), base_url="http://testserver"
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
     ) as h:
         assert (await h.post(BASE, json=body())).status_code == 401  # 没带令牌
         refused = await h.post(BASE, json=body(), headers={"Authorization": "Bearer x"})
         assert refused.status_code == 503
         assert refused.json()["code"] == "service_relation_unconfigured"
+    # 公网地址来的：当没有这个接口（审读第 1 条）
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://testserver"
+    ) as h:
+        hidden = await h.post(BASE, json=body(), headers={"Authorization": "Bearer x"})
+        assert hidden.status_code == 404
 
 
 async def test_knowlab_submits_reads_and_answers(client, monkeypatch):
@@ -71,7 +77,7 @@ async def test_knowlab_submits_reads_and_answers(client, monkeypatch):
         ),
     )
     async with AsyncClient(
-        transport=ASGITransport(app=client), base_url="http://testserver"
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
     ) as h:
         made = await h.post(BASE, json=body())
         assert made.status_code == 202, made.text

@@ -26,9 +26,17 @@ def run_folder(run: dict[str, Any]) -> str:
     return f"{RUNS}/{stamp}-{_UNSAFE.sub('-', str(run['run_id']))[:80]}"
 
 
+class FolderRefused(WorkbenchError):
+    """代理明确拒了删或建（不是离线、超时这类过一会儿就好的）：等下去也不会好，
+    立刻报错，写明是哪个目录（审读第 15 条）。"""
+
+    code = "test_folder_refused"
+
+
 class TestFolders(Protocol):
     async def prepare(self, *, owner: str, root: str, folder: str) -> bool:
-        """删掉 runs 下别的目录，建好这一个。建好了回 True；问不到、建不了回 False。"""
+        """删掉 runs 下别的目录，建好这一个。建好了回 True；问不到回 False（下一轮再试）；
+        代理拒了删或建抛 FolderRefused。"""
         ...
 
     async def remove(self, *, owner: str, root: str, folder: str) -> None:
@@ -62,18 +70,19 @@ class AgentTestFolders:
             listed = {"entries": []}
         except WorkbenchError:
             return False
+        target = ""
         try:
             for entry in listed.get("entries") or []:
                 name = str(entry.get("fileName") or "")
                 if name and name != mine and entry.get("isDirectory"):
-                    await self.service.call(
-                        relay_user, "fs/remove", {"path": join_path(runs, name)}
-                    )
+                    target = join_path(runs, name)
+                    await self.service.call(relay_user, "fs/remove", {"path": target})
+            target = join_path(root, folder)
             await self.service.call(
-                relay_user,
-                "fs/createDirectory",
-                {"path": join_path(root, folder), "recursive": True},
+                relay_user, "fs/createDirectory", {"path": target, "recursive": True}
             )
+        except AgentRefused as exc:
+            raise FolderRefused(f"{target}: {exc.code}") from None
         except WorkbenchError:
             return False
         return True

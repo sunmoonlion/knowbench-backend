@@ -89,6 +89,36 @@ def test_requests_we_accept_and_results_we_return_fit_the_contract() -> None:
     jsonschema.validate(
         base | {"status": "passed", "cases": [passed], "questions": []}, result_schema
     )
+    # 没过的带原因（审读第 3 条）；平台取不到数记成出错
+    failed = case_result(
+        case=RunCase.model_validate(case),
+        task={"state": "FAILED"},
+        steps=[
+            {
+                "step_id": "answer",
+                "status": "rejected",
+                "attempts": [
+                    {
+                        "outcome": "rejected",
+                        "checks": [
+                            {
+                                "rule": "sourced",
+                                "label": "取出的数与表里一致",
+                                "pass": False,
+                                "detail": "user_data_unavailable: not configured",
+                                "platform": True,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        artifacts={},
+    )
+    assert failed["status"] == "error" and failed["steps"][0]["details"]
+    jsonschema.validate(
+        base | {"status": "error", "cases": [failed], "questions": []}, result_schema
+    )
     waiting = base | {
         "status": "waiting",
         "cases": [],

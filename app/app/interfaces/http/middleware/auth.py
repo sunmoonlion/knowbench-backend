@@ -6,7 +6,7 @@ from typing import Annotated
 from fastapi import Cookie, Depends, Header, Request
 
 from app.application.audit_context import set_actor
-from app.application.errors.exceptions import UnauthorizedError
+from app.application.errors.exceptions import ForbiddenError, UnauthorizedError
 from app.application.services.auth_service import AuthService
 from app.bootstrap.auth import build_auth_service
 from app.domain.security import BrowserSession, Principal
@@ -83,6 +83,22 @@ async def get_web_current_user(
     return session.principal
 
 
+# 部署只给角色、不发权限（账 134），所以管理角色换算成权限（待办 98，
+# 所有者 2026-10-18 采纳审读第 4 条）：admin 什么都能做；白名单里别的角色
+# （operator）只拿到管理端的基本权限（看、发起测试、答跑法问题）。交付、退回
+# 这类接口在基本权限之外再要一项，只有 admin 有。
+FULL_ADMIN_ROLE = "admin"
+
+
+def granted_scopes(principal: Principal) -> frozenset[str] | None:
+    """这个人在管理端有哪些权限；None 是全部。"""
+    roles = set(principal.roles) & _admin_profile.role_allowlist
+    if FULL_ADMIN_ROLE in roles:
+        return None
+    base = frozenset(_admin_profile.required_scopes) if roles else frozenset()
+    return frozenset(principal.scopes) | base
+
+
 def require_admin_scopes(*required: str) -> Callable[..., Awaitable[Principal]]:
     required_set = frozenset(required)
 
@@ -90,11 +106,9 @@ def require_admin_scopes(*required: str) -> Callable[..., Awaitable[Principal]]:
         session: Annotated[BrowserSession, Depends(get_admin_browser_session)],
     ) -> Principal:
         principal = session.principal
-        # 白名单里的管理角色（admin、operator，待办 98）也算管理员：
-        # 部署只给角色，不发「应用名:admin」这个权限；只认权限的话，
-        # 管理端业务接口对谁都是 403（2026-10-17 knowlab 走查，账 134）
-        if not set(principal.roles) & _admin_profile.role_allowlist:
-            admin_auth_service.require_scopes(principal, required_set)
+        granted = granted_scopes(principal)
+        if granted is not None and not required_set <= granted:
+            raise ForbiddenError("Required scope missing")
         return principal
 
     return dependency

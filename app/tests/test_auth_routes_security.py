@@ -164,6 +164,36 @@ async def test_admin_business_routes_accept_the_admin_roles(
     assert response.status_code == (503 if allowed else 403), response.text
 
 
+@pytest.mark.parametrize(
+    ("roles", "scopes", "granted"),
+    [
+        (("admin",), (), None),  # 全部
+        (("operator",), (), {"knowbench:admin"}),  # 只有基本权限
+        (("operator",), ("knowbench:release",), {"knowbench:admin", "knowbench:release"}),
+        (("editor",), (), set()),
+        ((), ("knowbench:admin",), {"knowbench:admin"}),
+    ],
+)
+def test_admin_roles_become_scopes_and_only_admin_gets_everything(
+    monkeypatch: pytest.MonkeyPatch,
+    roles: tuple[str, ...],
+    scopes: tuple[str, ...],
+    granted: set[str] | None,
+) -> None:
+    """operator 不等于 admin（审读第 4 条）：要多一项权限的（交付、退回）它过不了。"""
+    monkeypatch.setattr(
+        auth_middleware,
+        "_admin_profile",
+        dataclasses.replace(
+            auth_middleware._admin_profile,
+            role_allowlist=frozenset({"admin", "operator"}),
+        ),
+    )
+    principal = session("admin", *scopes).principal.model_copy(update={"roles": roles})
+    result = auth_middleware.granted_scopes(principal)
+    assert (None if result is None else set(result)) == granted
+
+
 def test_admin_has_no_signup_and_web_has_signup_and_continue() -> None:
     paths = {route.path for route in app.routes}
     assert "/api/auth/admin/signup" not in paths

@@ -158,9 +158,11 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": (
             "Read one sheet of a CSV or Excel dataset as labelled cells: `columns` are "
             "the header labels (dates as YYYY-MM-DD), each row has its `label` (first "
-            "column; a repeated label gets #2, #3) and its values. Use it to write cell "
-            "addresses for compute: <dataset_id>:<sheet>!<row label>@<column label>, "
-            "e.g. 3f…:利润表!营业收入@2024-06-30. Paged like read_my_data."
+            "column; a repeated label gets #2, #3; so does a repeated column label) and "
+            "its values. Use it to write cell addresses for compute: "
+            "<dataset_id>:<sheet>!<row label>@<column label>, "
+            "e.g. 3f…:利润表!营业收入@2024-06-30. Copy the labels exactly as returned "
+            "here; do not reformat dates. Paged like read_my_data."
         ),
         "inputSchema": {
             "type": "object",
@@ -185,7 +187,8 @@ TOOLS: dict[str, dict[str, Any]] = {
             "numbers, + - * / ( ) and sum avg median min max abs (these take lists). "
             "You cannot pass numbers as inputs. Returns {id, value, formula, inputs}: "
             "put the id as compute_id next to every computed number you hand back. "
-            "A zero denominator is refused: report the figure as not applicable."
+            "A zero denominator is refused: report the figure as not applicable. "
+            "Ids are not consecutive (c3, c17, …); that is normal, nothing is missing."
         ),
         "inputSchema": {
             "type": "object",

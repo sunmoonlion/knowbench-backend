@@ -23,6 +23,7 @@ from app.infrastructure.messaging import delivery_observation as observation
 from app.infrastructure.security.oidc import OidcProviderClient
 from app.infrastructure.security.service_identity import ServiceIdentityVerifier
 from app.interfaces.http.internal import delivery_metrics as endpoint
+from app.interfaces.http.internal.host_guard import is_internal_host
 from app.interfaces.http.middleware import auth
 from core.config import Settings
 
@@ -92,12 +93,39 @@ def identity(monkeypatch):
     return headers
 
 
-def client():
+def client(base_url: str = "http://127.0.0.1"):
     # ASGITransport intentionally does not run the shared API lifespan: tests inject
     # only the disposable session factory, never initialize a configured business DB.
+    # 内部接口只认集群内与回环地址（审读第 1 条）；测试的 TrustedHost 放回环地址
     return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=create_app()), base_url="http://testserver"
+        transport=httpx.ASGITransport(app=create_app()), base_url=base_url
     )
+
+
+async def test_public_hosts_do_not_see_internal_routes(monkeypatch, identity):
+    """公网入口把整个 /api 转进来：不是集群内地址的，当没有这个接口，连令牌都不看。"""
+    monkeypatch.setattr(endpoint, "get_postgres", lambda: pytest.fail("no pool"))
+    async with client("http://testserver") as http:
+        response = await http.get(PATH, headers=identity())
+    assert response.status_code == 404
+    assert "sunmoonai_delivery_" not in response.text
+
+
+@pytest.mark.parametrize(
+    "host",
+    [
+        "knowbench-tls.app-platform-dev.svc.cluster.local",
+        "knowbench-api.app-platform-dev.svc.cluster.local",
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    ],
+)
+def test_cluster_and_loopback_hosts_are_internal(host):
+    assert is_internal_host(host)
+    assert not is_internal_host("knowbench.sunmoonai.com")
+    assert not is_internal_host("svc.cluster.local.evil.example")
+    assert not is_internal_host(None)
 
 
 @pytest.mark.parametrize(
