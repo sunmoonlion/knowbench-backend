@@ -40,6 +40,7 @@ from app.domain.workbench.packs import ExpertPack, Scope, StepContract, find_pac
 from app.domain.workbench.projects import NO_DETOUR
 from app.domain.workbench.records import one_line
 from app.domain.workbench.states import (
+    PLATFORM_FAILURE,
     TASK_TERMINAL,
     AttemptState,
     TaskState,
@@ -801,6 +802,28 @@ class Advisor:
         )
         log.info("task %s declined as out of scope at %s", task_id, step.step_id)
         return TaskState.WAITING
+
+    async def fail_after_crash(self, task_id: str, error: str) -> None:
+        """驾驶中抛了没接住的异常：开着的尝试记失败、委托记失败，不让它停在 RUNNING 没人推。
+
+        K19 判分崩了以后委托一直挂着，测试要等到超时才收尾。已经停下（等人、终态）的不动。
+        """
+        async with self.stores() as repo:
+            led = Ledger(repo)
+            task = await repo.get_task(task_id)
+            if task["state"] not in (TaskState.QUEUED, TaskState.RUNNING):
+                return
+            attempt_id = task.get("active_attempt_id")
+            if attempt_id is not None:
+                attempt = await repo.get_attempt(str(attempt_id))
+                if attempt["status"] in (AttemptState.CREATED, AttemptState.RUNNING):
+                    await led.attempt_transition(
+                        str(attempt_id),
+                        AttemptState.FAILED,
+                        failure_code=PLATFORM_FAILURE,
+                        retryable=False,
+                    )
+            await led.transition(task_id, TaskState.FAILED, reason={"error": error})
 
     async def _requeue(self, led: Ledger, task_id: str) -> bool:
         async with self.stores() as repo:

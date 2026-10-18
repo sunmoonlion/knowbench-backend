@@ -1559,8 +1559,14 @@ class Runner:
         try:
             state = await advisor.drive(task_id)
             log.info("advisor stopped task=%s state=%s", task_id, state)
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
             log.exception("advisor crashed task=%s", task_id)
+            try:
+                await advisor.fail_after_crash(
+                    task_id, f"platform error: {type(exc).__name__}"
+                )
+            except Exception:  # noqa: BLE001
+                log.exception("could not close the crashed task=%s", task_id)
         finally:
             self.driving.pop(task_id, None)
 

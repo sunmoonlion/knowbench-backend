@@ -18,6 +18,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.workbench.states import PLATFORM_FAILURE
+
 CONTRACT = "knowbot-test-run/v1"
 RUN_ID = r"^[A-Za-z0-9._:-]{8,128}$"
 CASE_ID = r"^[A-Za-z0-9._-]{1,64}$"
@@ -197,6 +199,12 @@ def case_result(
                 ]
                 break
         platform += [_detail(c) for c in failed if c.get("platform")]
+        if any(
+            a.get("failure") == PLATFORM_FAILURE for a in step.get("attempts") or []
+        ):
+            platform.append(
+                f"{step.get('step_id')}: the platform failed during this step"
+            )
         if step.get("attempts"):
             lines.append(
                 {

@@ -189,6 +189,51 @@ async def test_a_draft_runs_on_the_real_engine_and_passes(db):
         await fake.close()
 
 
+async def test_a_crash_while_judging_ends_the_case_as_an_error(db, monkeypatch):
+    """判分时平台自己抛了异常（K19：算出 0 被当成没数）：委托记失败、这条用例记出错并收尾，
+    不挂到超时。"""
+    from decimal import InvalidOperation
+
+    from app.application.workbench import advisor as advisor_module
+
+    async def crash(*args, **kwargs):
+        raise InvalidOperation
+
+    monkeypatch.setattr(advisor_module, "judge_numbers", crash)
+    fake = ScriptedAppServer([PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-crash"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        done = await status(db, "knowlab-run-crash")
+        assert done["status"] in ("failed", "error"), done
+        [case] = done["cases"]
+        assert case["status"] == "error"
+        assert "plan: the platform failed during this step" in case["note"]
+        async with db() as s:
+            task = (
+                await s.execute(
+                    text("select state, active_attempt_id from workbench_tasks")
+                )
+            ).one()
+            attempt = (
+                await s.execute(
+                    text("select status, failure_code from workbench_attempts")
+                )
+            ).one()
+        assert task.state == "FAILED" and task.active_attempt_id is None
+        assert (attempt.status, attempt.failure_code) == ("FAILED", "platform")
+    finally:
+        await close(runner)
+        await fake.close()
+
+
 async def test_unmet_expectations_fail_the_case(db):
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()

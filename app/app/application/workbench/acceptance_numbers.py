@@ -52,15 +52,15 @@ def _computed(
         cid = str(item.get("compute_id") or "")
         record = records.get(cid)
         value = calc.decimal_of(item.get("value"))
+        # 算出来是 0 也是数：不能拿真假判有没有（K19 第 3 步勾稽差额为 0，NaN 一比就崩）
+        computed = None if record is None else calc.decimal_of(record.get("value"))
         if record is None:
             bad.append(f"#{i} {cid or 'no compute_id'} was not computed in this task")
         elif value is None:
             bad.append(f"#{i} {cid} has no number")
-        elif not _close(
-            calc.decimal_of(record.get("value")) or Decimal("NaN"),
-            value,
-            rule.tolerance,
-        ):
+        elif computed is None:
+            bad.append(f"#{i} {cid} computed {record.get('value')}, not one number")
+        elif not _close(computed, value, rule.tolerance):
             bad.append(
                 f"#{i} {cid} says {item.get('value')} but computed {record.get('value')}"
             )

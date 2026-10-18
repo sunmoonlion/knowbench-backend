@@ -305,6 +305,20 @@ async def test_computed_numbers_must_be_in_the_record_and_match() -> None:
     assert not v.ok and "used 'h1 - q1'" in v.checks[-1]["detail"]
 
 
+async def test_a_computed_zero_is_a_number() -> None:
+    """勾稽差额算出 0：判得过；交回物说 1 就是没对上，不是崩（K19 第 3 步）。"""
+    records, tool = world()
+    zero = await tool.compute(
+        "t", "diff", "a - b", {"a": at("零", "2024-06-30"), "b": at("零", "2024-06-30")}
+    )
+    rules = (rule("computed", "diffs", tolerance=1),)
+    ok = f'{{"diffs": [{{"compute_id": "{zero["id"]}", "value": "0"}}]}}'
+    assert (await verdict_of(ok, rules, records)).ok
+    off = f'{{"diffs": [{{"compute_id": "{zero["id"]}", "value": 5}}]}}'
+    v = await verdict_of(off, rules, records)
+    assert not v.ok and "says 5 but computed 0" in v.checks[-1]["detail"]
+
+
 async def test_identity_and_sourced() -> None:
     records, tool = world()
     a = await tool.compute("t", "a", "x * 2", {"x": at("营业收入", "2024-03-31")})

@@ -70,6 +70,10 @@ class AttemptState(StrEnum):
     ABANDONED = "ABANDONED"
 
 
+# 平台自己出错（驾驶中抛了没接住的异常）：这次尝试与委托都记失败，测试结果里记出错而不是没过
+PLATFORM_FAILURE = "platform"
+
+
 ATTEMPT_TERMINAL: frozenset[AttemptState] = frozenset(
     {
         AttemptState.COMPLETED,
