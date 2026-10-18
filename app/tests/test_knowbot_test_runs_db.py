@@ -354,6 +354,49 @@ async def test_no_clean_folder_means_no_start_and_then_an_error(db):
         await fake.close()
 
 
+async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db):
+    """账 133：测试电脑不在线不开跑；测试账号下在线的是别的电脑时，报错里写出来。"""
+    fake = ScriptedAppServer([PLAN, ANSWER])
+    await fake.start()
+    clock = Clock()
+    try:
+        await setup_test_computer(db, fake)
+        async with db() as s:
+            await s.execute(
+                text(
+                    "update workbench_environments set status = 'offline' where name = 'knowbot-test'"
+                )
+            )
+            await s.commit()
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.register_environment(
+                    owner_actor_id=OWNER,
+                    name="zymun",
+                    agent_version="0.5.0",
+                    codex_version="0.155.1",
+                    roots=["C:\\Users\\zymun\\Desktop"],
+                    ceiling={},
+                )
+        await accept(db, request("knowlab-run-0015"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, now=clock)
+        await conductor.tick()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            assert (await repo.get_test_run("knowlab-run-0015"))["started_at"] is None
+            assert not any(
+                c.get("task_id") for c in await repo.list_test_cases("knowlab-run-0015")
+            )
+        clock.at += timedelta(seconds=3601)
+        await conductor.tick()
+        async with db() as s:
+            run = await WorkbenchRepository(s).get_test_run("knowlab-run-0015")
+            assert run["status"] == "error"
+            assert "offline" in run["error"] and "zymun" in run["error"]
+    finally:
+        await fake.close()
+
+
 async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()

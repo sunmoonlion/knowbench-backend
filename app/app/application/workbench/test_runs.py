@@ -28,6 +28,7 @@ from app.application.workbench.catalog import SOURCE_TEST, PinnedPack
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.interactions import answer_interaction, cancel_task
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.project_service import ONLINE
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.test_folders import TestFolders, run_folder
 from app.domain.workbench import knowbots
@@ -75,6 +76,9 @@ class Account:
     actor_id: str
     environment_id: str
     project_id: str
+    online: bool = True  # 测试电脑在线
+    # 测试账号下此刻在线的别的电脑（账 133）：一个账号同一时刻只有一台在线，有它测试电脑就上不来
+    others_online: tuple[str, ...] = ()
 
 
 def _iso(value: Any) -> str | None:
@@ -380,8 +384,17 @@ class KnowbotTestConductor:
                 )
         else:
             project_id = str(project["id"])
+        others = tuple(
+            str(e["name"])
+            for e in await repo.list_environments(owner_actor_id=actor)
+            if str(e["id"]) != str(env["id"]) and e.get("status") == ONLINE
+        )
         return Account(
-            actor_id=actor, environment_id=str(env["id"]), project_id=project_id
+            actor_id=actor,
+            environment_id=str(env["id"]),
+            project_id=project_id,
+            online=env.get("status") == ONLINE,
+            others_online=others,
         )
 
     async def advance(self, run_id: str) -> None:
@@ -397,6 +410,19 @@ class KnowbotTestConductor:
                 await self._finish(repo, run, status="error", error=exc.message)
                 return
             if run["started_at"] is None:
+                if not account.online:
+                    # 测试电脑不在线不开跑，免得委托落到测试账号下别的电脑上（账 133）；过了时限报错
+                    if (now - run["created_at"]).total_seconds() > run[
+                        "timeout_seconds"
+                    ]:
+                        error = "the test computer is offline"
+                        if account.others_online:
+                            error += (
+                                "; online on the test account instead: "
+                                + ", ".join(account.others_online)
+                            )
+                        await self._finish(repo, run, status="error", error=error)
+                    return
                 if self.folders is not None and not await self.folders.prepare(
                     owner=account.actor_id,
                     root=str(self.config.workspace_root),
