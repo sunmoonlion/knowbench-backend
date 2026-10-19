@@ -28,6 +28,7 @@ from app.application.workbench.records import ProjectRecords
 from app.application.workbench.tokens import TokenIssuer
 from app.bootstrap.workbench import knowbot_data_source, workbench_store
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     require_workbench_enabled,
@@ -353,12 +354,20 @@ async def handle(
     except Exception:  # 内部错误的细节不给模型
         log.exception("workbench_mcp_tool_failed tool=%s", name)
         return _tool_error(mid, "the records are temporarily unavailable")
+    text = json.dumps(result, ensure_ascii=False)
+    size = len(text.encode("utf-8"))
+    if size > TOOL_RESULT_MAX_BYTES:
+        # 太大会被 Codex 从中间省掉、模型却不知道：明说，让它换小一点的读法（待办账 137）
+        log.warning("workbench_mcp_result_too_large tool=%s bytes=%d", name, size)
+        return _tool_error(
+            mid,
+            f"This result is too large to show in one go ({size} bytes); "
+            "ask for a smaller part (another page, one sheet, fewer cells).",
+        )
     return _ok(
         mid,
         {
-            "content": [
-                {"type": "text", "text": json.dumps(result, ensure_ascii=False)}
-            ],
+            "content": [{"type": "text", "text": text}],
             "structuredContent": result,
             "isError": False,
         },

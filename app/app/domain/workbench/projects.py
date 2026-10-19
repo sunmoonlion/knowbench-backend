@@ -158,7 +158,15 @@ class Mode(StrEnum):
 
 # 一条线只有一个 Codex，每一轮都由账房发起、记账、计费。
 # 子代理会另起一条账里没有的线，「目标」会让线自己接着跑：两样都在账外花钱，所以关掉。
+# 模型一次看得到的工具结果上限（Codex 的 tool_output_token_limit；字节模式下按 4 字节一记折算）。
+# 不设时 Codex 对不认识的模型只给 1 万字节，超出的从中间省掉：年报一页的中间、三张表的中间几十行
+# 模型都看不到（2026-10-19 K19 第 2 稿第 6 步「主要会计数据」表读不出，待办账 137）
+TOOL_OUTPUT_TOKENS = 25_000
+# 工作台交给模型的一个工具结果不超过这么多字节，免得被 Codex 从中间省掉（留出余量）
+TOOL_RESULT_MAX_BYTES = TOOL_OUTPUT_TOKENS * 4 * 9 // 10
+
 THREAD_CONFIG: dict[str, Any] = {
+    "tool_output_token_limit": TOOL_OUTPUT_TOKENS,
     "features.multi_agent": False,
     "features.goals": False,
     # 让模型能在一轮中间问人（request_user_input → 提问卡，approval.md「Codex 反过来问用户」）。

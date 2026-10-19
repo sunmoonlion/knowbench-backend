@@ -230,3 +230,32 @@ async def test_too_many_calls_are_slowed_down(served, db):  # noqa: F811
     finally:
         await close(runner)
         await fake.close()
+
+
+async def test_a_result_too_large_for_the_model_is_refused_in_words(
+    served, db, monkeypatch
+):  # noqa: F811
+    """工具结果大过模型一次看得到的上限：不交出去让 Codex 从中间省掉，明说太大、换小一点的读法（待办账 137）。"""
+    from app.domain.workbench.projects import THREAD_CONFIG, TOOL_RESULT_MAX_BYTES
+    from app.interfaces.mcp import workbench_mcp
+
+    assert THREAD_CONFIG["tool_output_token_limit"] * 4 > TOOL_RESULT_MAX_BYTES
+    fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
+    try:
+
+        async def huge(records, name, args):
+            return {"text": "年" * (TOOL_RESULT_MAX_BYTES // 3 + 1)}
+
+        monkeypatch.setattr(workbench_mcp, "call", huge)
+        async with client(served) as http:
+            got = await http.post(
+                URL,
+                json=tool("list_project_conversations", task=ids["task"]),
+                headers=bearer(),
+            )
+        result = got.json()["result"]
+        assert result["isError"] is True
+        assert "too large to show in one go" in result["content"][0]["text"]
+    finally:
+        await close(runner)
+        await fake.close()

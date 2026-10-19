@@ -31,6 +31,8 @@ NO_SIDE_THREADS = {
     "features.goals": False,
     # 让模型能在一轮中间问人（approval.md「Codex 反过来问用户」）
     "features.default_mode_request_user_input": True,
+    # 模型一次看得到的工具结果放大到 2.5 万记，免得年报、三张表从中间被省掉（待办账 137）
+    "tool_output_token_limit": 25_000,
 }
 
 
