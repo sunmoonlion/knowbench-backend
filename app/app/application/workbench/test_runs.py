@@ -938,7 +938,7 @@ class KnowbotTestConductor:
         started = task.get("created_at")
         if (
             found.mtime_ms is not None
-            and hasattr(started, "timestamp")
+            and isinstance(started, datetime)
             and found.mtime_ms < started.timestamp() * 1000 - 1000
         ):
             return None, "成稿文件早于这条用例开始，不是这次写的"
