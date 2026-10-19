@@ -10,8 +10,11 @@ knowlab 交来一份草稿清单与验收用例。我们用真引擎跑：测试
 入超时，一个问题最多等 max_wait_seconds，过了这条用例记 needs_human。中途的审批与反问还受
 runner 的一小时等待上限约束（Codex 那一轮挂在沙箱里），超时按停下收尾，这条用例记 needs_human。
 
-结果只有运行正确与否：每步验收、没过的验收名、期望满足与否；不回分析内容（C-L5）。
-测试产出 7 天后删除（委托、对话、交回物；测试电脑上的底稿由测试电脑自己清理）。
+结果只有运行正确与否：每步验收、没过的验收名、期望满足与否，不放分析内容。每条用例跑完时另取
+它的产出——成稿与各步交回物（SDD 0037）：这时取，是因为用例共用工作区、后一条会盖掉前一条的
+成稿，整次测完目录还要删。产出单独存、单独一个接口给 knowlab（运营验证这一稿、用户看自己的）。
+测试产出 7 天后删除（委托、对话、交回物；测试电脑上的底稿由测试电脑自己清理）；取好的产出
+30 天后清空，测试结果留着。
 """
 
 from __future__ import annotations
@@ -25,6 +28,10 @@ from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import SOURCE_TEST, PinnedPack
+from app.application.workbench.deliverable_check import (
+    DeliverableReader,
+    DeliverableTooLarge,
+)
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.interactions import answer_interaction, cancel_task
 from app.application.workbench.ledger import Ledger
@@ -43,6 +50,7 @@ from app.domain.workbench.errors import (
     KnowbotTestUnconfigured,
     NotFound,
     QuestionNotOpen,
+    WorkbenchError,
 )
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.states import TASK_TERMINAL, TaskState
@@ -52,6 +60,7 @@ from app.domain.workbench.test_runs import (
     Answers,
     RunCase,
     RunRequest,
+    case_outputs,
     case_result,
     trial_profile_id,
 )
@@ -61,6 +70,9 @@ log = logging.getLogger(__name__)
 
 ACTIVE = ("accepted", "running", "waiting")
 KEEP = timedelta(days=7)  # 测试产出保留 7 天（0027 决定 11 ④）
+KEEP_OUTPUTS = timedelta(
+    days=30
+)  # 取好的成稿与交回物留 30 天，knowlab 早取走了（SDD 0037）
 NO_KNOWBOT = "00000000-0000-0000-0000-000000000000"  # 草稿还没有分身 id
 
 
@@ -334,6 +346,22 @@ class KnowbotTestService:
         ]
         return {i for i in ids if await self.repo.get_test_answer(run_id, i)}
 
+    async def outputs(self, run_id: str, case_id: str) -> dict[str, Any]:
+        """一条用例跑完时取好的产出（SDD 0037）。还没跑完、这次没取、已清空的都是 404。"""
+        if await self.repo.get_test_run(run_id) is None:
+            raise NotFound("no such test run", run_id=run_id)
+        row = next(
+            (
+                c
+                for c in await self.repo.list_test_cases(run_id)
+                if c["case_id"] == case_id
+            ),
+            None,
+        )
+        if row is None or not row.get("outputs"):
+            raise NotFound("no outputs for this case", run_id=run_id, case_id=case_id)
+        return dict(row["outputs"])
+
     async def answer(self, run_id: str, answers: Answers) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
         if run is None:
@@ -380,12 +408,15 @@ class KnowbotTestConductor:
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         folders: TestFolders | None = None,
+        reader: DeliverableReader | None = None,
     ) -> None:
         self.stores = stores
         self.config = config
         self.now = now
         # 每次测试自己的目录，开跑前建好、测完删掉（账 129）；没配会合点服务流时为 None，只分项目不建目录
         self.folders = folders
+        # 经会合点读测试电脑上的成稿（SDD 0037）；没配会合点时为 None，产出里写明没读
+        self.reader = reader
         self._unanswerable: set[str] = set()  # 答不进去、已记过原因的交互
 
     async def tick(self) -> int:
@@ -815,12 +846,91 @@ class KnowbotTestConductor:
                     line["step_id"],
                     detail,
                 )
+        outputs = await self._outputs(
+            repo, run, case, task, account, steps=len(view["steps"])
+        )
         spent = Decimal(str((task.get("budget") or {}).get("used") or "0"))
         async with repo.transaction():
-            await repo.update_test_case(run["run_id"], case.case_id, result=result)
+            await repo.update_test_case(
+                run["run_id"], case.case_id, result=result, outputs=outputs
+            )
             await repo.update_test_run(
                 run["run_id"], spent=Decimal(str(run["spent"])) + spent
             )
+
+    async def _outputs(
+        self,
+        repo: WorkbenchStore,
+        run: dict[str, Any],
+        case: RunCase,
+        task: dict[str, Any],
+        account: Account,
+        *,
+        steps: int,
+    ) -> dict[str, Any]:
+        """这条用例的成稿与各步交回物（SDD 0037）。取不到的照实写，不影响结论。"""
+        task_id = str(task["id"])
+        try:
+            desk = ExpertDesk(repo)
+            full = [
+                (await desk.step(task_id, n, owner_actor_id=account.actor_id))["step"]
+                for n in range(1, steps + 1)
+            ]
+            deliverable, note = await self._deliverable(repo, task)
+        except Exception as exc:  # noqa: BLE001 - 产出取不到不拖累结论
+            log.exception(
+                "knowbot test outputs failed run=%s case=%s",
+                run["run_id"],
+                case.case_id,
+            )
+            return case_outputs(
+                run_id=run["run_id"],
+                case_id=case.case_id,
+                steps=[],
+                deliverable=None,
+                deliverable_note=None,
+                error=f"the outputs could not be collected: {type(exc).__name__}",
+            )
+        return case_outputs(
+            run_id=run["run_id"],
+            case_id=case.case_id,
+            steps=full,
+            deliverable=deliverable,
+            deliverable_note=note,
+        )
+
+    async def _deliverable(
+        self, repo: WorkbenchStore, task: dict[str, Any]
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """只读这条用例这次真写了的成稿（验收时记下了路径的那份）：用例共用工作区，碰巧还在
+        那儿的可能是上一条用例写的。"""
+        written = sorted(
+            (
+                a
+                for a in await repo.list_artifacts_with_content(str(task["id"]))
+                if a.get("kind") == "step" and a.get("workspace_path")
+            ),
+            key=lambda a: str(a.get("created_at") or ""),
+        )
+        if not written:
+            return None, "这条用例没有写成稿：写稿那一步没走到，或没写文件"
+        path = str(written[-1]["workspace_path"])
+        if self.reader is None:
+            return None, "没有读测试电脑文件的通道（会合点没配），成稿没取"
+        session = await repo.get_session(str(task["session_id"]))
+        try:
+            text = await self.reader.read(
+                owner=str(task["owner_actor_id"]),
+                directory=session.get("project_root"),
+                path=path,
+            )
+        except DeliverableTooLarge as exc:
+            return None, f"成稿太大没取（{exc.details.get('size')} 字节）"
+        except WorkbenchError as exc:
+            return None, f"成稿没读到：{exc.code}"
+        if text is None:
+            return None, "成稿没读到：问不到测试电脑"
+        return {"path": path, "text": text, "truncated": False}, None
 
     async def _time_out(
         self,
@@ -836,12 +946,20 @@ class KnowbotTestConductor:
             if row.get("result"):
                 continue
             case = next(c for c in request.cases if c.case_id == row["case_id"])
+            outputs = None
             if row.get("task_id"):
                 task = await repo.get_task(str(row["task_id"]))
                 if TaskState(task["state"]) not in TASK_TERMINAL:
                     await cancel_task(
                         repo, str(task["id"]), owner_actor_id=account.actor_id
                     )
+                # 超时的也留下做到哪、交回了什么：排查第 1 稿那种全超时最要这个（SDD 0037）
+                view = await ExpertDesk(repo).steps(
+                    str(task["id"]), owner_actor_id=account.actor_id
+                )
+                outputs = await self._outputs(
+                    repo, run, case, task, account, steps=len(view["steps"])
+                )
             async with repo.transaction():
                 await repo.update_test_case(
                     run["run_id"],
@@ -849,6 +967,7 @@ class KnowbotTestConductor:
                     result=case_result(
                         case=case, task=None, steps=[], artifacts={}, error=error
                     ),
+                    outputs=outputs,
                 )
         await self._finish(
             repo, run, status="timeout", error=None if error == "timed out" else error
@@ -920,10 +1039,12 @@ class KnowbotTestConductor:
                 pass
 
     async def cleanup(self) -> int:
-        """测试产出保留期满：删委托、对话、交回物；测试结果留着。"""
+        """测试产出保留期满：删委托、对话、交回物；取好的产出 30 天后清空；测试结果留着。"""
         async with self.stores() as repo:
             expired = await repo.expired_test_runs(self.now())
             for run in expired:
                 async with repo.transaction():
                     await repo.purge_test_run(run["run_id"])
+            async with repo.transaction():
+                await repo.clear_test_outputs(self.now() - KEEP_OUTPUTS)
         return len(expired)

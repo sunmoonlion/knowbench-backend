@@ -5,7 +5,8 @@
 本仓只持锁（`knowbench-app/contracts/knowlab-test-run-lock.json`），测试核样例合提供方 schema。
 
 有人值守：跑到要人决定的地方（工作台的「待人回答」交互）就报成待回答的问题，knowlab 那边
-运营答跑法、用户答投资判断，答完接着跑。结果只有运行正确与否，不含分析内容（C-L5）。
+运营答跑法、用户答投资判断，答完接着跑。结果只有运行正确与否，不含分析内容；成稿与各步交回物
+走单独的产出（SDD 0037，`case_outputs`）：运营看来验证这一稿，用户看自己的作验收依据。
 """
 
 from __future__ import annotations
@@ -193,7 +194,8 @@ def case_result(
     error: str | None = None,
     reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """每步验收通过与否、没过的验收名与原因、期望满足与否。不放交回物的内容（C-L5）。
+    """每步验收通过与否、没过的验收名与原因、期望满足与否。不放交回物的内容：内容走
+    `case_outputs`（SDD 0037），结果每次刷新整份拉，要小。
 
     验收没能做（读不到用户的数据这类平台的事）记成用例出错，不记成没过（审读第 3 条）。
     reason：委托停下的原因（最后一次状态变化里记的）。平台收尾的（推它的程序重启、崩了，
@@ -256,3 +258,101 @@ def case_result(
         "expectations": met,
         "note": note,
     }
+
+
+# ---------- 一条用例的产出（SDD 0037，契约 test-run-case-outputs）----------
+DELIVERABLE_CHARS = 200_000  # 成稿最多这么多字，超了截断
+ARTIFACT_BYTES = 200_000  # 一步交回物序列化后最多这么多字节，超了不带、注明多大
+RAW_CHARS = 20_000  # 没过的那次交回原文（同工作台排查用的上限）
+OUTPUTS_BYTES = 2 * 1024 * 1024  # 一条用例的产出合计
+OUTPUT_OUTCOMES = frozenset(
+    {"accepted", "rejected", "failed", "over_budget", "cancelled", "running"}
+)
+
+
+def _json_bytes(value: Any) -> int:
+    return len(
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def step_output(step: dict[str, Any]) -> dict[str, Any]:
+    """工作台单步视图（带交回物与过程的那种）里一步的最后一次尝试 → 产出里的一步。
+
+    通过的带交回物；没过的带最后一次交回的内容与原文、逐条验收；没开始的 not_reached。"""
+    head = {
+        "step_id": str(step.get("step_id") or "")[:128],
+        "title": str(step.get("title") or "")[:200],
+    }
+    attempts = step.get("attempts") or []
+    if not attempts:
+        return {**head, "outcome": "not_reached", "checks": []}
+    last = attempts[-1]
+    outcome = last.get("outcome")
+    out: dict[str, Any] = {
+        **head,
+        "outcome": outcome if outcome in OUTPUT_OUTCOMES else "running",
+        "checks": [
+            {
+                "label": str(c.get("label") or "")[:200],
+                "passed": c.get("pass"),
+                "message": str(c.get("message") or "")[:1000],
+            }
+            for c in last.get("checks") or []
+        ][:64],
+    }
+    returned = last.get("returned") or {}
+    content = returned.get("content")
+    if content is not None:
+        size = _json_bytes(content)
+        if size > ARTIFACT_BYTES:
+            out["artifact_omitted_bytes"] = size
+        else:
+            out["artifact"] = content
+    if outcome == "rejected" and returned.get("raw"):
+        out["returned_raw"] = str(returned["raw"])[:RAW_CHARS]
+    return out
+
+
+def case_outputs(
+    *,
+    run_id: str,
+    case_id: str,
+    steps: list[dict[str, Any]],
+    deliverable: dict[str, Any] | None,
+    deliverable_note: str | None,
+    error: str | None = None,
+) -> dict[str, Any]:
+    """一条用例的产出。合计超上限时先把最大的几步交回物换成「太大没带」，还超再截成稿。"""
+    out: dict[str, Any] = {
+        "contract": CONTRACT,
+        "run_id": run_id,
+        "case_id": case_id,
+        "deliverable": deliverable,
+        "deliverable_note": deliverable_note[:500] if deliverable_note else None,
+        "steps": [step_output(s) for s in steps][:200],
+        "error": error[:500] if error else None,
+    }
+    if deliverable is not None and len(deliverable["text"]) > DELIVERABLE_CHARS:
+        out["deliverable"] = {
+            **deliverable,
+            "text": deliverable["text"][:DELIVERABLE_CHARS],
+            "truncated": True,
+        }
+    by_size = sorted(
+        (s for s in out["steps"] if "artifact" in s),
+        key=lambda s: _json_bytes(s["artifact"]),
+        reverse=True,
+    )
+    for step in by_size:
+        if _json_bytes(out) <= OUTPUTS_BYTES:
+            break
+        step["artifact_omitted_bytes"] = _json_bytes(step.pop("artifact"))
+    while _json_bytes(out) > OUTPUTS_BYTES and out["deliverable"]:
+        text = out["deliverable"]["text"]
+        out["deliverable"] = {
+            **out["deliverable"],
+            "text": text[: len(text) // 2],
+            "truncated": True,
+        }
+    return out

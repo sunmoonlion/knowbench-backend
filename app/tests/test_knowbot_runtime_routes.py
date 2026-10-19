@@ -98,3 +98,12 @@ async def test_knowlab_submits_reads_and_answers(client, monkeypatch):
         )
         assert not_open.status_code == 409
         assert not_open.json()["code"] == "question_not_open"
+        # 一条用例的产出（SDD 0037）：还没跑完就是 404；用例编号不合规则 422
+        none_yet = await h.get(f"{BASE}/knowlab-run-0100/cases/c1/outputs")
+        assert none_yet.status_code == 404, none_yet.text
+        assert (
+            await h.get(f"{BASE}/knowlab-run-9999/cases/c1/outputs")
+        ).status_code == 404
+        assert (
+            await h.get(f"{BASE}/knowlab-run-0100/cases/c%201/outputs")
+        ).status_code == 422

@@ -1,15 +1,22 @@
-"""成稿硬检查（0022 段 4）：路径拼法、三种回答怎么合进验收结论、经服务流问代理的映射。"""
+"""成稿硬检查（0022 段 4）：路径拼法、三种回答怎么合进验收结论、经服务流问代理的映射；
+测试的用例跑完时读回成稿（SDD 0037）。"""
 
 from __future__ import annotations
 
+import base64
 from contextlib import asynccontextmanager
 
 import pytest
 
 from app.application.workbench.acceptance import Verdict
-from app.application.workbench.agent_service import AgentOffline, AgentRefused
+from app.application.workbench.agent_service import (
+    MAX_READ_BYTES,
+    AgentOffline,
+    AgentRefused,
+)
 from app.application.workbench.deliverable_check import (
     AgentDeliverableCheck,
+    DeliverableTooLarge,
     harden,
     join_path,
 )
@@ -121,3 +128,43 @@ async def test_agent_check_is_unknown_without_pairing_or_directory():
         is None
     )
     assert service.calls == []
+
+
+async def test_reading_the_deliverable_decodes_one_read_and_refuses_bigger_files():
+    text = "# 成稿\n\n营业收入逐年上升。"
+    service = FakeService(
+        {
+            "content": base64.b64encode(text.encode("utf-8")).decode(),
+            "size": len(text.encode("utf-8")),
+            "mtime": 1,
+            "eof": True,
+        }
+    )
+    reader = AgentDeliverableCheck(service, stores_with({"relay_user": "u-abc"}))
+    assert (
+        await reader.read(owner="o", directory="/workspace", path="底稿/x.md") == text
+    )
+    assert service.calls == [
+        (
+            "u-abc",
+            "fs/readFile",
+            {"path": "/workspace/底稿/x.md", "offset": 0, "length": MAX_READ_BYTES},
+        )
+    ]
+    service.result = {"content": "", "size": MAX_READ_BYTES + 1, "eof": False}
+    with pytest.raises(DeliverableTooLarge):
+        await reader.read(owner="o", directory="/workspace", path="底稿/x.md")
+
+
+async def test_reading_without_pairing_is_unknown_and_refusals_propagate():
+    assert (
+        await AgentDeliverableCheck(FakeService({}), stores_with(None)).read(
+            owner="o", directory="/p", path="x"
+        )
+        is None
+    )
+    offline = AgentDeliverableCheck(
+        FakeService(raise_=AgentOffline("off")), stores_with({"relay_user": "u"})
+    )
+    with pytest.raises(AgentOffline):
+        await offline.read(owner="o", directory="/p", path="x")

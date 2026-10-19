@@ -157,6 +157,25 @@ def build_deliverable_check(
     )
 
 
+def build_deliverable_reader(
+    session_factory: async_sessionmaker[AsyncSession],
+    *,
+    relay_url: str | None,
+    signing_key: str | None,
+    issuer_name: str,
+) -> DeliverableReader | None:
+    """SDD 0037：测试的每条用例跑完时经会合点服务流读回成稿；没配会合点或签名私钥就不读（返回 None）。"""
+    if not (relay_url and signing_key):
+        return None
+    from app.application.workbench.deliverable_check import AgentDeliverableCheck
+    from app.application.workbench.tokens import TokenIssuer
+
+    return AgentDeliverableCheck(
+        build_agent_service(relay_url, TokenIssuer(signing_key, issuer=issuer_name)),
+        workbench_stores(session_factory),
+    )
+
+
 def build_machine_sync(
     session_factory: async_sessionmaker[AsyncSession],
     *,
@@ -176,7 +195,10 @@ def build_machine_sync(
 
 if TYPE_CHECKING:
     from app.application.workbench.agent_service import AgentService
-    from app.application.workbench.deliverable_check import DeliverableCheck
+    from app.application.workbench.deliverable_check import (
+        DeliverableCheck,
+        DeliverableReader,
+    )
     from app.application.workbench.test_folders import TestFolders
     from app.application.workbench.tokens import TokenIssuer
 
@@ -212,6 +234,12 @@ def build_test_conductor(
         workbench_stores(session_factory),
         config,
         folders=build_test_folders(session_factory, settings),
+        reader=build_deliverable_reader(
+            session_factory,
+            relay_url=settings.workbench_relay_admin_url,
+            signing_key=settings.workbench_token_signing_key,
+            issuer_name=settings.workbench_token_issuer,
+        ),
     )
 
 

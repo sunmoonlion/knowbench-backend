@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from knowbot_fixtures import manifest
 
-from app.domain.workbench.test_runs import RunCase, case_result
+from app.domain.workbench.test_runs import RunCase, case_outputs, case_result
 
 PARENT = Path(__file__).resolve().parents[3]
 LOCK = PARENT / "contracts/knowlab-test-run-lock.json"
@@ -156,3 +156,53 @@ def test_requests_we_accept_and_results_we_return_fit_the_contract() -> None:
         ],
     }
     jsonschema.validate(answers, _schema(lock, "test-run-answers.schema.json"))
+
+
+def test_case_outputs_we_return_fit_the_contract() -> None:
+    """SDD 0037：一条用例的产出合提供方 schema（成稿、通过的交回物、没过的原文、没走到的）。"""
+    lock = _lock()
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = _schema(lock, "test-run-case-outputs.schema.json")
+    out = case_outputs(
+        run_id="knowlab-run-0001",
+        case_id="c1",
+        steps=[
+            {
+                "step_id": "plan",
+                "title": "定计划",
+                "attempts": [
+                    {
+                        "outcome": "accepted",
+                        "checks": [{"label": "格式对", "pass": True, "message": ""}],
+                        "returned": {"content": {"plan": ["a"]}},
+                    }
+                ],
+            },
+            {
+                "step_id": "answer",
+                "title": "回答",
+                "attempts": [
+                    {
+                        "outcome": "rejected",
+                        "checks": [
+                            {"label": "有出处", "pass": False, "message": "没有"}
+                        ],
+                        "returned": {"content": None, "raw": "not json"},
+                    }
+                ],
+            },
+            {"step_id": "writeup", "title": "成稿", "attempts": []},
+        ],
+        deliverable={"path": "底稿/成稿.md", "text": "# 成稿", "truncated": False},
+        deliverable_note=None,
+    )
+    jsonschema.validate(out, schema)
+    nothing = case_outputs(
+        run_id="knowlab-run-0001",
+        case_id="c1",
+        steps=[],
+        deliverable=None,
+        deliverable_note="这条用例没有写成稿",
+        error="the outputs could not be collected: RuntimeError",
+    )
+    jsonschema.validate(nothing, schema)

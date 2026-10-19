@@ -17,7 +17,7 @@ from app.application.errors.exceptions import AppException
 from app.application.workbench.test_runs import KnowbotTestService
 from app.bootstrap.workbench import test_run_service
 from app.domain.workbench.errors import WorkbenchError
-from app.domain.workbench.test_runs import RUN_ID, Answers, RunRequest
+from app.domain.workbench.test_runs import CASE_ID, RUN_ID, Answers, RunRequest
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
     require_testrun_service,
@@ -35,6 +35,7 @@ router = APIRouter(
 )
 Caller = Annotated[ServiceCaller, Depends(require_testrun_service)]
 RunId = Annotated[str, Path(pattern=RUN_ID)]
+CaseId = Annotated[str, Path(pattern=CASE_ID)]
 
 
 def service(
@@ -74,6 +75,17 @@ async def submit(caller: Caller, body: dict[str, Any], svc: Service) -> JSONResp
 async def status(_: Caller, svc: Service, run_id: RunId) -> JSONResponse:
     try:
         return _out(await svc.status(run_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/test-runs/{run_id}/cases/{case_id}/outputs")
+async def outputs(
+    _: Caller, svc: Service, run_id: RunId, case_id: CaseId
+) -> JSONResponse:
+    """一条用例跑完时取好的成稿与各步交回物（SDD 0037）；还没有就 404。"""
+    try:
+        return _out(await svc.outputs(run_id, case_id))
     except WorkbenchError as exc:
         raise _http(exc) from exc
 

@@ -793,6 +793,10 @@ class WorkbenchStore(Protocol):
         """删掉这次测试建的委托、对话与交回物；测试结果留着。"""
         ...
 
+    async def clear_test_outputs(self, finished_before: Any) -> None:
+        """收尾早于这个时刻的测试：清空每条用例取好的产出（SDD 0037）；测试结果留着。"""
+        ...
+
     # ---------- 知识库（SDD 0011）----------
     async def list_owner_step_artifacts(
         self, *, owner_actor_id: str

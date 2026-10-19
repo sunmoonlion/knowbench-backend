@@ -18,6 +18,7 @@ from test_workbench_advisor_db import ANSWER, PLAN, ScriptedAppServer, close, dr
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
+from app.application.workbench.agent_service import AgentOffline
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
     KnowbotTestConfig,
@@ -29,6 +30,7 @@ from app.domain.workbench.errors import (
     KnowbotTestBudgetExhausted,
     KnowbotTestConflict,
     KnowbotTestUnconfigured,
+    NotFound,
     QuestionNotOpen,
 )
 from app.domain.workbench.test_runs import Answers, RunRequest
@@ -185,6 +187,126 @@ async def test_a_draft_runs_on_the_real_engine_and_passes(db):
         assert task.pack_source == "knowlab-test"
         assert task.profile_id.startswith("knowlab-test:")
         assert str(task.owner_actor_id) == OWNER  # 跑在测试账号上
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+class FakeReader:
+    """测试电脑上的代理：读成稿（SDD 0037）。"""
+
+    def __init__(self, text: str | None = "# 成稿\n\n回答在这里", error=None) -> None:
+        self.text = text
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def read(self, *, owner, directory, path):
+        self.calls.append({"owner": owner, "directory": directory, "path": path})
+        if self.error is not None:
+            raise self.error
+        return self.text
+
+
+async def mark_written(db) -> None:
+    """代理认了成稿写到了（验收时记下 workspace_path）：脚本化的 app-server 不发 fileChange。"""
+    async with db() as s:
+        await s.execute(
+            text(
+                """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
+                   where name = 'answer'"""
+            )
+        )
+        await s.commit()
+
+
+async def outputs(db, run_id, case_id="c1"):
+    async with db() as s:
+        return await KnowbotTestService(WorkbenchRepository(s), CONFIG).outputs(
+            run_id, case_id
+        )
+
+
+async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
+    """SDD 0037：用例记结果时取成稿（只取这次写了的）与各步交回物；结果本身照旧不带内容。"""
+    fake = ScriptedAppServer([PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    reader = FakeReader()
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, request("knowlab-run-out1"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=reader)
+        await conductor.tick()
+        await drive(runner)
+        await mark_written(db)
+        await conductor.tick()
+        await conductor.tick()
+        done = await status(db, "knowlab-run-out1")
+        assert done["status"] == "passed"
+        assert "The project has one README" not in json.dumps(done, ensure_ascii=False)
+        got = await outputs(db, "knowlab-run-out1")
+        assert got["contract"] == "knowbot-test-run/v1" and got["case_id"] == "c1"
+        assert got["deliverable"] == {
+            "path": "底稿/烟测-回答.md",
+            "text": "# 成稿\n\n回答在这里",
+            "truncated": False,
+        }
+        assert got["deliverable_note"] is None and got["error"] is None
+        [call] = reader.calls
+        assert call["owner"] == OWNER and call["path"] == "底稿/烟测-回答.md"
+        assert call["directory"] == WORKSPACE
+        plan, answer_step = got["steps"]
+        assert (plan["step_id"], plan["outcome"]) == ("plan", "accepted")
+        assert plan["artifact"]["plan"] == ["read README", "answer"]
+        assert answer_step["artifact"]["answer"] == "The project has one README."
+        assert all(c["passed"] for c in answer_step["checks"])
+        with pytest.raises(NotFound):
+            await outputs(db, "knowlab-run-out1", "no-such-case")
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_noted(db):
+    """没记下写了成稿就不读（工作区共用，碰巧在那儿的可能是上一条的）；读失败照实写、结论不变。"""
+    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        reader = FakeReader()
+        await accept(db, request("knowlab-run-out2"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=reader)
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        got = await outputs(db, "knowlab-run-out2")
+        assert reader.calls == [] and got["deliverable"] is None
+        assert "没有写成稿" in got["deliverable_note"]
+        assert [s["outcome"] for s in got["steps"]] == ["accepted", "accepted"]
+
+        offline = FakeReader(error=AgentOffline("no agent online"))
+        await accept(db, request("knowlab-run-out3"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=offline)
+        await conductor.tick()
+        await drive(runner)
+        async with db() as s:
+            await s.execute(
+                text(
+                    """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
+                       where name = 'answer' and workspace_path is null"""
+                )
+            )
+            await s.commit()
+        await conductor.tick()
+        await conductor.tick()
+        assert (await status(db, "knowlab-run-out3"))["status"] == "passed"
+        got = await outputs(db, "knowlab-run-out3")
+        assert got["deliverable"] is None
+        assert got["deliverable_note"] == "成稿没读到：agent_offline"
+        unwired = await outputs(db, "knowlab-run-out2")
+        assert unwired["case_id"] == "c1"
     finally:
         await close(runner)
         await fake.close()
@@ -674,6 +796,10 @@ async def test_timeouts_and_seven_day_cleanup(db):
         done = await status(db, "knowlab-run-0020")
         assert done["status"] == "timeout"
         assert done["cases"][0]["status"] == "error"
+        # 超时的也留下做到哪（SDD 0037）：这里 runner 没开动，两步都没走到
+        kept = await outputs(db, "knowlab-run-0020")
+        assert [x["outcome"] for x in kept["steps"]] == ["not_reached", "not_reached"]
+        assert "没有写成稿" in kept["deliverable_note"]
         async with db() as s:
             sessions = (
                 await s.execute(text("select count(*) from workbench_sessions"))
@@ -690,6 +816,12 @@ async def test_timeouts_and_seven_day_cleanup(db):
             ).scalar_one()
         assert (left, tasks) == (0, 0)
         assert (await status(db, "knowlab-run-0020"))["status"] == "timeout"  # 结果留着
+        assert (await outputs(db, "knowlab-run-0020"))["steps"]  # 产出 30 天内还在
+        clock.at += timedelta(days=23)
+        await conductor.cleanup()
+        with pytest.raises(NotFound):
+            await outputs(db, "knowlab-run-0020")
+        assert (await status(db, "knowlab-run-0020"))["status"] == "timeout"
     finally:
         await close(runner)
         await fake.close()

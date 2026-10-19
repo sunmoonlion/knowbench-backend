@@ -1370,16 +1370,18 @@ class WorkbenchRepository:
             "session_id",
             "task_id",
             "result",
+            "outputs",
             "waiting_since",
             "waited_seconds",
         }
         assert set(changes) <= allowed, sorted(set(changes) - allowed)
+        json_columns = ("result", "outputs")
         sets = ", ".join(
-            f"{k} = cast(:{k} as jsonb)" if k == "result" else f"{k} = :{k}"
+            f"{k} = cast(:{k} as jsonb)" if k in json_columns else f"{k} = :{k}"
             for k in changes
         )
         params = {
-            k: (_j(v) if k == "result" and v is not None else v)
+            k: (_j(v) if k in json_columns and v is not None else v)
             for k, v in changes.items()
         }
         await self.session.execute(
@@ -1457,6 +1459,17 @@ class WorkbenchRepository:
             )
         await self.session.execute(
             text("delete from workbench_sessions where id = :s"), params
+        )
+
+    async def clear_test_outputs(self, finished_before: Any) -> None:
+        await self.session.execute(
+            text(
+                """update workbench_test_cases set outputs = null
+                   where outputs is not null and run_id in (
+                     select run_id from workbench_test_runs
+                     where finished_at is not null and finished_at < :b)"""
+            ),
+            {"b": finished_before},
         )
 
     async def purge_test_run(self, run_id: str) -> None:
