@@ -768,6 +768,70 @@ async def test_a_mid_step_approval_is_answered_through_knowlab(db):
         await fake.close()
 
 
+async def test_an_answer_that_cannot_go_in_is_noted_once_not_every_tick(db, caplog):
+    """预给的答复答不进去（问题已失效）：记一次原因，测试不每 5 秒整轮报错一遍（2026-10-19 K19 第 2 稿）。"""
+    import asyncio
+    import logging
+
+    from test_workbench_runner_db import FakeAppServer, wait_for
+
+    fake = FakeAppServer()
+    await fake.start()
+    runner = runner_for(db)
+    running = asyncio.create_task(runner.run_forever())
+    try:
+        await setup_test_computer(db, fake)
+        req = request("knowlab-run-0040")
+        body = req.model_dump(mode="json")
+        body["cases"][0]["input"]["question"] = "NEED_APPROVAL 看看项目"
+        await accept(db, RunRequest.model_validate(body))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+
+        async def asked():
+            await conductor.tick()
+            return (await status(db, "knowlab-run-0040"))["status"] == "waiting"
+
+        assert await wait_for(asked, timeout=15)
+        [q] = (await status(db, "knowlab-run-0040"))["questions"]
+        async with db() as s:  # 问题打开之后委托又被动过：版本对不上，答不进去
+            await s.execute(
+                text(
+                    "update workbench_tasks set state_version = state_version + 2 "
+                    "where active_interaction_id is not null"
+                )
+            )
+            await s.commit()
+        await answer(
+            db,
+            "knowlab-run-0040",
+            {
+                "answers": [
+                    {
+                        "question_id": q["question_id"],
+                        "decision": "approve",
+                        "answered_by": "operator",
+                    }
+                ]
+            },
+        )
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            for _ in range(3):
+                await conductor.tick()
+        assert not [r for r in caplog.records if "advance failed" in r.getMessage()]
+        noted = [r for r in caplog.records if "could not answer" in r.getMessage()]
+        assert len(noted) == 1
+    finally:
+        runner.stop()
+        await asyncio.wait_for(running, 10)
+        drivers = list(runner.driving.values())
+        for task in drivers:
+            task.cancel()
+        await asyncio.gather(*drivers, return_exceptions=True)
+        await close(runner)
+        await fake.close()
+
+
 class FakeDataSource:
     """假的 knowlab：记下用途，按清单的绑定回数据（0027 §3.5）。"""
 

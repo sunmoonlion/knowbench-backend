@@ -344,6 +344,8 @@ class Advisor:
         async with self.stores() as repo:
             led = Ledger(repo)
             consumed = result.cost or Decimal("0")
+            # 这一轮结束了：它里面还挂着的问题作废、委托回到在跑，下面才按结果走得下去
+            await led.end_turn_waits(task_id)
             task = await repo.get_task(task_id)
             settled = (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL
             if not settled:

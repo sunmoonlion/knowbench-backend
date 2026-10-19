@@ -37,6 +37,7 @@ from app.application.workbench.test_folders import (
 )
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
+    InteractionRejected,
     KnowbotTestBudgetExhausted,
     KnowbotTestConflict,
     KnowbotTestUnconfigured,
@@ -385,6 +386,7 @@ class KnowbotTestConductor:
         self.now = now
         # 每次测试自己的目录，开跑前建好、测完删掉（账 129）；没配会合点服务流时为 None，只分项目不建目录
         self.folders = folders
+        self._unanswerable: set[str] = set()  # 答不进去、已记过原因的交互
 
     async def tick(self) -> int:
         async with self.stores() as repo:
@@ -651,7 +653,24 @@ class KnowbotTestConductor:
                 note=note,
             )
             return
-        if await self._respond_if_ready(repo, run, case, interaction, account):
+        try:
+            answered = await self._respond_if_ready(
+                repo, run, case, interaction, account
+            )
+        except InteractionRejected as exc:
+            # 答不进去（那一轮已经结束、问题失效）：记一次原因，不让整次测试每 5 秒报错一遍；
+            # 委托由推它的程序收拾（0034 后补：那一轮结束时作废它里面的问题）
+            if str(interaction["id"]) not in self._unanswerable:
+                self._unanswerable.add(str(interaction["id"]))
+                log.warning(
+                    "knowbot test could not answer run=%s case=%s interaction=%s: %s",
+                    run["run_id"],
+                    case.case_id,
+                    interaction["id"],
+                    exc.message,
+                )
+            return
+        if answered:
             await self._stop_waiting(repo, run, row, now)
             return
         if row.get("waiting_since") is None:

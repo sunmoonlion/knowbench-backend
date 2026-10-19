@@ -1482,6 +1482,106 @@ async def test_one_bad_task_does_not_stop_the_round_for_the_others(db, monkeypat
         await fake.close()
 
 
+async def test_time_spent_waiting_for_an_answer_does_not_count_against_the_step(
+    db, monkeypatch
+):
+    """专家停下来问人时，这一步的钟停着：答得比时限慢，这一步也不按超时判失败（2026-10-19 K19 第 2 稿：
+    所有者思考作答的几分钟算进了 15 分钟，这一步超时，问题挂着、测试卡死）。"""
+    from app.application.workbench import advisor as advisor_module
+    from app.domain.workbench.states import AttemptState
+
+    monkeypatch.setattr(advisor_module, "STEP_TIMEOUT_SECONDS", 0.5)
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        _, sb, sid = await seed(db, fake)
+        runner = build_runner(
+            db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
+        )
+        await runner.run_once()
+        task_id = await _advisor_task(db, sid, "NEED_APPROVAL", "slow-answer-1")
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.enqueue_command(
+                    session_id=sid, sandbox_id=sb, kind="noop", payload={}
+                )
+        await _pump(runner)
+
+        async def opened():
+            return len(await _pending(db, sid, "tool_approval")) == 1
+
+        assert await wait_for(opened)
+        await asyncio.sleep(1.2)  # 比这一步的时限（0.5 秒）慢得多才答
+        [it] = await _pending(db, sid, "tool_approval")
+        await _answer(db, sb, sid, it, {"decision": "accept"})
+        await _pump(runner)
+        await runner.wait_drivers(timeout=5)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            first = (await repo.list_attempts(task_id))[0]
+            rejected = await repo.list_task_events(task_id, types=("step/rejected",))
+        # 那一轮等到了答复、自己做完了（假 app-server 交回的不合这一步的验收，那是另一回事），
+        # 不是被时限停下：没有「timeout」这一条
+        assert first["status"] != AttemptState.CANCELLED
+        failures = [f for r in rejected for f in r["payload"].get("failures") or []]
+        assert rejected and not any(f.startswith("timeout") for f in failures)
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_a_question_left_open_when_its_turn_ends_is_dropped_and_the_task_moves_on(
+    db,
+):
+    """那一轮结束了（例如真到了时限），它里面还挂着的问题作废、委托回到在跑，按这一轮的结果接着走；
+    之后这条线上的新一轮不会被那个旧问题的善后误停。"""
+    from app.domain.workbench.models import InteractionPrompt
+    from app.domain.workbench.states import WaitingReason
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        task_id, _ = await _task(db, sid, "turn-ended-1", attempt=True)
+        async with db() as s:
+            led = Ledger(WorkbenchRepository(s))
+            await led.open_interaction(
+                task_id,
+                kind="question",
+                prompt=InteractionPrompt(
+                    title="Codex 想问你",
+                    question="印刷页读不到，怎么办？",
+                    subject={"request_id": "req-q"},
+                ),
+                waiting_reason=WaitingReason.INPUT,
+            )
+            assert await led.end_turn_waits(task_id) is True
+            assert await led.end_turn_waits(task_id) is False  # 只做一次
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(task_id)
+            left = await repo.list_interactions(session_id=sid, status="pending")
+        assert task["state"] == "RUNNING" and task["active_interaction_id"] is None
+        assert left == []
+        # 委托级的等待（开步前的提问，没有 request_id）不动
+        other, _ = await _task(
+            db, await _other_project(db, sid, "p2"), "turn-ended-2", attempt=True
+        )
+        async with db() as s:
+            led = Ledger(WorkbenchRepository(s))
+            await led.open_interaction(
+                other,
+                kind="input",
+                prompt=InteractionPrompt(title="开步前", question="看哪几年？"),
+                waiting_reason=WaitingReason.INPUT,
+            )
+            assert await led.end_turn_waits(other) is False
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
 @pytest.mark.parametrize("ref,expected", [("inline:abc", "abc")])
 def test_token_ref(ref, expected):
     from app.infrastructure.workbench.app_server_client import resolve_token_ref

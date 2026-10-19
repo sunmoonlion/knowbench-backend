@@ -555,6 +555,27 @@ class Ledger:
                 "interrupt": live or state is TaskState.WAITING,
             }
 
+    async def end_turn_waits(self, task_id: str) -> bool:
+        """推它的那一轮结束了（做完、超时、出错）：那一轮里开的、还没人答的审批与提问作废，委托从等待
+        回到在跑，推它的程序接着按这一轮的结果走（重做、交人或结束）。委托级的等待（开步前的提问、
+        交人、追加预算）不动。不这样做，问题挂着、委托停在等待，谁也推不动（2026-10-19 K19 第 2 稿）。
+        """
+        async with self.repo.transaction():
+            task = await self.repo.get_task(task_id, for_update=True)
+            if not await self._waits_on_codex(task):
+                return False
+            await self.repo.cancel_pending_interactions(
+                task_id=task_id, reason="the turn ended before it was answered"
+            )
+            await self.transition(
+                task_id,
+                TaskState.QUEUED,
+                reason={"turn_ended": True},
+                active_interaction_id=None,
+            )
+            await self.transition(task_id, TaskState.RUNNING)
+            return True
+
     async def _waits_on_codex(self, task: dict[str, Any]) -> bool:
         """委托在等 Codex 那一轮里的请求（审批、反问，交互带 request_id）：那一轮还开着。"""
         if task["state"] != TaskState.WAITING or not task.get("active_interaction_id"):

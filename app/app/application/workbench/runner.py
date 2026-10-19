@@ -170,6 +170,12 @@ class SandboxLink:
         self.pending_threads: dict[str, str] = {}
         # 被「取消委托」放掉的那几问：它们不再等人，也不再去关待办（待办已随委托关掉）
         self.released: set[str] = set()
+        # 那一轮已经结束、还挂着的审批与提问：放掉，不当成用户停下，也不再去中断那条线（新的一轮）
+        self.turn_over: set[str] = set()
+        # 每条线上等人答的时间（秒）：这段时间不算进这一步的时限（0034 后补）
+        self._waits_open: dict[str, int] = {}
+        self._wait_since: dict[str, float] = {}
+        self._waited: dict[str, float] = {}
         self._lock = asyncio.Lock()
         self.turn_waiters: dict[str, dict[str, Any]] = {}  # turn_id -> waiter
         # 用户在审批面点了「停下」（或等不到人）：这条线这一轮是被人停的，不是出错。
@@ -521,8 +527,26 @@ class SandboxLink:
         }
         self.turn_waiters[turn_id] = waiter
         self.active_turns[thread_id] = turn_id
+        loop = asyncio.get_running_loop()
+        started, waited_before = loop.time(), self.waited(thread_id)
         try:
-            await asyncio.wait_for(waiter["future"], timeout)
+            # 这一步的时限不算等人答的时间：专家停下来问人时，钟停着（2026-10-19 K19 第 2 稿：
+            # 所有者思考作答的时间算进了 15 分钟，这一步超时判失败，问题还挂着、测试卡死）
+            while True:
+                left = (
+                    timeout
+                    + (self.waited(thread_id) - waited_before)
+                    - (loop.time() - started)
+                )
+                if left <= 0:
+                    raise TimeoutError
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(waiter["future"]), min(left, 5.0)
+                    )
+                    break
+                except TimeoutError:
+                    continue
             # 真 app-server 的 thread/tokenUsage 可能晚于 turn/completed 到达：留一小段宽限期再撤 waiter
             for _ in range(20):
                 if waiter["reported"]:
@@ -545,6 +569,7 @@ class SandboxLink:
             self.turn_waiters.pop(turn_id, None)
             if self.active_turns.get(thread_id) == turn_id:
                 self.active_turns.pop(thread_id, None)
+            self._end_turn_waits(thread_id)
         # 这一轮花的 = 这一轮里每次调用相加。不拿这条线的累计来算
         used = self.turn_usage.pop(turn_id, Usage())
         stop = self.user_stops.pop(thread_id, None)
@@ -861,17 +886,63 @@ class SandboxLink:
         self.pending_approvals[request_id] = fut
         if thread_id:
             self.pending_threads[request_id] = thread_id
+            self._wait_started(thread_id)
         try:
             answer = await asyncio.wait_for(fut, timeout=timeout)
+            if request_id in self.turn_over:
+                return None, "turn_over"
             if request_id in self.released:
                 return None, "cancelled"
             return answer, "user"
         except TimeoutError:
             return None, "timeout"
         finally:
+            if thread_id:
+                self._wait_ended(thread_id)
             self.pending_approvals.pop(request_id, None)
             self.pending_threads.pop(request_id, None)
             self.released.discard(request_id)
+            self.turn_over.discard(request_id)
+
+    async def _answer_dead_request(self, rid: Any, result: dict[str, Any]) -> None:
+        """那一轮已经结束：照规矩回一句，不记用户停下、不去中断那条线（那时可能已是新的一轮）。"""
+        client = self.client
+        if client is None:
+            return
+        try:
+            await client.respond(rid, result)
+        except Exception:  # noqa: BLE001
+            log.info("answer to a request of an ended turn failed rid=%s", rid)
+
+    def _wait_started(self, thread_id: str) -> None:
+        if not self._waits_open.get(thread_id):
+            self._wait_since[thread_id] = asyncio.get_running_loop().time()
+        self._waits_open[thread_id] = self._waits_open.get(thread_id, 0) + 1
+
+    def _wait_ended(self, thread_id: str) -> None:
+        self._waits_open[thread_id] = max(0, self._waits_open.get(thread_id, 0) - 1)
+        if not self._waits_open[thread_id]:
+            since = self._wait_since.pop(thread_id, None)
+            if since is not None:
+                self._waited[thread_id] = self._waited.get(thread_id, 0.0) + (
+                    asyncio.get_running_loop().time() - since
+                )
+
+    def waited(self, thread_id: str) -> float:
+        """这条线上一共等人答了多久（秒，含正在等的这一段）。"""
+        total = self._waited.get(thread_id, 0.0)
+        since = self._wait_since.get(thread_id)
+        if self._waits_open.get(thread_id) and since is not None:
+            total += asyncio.get_running_loop().time() - since
+        return total
+
+    def _end_turn_waits(self, thread_id: str) -> None:
+        """那一轮结束了：它里面还挂着的审批与提问放掉（Codex 那边已经不等了）。"""
+        for request_id, owner in list(self.pending_threads.items()):
+            fut = self.pending_approvals.get(request_id)
+            if owner == thread_id and fut is not None and not fut.done():
+                self.turn_over.add(request_id)
+                fut.set_result(None)
 
     def release_waits(self, thread_id: str | None) -> int:
         """委托被取消：这条线上还在等人答的审批、提问一律放掉，让 Codex 那一轮马上收住，而不是卡到时限。"""
@@ -970,6 +1041,9 @@ class SandboxLink:
         response, source = await self._wait_answer(
             request_id, thread_id=thread_id_of(params)
         )
+        if source == "turn_over":
+            await self._answer_dead_request(rid, {"decision": "decline"})
+            return
         if response is None:
             if source != "cancelled":
                 await self._settle_timeout(session=session, where=where, opened=opened)
@@ -1150,6 +1224,9 @@ class SandboxLink:
         )
         thread_id = thread_id_of(params)
         response, source = await self._wait_answer(request_id, thread_id=thread_id)
+        if source == "turn_over":
+            await self._answer_dead_request(rid, empty)
+            return
         if response is None:
             if source != "cancelled":
                 await self._settle_timeout(session=session, where=where, opened=opened)
