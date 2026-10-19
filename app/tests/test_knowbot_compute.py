@@ -37,6 +37,10 @@ class EventRepo:
     def __init__(self, base: Any) -> None:
         self.base = base
         self.events: list[dict[str, Any]] = []
+        self.artifacts: list[dict[str, Any]] = []  # 上游交回物（covers 用）
+
+    async def list_artifacts_with_content(self, task_id: str) -> list[dict[str, Any]]:
+        return self.artifacts
 
     async def get_knowbot_pin(self, **kw: Any) -> Any:
         return await self.base.get_knowbot_pin(**kw)
@@ -494,7 +498,8 @@ async def test_quotes_must_have_the_right_shape_and_bound_data() -> None:
     assert not v.ok and "not {dataset_id, page, text}" in v.checks[-1]["detail"]
     other = (
         '{"checks": [{"verdict": "支持", "quotes": '
-        '[{"dataset_id": "not-bound", "page": 3, "text": "营业收入"}]}]}'
+        '[{"dataset_id": "00000000-0000-4000-8000-000000000000", "page": 3, '
+        '"text": "营业收入"}]}]}'
     )
     v = await verdict_of(other, SUPPORTED, records, QuoteSource())
     assert not v.ok and "does not bind" in v.checks[-1]["detail"]
@@ -502,6 +507,40 @@ async def test_quotes_must_have_the_right_shape_and_bound_data() -> None:
     bumped = checks_of(("支持", [(3, "营业收入同比增长15.7%")]))
     v = await verdict_of(bumped, SUPPORTED, records, QuoteSource(bump="2"))
     assert not v.ok and "not the bound version" in v.checks[-1]["detail"]
+
+
+async def test_a_badly_shaped_quote_is_the_reply_s_fault_and_never_sent() -> None:
+    """页码 0、负数、空原文、太长、编号不像数据编号：交回物的错，不是平台的（审读 10-19 第 2 条）。"""
+    records, _ = world()
+    for page, text, why in (
+        (0, "营业收入同比增长15.7%", "bad page number"),
+        (-2, "营业收入同比增长15.7%", "bad page number"),
+        (3, "   ", "quote text empty or too long"),
+        (3, "字" * 4001, "quote text empty or too long"),
+    ):
+        source = QuoteSource()
+        v = await verdict_of(
+            checks_of(("支持", [(page, text)])), SUPPORTED, records, source
+        )
+        assert not v.ok and why in v.checks[-1]["detail"], why
+        assert "platform" not in v.checks[-1] and source.quoted == []
+    odd_id = '{"checks": [{"verdict": "支持", "quotes": [{"dataset_id": "x", "page": 3, "text": "营业收入同比增长"}]}]}'
+    v = await verdict_of(odd_id, SUPPORTED, records, QuoteSource())
+    assert not v.ok and "bad dataset id" in v.checks[-1]["detail"]
+    assert "platform" not in v.checks[-1]
+
+
+async def test_a_wrong_number_of_answers_from_knowlab_is_a_platform_error() -> None:
+    class Short(QuoteSource):
+        async def quotes(self, purpose, quotes):  # type: ignore[no-untyped-def]
+            return (await super().quotes(purpose, quotes))[:-1]
+
+    records, _ = world()
+    text = checks_of(
+        ("支持", [(3, "营业收入同比增长15.7%")]), ("支持", [(3, "系列酒销量增加")])
+    )
+    v = await verdict_of(text, SUPPORTED, records, Short())
+    assert not v.ok and v.checks[-1]["platform"] is True
 
 
 async def test_knowlab_trouble_while_checking_quotes_is_a_platform_error() -> None:
@@ -665,3 +704,113 @@ def test_percent_signs_and_booleans_compare_the_same_way(kind, want, value, met)
         tolerance=0.01 if kind == "approx" else None,
     )
     assert expectation_met(expectation, {"a": {"x": value}}) is met
+
+
+# ---------- 结构与对得上上游（审读 10-19：第 3 稿第 6 步空交也能过） ----------
+
+SHAPE = (
+    AcceptanceRule(
+        kind="each_has",
+        path="checks",
+        keys=("finding", "verdict", "quotes"),
+        field="verdict",
+        values=("支持", "不支持"),
+        message="结构不对",
+    ),
+)
+
+
+def test_each_item_has_its_keys_and_one_of_the_allowed_values() -> None:
+    import json
+
+    def ok(checks: list) -> bool:
+        return judge(json.dumps({"checks": checks}, ensure_ascii=False), SHAPE).ok
+
+    good = {"finding": "a", "verdict": "支持", "quotes": []}
+    assert ok([good, {**good, "verdict": "不支持"}])
+    assert ok([])  # 空的一串算过；要非空另配 list_min
+    assert not ok([{}])
+    assert not ok([{**good, "verdict": "部分支持"}])
+    assert not ok([{"finding": "a", "quotes": []}])
+    v = judge('{"checks": {"finding": "a"}}', SHAPE)
+    assert not v.ok and v.checks[-1]["detail"] == "not a list"
+
+
+COVERS = (
+    AcceptanceRule(
+        kind="covers",
+        path="checks",
+        field="finding",
+        source="indicators.findings",
+        message="结论对不上第 5 步",
+    ),
+    AcceptanceRule(
+        kind="covers",
+        path="sections",
+        also=("sections_missing",),
+        field="dataset_id",
+        source="scope.reports",
+        source_field="dataset_id",
+        message="年报没有逐份交代",
+    ),
+)
+
+
+async def test_every_upstream_finding_and_report_is_covered_once() -> None:
+    import json
+
+    records, _ = world()
+    records.repo.artifacts = [
+        {"name": "indicators", "kind": "step", "content": {"findings": ["甲", "乙"]}},
+        {
+            "name": "scope",
+            "kind": "step",
+            "content": {"reports": [{"dataset_id": "r1"}, {"dataset_id": "r2"}]},
+        },
+    ]
+
+    async def run(checks: list, sections: list, missing: list):  # type: ignore[no-untyped-def]
+        text = json.dumps(
+            {"checks": checks, "sections": sections, "sections_missing": missing},
+            ensure_ascii=False,
+        )
+        return await verdict_of(text, COVERS, records)
+
+    v = await run(
+        [{"finding": "甲"}, {"finding": "乙"}],
+        [{"dataset_id": "r1"}],
+        [{"dataset_id": "r2"}],
+    )
+    assert v.ok, v.checks
+    v = await run([{"finding": "甲"}], [{"dataset_id": "r1"}], [{"dataset_id": "r2"}])
+    assert not v.ok and "missing '乙'" in v.checks[0]["detail"]
+    v = await run(
+        [{"finding": "甲"}, {"finding": "甲"}, {"finding": "乙"}, {"finding": "丙"}],
+        [{"dataset_id": "r1"}, {"dataset_id": "r2"}],
+        [{"dataset_id": "r2"}],
+    )
+    assert (
+        "twice '甲'" in v.checks[0]["detail"]
+        and "not upstream '丙'" in v.checks[0]["detail"]
+    )
+    assert "twice 'r2'" in v.checks[1]["detail"]
+    # 没有这家公司：上游都是空的，这一步也空，算过
+    records.repo.artifacts = [
+        {"name": "indicators", "kind": "step", "content": {"findings": []}},
+        {"name": "scope", "kind": "step", "content": {"reports": []}},
+    ]
+    assert (await run([], [], [])).ok
+    records.repo.artifacts = []
+    v = await run([], [], [])
+    assert not v.ok and "upstream indicators is missing" in v.checks[0]["detail"]
+
+
+def test_new_rules_check_their_own_settings() -> None:
+    with pytest.raises(ValueError, match="each_has needs a path"):
+        AcceptanceRule(kind="each_has")
+    with pytest.raises(ValueError, match="limit values"):
+        AcceptanceRule(kind="all_equal", path="x", field="v", values=("a",))
+    with pytest.raises(ValueError, match="covers needs"):
+        AcceptanceRule(kind="covers", path="x", field="f", source="nodot")
+    with pytest.raises(ValueError, match="only covers"):
+        AcceptanceRule(kind="list_min", path="x", source="a.b")

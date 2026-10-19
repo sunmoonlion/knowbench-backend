@@ -133,3 +133,79 @@ def test_notes_are_capped() -> None:
         error="错" * 600,
     )
     assert len(out["deliverable_note"]) == 500 and len(out["error"]) == 500
+
+
+def test_too_much_besides_artifacts_still_ends_under_the_limit() -> None:
+    """非交回物本身就超 2 MB（40 步、每步没过的原文 2 万字），有没有成稿都要停、都不超
+    （Astra 10-19 第 1 条的复现）。"""
+    many = [
+        _step(
+            f"s{n}",
+            {
+                "outcome": "rejected",
+                "checks": [{"label": "格式对", "pass": False, "message": "不是 JSON"}],
+                "returned": {"content": None, "raw": "原" * RAW_CHARS},
+            },
+        )
+        for n in range(40)
+    ]
+    for deliverable in (None, {"path": "a.md", "text": "稿", "truncated": False}):
+        out = case_outputs(
+            run_id="knowlab-run-0001",
+            case_id="c1",
+            steps=many,
+            deliverable=deliverable,
+            deliverable_note=None,
+        )
+        assert _json_bytes(out) <= OUTPUTS_BYTES
+        assert len(out["steps"]) == 40 and out["steps"][0]["outcome"] == "rejected"
+
+
+def test_the_last_resort_keeps_only_the_outcomes() -> None:
+    noisy = [
+        _step(
+            f"s{n}",
+            {
+                "outcome": "rejected",
+                "checks": [{"label": "验" * 200, "pass": False, "message": "错" * 1000}]
+                * 64,
+            },
+        )
+        for n in range(200)
+    ]
+    out = case_outputs(
+        run_id="knowlab-run-0001",
+        case_id="c1",
+        steps=noisy,
+        deliverable={
+            "path": "a.md",
+            "text": "稿" * DELIVERABLE_CHARS,
+            "truncated": False,
+        },
+        deliverable_note=None,
+    )
+    assert _json_bytes(out) <= OUTPUTS_BYTES
+    assert out["error"] == "产出太大，只带回各步的结局"
+    assert (
+        out["deliverable"] is None and out["deliverable_note"] == "成稿太大，这次没带回"
+    )
+    assert all(s["checks"] == [] for s in out["steps"])
+
+
+def test_output_file_must_stay_inside_the_project() -> None:
+    import pytest
+
+    from app.domain.workbench.packs import SMOKE
+
+    step = SMOKE.workflow[-1]
+    for bad in (
+        "../别处/x.md",
+        "/etc/passwd",
+        "a//b.md",
+        "a\\b.md",
+        "C:x.md",
+        "a/./b.md",
+    ):
+        with pytest.raises(ValueError, match="relative path"):
+            type(step).model_validate({**step.model_dump(), "output_file": bad})
+    assert type(step).model_validate({**step.model_dump(), "output_file": "底稿/a.md"})

@@ -762,7 +762,7 @@ class WorkbenchStore(Protocol):
     async def update_test_run(self, run_id: str, **changes: Any) -> None: ...
 
     async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
-        """按顺序。"""
+        """按顺序。不带 outputs（大，要的用 get_test_case_outputs）。"""
         ...
 
     async def update_test_case(
@@ -791,6 +791,12 @@ class WorkbenchStore(Protocol):
 
     async def purge_test_run(self, run_id: str) -> None:
         """删掉这次测试建的委托、对话与交回物；测试结果留着。"""
+        ...
+
+    async def get_test_case_outputs(
+        self, run_id: str, case_id: str
+    ) -> dict[str, Any] | None:
+        """一条用例取好的产出（只读这一格）；没有就是 None。"""
         ...
 
     async def clear_test_outputs(self, finished_before: Any) -> None:

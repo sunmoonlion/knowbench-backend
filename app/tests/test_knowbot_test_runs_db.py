@@ -19,6 +19,7 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
 from app.application.workbench.agent_service import AgentOffline
+from app.application.workbench.deliverable_check import ReadFile
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
     KnowbotTestConfig,
@@ -195,16 +196,19 @@ async def test_a_draft_runs_on_the_real_engine_and_passes(db):
 class FakeReader:
     """测试电脑上的代理：读成稿（SDD 0037）。"""
 
-    def __init__(self, text: str | None = "# 成稿\n\n回答在这里", error=None) -> None:
+    def __init__(
+        self, text: str | None = "# 成稿\n\n回答在这里", error=None, mtime_ms=None
+    ) -> None:
         self.text = text
         self.error = error
+        self.mtime_ms = mtime_ms  # None：代理没报修改时间
         self.calls: list[dict] = []
 
     async def read(self, *, owner, directory, path):
         self.calls.append({"owner": owner, "directory": directory, "path": path})
         if self.error is not None:
             raise self.error
-        return self.text
+        return None if self.text is None else ReadFile(self.text, self.mtime_ms)
 
 
 async def mark_written(db) -> None:
@@ -250,6 +254,7 @@ async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
             "path": "底稿/烟测-回答.md",
             "text": "# 成稿\n\n回答在这里",
             "truncated": False,
+            "step_id": "answer",  # 哪一步写的（审读 10-19）
         }
         assert got["deliverable_note"] is None and got["error"] is None
         [call] = reader.calls
@@ -269,7 +274,7 @@ async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
 
 async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_noted(db):
     """没记下写了成稿就不读（工作区共用，碰巧在那儿的可能是上一条的）；读失败照实写、结论不变。"""
-    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
+    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER, PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -307,6 +312,26 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
         assert got["deliverable_note"] == "成稿没读到：agent_offline"
         unwired = await outputs(db, "knowlab-run-out2")
         assert unwired["case_id"] == "c1"
+
+        # 文件的修改时间早于这条用例开始：不是这次写的，不认（审读 10-19 第 3 条）
+        stale = FakeReader(mtime_ms=0)
+        await accept(db, request("knowlab-run-out4"))
+        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=stale)
+        await conductor.tick()
+        await drive(runner)
+        async with db() as s:
+            await s.execute(
+                text(
+                    """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
+                       where name = 'answer' and workspace_path is null"""
+                )
+            )
+            await s.commit()
+        await conductor.tick()
+        await conductor.tick()
+        got = await outputs(db, "knowlab-run-out4")
+        assert got["deliverable"] is None
+        assert got["deliverable_note"] == "成稿文件早于这条用例开始，不是这次写的"
     finally:
         await close(runner)
         await fake.close()

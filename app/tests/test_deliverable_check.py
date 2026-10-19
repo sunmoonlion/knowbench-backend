@@ -141,9 +141,8 @@ async def test_reading_the_deliverable_decodes_one_read_and_refuses_bigger_files
         }
     )
     reader = AgentDeliverableCheck(service, stores_with({"relay_user": "u-abc"}))
-    assert (
-        await reader.read(owner="o", directory="/workspace", path="底稿/x.md") == text
-    )
+    found = await reader.read(owner="o", directory="/workspace", path="底稿/x.md")
+    assert found is not None and (found.text, found.mtime_ms) == (text, 1)
     assert service.calls == [
         (
             "u-abc",

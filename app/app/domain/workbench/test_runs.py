@@ -323,7 +323,10 @@ def case_outputs(
     deliverable_note: str | None,
     error: str | None = None,
 ) -> dict[str, Any]:
-    """一条用例的产出。合计超上限时先把最大的几步交回物换成「太大没带」，还超再截成稿。"""
+    """一条用例的产出，合计不超过 OUTPUTS_BYTES（留出余量给对方补默认字段）。
+
+    超了就一级一级让：先拿掉最大的几步交回物，再截、再拿掉没过的原文，再只留没过的验收，
+    再截、再拿掉成稿，最后只留各步结局。每一级只走一遍，不会转圈（审读 10-19 第 1 条）。"""
     out: dict[str, Any] = {
         "contract": CONTRACT,
         "run_id": run_id,
@@ -339,20 +342,81 @@ def case_outputs(
             "text": deliverable["text"][:DELIVERABLE_CHARS],
             "truncated": True,
         }
-    by_size = sorted(
+    for give_way in _GIVE_WAY:
+        if _json_bytes(out) <= _BUDGET:
+            break
+        give_way(out)
+    return out
+
+
+_BUDGET = OUTPUTS_BYTES - 64 * 1024  # 对方的模型会补上没写的默认字段
+
+
+def _drop_artifacts(out: dict[str, Any]) -> None:
+    for step in sorted(
         (s for s in out["steps"] if "artifact" in s),
         key=lambda s: _json_bytes(s["artifact"]),
         reverse=True,
-    )
-    for step in by_size:
-        if _json_bytes(out) <= OUTPUTS_BYTES:
-            break
+    ):
+        if _json_bytes(out) <= _BUDGET:
+            return
         step["artifact_omitted_bytes"] = _json_bytes(step.pop("artifact"))
-    while _json_bytes(out) > OUTPUTS_BYTES and out["deliverable"]:
-        text = out["deliverable"]["text"]
+
+
+def _cut_raw(out: dict[str, Any]) -> None:
+    for step in out["steps"]:
+        if step.get("returned_raw"):
+            step["returned_raw"] = step["returned_raw"][:2_000]
+
+
+def _drop_raw(out: dict[str, Any]) -> None:
+    for step in out["steps"]:
+        step.pop("returned_raw", None)
+
+
+def _failed_checks_only(out: dict[str, Any]) -> None:
+    for step in out["steps"]:
+        step["checks"] = [
+            {**c, "message": c["message"][:200]}
+            for c in step.get("checks") or []
+            if c.get("passed") is False
+        ]
+
+
+def _cut_deliverable(out: dict[str, Any]) -> None:
+    if out["deliverable"] and len(out["deliverable"]["text"]) > 20_000:
         out["deliverable"] = {
             **out["deliverable"],
-            "text": text[: len(text) // 2],
+            "text": out["deliverable"]["text"][:20_000],
             "truncated": True,
         }
-    return out
+
+
+def _drop_deliverable(out: dict[str, Any]) -> None:
+    if out["deliverable"]:
+        out["deliverable"] = None
+        out["deliverable_note"] = "成稿太大，这次没带回"
+
+
+def _outcomes_only(out: dict[str, Any]) -> None:
+    out["steps"] = [
+        {
+            "step_id": s["step_id"],
+            "title": s["title"],
+            "outcome": s["outcome"],
+            "checks": [],
+        }
+        for s in out["steps"]
+    ]
+    out["error"] = "产出太大，只带回各步的结局"
+
+
+_GIVE_WAY = (
+    _drop_artifacts,
+    _cut_raw,
+    _drop_raw,
+    _failed_checks_only,
+    _cut_deliverable,
+    _drop_deliverable,
+    _outcomes_only,
+)

@@ -193,7 +193,12 @@ def test_case_outputs_we_return_fit_the_contract() -> None:
             },
             {"step_id": "writeup", "title": "成稿", "attempts": []},
         ],
-        deliverable={"path": "底稿/成稿.md", "text": "# 成稿", "truncated": False},
+        deliverable={
+            "path": "底稿/成稿.md",
+            "text": "# 成稿",
+            "truncated": False,
+            "step_id": "writeup",
+        },
         deliverable_note=None,
     )
     jsonschema.validate(out, schema)

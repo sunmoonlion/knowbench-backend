@@ -9,7 +9,9 @@
 - `quoted`（SDD 0036）：path 处每项带 `quotes`，一串 `{dataset_id, page, text}`；引了的都交
   knowlab 在那份 PDF 的第 page 页找原话，都要找到。写了 `field`、`equals` 的，那样的项至少引
   一条（如判「支持」的必须引到原文）；别的项可以不引。判成哪一种这条验收不管。取不到同上记
-  `platform`。
+  `platform`。页码、原文的形状先按契约核，不合的是交回物的错，不送 knowlab（审读 10-19）。
+- `covers`（审读 10-19）：path（加 `also` 各处）各项的 `field`，与这件委托上游交回物 `source`
+  一一对应：不多、不少、不重。如第 6 步每条结论对上第 5 步的 findings。
 
 path 处可以是一项（对象）或一串；空的一串算通过，要求非空另配 `list_min`（同 `all_equal`）。
 交回物没解析成 JSON 时 judge 已把它们记成「没有验」，这里不再判。
@@ -17,6 +19,7 @@ path 处可以是一项（对象）或一串；空的一串算通过，要求非
 
 from __future__ import annotations
 
+import re
 from decimal import Decimal
 from typing import Any
 
@@ -35,6 +38,12 @@ from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
 
 SHOWN = 5  # 不通过时列出前几项
 QUOTES_PER_CALL = 100  # knowbot-data/v1 一次核引文最多这么多条
+# knowbot-data/v1 QuoteRef 的形状（knowlab domain/knowbots/data_read.py）：不合的先挡下，记交回物的错
+_DATASET_ID = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+)
+QUOTE_PAGE_MAX = 1_000_000
+QUOTE_TEXT_MAX = 4_000
 
 
 def _items(value: Any) -> list[Any] | None:
@@ -168,6 +177,10 @@ def _quote_refs(
             ):
                 bad.append(f"#{i} has a quote that is not {{dataset_id, page, text}}")
                 break
+            problem = _quote_problem(q)
+            if problem:
+                bad.append(f"#{i} page {q['page']}: {problem}")
+                continue
             refs.append(
                 (
                     i,
@@ -182,6 +195,16 @@ def _quote_refs(
             if rule.field and item.get(rule.field) == rule.equals and not quotes:
                 bad.append(f"#{i} says {rule.equals} but quotes nothing")
     return refs, bad
+
+
+def _quote_problem(q: dict[str, Any]) -> str | None:
+    if not _DATASET_ID.fullmatch(q["dataset_id"]):
+        return "bad dataset id"
+    if not 1 <= q["page"] <= QUOTE_PAGE_MAX:
+        return "bad page number"
+    if not q["text"].strip() or len(q["text"]) > QUOTE_TEXT_MAX:
+        return "quote text empty or too long"
+    return None
 
 
 async def _quoted(
@@ -208,12 +231,41 @@ async def _quoted(
             )
     except WorkbenchError as exc:
         return [f"{exc.code}: {exc.message}"], _platform(exc)
+    if len(found) != len(refs):  # knowlab 回的条数不对：平台的事，记进这一项
+        return ["knowlab answered a different number of quotes"], True
     for (i, q), got in zip(refs, found, strict=True):
         if not same_binding(got, bound):
             bad.append(f"#{i} page {q['page']}: not the bound version of the data")
         elif not got.get("found"):
             bad.append(f"#{i} page {q['page']}: {got.get('reason') or 'not_found'}")
     return bad, False
+
+
+def _covers(
+    rule: AcceptanceRule, parsed: dict[str, Any], upstream: dict[str, Any]
+) -> list[str]:
+    name, _, where = str(rule.source).partition(".")
+    if name not in upstream:
+        return [f"upstream {name} is missing"]
+    source = value_at(upstream[name], where)
+    if not isinstance(source, list):
+        return [f"upstream {rule.source} is not a list"]
+    wanted = [
+        s.get(rule.source_field) if rule.source_field and isinstance(s, dict) else s
+        for s in source
+    ]
+    got: list[Any] = []
+    for path in (rule.path or "", *rule.also):
+        items = _items(value_at(parsed, path))
+        if items is None:
+            return [f"{path} is not a list"]
+        got += [i.get(rule.field or "") if isinstance(i, dict) else None for i in items]
+    bad = [f"missing {w!r}" for w in wanted if w not in got]
+    bad += [f"not upstream {g!r}" for g in got if g not in wanted]
+    bad += [
+        f"twice {g!r}" for g in {repr(x): x for x in got}.values() if got.count(g) > 1
+    ]
+    return bad
 
 
 async def judge_numbers(
@@ -228,10 +280,21 @@ async def judge_numbers(
     if not numeric or not isinstance(verdict.parsed, dict):
         return verdict
     records = await computations(repo, str(task["id"]))
+    upstream = (
+        {
+            a["name"]: a["content"]
+            for a in await repo.list_artifacts_with_content(str(task["id"]))
+            if a.get("kind") == "step"
+        }
+        if any(r.kind == "covers" for r in numeric)
+        else {}
+    )
     for r in numeric:
         items = _items(value_at(verdict.parsed, r.path))
         platform = False
-        if items is None:
+        if r.kind == "covers":
+            bad = _covers(r, verdict.parsed, upstream)
+        elif items is None:
             bad = ["not a list"]
         elif r.kind == "computed":
             bad = _computed(r, items, records)

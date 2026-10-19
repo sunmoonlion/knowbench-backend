@@ -1356,13 +1356,28 @@ class WorkbenchRepository:
         return dict(row) if row else None
 
     async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
+        # 不带 outputs：每条最多 2 MB，推进器每 5 秒、knowlab 每次刷新都走这里（审读 10-19）
         r = await self.session.execute(
             text(
-                "select * from workbench_test_cases where run_id = :r order by position"
+                """select run_id, case_id, position, project_id, session_id, task_id,
+                          result, waiting_since, waited_seconds
+                   from workbench_test_cases where run_id = :r order by position"""
             ),
             {"r": run_id},
         )
         return [dict(m) for m in r.mappings().all()]
+
+    async def get_test_case_outputs(
+        self, run_id: str, case_id: str
+    ) -> dict[str, Any] | None:
+        r = await self.session.execute(
+            text(
+                """select outputs from workbench_test_cases
+                   where run_id = :r and case_id = :c"""
+            ),
+            {"r": run_id, "c": case_id},
+        )
+        return r.scalar_one_or_none()
 
     async def update_test_case(self, run_id: str, case_id: str, **changes: Any) -> None:
         allowed = {

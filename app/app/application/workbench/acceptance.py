@@ -148,6 +148,23 @@ def out_of_scope(text: str | None) -> dict[str, str] | None:
     }
 
 
+def _each_has(val: Any, rule: AcceptanceRule) -> tuple[bool, str]:
+    """列表的每一项都有 keys；写了 field/values 的，那一项只能取其中之一。空列表算过。"""
+    if not isinstance(val, list):
+        return False, "not a list"
+    bad = []
+    for i, item in enumerate(val):
+        if not isinstance(item, dict):
+            bad.append(f"#{i} is not an object")
+            continue
+        missing = [k for k in rule.keys if k not in item]
+        if missing:
+            bad.append(f"#{i} misses {missing}")
+        elif rule.values and item.get(rule.field or "") not in rule.values:
+            bad.append(f"#{i} {rule.field}={item.get(rule.field or '')!r}")
+    return not bad, "; ".join(bad[:5])
+
+
 def judge(text: str | None, rules: tuple[AcceptanceRule, ...]) -> Verdict:
     v = Verdict(ok=True)
     parsed: Any = None
@@ -211,6 +228,8 @@ def judge(text: str | None, rules: tuple[AcceptanceRule, ...]) -> Verdict:
             ok = len(text or "") <= r.max_chars
         elif r.kind == "all_equal":
             ok, detail = _all_equal(value_at(parsed, r.path), r.field, r.equals)
+        elif r.kind == "each_has":
+            ok, detail = _each_has(value_at(parsed, r.path), r)
         elif r.kind == "list_empty":
             val = value_at(parsed, r.path)
             ok = isinstance(val, list) and not val

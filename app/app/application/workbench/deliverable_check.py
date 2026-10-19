@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import base64
 import re
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 from app.application.ports.workbench import WorkbenchStores
@@ -40,9 +40,17 @@ class DeliverableCheck(Protocol):
         ...
 
 
+@dataclass(frozen=True)
+class ReadFile:
+    text: str
+    mtime_ms: int | None  # 代理报的修改时间（毫秒）；没报就是不知道
+
+
 class DeliverableReader(Protocol):
-    async def read(self, *, owner: str, directory: str | None, path: str) -> str | None:
-        """成稿的文字；问不到（没配对、没有项目目录）回 None；代理拒了、离线、太大抛 WorkbenchError。"""
+    async def read(
+        self, *, owner: str, directory: str | None, path: str
+    ) -> ReadFile | None:
+        """成稿的文字与修改时间；问不到（没配对、没有项目目录）回 None；代理拒了、离线、太大抛 WorkbenchError。"""
         ...
 
 
@@ -81,7 +89,9 @@ class AgentDeliverableCheck:
             return None
         return result.get("type") == "file"
 
-    async def read(self, *, owner: str, directory: str | None, path: str) -> str | None:
+    async def read(
+        self, *, owner: str, directory: str | None, path: str
+    ) -> ReadFile | None:
         if not directory or not path:
             return None
         async with self.stores() as repo:
@@ -104,7 +114,11 @@ class AgentDeliverableCheck:
                 "the deliverable is larger than one read", size=size
             )
         raw = base64.b64decode(str(result.get("content") or ""))
-        return raw.decode("utf-8", errors="replace")
+        mtime = result.get("mtime")
+        return ReadFile(
+            text=raw.decode("utf-8", errors="replace"),
+            mtime_ms=int(mtime) if isinstance(mtime, int | float) else None,
+        )
 
 
 def harden(

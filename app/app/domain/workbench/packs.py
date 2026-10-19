@@ -43,6 +43,12 @@ class AcceptanceRule(Strict):
         # 引文（SDD 0036）：path 处每项带 quotes（一串 {dataset_id, page, text}），引了的都要在
         # 那份 PDF 的第 page 页找到；写了 field/equals 的，那样的项至少引一条
         "quoted",
+        # 结构（审读 10-19：第 3 稿第 6 步空交也能过）：path 处是列表，每项都有 keys；写了
+        # field/values 的，那一项只能取 values 里的一个
+        "each_has",
+        # 对得上上游（同上）：path（加上 also 列的几处）各项的 field，与上游交回物 source
+        # （「交回物名.点号路径」，项是对象时取 source_field）一一对应，不多不少不重
+        "covers",
     ]
     keys: tuple[str, ...] = ()
     path: str | None = None
@@ -50,6 +56,10 @@ class AcceptanceRule(Strict):
     max_chars: int = 20000
     field: str | None = None
     equals: str | int | float | bool | None = None
+    values: tuple[str | int | float | bool, ...] = ()  # each_has：field 只能取这几个
+    source: str | None = None  # covers：上游「交回物名.点号路径」
+    source_field: str | None = None  # covers：上游的项是对象时取哪一项
+    also: tuple[str, ...] = ()  # covers：同一交回物里一起算的别的几处列表
     tolerance: float = Field(default=0, ge=0)  # 数值类：差的绝对值不超过它算一致
     expression: str | None = None  # computed：记录里的算式必须就是这个（比语法树）
     message: str = ""  # 不通过时的说明
@@ -61,11 +71,35 @@ class AcceptanceRule(Strict):
             raise ValueError(f"acceptance {self.kind} needs a path")
         if self.expression is not None and self.kind != "computed":
             raise ValueError("only a computed acceptance can require an expression")
+        if self.kind == "each_has" and not self.path:
+            raise ValueError("acceptance each_has needs a path")
+        if self.values and (self.kind != "each_has" or not self.field):
+            raise ValueError("only each_has with a field can limit values")
+        if self.kind == "covers" and not (
+            self.field and self.source and "." in self.source
+        ):
+            raise ValueError(
+                "acceptance covers needs a field and a source artifact.path"
+            )
+        if (self.source or self.source_field or self.also) and self.kind != "covers":
+            raise ValueError("only covers reads an upstream artifact")
         return self
 
 
+OUTPUT_FILE_CHARS = 256
+
+
+def safe_relative_path(path: str) -> bool:
+    """POSIX 相对路径：不以 / 开头、没有盘符、反斜杠、NUL，没有空段与 . .. 段，不太长。"""
+    if not path or len(path) > OUTPUT_FILE_CHARS or "\\" in path or "\x00" in path:
+        return False
+    if path.startswith("/") or (len(path) > 1 and path[1] == ":"):
+        return False
+    return all(part not in ("", ".", "..") for part in path.split("/"))
+
+
 # 要查计算记录或调 knowlab 的验收：由工作台应用层判（acceptance_numbers），不在纯函数 judge 里
-NUMERIC_RULES = frozenset({"computed", "identity", "sourced", "quoted"})
+NUMERIC_RULES = frozenset({"computed", "identity", "sourced", "quoted", "covers"})
 
 
 class MissingData(Strict):
@@ -120,6 +154,14 @@ class StepContract(Strict):
     # 这一步给人看的成稿写到项目目录里的哪个文件（相对项目目录；0015 §3.3）。结构化结果仍按
     # output_schema 回在正文里做机器验收；文件才是给用户的那一份
     output_file: str | None = None
+
+    @model_validator(mode="after")
+    def _output_file_stays_inside(self) -> StepContract:
+        """成稿路径只许项目内的相对路径（审读 10-19 第 4 条）：它会拼进读测试电脑文件的请求，
+        代理的白名单是最后一道，不是唯一一道。"""
+        if self.output_file is not None and not safe_relative_path(self.output_file):
+            raise ValueError("output_file must be a plain relative path inside the project")
+        return self
 
 
 class Scope(Strict):
