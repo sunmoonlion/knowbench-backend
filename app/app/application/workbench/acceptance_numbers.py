@@ -6,6 +6,10 @@
 - `sourced`：path 处每项带 `address` 与 `value`，重新向 knowlab 取这一格，与 value 一致。
   取不到（没配读用户数据的关系、knowlab 拒了）是平台的事，不是数对不上：这一项记
   `platform`，测试结果里那条用例记出错而不是没过（审读第 3 条）。
+- `quoted`（SDD 0036）：path 处每项带 `quotes`，一串 `{dataset_id, page, text}`；引了的都交
+  knowlab 在那份 PDF 的第 page 页找原话，都要找到。写了 `field`、`equals` 的，那样的项至少引
+  一条（如判「支持」的必须引到原文）；别的项可以不引。判成哪一种这条验收不管。取不到同上记
+  `platform`。
 
 path 处可以是一项（对象）或一串；空的一串算通过，要求非空另配 `list_min`（同 `all_equal`）。
 交回物没解析成 JSON 时 judge 已把它们记成「没有验」，这里不再判。
@@ -19,9 +23,10 @@ from typing import Any
 from app.application.ports.workbench import KnowbotDataSource, WorkbenchStore
 from app.application.workbench.acceptance import Verdict, value_at
 from app.application.workbench.knowbot_compute import computations, fetch_cells
-from app.application.workbench.knowbot_data import data_scope
+from app.application.workbench.knowbot_data import data_scope, same_binding
 from app.domain.workbench import compute as calc
 from app.domain.workbench.errors import (
+    NotFound,
     RecordsRefused,
     UserDataUnavailable,
     WorkbenchError,
@@ -29,6 +34,7 @@ from app.domain.workbench.errors import (
 from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
 
 SHOWN = 5  # 不通过时列出前几项
+QUOTES_PER_CALL = 100  # knowbot-data/v1 一次核引文最多这么多条
 
 
 def _items(value: Any) -> list[Any] | None:
@@ -138,6 +144,78 @@ async def _sourced(
     return bad, False
 
 
+def _quote_refs(
+    rule: AcceptanceRule, items: list[Any]
+) -> tuple[list[tuple[int, dict[str, Any]]], list[str]]:
+    """各项引的原文（项的序号，引文），以及形状不对、该引没引的。"""
+    refs: list[tuple[int, dict[str, Any]]] = []
+    bad: list[str] = []
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            bad.append(f"#{i} is not an object")
+            continue
+        quotes = item.get("quotes") or []
+        if not isinstance(quotes, list):
+            bad.append(f"#{i} quotes is not a list")
+            continue
+        for q in quotes:
+            if (
+                not isinstance(q, dict)
+                or not isinstance(q.get("dataset_id"), str)
+                or not isinstance(q.get("page"), int)
+                or isinstance(q.get("page"), bool)
+                or not isinstance(q.get("text"), str)
+            ):
+                bad.append(f"#{i} has a quote that is not {{dataset_id, page, text}}")
+                break
+            refs.append(
+                (
+                    i,
+                    {
+                        "dataset_id": q["dataset_id"],
+                        "page": q["page"],
+                        "text": q["text"],
+                    },
+                )
+            )
+        else:
+            if rule.field and item.get(rule.field) == rule.equals and not quotes:
+                bad.append(f"#{i} says {rule.equals} but quotes nothing")
+    return refs, bad
+
+
+async def _quoted(
+    rule: AcceptanceRule,
+    items: list[Any],
+    source: KnowbotDataSource | None,
+    repo: WorkbenchStore,
+    task: dict[str, Any],
+) -> tuple[list[str], bool]:
+    """没找到的引文、该引没引的，以及是不是平台没能核（不是引错了）。"""
+    refs, bad = _quote_refs(rule, items)
+    if bad or not refs:
+        return bad, False
+    if source is None:
+        return ["the user's data cannot be read here"], True
+    try:
+        purpose, bound = await data_scope(repo, str(task["owner_actor_id"]), task)
+        if any(q["dataset_id"] not in bound for _, q in refs):
+            raise NotFound("a quote cites data this version does not bind")
+        found: list[dict[str, Any]] = []
+        for start in range(0, len(refs), QUOTES_PER_CALL):
+            found += await source.quotes(
+                purpose, [q for _, q in refs[start : start + QUOTES_PER_CALL]]
+            )
+    except WorkbenchError as exc:
+        return [f"{exc.code}: {exc.message}"], _platform(exc)
+    for (i, q), got in zip(refs, found, strict=True):
+        if not same_binding(got, bound):
+            bad.append(f"#{i} page {q['page']}: not the bound version of the data")
+        elif not got.get("found"):
+            bad.append(f"#{i} page {q['page']}: {got.get('reason') or 'not_found'}")
+    return bad, False
+
+
 async def judge_numbers(
     verdict: Verdict,
     rules: tuple[AcceptanceRule, ...],
@@ -159,6 +237,8 @@ async def judge_numbers(
             bad = _computed(r, items, records)
         elif r.kind == "identity":
             bad = _identity(r, items, records)
+        elif r.kind == "quoted":
+            bad, platform = await _quoted(r, items, source, repo, task)
         else:
             bad, platform = await _sourced(r, items, source, repo, task)
         ok = not bad

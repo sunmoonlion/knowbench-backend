@@ -398,6 +398,143 @@ async def test_a_wrong_number_is_not_a_platform_error() -> None:
     assert not v.ok and "platform" not in v.checks[-1]
 
 
+# ---------- 引文（SDD 0036） ----------
+
+PAGES = {3: "报告期内营业收入同比增长15.7%，主要得益于系列酒销量增加"}
+
+
+class QuoteSource(CellSource):
+    """第 3 页有一句话；原话是它的一段就算找到（真的规整与跨页在 knowlab 那边测）。"""
+
+    def __init__(self, fail: Exception | None = None, bump: str | None = None) -> None:
+        super().__init__(bump)
+        self.fail = fail
+        self.quoted: list[list[dict[str, Any]]] = []
+
+    async def quotes(self, purpose, quotes):  # type: ignore[no-untyped-def]
+        if self.fail is not None:
+            raise self.fail
+        self.quoted.append(quotes)
+        return [
+            {
+                "dataset_id": q["dataset_id"],
+                "page": q["page"],
+                "found": q["text"] in PAGES.get(q["page"], ""),
+                "reason": None
+                if q["text"] in PAGES.get(q["page"], "")
+                else "not_found",
+                "version": self.version,
+                "sha256": BINDING["sha256"],
+            }
+            for q in quotes
+        ]
+
+
+def checks_of(*items: tuple[str, list[tuple[int, str]]]) -> str:
+    import json
+
+    return json.dumps(
+        {
+            "checks": [
+                {
+                    "conclusion": f"结论 {i}",
+                    "verdict": verdict,
+                    "quotes": [
+                        {"dataset_id": DATASET, "page": p, "text": t} for p, t in quotes
+                    ],
+                }
+                for i, (verdict, quotes) in enumerate(items)
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+SUPPORTED = (rule("quoted", "checks", field="verdict", equals="支持"),)
+
+
+async def test_supported_conclusions_must_quote_text_that_is_really_there() -> None:
+    records, _ = world()
+    source = QuoteSource()
+    good = checks_of(
+        ("支持", [(3, "营业收入同比增长15.7%")]),
+        ("不支持", []),  # 没提到：不引，不挡
+    )
+    v = await verdict_of(good, SUPPORTED, records, source)
+    assert v.ok and v.checks[-1]["pass"] is True
+    assert source.quoted == [
+        [{"dataset_id": DATASET, "page": 3, "text": "营业收入同比增长15.7%"}]
+    ]
+
+    unquoted = checks_of(("支持", []), ("不支持", []))
+    v = await verdict_of(unquoted, SUPPORTED, records, source)
+    assert not v.ok and "#0 says 支持 but quotes nothing" in v.checks[-1]["detail"]
+
+    wrong_page = checks_of(("支持", [(4, "营业收入同比增长15.7%")]))
+    v = await verdict_of(wrong_page, SUPPORTED, records, source)
+    assert not v.ok and "#0 page 4: not_found" in v.checks[-1]["detail"]
+    assert "platform" not in v.checks[-1]
+
+
+async def test_a_not_supported_conclusion_may_quote_but_not_make_things_up() -> None:
+    records, _ = world()
+    made_up = checks_of(("不支持", [(3, "毛利率大幅上升")]))
+    v = await verdict_of(made_up, SUPPORTED, records, QuoteSource())
+    assert not v.ok and "#0 page 3: not_found" in v.checks[-1]["detail"]
+    all_no = checks_of(("不支持", []), ("不支持", []))
+    assert (await verdict_of(all_no, SUPPORTED, records, QuoteSource())).ok
+
+
+async def test_quotes_must_have_the_right_shape_and_bound_data() -> None:
+    records, _ = world()
+    bad_shape = (
+        '{"checks": [{"verdict": "支持", "quotes": [{"page": "3", "text": "x"}]}]}'
+    )
+    v = await verdict_of(bad_shape, SUPPORTED, records, QuoteSource())
+    assert not v.ok and "not {dataset_id, page, text}" in v.checks[-1]["detail"]
+    other = (
+        '{"checks": [{"verdict": "支持", "quotes": '
+        '[{"dataset_id": "not-bound", "page": 3, "text": "营业收入"}]}]}'
+    )
+    v = await verdict_of(other, SUPPORTED, records, QuoteSource())
+    assert not v.ok and "does not bind" in v.checks[-1]["detail"]
+    assert "platform" not in v.checks[-1]
+    bumped = checks_of(("支持", [(3, "营业收入同比增长15.7%")]))
+    v = await verdict_of(bumped, SUPPORTED, records, QuoteSource(bump="2"))
+    assert not v.ok and "not the bound version" in v.checks[-1]["detail"]
+
+
+async def test_knowlab_trouble_while_checking_quotes_is_a_platform_error() -> None:
+    from app.domain.workbench.errors import UserDataUnavailable
+
+    records, _ = world()
+    text = checks_of(("支持", [(3, "营业收入同比增长15.7%")]))
+    down = QuoteSource(fail=UserDataUnavailable("the user's data is unavailable now"))
+    v = await verdict_of(text, SUPPORTED, records, down)
+    assert not v.ok and v.checks[-1]["platform"] is True
+    v = await judge_numbers(
+        judge(text, SUPPORTED),
+        SUPPORTED,
+        repo=records.repo,
+        task={**records.task, "owner_actor_id": records.owner},
+        source=None,
+    )
+    assert not v.ok and v.checks[-1]["platform"] is True
+
+
+async def test_many_quotes_are_checked_in_batches() -> None:
+    records, _ = world()
+    source = QuoteSource()
+    text = checks_of(*[("支持", [(3, "营业收入同比增长15.7%")])] * 150)
+    v = await verdict_of(text, SUPPORTED, records, source)
+    assert v.ok and [len(b) for b in source.quoted] == [100, 50]
+
+
+def test_quoted_needs_a_path() -> None:
+    with pytest.raises(ValueError, match="needs a path"):
+        AcceptanceRule(kind="quoted")
+
+
 def _step(checks: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "step_id": "answer",
@@ -447,6 +584,62 @@ def test_a_case_says_why_a_step_failed_and_platform_trouble_is_an_error() -> Non
         case=case, task={"state": "FAILED"}, steps=[_step([long])], artifacts={}
     )
     assert len(cut["steps"][0]["details"][0]) == 200
+
+
+def test_a_run_the_platform_stopped_is_an_error_and_others_say_why() -> None:
+    """K19 第 2 稿 c1：推它的程序重启后收尾的委托记出错、写原因；别的失败也写原因。"""
+    from app.domain.workbench.test_runs import RunCase, case_result
+
+    case = RunCase.model_validate(
+        {
+            "case_id": "c1",
+            "input": {"question": "q"},
+            "expectations": [
+                {"artifact": "a", "path": "x", "kind": "equals", "value": 1}
+            ],
+        }
+    )
+    timed_out = {"rule": "in_time", "pass": False, "label": "在时限内交回"}
+    restarted = {
+        "error": "the runner driving this task restarted; the step did not finish",
+        "attempt_id": None,
+        "turn_id": None,
+        "cost": "unknown",
+        "platform": True,
+    }
+    settled = case_result(
+        case=case,
+        task={"state": "FAILED"},
+        steps=[_step([timed_out])],
+        artifacts={},
+        reason=restarted,
+    )
+    assert settled["status"] == "error"
+    assert settled["note"] == (
+        "the platform stopped this run: "
+        "the runner driving this task restarted; the step did not finish"
+    )
+    stopped = case_result(
+        case=case,
+        task={"state": "FAILED"},
+        steps=[],
+        artifacts={},
+        reason={"interaction": "i-1", "by": "user stopped"},
+    )
+    assert (stopped["status"], stopped["note"]) == (
+        "failed",
+        "the run ended as failed: user stopped",
+    )
+    missing = case_result(
+        case=case,
+        task={"state": "FAILED"},
+        steps=[],
+        artifacts={},
+        reason={"code": "missing_input", "step": "s2", "artifact": "scope"},
+    )
+    assert missing["note"] == "the run ended as failed: missing_input"
+    bare = case_result(case=case, task={"state": "FAILED"}, steps=[], artifacts={})
+    assert (bare["status"], bare["note"]) == ("failed", "the run ended as failed")
 
 
 @pytest.mark.parametrize(

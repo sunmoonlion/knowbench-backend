@@ -1,7 +1,7 @@
 """确定性验收（F-ACCEPT-01 的第一层）：纯函数，输入交回物文本与规则，输出 pass/fail 与原因。不调模型。
 
-数值类三种（computed、identity、sourced，0030 §3.3）要查计算记录与用户数据，不在这里判：
-judge 跳过它们，由 acceptance_numbers 在工作台应用层接着判。
+数值类三种（computed、identity、sourced，0030 §3.3）与引文 quoted（0036）要查计算记录与用户
+数据，不在这里判：judge 跳过它们，由 acceptance_numbers 在工作台应用层接着判。
 """
 
 from __future__ import annotations

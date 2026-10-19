@@ -106,7 +106,8 @@ class Advisor:
         self.records = records
         # 成稿硬检查（0022 段 4）：没配就只有软检查
         self.deliverables = deliverables
-        # 数值验收 sourced 要重新取用户的数（0030 §3.3）：没配就判不过，不放行
+        # 数值验收 sourced 要重新取用户的数（0030 §3.3）、quoted 要回原文核引文（0036）：
+        # 没配就判不过，不放行
         self.data = data
 
     # ---------------- 入口 ----------------
@@ -857,7 +858,10 @@ class Advisor:
                     task_id, TaskState.CANCELLED, reason={"by": "user"}
                 )
                 return
-            await led.transition(task_id, TaskState.FAILED, reason={"error": error})
+            # 平台的事（推它的程序崩了）：测试结果里记出错，不记没过
+            await led.transition(
+                task_id, TaskState.FAILED, reason={"error": error, "platform": True}
+            )
 
     async def _requeue(self, led: Ledger, task_id: str) -> bool:
         async with self.stores() as repo:

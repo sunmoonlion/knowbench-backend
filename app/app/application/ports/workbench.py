@@ -855,6 +855,13 @@ class KnowbotDataSource(Protocol):
         """按（dataset_id、sheet、row、column）取格子，按次序回 found、raw、number、version、sha256。"""
         ...
 
+    async def quotes(
+        self, purpose: dict[str, Any], quotes: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """核引文（SDD 0036）：按（dataset_id、page、text）在 PDF 第 page 页找原话，
+        按次序回 found、reason、version、sha256。"""
+        ...
+
 
 class WorkbenchStores(Protocol):
     def __call__(self) -> AbstractAsyncContextManager[WorkbenchStore]:

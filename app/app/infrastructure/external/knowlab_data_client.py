@@ -109,3 +109,20 @@ class KnowlabDataClient:
         ):
             raise UserDataUnavailable("knowlab answered outside the contract")
         return found
+
+    async def quotes(
+        self, purpose: dict[str, Any], quotes: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        answer = await self._post("/quotes", {"purpose": purpose, "quotes": quotes})
+        found = answer.get("quotes")
+        if (
+            not isinstance(found, list)
+            or len(found) != len(quotes)
+            or not all(isinstance(q, dict) for q in found)
+            or any(
+                (q.get("dataset_id"), q.get("page")) != (r["dataset_id"], r["page"])
+                for q, r in zip(found, quotes, strict=True)
+            )
+        ):
+            raise UserDataUnavailable("knowlab answered outside the contract")
+        return found

@@ -164,6 +164,15 @@ def expectation_met(expectation: Expectation, artifacts: dict[str, Any]) -> bool
 DETAIL_CHARS = 200
 
 
+def _why(reason: dict[str, Any] | None) -> str:
+    """委托停下的原因，一句话：错误、代码、预算、谁停的，有哪个写哪个。"""
+    reason = reason or {}
+    for key in ("error", "code", "budget", "by"):
+        if reason.get(key):
+            return str(reason[key])[:DETAIL_CHARS]
+    return "no reason recorded"
+
+
 def _detail(check: dict[str, Any]) -> str:
     """没过的验收为什么没过：哪一格、说了多少、实际多少（审读第 3 条）。
 
@@ -182,10 +191,13 @@ def case_result(
     artifacts: dict[str, Any],
     needs_human: bool = False,
     error: str | None = None,
+    reason: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """每步验收通过与否、没过的验收名与原因、期望满足与否。不放交回物的内容（C-L5）。
 
     验收没能做（读不到用户的数据这类平台的事）记成用例出错，不记成没过（审读第 3 条）。
+    reason：委托停下的原因（最后一次状态变化里记的）。平台收尾的（推它的程序重启、崩了，
+    `platform` 为真）记成出错；别的失败把原因写进说明，不只写「失败了」（K19 第 2 稿 c1）。
     """
     lines = []
     platform: list[str] = []
@@ -218,6 +230,11 @@ def case_result(
     state = (task or {}).get("state")
     if error is not None:
         status, note = "error", error
+    elif state == "FAILED" and (reason or {}).get("platform"):
+        status = "error"
+        note = f"the platform stopped this run: {_why(reason)}"
+        if platform:  # 哪一步出的事也写上
+            note += f"; {platform[0]}"
     elif platform and not (state == "SUCCEEDED" and all(met)):
         status = "error"
         note = f"the platform could not check a step: {platform[0]}"
@@ -230,6 +247,8 @@ def case_result(
     else:
         status = "failed"
         note = f"the run ended as {str(state).lower()}" if state else "not run"
+        if state and reason:
+            note += f": {_why(reason)}"
     return {
         "case_id": case.case_id,
         "status": status,

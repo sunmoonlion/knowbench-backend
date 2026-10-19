@@ -796,6 +796,7 @@ class KnowbotTestConductor:
             steps=view["steps"],
             artifacts=artifacts,
             needs_human=needs_human,
+            reason=view["task"].get("reason"),
         )
         if note and result["status"] != "passed":
             result["note"] = note[:1000]

@@ -295,7 +295,7 @@ class Ledger:
                 reason=(
                     {"by": "user", "cost": "unknown"}
                     if cancelled
-                    else {**reason, "cost": "unknown"}
+                    else {**reason, "cost": "unknown", "platform": True}
                 ),
                 original_input=(
                     None if stopped else _turn_open(task, task.get("active_attempt_id"))

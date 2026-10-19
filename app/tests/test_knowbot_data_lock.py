@@ -118,3 +118,38 @@ async def test_table_and_cell_requests_fit_the_contract(purpose) -> None:
         await client.cells(purpose, [ref])
     jsonschema.validate(sent[0], _schema(lock, "data-table-request.schema.json"))
     jsonschema.validate(sent[1], _schema(lock, "data-cells-request.schema.json"))
+
+
+@pytest.mark.parametrize("purpose", PURPOSES)
+async def test_quote_requests_fit_the_contract(purpose) -> None:
+    """核引文（SDD 0036）：请求合提供方的 schema；回来的和问的对不上就按契约外处理。"""
+    lock = _lock()
+    jsonschema = pytest.importorskip("jsonschema")
+    dataset = "0b8a6c3e-1f2d-4c5b-9a7e-6d5c4b3a2f11"
+    quote = {"dataset_id": dataset, "page": 25, "text": "营业收入同比增长 15.7%"}
+    sent: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body)
+        got = {
+            "dataset_id": dataset,
+            "page": 26 if len(sent) > 1 else 25,
+            "found": True,
+            "reason": None,
+            "version": "1",
+            "sha256": "a" * 64,
+        }
+        return httpx.Response(
+            200, json={"contract": "knowbot-data/v1", "quotes": [got]}
+        )
+
+    from test_workbench_knowbot_data import ENV, FakeOidc
+
+    client = KnowlabDataClient(
+        ENV, oidc_client=FakeOidc(), transport=httpx.MockTransport(handler)
+    )
+    assert (await client.quotes(purpose, [quote]))[0]["found"] is True
+    with pytest.raises(UserDataUnavailable):
+        await client.quotes(purpose, [quote])
+    jsonschema.validate(sent[0], _schema(lock, "data-quotes-request.schema.json"))

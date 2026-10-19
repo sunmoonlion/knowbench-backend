@@ -980,6 +980,9 @@ async def test_a_restarted_runner_fails_a_running_step_instead_of_running_it_twi
         assert (attempt["status"], attempt["failure_code"]) == ("FAILED", "platform")
         reason = events[-1]["payload"]["reason"]
         assert reason["attempt_id"] == attempt_id and reason["turn_id"] == "turn-left"
+        assert (
+            reason["platform"] is True
+        )  # 测试结果里记出错，不记没过（K19 第 2 稿 c1）
         sent = [r for r in fake.requests[before:]]
         assert [
             r["params"]["turnId"] for r in sent if r["method"] == "turn/interrupt"
@@ -1219,6 +1222,30 @@ async def test_a_crash_of_a_task_that_was_being_cancelled_ends_it_as_cancelled(d
             "CANCELLED",
             "cancelled",
         )
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_a_crash_fails_the_task_as_a_platform_failure(db):
+    """推它的程序崩了：委托记失败，原因标平台（测试结果里记出错，不记没过）。"""
+    from app.application.workbench.advisor import Advisor
+    from app.bootstrap.workbench import workbench_stores
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        task_id, attempt_id = await _task(db, sid, "crash-0002", attempt=True)
+        await Advisor(workbench_stores(db), None).fail_after_crash(task_id, "boom")  # type: ignore[arg-type]
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(task_id)
+            attempt = await repo.get_attempt(attempt_id)
+            events = await repo.list_task_events(task_id, types=("task/state",))
+        assert task["state"] == "FAILED"
+        assert attempt["failure_code"] == "platform"
+        assert events[-1]["payload"]["reason"] == {"error": "boom", "platform": True}
         await _close(runner)
     finally:
         await fake.close()

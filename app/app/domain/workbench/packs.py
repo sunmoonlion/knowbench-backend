@@ -40,6 +40,9 @@ class AcceptanceRule(Strict):
         "computed",  # path 处每项带 compute_id 与 value：记录里有这一次计算，结果一致
         "identity",  # path 处每项带 left_id 与 right_id：两次计算的结果在容差内相等
         "sourced",  # path 处每项带 address 与 value：重新取这一格，与 value 一致
+        # 引文（SDD 0036）：path 处每项带 quotes（一串 {dataset_id, page, text}），引了的都要在
+        # 那份 PDF 的第 page 页找到；写了 field/equals 的，那样的项至少引一条
+        "quoted",
     ]
     keys: tuple[str, ...] = ()
     path: str | None = None
@@ -61,7 +64,8 @@ class AcceptanceRule(Strict):
         return self
 
 
-NUMERIC_RULES = frozenset({"computed", "identity", "sourced"})
+# 要查计算记录或调 knowlab 的验收：由工作台应用层判（acceptance_numbers），不在纯函数 judge 里
+NUMERIC_RULES = frozenset({"computed", "identity", "sourced", "quoted"})
 
 
 class MissingData(Strict):
