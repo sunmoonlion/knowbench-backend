@@ -659,7 +659,7 @@ class WorkbenchStore(Protocol):
     ) -> str: ...
 
     async def acquire_leases(self, *, runner_id: str, ttl_seconds: int) -> list[str]:
-        """给有待办命令的沙箱拿租约：没有租约或租约已过期的才拿得到；返回新拿到（接管）的沙箱 id。"""
+        """给有待办命令、或有委托要人推（排队、在跑、等审批）的沙箱拿租约：没有租约、租约已过期、或本来就是这个名字的才拿得到；返回拿到的沙箱 id。哪些是本进程新拿到的，由 runner 自己记（0034）。"""
         ...
 
     async def renew_leases(self, *, runner_id: str, ttl_seconds: int) -> list[str]:
@@ -680,9 +680,14 @@ class WorkbenchStore(Protocol):
         """接管一个沙箱时：上一个 runner 手里未决的工具审批作废（app-server 那边的请求已随连接消失，Codex 会重发）。"""
         ...
 
-    async def active_tasks_for_sandbox(
-        self, sandbox_id: str
-    ) -> list[dict[str, Any]]: ...
+    async def unsettled_tasks(self, sandbox_ids: list[str]) -> list[dict[str, Any]]:
+        """这些沙箱上要有人推的委托：排队的、在跑的、等着 Codex 那一轮里的请求（审批、反问）的。
+        带 `request_id`（等的那一问）与 `drive_queued`（已有没做完的 task.drive）。"""
+        ...
+
+    async def projects_with_stalled_queue(self) -> list[str]:
+        """有委托在排队、却没有活跃委托的项目（前一位到了终态，放行那一刻没做成）。"""
+        ...
 
     async def claim_commands(
         self, *, claimed_by: str, limit: int = 20

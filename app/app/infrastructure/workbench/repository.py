@@ -2217,11 +2217,15 @@ class WorkbenchRepository:
 
     # ---------- sandbox leases（runner 分片，F-LEDGER-02） ----------
     async def acquire_leases(self, *, runner_id: str, ttl_seconds: int) -> list[str]:
-        """给有待办命令的沙箱拿租约：没有租约或租约已过期的才拿得到；返回新拿到（接管）的沙箱 id。"""
+        """给有待办命令、或有委托要人推（排队、在跑、等审批）的沙箱拿租约：没有租约、租约已过期、或本来就是这个名字的才拿得到；返回拿到的沙箱 id。哪些是本进程新拿到的，由 runner 自己记（0034）。"""
         r = await self.session.execute(
             text(
                 """with wanted as (
-                     select distinct sandbox_id from workbench_commands where status = 'pending'
+                     select sandbox_id from workbench_commands where status = 'pending'
+                     union
+                     -- 有委托要人推的沙箱：上一任 runner 死了或同名重启了，没有待办命令也要拿下来对账（0034）
+                     select s.sandbox_id from workbench_tasks t join workbench_sessions s on s.id = t.session_id
+                     where t.state in ('QUEUED', 'RUNNING', 'WAITING')
                    ), taken as (
                      insert into workbench_sandbox_leases (sandbox_id, runner_id, expires_at, acquired_at, updated_at)
                      select sandbox_id, :r, now() + make_interval(secs => :ttl), now(), now() from wanted
@@ -2232,28 +2236,13 @@ class WorkbenchRepository:
                            updated_at = now()
                        where workbench_sandbox_leases.runner_id = excluded.runner_id
                           or workbench_sandbox_leases.expires_at < now()
-                     returning sandbox_id, (xmax = 0) as inserted, acquired_at
+                     returning sandbox_id
                    )
-                   select sandbox_id, inserted, acquired_at from taken"""
+                   select sandbox_id from taken"""
             ),
             {"r": runner_id, "ttl": ttl_seconds},
         )
-        rows = r.mappings().all()
-        # 新拿到 = 刚插入的，或 acquired_at 刚被重置（接管）的
-        fresh = []
-        for row in rows:
-            if row["inserted"]:
-                fresh.append(str(row["sandbox_id"]))
-                continue
-            age = await self.session.execute(
-                text(
-                    "select extract(epoch from (now() - acquired_at)) from workbench_sandbox_leases where sandbox_id = :s"
-                ),
-                {"s": row["sandbox_id"]},
-            )
-            if float(age.scalar_one()) < 1.0:
-                fresh.append(str(row["sandbox_id"]))
-        return fresh
+        return [str(x[0]) for x in r.all()]
 
     async def sandbox_held(self, sandbox_id: str) -> bool:
         r = await self.session.execute(
@@ -2306,18 +2295,53 @@ class WorkbenchRepository:
             for m in r.mappings().all()
         ]
 
-    async def active_tasks_for_sandbox(self, sandbox_id: str) -> list[dict[str, Any]]:
+    async def unsettled_tasks(self, sandbox_ids: list[str]) -> list[dict[str, Any]]:
+        if not sandbox_ids:
+            return []
         r = await self.session.execute(
             text(
-                """select t.id, t.session_id from workbench_tasks t join workbench_sessions s on s.id = t.session_id
-                   where s.sandbox_id = :sb and t.state in ('QUEUED', 'RUNNING') order by t.created_at"""
+                """select t.id, t.session_id, s.sandbox_id, t.state, t.state_version, t.thread_id,
+                          t.active_attempt_id, t.cancel_requested_at,
+                          i.prompt->'subject'->>'request_id' as request_id,
+                          exists(select 1 from workbench_commands c
+                                 where c.kind = 'task.drive' and c.status in ('pending', 'claimed')
+                                   and c.payload->>'task_id' = t.id::text) as drive_queued
+                   from workbench_tasks t join workbench_sessions s on s.id = t.session_id
+                   left join workbench_interactions i on i.id = t.active_interaction_id
+                   where s.sandbox_id::text = any(:sbs)
+                     and (t.state in ('QUEUED', 'RUNNING')
+                          or (t.state = 'WAITING' and coalesce(i.prompt->'subject'->>'request_id', '') <> ''))
+                   order by t.created_at"""
             ),
-            {"sb": sandbox_id},
+            {"sbs": list(sandbox_ids)},
         )
         return [
-            {"id": str(m["id"]), "session_id": str(m["session_id"])}
+            {
+                **dict(m),
+                "id": str(m["id"]),
+                "session_id": str(m["session_id"]),
+                "sandbox_id": str(m["sandbox_id"]),
+                "active_attempt_id": (
+                    str(m["active_attempt_id"]) if m["active_attempt_id"] else None
+                ),
+            }
             for m in r.mappings().all()
         ]
+
+    async def projects_with_stalled_queue(self) -> list[str]:
+        r = await self.session.execute(
+            text(
+                """select distinct q.project_id from workbench_tasks q
+                   where q.project_id is not null and q.state = 'RECEIVED'
+                     and coalesce(q.original_input->'client_context'->>'queued_behind', '') <> ''
+                     and not exists (
+                       select 1 from workbench_tasks a where a.project_id = q.project_id
+                         and a.state not in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
+                         and not (a.state = 'RECEIVED'
+                                  and coalesce(a.original_input->'client_context'->>'queued_behind', '') <> ''))"""
+            )
+        )
+        return [str(x[0]) for x in r.all()]
 
     async def claim_commands(
         self, *, claimed_by: str, limit: int = 20

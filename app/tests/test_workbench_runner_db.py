@@ -43,6 +43,8 @@ class FakeAppServer:
         self.auth_headers: list[str | None] = []
         self.approval_decisions: list[dict] = []
         self.question_answers: list[dict] = []
+        # 线程上还在跑的那一轮（上一任 runner 开的）：thread/resume 时照真 app-server 报 inProgress
+        self.in_progress: dict[str, str] = {}
         self.ready = asyncio.Event()
 
     async def start(self):
@@ -91,7 +93,14 @@ class FakeAppServer:
             tid = p["threadId"]
             if tid in self.disk:
                 self.live.add(tid)
-                await send({"id": rid, "result": {"thread": {"id": tid}}})
+                turns = (
+                    [{"id": self.in_progress[tid], "status": "inProgress"}]
+                    if tid in self.in_progress
+                    else []
+                )
+                await send(
+                    {"id": rid, "result": {"thread": {"id": tid, "turns": turns}}}
+                )
             else:
                 await send(
                     {
@@ -828,6 +837,381 @@ async def test_takeover_requeues_running_tasks(db):
         for link in r2.links.values():
             if link.client:
                 await link.client.close()
+    finally:
+        await fake.close()
+
+
+async def _started(db, fake, runner_id="r1"):
+    """起线（租约归 runner_id），返回 (runner, sandbox, session, thread)。"""
+    _, sb, sid = await seed(db, fake)
+    runner = build_runner(
+        db, publisher=RedisPublisher(None, "t"), runner_id=runner_id, poll_seconds=0.05
+    )
+    assert await runner.run_once() == 1
+    async with db() as s:
+        thread = (await WorkbenchRepository(s).get_session(sid))["thread_id"]
+    return runner, sb, sid, thread
+
+
+async def _task(db, sid, key, *, to=("VALIDATING", "QUEUED", "RUNNING"), attempt=False):
+    from decimal import Decimal
+
+    from app.domain.workbench.models import HandoverRequest
+    from app.domain.workbench.states import AttemptState, TaskState
+
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        led = Ledger(repo)
+        task_id = (
+            await led.handover(
+                HandoverRequest(
+                    idempotency_key=key,
+                    session_id=sid,
+                    profile_id="SMOKE",
+                    original_input={"text": "q"},
+                    budget_limit=Decimal("1"),
+                ),
+                owner_actor_id=OWNER,
+            )
+        )["task_id"]
+        for state in to:
+            await led.transition(task_id, TaskState(state))
+        attempt_id = None
+        if attempt:
+            attempt_id = (
+                await led.open_attempt(
+                    task_id, step_id="s1", step_version="1", reserve=Decimal("0.5")
+                )
+            )["attempt_id"]
+            await led.attempt_transition(attempt_id, AttemptState.RUNNING)
+        # 委托和对话在同一条线上（推它的程序起步时会记，这里直接记）
+        await s.execute(
+            text(
+                "update workbench_tasks set thread_id = (select thread_id from workbench_sessions where id = :s) where id = :t"
+            ),
+            {"s": sid, "t": task_id},
+        )
+        await s.commit()
+    return task_id, attempt_id
+
+
+async def _restart(db, old, runner_id="r1"):
+    """上一任退出（放掉租约，和 run_forever 收尾一样），同名的新进程起来。"""
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            await repo.release_leases(runner_id=runner_id)
+    for link in old.links.values():
+        if link.client:
+            await link.client.close()
+    return build_runner(
+        db, publisher=RedisPublisher(None, "t"), runner_id=runner_id, poll_seconds=0.05
+    )
+
+
+async def _close(*runners):
+    for runner in runners:
+        await runner.wait_drivers(timeout=5)
+        for link in runner.links.values():
+            if link.client:
+                await link.client.close()
+
+
+async def test_a_restarted_runner_with_the_same_name_settles_a_task_nobody_drives(db):
+    """runner 名字是固定配置，重启后同名。上一任死时手上的委托在跑、记着取消（旧数据：那时取消要等推它的人落实），
+    又没有待办命令：新进程也拿下这个沙箱、对账、收成已取消（2026-10-19 K19 第 1 稿卡死，0034）。"""
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        first, sb, sid, _ = await _started(db, fake)
+        task_id, _ = await _task(db, sid, "restart-0001")
+        async with db() as s:
+            await s.execute(
+                text(
+                    "update workbench_tasks set cancel_requested_at = now() where id = :t"
+                ),
+                {"t": task_id},
+            )
+            await s.commit()
+        second = await _restart(db, first)
+        await second.run_once()  # 没有待办命令也拿下沙箱
+        await second.wait_drivers(timeout=5)
+        async with db() as s:
+            task = await WorkbenchRepository(s).get_task(task_id)
+        assert task["state"] == "CANCELLED" and sb in second.leased
+        await _close(second)
+    finally:
+        await fake.close()
+
+
+async def test_a_restarted_runner_fails_a_running_step_instead_of_running_it_twice(db):
+    """在跑的一步没人推了：停下 Codex 里还在跑的那一轮，委托收成失败（平台），原因带尝试与那一轮的编号；
+    不重开这一步——重开就是双跑（0034 §三.2）。"""
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        first, sb, sid, thread = await _started(db, fake)
+        task_id, attempt_id = await _task(db, sid, "restart-0002", attempt=True)
+        fake.in_progress[thread] = "turn-left"
+        second = await _restart(db, first)
+        before = len(fake.requests)
+        await second.run_once()
+        await second.wait_drivers(timeout=5)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(task_id)
+            attempt = await repo.get_attempt(attempt_id)
+            events = await repo.list_task_events(task_id, types=("task/state",))
+        assert task["state"] == "FAILED"
+        assert (attempt["status"], attempt["failure_code"]) == ("FAILED", "platform")
+        reason = events[-1]["payload"]["reason"]
+        assert reason["attempt_id"] == attempt_id and reason["turn_id"] == "turn-left"
+        sent = [r for r in fake.requests[before:]]
+        assert [
+            r["params"]["turnId"] for r in sent if r["method"] == "turn/interrupt"
+        ] == ["turn-left"]
+        assert not [r for r in sent if r["method"] == "turn/start"]
+        await _close(second)
+    finally:
+        await fake.close()
+
+
+async def test_a_restarted_runner_settles_a_task_waiting_on_an_approval_of_the_old_turn(
+    db,
+):
+    """等着 Codex 那一轮里的审批时上一任没了：旧审批作废、发 interaction/expired；那一轮没人推了，委托收尾。"""
+    from app.domain.workbench.models import InteractionPrompt
+    from app.domain.workbench.states import WaitingReason
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        first, sb, sid, _ = await _started(db, fake)
+        task_id, _ = await _task(db, sid, "restart-0003")
+        async with db() as s:
+            it = await Ledger(WorkbenchRepository(s)).open_interaction(
+                task_id,
+                kind="tool_approval",
+                prompt=InteractionPrompt(
+                    title="要跑一条命令",
+                    question="允许吗？",
+                    subject={"request_id": "req-old"},
+                ),
+                waiting_reason=WaitingReason.APPROVAL,
+            )
+        second = await _restart(db, first)
+        await second.run_once()
+        await second.wait_drivers(timeout=5)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(task_id)
+            expired = await repo.list_interactions(session_id=sid, status="expired")
+            events = [
+                e
+                for e in await repo.list_events(session_id=sid)
+                if e["type"] == "interaction/expired"
+            ]
+        assert [str(x["id"]) for x in expired] == [str(it["interaction_id"])]
+        assert len(events) == 1 and task["state"] == "FAILED"
+        await _close(second)
+    finally:
+        await fake.close()
+
+
+async def test_reconnecting_to_the_sandbox_expires_the_approvals_of_the_old_connection(
+    db,
+):
+    """同一进程里到沙箱的连接断了再连：旧连接上没答的审批作废（Codex 会在新连接上重问；0034 §三.2）。"""
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.enqueue_command(
+                    session_id=sid,
+                    sandbox_id=sb,
+                    kind="turn.start",
+                    payload={
+                        "text": "please NEED_APPROVAL now",
+                        "request_id": "r-x",
+                        "by": "user",
+                    },
+                )
+        await runner.run_once()
+
+        async def pending():
+            async with db() as s:
+                return (
+                    len(
+                        await WorkbenchRepository(s).list_interactions(
+                            session_id=sid, status="pending"
+                        )
+                    )
+                    == 1
+                )
+
+        assert await wait_for(pending)
+        link = runner.links[sb]
+        await link.client.close()
+        await link.ensure_connected()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            assert await repo.list_interactions(session_id=sid, status="pending") == []
+            assert (
+                len(await repo.list_interactions(session_id=sid, status="expired")) == 1
+            )
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_reconcile_queues_one_drive_for_a_queued_task_however_many_rounds(db):
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        task_id, _ = await _task(db, sid, "queued-0001", to=("VALIDATING", "QUEUED"))
+        for _ in range(3):  # 命令没被领走时不重复排
+            async with db() as s:
+                repo = WorkbenchRepository(s)
+                async with repo.transaction():
+                    assert await runner._reconcile(repo) == []
+        async with db() as s:
+            rows = (
+                (
+                    await s.execute(
+                        text(
+                            "select payload from workbench_commands where kind = 'task.drive' and status = 'pending'"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [r["task_id"] for r in rows] == [task_id]
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_reconcile_lets_the_next_task_in_when_the_one_ahead_ended_without_letting_it(
+    db,
+):
+    """前一位到了终态，放行那一刻没做成（例如旧版本的取消停在半路）：下一轮对账放行排队的那一件。"""
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        ahead, _ = await _task(db, sid, "ahead-0001")
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            project = (await repo.get_session(sid))["project_id"]
+            other = (
+                await SessionService(repo).start(
+                    owner_actor_id=OWNER,
+                    kind="expert",
+                    project_id=str(project),
+                    title="t2",
+                )
+            )["session_id"]
+        behind, _ = await _task(db, other, "behind-0001", to=())
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            queued = await repo.get_task(behind)
+            assert queued["original_input"]["client_context"]["queued_behind"] == ahead
+            # 前一位直接落到终态，没走放行
+            await s.execute(
+                text("update workbench_tasks set state = 'CANCELLED' where id = :t"),
+                {"t": ahead},
+            )
+            await s.commit()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await runner._reconcile(repo)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            dequeued = await repo.list_task_events(behind, types=("task/dequeued",))
+        assert len(dequeued) == 1
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_cancelling_a_running_task_settles_it_now_and_books_the_late_cost(db):
+    """取消直接收尾（0034 §三.1）：委托与那一轮一起关、预留全退；推它的程序这一轮跑完才报的花费补记上，
+    加进 budget.used 与那一轮的花费，预留不变。"""
+    from decimal import Decimal
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        task_id, attempt_id = await _task(db, sid, "cancel-0001", attempt=True)
+        async with db() as s:
+            led = Ledger(WorkbenchRepository(s))
+            done = await led.request_cancel(task_id, owner_actor_id=OWNER)
+            assert done["state"] == "CANCELLED" and done["interrupt"] is True
+            repo = WorkbenchRepository(s)
+            attempt = await repo.get_attempt(attempt_id)
+            before = (await repo.get_task(task_id))["budget"]
+        assert attempt["status"] == "CANCELLED"
+        assert Decimal(str(before["reserved"])) == 0
+        async with db() as s:
+            await Ledger(WorkbenchRepository(s)).record_late_cost(
+                task_id,
+                attempt_id=attempt_id,
+                consumed=Decimal("0.3"),
+                tokens={"input": 10},
+                turn_id="turn-late",
+            )
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(task_id)
+            attempt = await repo.get_attempt(attempt_id)
+            late = await repo.list_task_events(task_id, types=("attempt/late_cost",))
+        assert Decimal(str(task["budget"]["used"])) == Decimal(
+            str(before["used"])
+        ) + Decimal("0.3")
+        assert Decimal(str(task["budget"]["reserved"])) == 0
+        assert attempt["status"] == "CANCELLED"
+        assert Decimal(attempt["budget_consumed"]["amount"]) == Decimal("0.3")
+        assert len(late) == 1 and late[0]["payload"]["turn_id"] == "turn-late"
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_a_crash_of_a_task_that_was_being_cancelled_ends_it_as_cancelled(db):
+    from app.application.workbench.advisor import Advisor
+    from app.bootstrap.workbench import workbench_stores
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        task_id, attempt_id = await _task(db, sid, "crash-0001", attempt=True)
+        async with db() as s:
+            await s.execute(
+                text(
+                    "update workbench_tasks set cancel_requested_at = now() where id = :t"
+                ),
+                {"t": task_id},
+            )
+            await s.commit()
+        await Advisor(workbench_stores(db), None).fail_after_crash(task_id, "boom")  # type: ignore[arg-type]
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(task_id)
+            attempt = await repo.get_attempt(attempt_id)
+        assert task["state"] == "CANCELLED"
+        assert (attempt["status"], attempt["failure_code"]) == (
+            "CANCELLED",
+            "cancelled",
+        )
+        await _close(runner)
     finally:
         await fake.close()
 

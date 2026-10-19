@@ -394,16 +394,8 @@ async def test_cancel_vs_complete_only_one_terminal_wins(db):
             try:
                 led3 = Ledger(WorkbenchRepository(s3))
                 r = await led3.request_cancel(t, owner_actor_id=OWNER)
-                if r.get("cancel_requested"):
-                    # 意图已持久化；收敛由编排做——这里模拟编排看到意图后收敛
-                    await led3.attempt_transition(a, AttemptState.CANCELLED)
-                    await led3.transition(t, TaskState.CANCELLED)
-                    return "cancelled"
-                return (
-                    "noop"
-                    if r["state"] in (TaskState.SUCCEEDED, TaskState.FAILED)
-                    else "cancelled"
-                )
+                # 取消直接收成终态，不等编排落实（0034 §三.1）
+                return "cancelled" if r["state"] == TaskState.CANCELLED else "noop"
             except Exception:
                 return "lost"
 

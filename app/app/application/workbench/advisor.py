@@ -40,6 +40,7 @@ from app.domain.workbench.packs import ExpertPack, Scope, StepContract, find_pac
 from app.domain.workbench.projects import NO_DETOUR
 from app.domain.workbench.records import one_line
 from app.domain.workbench.states import (
+    ATTEMPT_TERMINAL,
     PLATFORM_FAILURE,
     TASK_TERMINAL,
     AttemptState,
@@ -341,11 +342,24 @@ class Advisor:
 
         async with self.stores() as repo:
             led = Ledger(repo)
+            consumed = result.cost or Decimal("0")
+            task = await repo.get_task(task_id)
+            attempt = await repo.get_attempt(attempt_id)
+            if attempt["status"] in ATTEMPT_TERMINAL:
+                # 这一轮跑着的时候委托已被别人收尾（取消、测试超时、对账；0034 §三.1），尝试也已关掉：
+                # 花掉的钱补记到委托上，安静停下
+                await led.record_late_cost(
+                    task_id,
+                    attempt_id=attempt_id,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                )
+                return task["state"]
             await led.attempt_transition(
                 attempt_id, AttemptState.RUNNING, turn_id=result.turn_id
             )
             task = await repo.get_task(task_id)
-            consumed = result.cost or Decimal("0")
             if task["cancel_requested_at"] is not None:
                 # 用户点了停止：这一步被中断。已经花的照记，做完的部分交回
                 await led.attempt_transition(
@@ -807,22 +821,29 @@ class Advisor:
         """驾驶中抛了没接住的异常：开着的尝试记失败、委托记失败，不让它停在 RUNNING 没人推。
 
         K19 判分崩了以后委托一直挂着，测试要等到超时才收尾。已经停下（等人、终态）的不动。
+        记着取消的收成「已取消」，不算平台失败（0034 §三.1）。
         """
         async with self.stores() as repo:
             led = Ledger(repo)
             task = await repo.get_task(task_id)
             if task["state"] not in (TaskState.QUEUED, TaskState.RUNNING):
                 return
+            cancelled = task.get("cancel_requested_at") is not None
             attempt_id = task.get("active_attempt_id")
             if attempt_id is not None:
                 attempt = await repo.get_attempt(str(attempt_id))
                 if attempt["status"] in (AttemptState.CREATED, AttemptState.RUNNING):
                     await led.attempt_transition(
                         str(attempt_id),
-                        AttemptState.FAILED,
-                        failure_code=PLATFORM_FAILURE,
+                        AttemptState.CANCELLED if cancelled else AttemptState.FAILED,
+                        failure_code="cancelled" if cancelled else PLATFORM_FAILURE,
                         retryable=False,
                     )
+            if cancelled:
+                await led.transition(
+                    task_id, TaskState.CANCELLED, reason={"by": "user"}
+                )
+                return
             await led.transition(task_id, TaskState.FAILED, reason={"error": error})
 
     async def _requeue(self, led: Ledger, task_id: str) -> bool:

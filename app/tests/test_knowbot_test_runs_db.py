@@ -317,6 +317,45 @@ async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
         await fake.close()
 
 
+async def test_a_case_queued_behind_another_task_says_so_and_is_capped(db):
+    """用例的委托排在测试账号别的委托后面（同一项目一次一位）：进度里带挡路的委托编号；排队不算进超时，
+    但排到这次测试的时限还没轮到，按超时收、原因写清排在谁后面（0034 §三.3）。"""
+    from dataclasses import replace
+
+    fake = ScriptedAppServer([])
+    await fake.start()
+    clock = Clock()
+    try:
+        await setup_test_computer(db, fake)
+        ahead = request("knowlab-run-0030").model_copy(
+            update={"timeout_seconds": 86400}
+        )
+        await accept(db, ahead)
+        await accept(db, request("knowlab-run-0031"))
+        conductor = KnowbotTestConductor(
+            workbench_stores(db), replace(CONFIG, max_running=2), now=clock
+        )
+        await conductor.tick()  # 两次都开跑；第二次的用例委托排在第一次的后面
+        async with db() as s:
+            [first] = await WorkbenchRepository(s).list_test_cases("knowlab-run-0030")
+        await conductor.tick()  # 开始记排队时间
+        shown = await status(db, "knowlab-run-0031")
+        assert shown["status"] == "running"
+        assert shown["progress"]["queued_behind"] == str(first["task_id"])
+        clock.at += timedelta(seconds=1800)
+        await conductor.tick()
+        assert (await status(db, "knowlab-run-0031"))["status"] == "running"
+        clock.at += timedelta(seconds=1801)  # 排队过了时限（3600 秒）
+        await conductor.tick()
+        done = await status(db, "knowlab-run-0031")
+        assert done["status"] == "timeout"
+        assert done["cases"][0]["status"] == "error"
+        assert f"queued too long behind task {first['task_id']}" in json.dumps(done)
+        assert (await status(db, "knowlab-run-0030"))["status"] == "running"
+    finally:
+        await fake.close()
+
+
 class Folders:
     """测试电脑上的目录：记下建了哪个、删了哪个；ready=False 时建不出干净目录。"""
 

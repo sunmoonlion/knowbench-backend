@@ -30,6 +30,7 @@ from app.application.workbench.deliverable_check import DeliverableCheck
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench import missing_data
 from app.domain.workbench.deliverables import changed_paths
+from app.domain.workbench.errors import StaleStateVersion
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.pricing import (
@@ -48,7 +49,13 @@ from app.domain.workbench.projects import (
     thread_settings,
     turn_settings,
 )
-from app.domain.workbench.states import TaskState, WaitingReason, Wheel
+from app.domain.workbench.states import (
+    TASK_TERMINAL,
+    InvalidTransition,
+    TaskState,
+    WaitingReason,
+    Wheel,
+)
 from app.domain.workbench.tool_policy import (
     DECISION_ACCEPT,
     DECISION_ACCEPT_TASK,
@@ -181,6 +188,14 @@ class SandboxLink:
                 self.sandbox_id,
                 self.sandbox["app_server_url"],
             )
+            # 旧连接上等着答的工具审批随连接没了（app-server 那边的请求也没了，Codex 会重问）：
+            # 每次真的建一条新连接都作废一次，同一进程里断了再连也算（0034 §三.2）
+            for fut in list(self.pending_approvals.values()):
+                if not fut.done():
+                    fut.set_result({"decision": "decline"})
+            await self.runner.expire_approvals(
+                self.sandbox_id, "connection to the sandbox re-established"
+            )
             return client
 
     async def ensure_thread(self, thread_id: str) -> None:
@@ -195,6 +210,10 @@ class SandboxLink:
             timeout=60,
         )
         self.remember_model(thread_id, resumed)
+        # 还在跑的那一轮（上一任 runner 开的）：记下来，接手时才停得下它（0034 §三.2）
+        for turn in ((resumed or {}).get("thread") or {}).get("turns") or []:
+            if turn.get("status") == "inProgress" and turn.get("id"):
+                self.active_turns[thread_id] = str(turn["id"])
         self.live_threads.add(thread_id)
         log.info("thread resumed sandbox=%s thread=%s", self.sandbox_id, thread_id)
 
@@ -539,6 +558,13 @@ class SandboxLink:
             files=list(waiter["files"]),
             timed_out=waiter["timed_out"],
         )
+
+    async def stop_leftover(self, thread_id: str | None) -> str | None:
+        """接手没人推的委托时：这条线若还有一轮在跑（上一任开的），停下它；返回停的是哪一轮。"""
+        if not thread_id:
+            return None
+        await self.ensure_thread(thread_id)
+        return await self.interrupt(thread_id)
 
     async def interrupt(
         self, thread_id: str | None, turn_id: str | None = None
@@ -1246,10 +1272,17 @@ class Runner:
             except Exception:  # noqa: BLE001
                 pass
 
-    async def _take_over(self, repo: WorkbenchStore, sandbox_id: str) -> None:
-        """刚拿到一个沙箱的租约（首次或接管）：作废上一任留下的未决工具审批，把没有驾驶者的 Task 重新排队。"""
+    async def expire_approvals(self, sandbox_id: str, reason: str) -> None:
+        async with self.stores() as repo:
+            async with repo.transaction():
+                await self._expire_approvals(repo, sandbox_id, reason)
+
+    async def _expire_approvals(
+        self, repo: WorkbenchStore, sandbox_id: str, reason: str
+    ) -> int:
+        """这个沙箱上没答的工具审批作废（app-server 那边的请求已随连接消失，Codex 会重问）。"""
         expired = await repo.expire_pending_tool_approvals(
-            sandbox_id=sandbox_id, reason="runner restarted; Codex will ask again"
+            sandbox_id=sandbox_id, reason=reason
         )
         for it in expired:
             ev = await repo.append_event(
@@ -1266,16 +1299,76 @@ class Runner:
             await self.publisher.publish(
                 self.publisher.session_channel(it["session_id"]), ev
             )
-        for task in await repo.active_tasks_for_sandbox(sandbox_id):
-            if task["id"] in self.driving:
+        return len(expired)
+
+    async def _take_over(self, repo: WorkbenchStore, sandbox_id: str) -> None:
+        """本进程新拿到一个沙箱（首次、接管、或同名的上一任留下的）：作废它上面没答的工具审批。
+        委托有没有人推，由每轮对账管（`_reconcile`）。"""
+        expired = await self._expire_approvals(
+            repo, sandbox_id, "runner restarted; Codex will ask again"
+        )
+        log.info("took over sandbox=%s expired_approvals=%d", sandbox_id, expired)
+
+    def _busy(self, task_id: str) -> bool:
+        running = self.driving.get(task_id)
+        return running is not None and not running.done()
+
+    async def _reconcile(self, repo: WorkbenchStore) -> list[dict[str, Any]]:
+        """每轮对账（0034 §三.2）：库里要有人推、本进程却没在推的委托——排队的接着推（还没开工，不会双跑），
+        在跑的与等着 Codex 那一轮里的请求的交给 `_settle` 收尾（不重开）；项目里前一位已结束、排队的没放行的放行。
+        单 runner 才成立：多 runner 前要有委托心跳（0034 第五节）。"""
+        unattended = []
+        for task in await repo.unsettled_tasks(sorted(self.leased)):
+            if self._busy(task["id"]):
                 continue
-            await repo.enqueue_command(
-                session_id=task["session_id"],
-                sandbox_id=sandbox_id,
-                kind="task.drive",
-                payload={"task_id": task["id"], "resumed": True},
+            if task["state"] == TaskState.QUEUED:
+                if not task["drive_queued"]:
+                    await repo.enqueue_command(
+                        session_id=task["session_id"],
+                        sandbox_id=task["sandbox_id"],
+                        kind="task.drive",
+                        payload={"task_id": task["id"], "resumed": True},
+                    )
+                continue
+            unattended.append(task)
+        for project_id in await repo.projects_with_stalled_queue():
+            await Ledger(repo).start_next_queued(project_id)
+        return unattended
+
+    async def _settle(self, task: dict[str, Any]) -> None:
+        """没人推的委托：先尽力停下 Codex 里可能还在跑的那一轮，再收尾（失败，记着取消的收成已取消）。"""
+        task_id = task["id"]
+        leftover = None
+        try:
+            async with self.stores() as repo:
+                link = await self.link_for(task["sandbox_id"], repo)
+            leftover = await asyncio.wait_for(
+                link.stop_leftover(task.get("thread_id")), timeout=60
             )
-        log.info("took over sandbox=%s expired_approvals=%d", sandbox_id, len(expired))
+        except Exception:  # noqa: BLE001 - 停不下也照样收尾，那一轮到步骤时限会自己停
+            log.warning("could not stop the leftover turn task=%s", task_id)
+        try:
+            async with self.stores() as repo:
+                state = await Ledger(repo).settle_unattended(
+                    task_id,
+                    expected_version=int(task["state_version"]),
+                    reason={
+                        "error": "the runner driving this task restarted; "
+                        "the step did not finish",
+                        "attempt_id": task.get("active_attempt_id"),
+                        "turn_id": leftover,
+                    },
+                )
+            log.info(
+                "advisor stopped task=%s state=%s (nobody was driving it; turn=%s)",
+                task_id,
+                state,
+                leftover,
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("could not settle the unattended task=%s", task_id)
+        finally:
+            self.driving.pop(task_id, None)
 
     async def run_once(self) -> int:
         async with self.stores() as repo:
@@ -1286,16 +1379,26 @@ class Runner:
                         runner_id=self.runner_id, ttl_seconds=self.lease_ttl_seconds
                     )
                 )
-                fresh = await repo.acquire_leases(
-                    runner_id=self.runner_id, ttl_seconds=self.lease_ttl_seconds
+                held = kept | set(
+                    await repo.acquire_leases(
+                        runner_id=self.runner_id, ttl_seconds=self.lease_ttl_seconds
+                    )
                 )
-                for sandbox_id in fresh:
+                # 本进程新拿到的都要接管，含同名上一任留下的：runner 名字是固定配置，重启后同名，
+                # 只看库里的租约会把上一任的当成自己的（2026-10-19 K19 第 1 稿卡死，0034）
+                for sandbox_id in sorted(held - self.leased):
                     await self._take_over(repo, sandbox_id)
-                lost = self.leased - kept - set(fresh)
-                self.leased = kept | set(fresh)
+                lost = self.leased - held
+                self.leased = held
+                unattended = await self._reconcile(repo)
                 commands = await repo.claim_commands(claimed_by=self.runner_id)
         for sandbox_id in lost:
             await self._drop_link(sandbox_id, "lease lost to another runner")
+        for task in unattended:
+            if not self._busy(task["id"]):
+                self.driving[task["id"]] = asyncio.create_task(
+                    self._settle(task), name=f"settle:{task['id']}"
+                )
         for cmd in commands:
             error: str | None = None
             try:
@@ -1559,16 +1662,32 @@ class Runner:
         try:
             state = await advisor.drive(task_id)
             log.info("advisor stopped task=%s state=%s", task_id, state)
-        except Exception as exc:  # noqa: BLE001
-            log.exception("advisor crashed task=%s", task_id)
-            try:
-                await advisor.fail_after_crash(
-                    task_id, f"platform error: {type(exc).__name__}"
+        except (StaleStateVersion, InvalidTransition) as exc:
+            # 别人（取消、测试超时、对账）已经把委托收了尾，这边写状态撞上了：安静停下（0034 §三.1）
+            async with self.stores() as repo:
+                task = await repo.get_task(task_id)
+            if TaskState(task["state"]) in TASK_TERMINAL:
+                log.info(
+                    "advisor stopped task=%s state=%s (settled elsewhere: %s)",
+                    task_id,
+                    task["state"],
+                    type(exc).__name__,
                 )
-            except Exception:  # noqa: BLE001
-                log.exception("could not close the crashed task=%s", task_id)
+            else:
+                await self._crashed(advisor, task_id, exc)
+        except Exception as exc:  # noqa: BLE001
+            await self._crashed(advisor, task_id, exc)
         finally:
             self.driving.pop(task_id, None)
+
+    async def _crashed(self, advisor: Advisor, task_id: str, exc: Exception) -> None:
+        log.exception("advisor crashed task=%s", task_id)  # 只在 except 里调
+        try:
+            await advisor.fail_after_crash(
+                task_id, f"platform error: {type(exc).__name__}"
+            )
+        except Exception:  # noqa: BLE001
+            log.exception("could not close the crashed task=%s", task_id)
 
     async def wait_drivers(self, timeout: float = 60) -> None:  # noqa: ASYNC109
         """测试与优雅停机用：等正在驾驶的顾问停下。"""

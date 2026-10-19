@@ -85,6 +85,15 @@ class Account:
     others_online: tuple[str, ...] = ()
 
 
+def queued_behind(task: dict[str, Any]) -> str | None:
+    """委托还没开工、排在同一项目里哪件委托后面；没在排队就是 None。"""
+    if task.get("state") != TaskState.RECEIVED:
+        return None
+    context = (task.get("original_input") or {}).get("client_context") or {}
+    behind = context.get("queued_behind")
+    return str(behind) if behind else None
+
+
 def _iso(value: Any) -> str | None:
     if value is None:
         return None
@@ -273,6 +282,7 @@ class KnowbotTestService:
         )
         used = Decimal(str((task.get("budget") or {}).get("used") or "0"))
         spent = (Decimal(run["spent"]) + used).quantize(Decimal("0.000001"))
+        behind = queued_behind(task)
         return {
             "case_id": current["case_id"],
             "cases_done": sum(1 for c in cases if c.get("result")),
@@ -282,6 +292,8 @@ class KnowbotTestService:
             "step_title": str(at["title"])[:200],
             "attempt": min(attempt, 100),
             "spent": str(spent),
+            # 排在别的委托后面：只给那件委托的编号（C-L5），管理端写「排在…后面」（0034 §三.3）
+            **({"queued_behind": behind} if behind else {}),
         }
 
     async def open_questions(
@@ -595,6 +607,25 @@ class KnowbotTestConductor:
         if TaskState(task["state"]) in TASK_TERMINAL:
             await self._record(repo, run, case, row, task, account)
             return
+        if behind := queued_behind(task):
+            # 排在测试账号别的委托后面（同一项目一次一位）：排队不算进超时，但排到这次测试的时限
+            # 还没轮到就按超时收，原因写清排在谁后面（0034 §三.3）
+            if row.get("waiting_since") is None:
+                async with repo.transaction():
+                    await repo.update_test_case(
+                        run["run_id"], case.case_id, waiting_since=now
+                    )
+            elif (now - row["waiting_since"]).total_seconds() > run["timeout_seconds"]:
+                await self._stop_waiting(repo, run, row, now)
+                await self._time_out(
+                    repo,
+                    run,
+                    _request(run),
+                    await repo.list_test_cases(run["run_id"]),
+                    account,
+                    error=f"queued too long behind task {behind}",
+                )
+            return
         if task["state"] != TaskState.WAITING or not task.get("active_interaction_id"):
             await self._stop_waiting(repo, run, row, now)
             return
@@ -778,6 +809,8 @@ class KnowbotTestConductor:
         request: RunRequest,
         cases: list[dict[str, Any]],
         account: Account,
+        *,
+        error: str = "timed out",
     ) -> None:
         for row in cases:
             if row.get("result"):
@@ -794,10 +827,12 @@ class KnowbotTestConductor:
                     run["run_id"],
                     case.case_id,
                     result=case_result(
-                        case=case, task=None, steps=[], artifacts={}, error="timed out"
+                        case=case, task=None, steps=[], artifacts={}, error=error
                     ),
                 )
-        await self._finish(repo, run, status="timeout")
+        await self._finish(
+            repo, run, status="timeout", error=None if error == "timed out" else error
+        )
 
     async def _conclude(
         self,
