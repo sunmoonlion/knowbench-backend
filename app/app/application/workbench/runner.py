@@ -70,6 +70,11 @@ from app.domain.workbench.tool_policy import (
 
 log = logging.getLogger(__name__)
 
+# 收尾没人推的委托：停下残留那一轮后，最多等它确认停下这么久；确认不了先占着项目（0034 §三.1）
+STOP_CONFIRM_SECONDS = 60
+# 对账连着出错这么多轮，记错误日志
+RECONCILE_ALERT_ROUNDS = 3
+
 # 不落库的流式通知（条目级事件才进 Session 事件，persistence.md）
 # 增量不入账：成段的内容在 item/completed 里。0.155.1 的名字有 …/delta、…/outputDelta、…/summaryTextDelta 等
 _SKIP_SUFFIXES = ("/delta", "Delta")
@@ -559,12 +564,45 @@ class SandboxLink:
             timed_out=waiter["timed_out"],
         )
 
-    async def stop_leftover(self, thread_id: str | None) -> str | None:
-        """接手没人推的委托时：这条线若还有一轮在跑（上一任开的），停下它；返回停的是哪一轮。"""
+    async def stop_and_confirm(
+        self, thread_id: str | None, within: float
+    ) -> tuple[str | None, bool]:
+        """接手没人推的委托时：这条线若还有一轮在跑（上一任开的），按那一轮的编号停下它，再读线程确认它停了。
+
+        返回（停的是哪一轮，确认停了没有）。没有在跑的就是（None, True）。读不到线程状态（旧 app-server 不认
+        `thread/read`）就是没确认。
+        """
         if not thread_id:
-            return None
+            return None, True
         await self.ensure_thread(thread_id)
-        return await self.interrupt(thread_id)
+        turn_id = self.active_turns.get(thread_id)
+        if turn_id is None:
+            return None, True
+        await self.interrupt(thread_id, turn_id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + within
+        while True:
+            running = await self.turn_running(thread_id, turn_id)
+            if running is False:
+                self.active_turns.pop(thread_id, None)
+                return turn_id, True
+            if running is None or loop.time() >= deadline:
+                return turn_id, False
+            await asyncio.sleep(min(2.0, within / 10))
+
+    async def turn_running(self, thread_id: str, turn_id: str) -> bool | None:
+        """那一轮还在跑吗：读线程（带各轮）看它的状态。读不到就是 None（不知道）。"""
+        client = await self.ensure_connected()
+        try:
+            read = await client.request(
+                "thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=30
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        for turn in ((read or {}).get("thread") or {}).get("turns") or []:
+            if turn.get("id") == turn_id:
+                return turn.get("status") == "inProgress"
+        return False
 
     async def interrupt(
         self, thread_id: str | None, turn_id: str | None = None
@@ -1223,6 +1261,9 @@ class Runner:
         self.handled = 0
         self.lease_ttl_seconds = max(10, int(poll_seconds * 30))
         self.leased: set[str] = set()
+        # 收尾没人推的委托时，停下残留那一轮后等它确认停下的时限（0034）
+        self.stop_confirm_seconds = STOP_CONFIRM_SECONDS
+        self.reconcile_failures = 0  # 连着出错的对账轮数
 
     async def link_for(self, sandbox_id: str, repo: WorkbenchStore) -> SandboxLink:
         link = self.links.get(sandbox_id)
@@ -1313,39 +1354,101 @@ class Runner:
         running = self.driving.get(task_id)
         return running is not None and not running.done()
 
-    async def _reconcile(self, repo: WorkbenchStore) -> list[dict[str, Any]]:
-        """每轮对账（0034 §三.2）：库里要有人推、本进程却没在推的委托——排队的接着推（还没开工，不会双跑），
-        在跑的与等着 Codex 那一轮里的请求的交给 `_settle` 收尾（不重开）；项目里前一位已结束、排队的没放行的放行。
-        单 runner 才成立：多 runner 前要有委托心跳（0034 第五节）。"""
-        unattended = []
-        for task in await repo.unsettled_tasks(sorted(self.leased)):
+    async def _reconcile(self) -> list[dict[str, Any]]:
+        """每轮对账（0034 §三.2）：库里要有人推、本进程却没在推的委托——还没开工的（受理了没排进项目队列、
+        核验中、排队）接着推，不会双跑；在跑的与等着 Codex 那一轮里的请求的，返回给调用方交 `_settle` 收尾
+        （不重开）；Codex 里那一轮等过了时限还没确认停下的放开项目；项目里没人占着却有排队的放行。
+
+        每件各用自己的事务、出错只跳过这一件，一件坏了不拖住别的；连着几轮出错记错误日志（监控看日志）。
+        单 runner 才成立：多 runner 前要有委托心跳（0034 第五节）。
+        """
+        failures = 0
+        unattended: list[dict[str, Any]] = []
+        try:
+            async with self.stores() as repo:
+                tasks = await repo.unsettled_tasks(sorted(self.leased))
+                holds = await repo.expired_turn_holds()
+        except Exception:  # noqa: BLE001
+            log.exception("reconcile could not read the tasks")
+            self._note_reconcile(1)
+            return []
+        for task in tasks:
             if self._busy(task["id"]):
                 continue
-            if task["state"] == TaskState.QUEUED:
-                if not task["drive_queued"]:
-                    await repo.enqueue_command(
-                        session_id=task["session_id"],
-                        sandbox_id=task["sandbox_id"],
-                        kind="task.drive",
-                        payload={"task_id": task["id"], "resumed": True},
-                    )
+            if task["state"] in (TaskState.RUNNING, TaskState.WAITING):
+                unattended.append(task)
                 continue
-            unattended.append(task)
-        for project_id in await repo.projects_with_stalled_queue():
-            await Ledger(repo).start_next_queued(project_id)
+            if task["drive_queued"]:
+                continue
+            try:
+                async with self.stores() as repo:
+                    async with repo.transaction():
+                        await repo.enqueue_command(
+                            session_id=task["session_id"],
+                            sandbox_id=task["sandbox_id"],
+                            kind="task.drive",
+                            payload={"task_id": task["id"], "resumed": True},
+                        )
+            except Exception:  # noqa: BLE001
+                failures += 1
+                log.exception(
+                    "reconcile failed task=%s sandbox=%s",
+                    task["id"],
+                    task["sandbox_id"],
+                )
+        for hold in holds:
+            try:
+                async with self.stores() as repo:
+                    if await Ledger(repo).release_turn(hold["id"], expired=True):
+                        log.warning(
+                            "turn never confirmed stopped task=%s attempt=%s; project released, cost unknown",
+                            hold["id"],
+                            (hold.get("hold") or {}).get("attempt_id"),
+                        )
+            except Exception:  # noqa: BLE001
+                failures += 1
+                log.exception("reconcile failed to release task=%s", hold["id"])
+        try:
+            async with self.stores() as repo:
+                stalled = await repo.projects_with_stalled_queue()
+        except Exception:  # noqa: BLE001
+            failures += 1
+            log.exception("reconcile could not read the project queues")
+            stalled = []
+        for project_id in stalled:
+            try:
+                async with self.stores() as repo:
+                    await Ledger(repo).start_next_queued(project_id)
+            except Exception:  # noqa: BLE001
+                failures += 1
+                log.exception(
+                    "reconcile failed to let in the next of project=%s", project_id
+                )
+        self._note_reconcile(failures)
         return unattended
 
+    def _note_reconcile(self, failures: int) -> None:
+        self.reconcile_failures = self.reconcile_failures + 1 if failures else 0
+        if self.reconcile_failures >= RECONCILE_ALERT_ROUNDS:
+            log.error(
+                "reconcile keeps failing rounds=%d failures_this_round=%d",
+                self.reconcile_failures,
+                failures,
+            )
+
     async def _settle(self, task: dict[str, Any]) -> None:
-        """没人推的委托：先尽力停下 Codex 里可能还在跑的那一轮，再收尾（失败，记着取消的收成已取消）。"""
+        """没人推的委托：先停下 Codex 里可能还在跑的那一轮、再确认它停了，然后收尾（失败，记着取消的收成
+        已取消）。确认停了才放行下一位；确认不了先占着项目，最多 TURN_HOLD_SECONDS（0034 §三.1、§三.2）。"""
         task_id = task["id"]
-        leftover = None
+        leftover, stopped = None, False
         try:
             async with self.stores() as repo:
                 link = await self.link_for(task["sandbox_id"], repo)
-            leftover = await asyncio.wait_for(
-                link.stop_leftover(task.get("thread_id")), timeout=60
+            leftover, stopped = await asyncio.wait_for(
+                link.stop_and_confirm(task.get("thread_id"), self.stop_confirm_seconds),
+                timeout=self.stop_confirm_seconds + 30,
             )
-        except Exception:  # noqa: BLE001 - 停不下也照样收尾，那一轮到步骤时限会自己停
+        except Exception:  # noqa: BLE001 - 停不下、确认不了也照样收尾，只是先不放行下一位
             log.warning("could not stop the leftover turn task=%s", task_id)
         try:
             async with self.stores() as repo:
@@ -1358,12 +1461,14 @@ class Runner:
                         "attempt_id": task.get("active_attempt_id"),
                         "turn_id": leftover,
                     },
+                    stopped=stopped,
                 )
             log.info(
-                "advisor stopped task=%s state=%s (nobody was driving it; turn=%s)",
+                "advisor stopped task=%s state=%s (nobody was driving it; turn=%s stopped=%s)",
                 task_id,
                 state,
                 leftover,
+                stopped,
             )
         except Exception:  # noqa: BLE001
             log.exception("could not settle the unattended task=%s", task_id)
@@ -1390,10 +1495,10 @@ class Runner:
                     await self._take_over(repo, sandbox_id)
                 lost = self.leased - held
                 self.leased = held
-                unattended = await self._reconcile(repo)
                 commands = await repo.claim_commands(claimed_by=self.runner_id)
         for sandbox_id in lost:
             await self._drop_link(sandbox_id, "lease lost to another runner")
+        unattended = await self._reconcile()
         for task in unattended:
             if not self._busy(task["id"]):
                 self.driving[task["id"]] = asyncio.create_task(
@@ -1673,6 +1778,8 @@ class Runner:
                     task["state"],
                     type(exc).__name__,
                 )
+                async with self.stores() as repo:
+                    await Ledger(repo).release_turn(task_id)  # 这边的那一轮已经结束
             else:
                 await self._crashed(advisor, task_id, exc)
         except Exception as exc:  # noqa: BLE001

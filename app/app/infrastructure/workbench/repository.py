@@ -31,6 +31,7 @@ from app.domain.workbench.errors import (
     RelayIdentityBusy,
     StaleStateVersion,
 )
+from app.domain.workbench.states import TURN_HOLD_SECONDS
 from app.domain.workbench.tokens import token_hash
 from app.infrastructure.repositories.outbox import SqlOutboxRepository
 
@@ -54,6 +55,19 @@ def _event(row: Any) -> dict[str, Any]:
         if d.get(k) is not None:
             d[k] = str(d[k])
     return d
+
+
+# 占着项目的委托（同一项目一次一位，0017）：没结束的（排在别人后面的不算），以及刚结束、
+# Codex 里那一轮还没确认停下的（`turn_open`，最多 TURN_HOLD_SECONDS；SDD 0034 §三.1）。
+# 提交、取消、放行、对账都按这一条判，别的地方不另写
+_OCCUPYING = """(
+    (a.state not in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
+     and not (a.state = 'RECEIVED'
+              and coalesce(a.original_input->'client_context'->>'queued_behind', '') <> ''))
+    or (a.state in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
+        and a.original_input->'client_context'->'turn_open' is not null
+        and (a.original_input->'client_context'->'turn_open'->>'since')::timestamptz
+            > now() - make_interval(secs => :hold)))"""
 
 
 class WorkbenchRepository:
@@ -816,13 +830,10 @@ class WorkbenchRepository:
         """这个项目里专家还在做的那件事；没有就是 None。"""
         r = await self.session.execute(
             text(
-                """select * from workbench_tasks where project_id = :p
-                   and state not in ('SUCCEEDED','REJECTED','FAILED','CANCELLED')
-                   and not (state = 'RECEIVED'
-                            and coalesce(original_input->'client_context'->>'queued_behind', '') <> '')
+                f"""select * from workbench_tasks a where project_id = :p and {_OCCUPYING}
                    order by created_at limit 1"""
             ),
-            {"p": project_id},
+            {"p": project_id, "hold": TURN_HOLD_SECONDS},
         )
         row = r.mappings().first()
         return dict(row) if row else None
@@ -2225,7 +2236,7 @@ class WorkbenchRepository:
                      union
                      -- 有委托要人推的沙箱：上一任 runner 死了或同名重启了，没有待办命令也要拿下来对账（0034）
                      select s.sandbox_id from workbench_tasks t join workbench_sessions s on s.id = t.session_id
-                     where t.state in ('QUEUED', 'RUNNING', 'WAITING')
+                     where t.state in ('RECEIVED', 'VALIDATING', 'QUEUED', 'RUNNING', 'WAITING')
                    ), taken as (
                      insert into workbench_sandbox_leases (sandbox_id, runner_id, expires_at, acquired_at, updated_at)
                      select sandbox_id, :r, now() + make_interval(secs => :ttl), now(), now() from wanted
@@ -2309,7 +2320,9 @@ class WorkbenchRepository:
                    from workbench_tasks t join workbench_sessions s on s.id = t.session_id
                    left join workbench_interactions i on i.id = t.active_interaction_id
                    where s.sandbox_id::text = any(:sbs)
-                     and (t.state in ('QUEUED', 'RUNNING')
+                     and (t.state in ('VALIDATING', 'QUEUED', 'RUNNING')
+                          or (t.state = 'RECEIVED'
+                              and coalesce(t.original_input->'client_context'->>'queued_behind', '') = '')
                           or (t.state = 'WAITING' and coalesce(i.prompt->'subject'->>'request_id', '') <> ''))
                    order by t.created_at"""
             ),
@@ -2331,17 +2344,32 @@ class WorkbenchRepository:
     async def projects_with_stalled_queue(self) -> list[str]:
         r = await self.session.execute(
             text(
-                """select distinct q.project_id from workbench_tasks q
+                f"""select distinct q.project_id from workbench_tasks q
                    where q.project_id is not null and q.state = 'RECEIVED'
                      and coalesce(q.original_input->'client_context'->>'queued_behind', '') <> ''
                      and not exists (
-                       select 1 from workbench_tasks a where a.project_id = q.project_id
-                         and a.state not in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
-                         and not (a.state = 'RECEIVED'
-                                  and coalesce(a.original_input->'client_context'->>'queued_behind', '') <> ''))"""
-            )
+                       select 1 from workbench_tasks a where a.project_id = q.project_id and {_OCCUPYING})"""
+            ),
+            {"hold": TURN_HOLD_SECONDS},
         )
         return [str(x[0]) for x in r.all()]
+
+    async def expired_turn_holds(self) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """select id, project_id, original_input->'client_context'->'turn_open' as hold
+                   from workbench_tasks
+                   where state in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
+                     and original_input->'client_context'->'turn_open' is not null
+                     and (original_input->'client_context'->'turn_open'->>'since')::timestamptz
+                         <= now() - make_interval(secs => :hold)"""
+            ),
+            {"hold": TURN_HOLD_SECONDS},
+        )
+        return [
+            {"id": str(m["id"]), "project_id": str(m["project_id"]), "hold": m["hold"]}
+            for m in r.mappings().all()
+        ]
 
     async def claim_commands(
         self, *, claimed_by: str, limit: int = 20

@@ -70,6 +70,10 @@ class AttemptState(StrEnum):
     ABANDONED = "ABANDONED"
 
 
+# 取消或收尾时 Codex 里那一轮可能还在跑：项目先不放行下一位，等那一轮确认结束，最多等这么久
+# （同专家每一步的时限；SDD 0034 §三.1）。过了还没确认，放行并记「费用待核对」
+TURN_HOLD_SECONDS = 900
+
 # 平台自己出错（驾驶中抛了没接住的异常）：这次尝试与委托都记失败，测试结果里记出错而不是没过
 PLATFORM_FAILURE = "platform"
 

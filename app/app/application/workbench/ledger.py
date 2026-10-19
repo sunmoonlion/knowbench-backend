@@ -61,6 +61,18 @@ def writes_files(task: dict[str, Any]) -> bool:
     return pack is None or bool(pack.deliverable_files())
 
 
+def _turn_open(task: dict[str, Any], attempt_id: Any) -> dict[str, Any]:
+    """委托的原始输入上记一笔：Codex 里那一轮还没确认停下，项目先占着（0034 §三.1）。"""
+    original = dict(task["original_input"])
+    context = dict(original.get("client_context") or {})
+    context["turn_open"] = {
+        "attempt_id": str(attempt_id) if attempt_id else None,
+        "since": datetime.now(UTC).isoformat(),
+    }
+    original["client_context"] = context
+    return original
+
+
 class Ledger:
     def __init__(self, repo: WorkbenchStore):
         self.repo = repo
@@ -235,13 +247,28 @@ class Ledger:
             return await self._start_next_queued(project_id)
 
     async def settle_unattended(
-        self, task_id: str, *, expected_version: int, reason: dict
+        self,
+        task_id: str,
+        *,
+        expected_version: int,
+        reason: dict,
+        stopped: bool,
     ) -> str | None:
         """没人推的委托收尾（0034 §三.2）：记着取消的收成「已取消」，否则「失败」（平台）；开着的尝试一起关。
 
-        不重开这一步：Codex 那一轮可能还在跑，重开就是双跑。读到之后有人动过（版本变了）就不动，返回 None。
+        不重开这一步：Codex 那一轮可能还在跑，重开就是双跑。那一轮花了多少拿不到了，原因里记「费用待核对」。
+        `stopped`：那一轮确认停下了才放行下一位；没确认就先占着项目（`turn_open`），最多 TURN_HOLD_SECONDS。
+        读到之后有人动过（版本变了）就不动，返回 None。
         """
         async with self.repo.transaction():
+            peek = await self.repo.get_task(task_id)
+            attempt = (
+                await self.repo.get_attempt(
+                    str(peek["active_attempt_id"]), for_update=True
+                )
+                if peek.get("active_attempt_id") is not None
+                else None
+            )
             task = await self.repo.get_task(task_id, for_update=True)
             if (
                 int(task["state_version"]) != expected_version
@@ -249,30 +276,42 @@ class Ledger:
             ):
                 return None
             cancelled = task.get("cancel_requested_at") is not None
-            if task.get("active_attempt_id") is not None:
-                attempt = await self.repo.get_attempt(str(task["active_attempt_id"]))
-                if attempt["status"] not in ATTEMPT_TERMINAL:
-                    if cancelled:
-                        target = AttemptState.CANCELLED
-                    elif attempt["status"] == AttemptState.SUSPENDED:
-                        target = AttemptState.ABANDONED
-                    else:
-                        target = AttemptState.FAILED
-                    await self.attempt_transition(
-                        str(attempt["id"]),
-                        target,
-                        failure_code="cancelled" if cancelled else PLATFORM_FAILURE,
-                        retryable=False,
-                    )
+            if attempt is not None and attempt["status"] not in ATTEMPT_TERMINAL:
+                if cancelled:
+                    target = AttemptState.CANCELLED
+                elif attempt["status"] == AttemptState.SUSPENDED:
+                    target = AttemptState.ABANDONED
+                else:
+                    target = AttemptState.FAILED
+                await self.attempt_transition(
+                    str(attempt["id"]),
+                    target,
+                    failure_code="cancelled" if cancelled else PLATFORM_FAILURE,
+                    retryable=False,
+                )
             done = await self.transition(
                 task_id,
                 TaskState.CANCELLED if cancelled else TaskState.FAILED,
-                reason={"by": "user"} if cancelled else reason,
+                reason=(
+                    {"by": "user", "cost": "unknown"}
+                    if cancelled
+                    else {**reason, "cost": "unknown"}
+                ),
+                original_input=(
+                    None if stopped else _turn_open(task, task.get("active_attempt_id"))
+                ),
             )
             return done["state"]
 
     async def _start_next_queued(self, project_id: str) -> str | None:
-        """前一位专家到终态：排在后面的下一位开始（0017 专家团：一次一位）。调用方持有事务。"""
+        """前一位专家到终态：排在后面的下一位开始（0017 专家团：一次一位）。调用方持有事务。
+
+        锁住项目、确认没有委托占着（同提交时的判法，含 Codex 里那一轮还没确认停下的），再选下一位、交接、
+        排命令：取消一件排着的委托不会把再后面的一件放进来和在跑的同跑（0034 评审）。
+        """
+        await self.repo.get_project(project_id, for_update=True)
+        if await self.repo.active_task_of_project(project_id) is not None:
+            return None
         nxt = await self.repo.next_queued_task(project_id)
         if nxt is None:
             return None
@@ -316,6 +355,7 @@ class Ledger:
         waiting_reason: WaitingReason | str | None = None,
         reason: dict | None = None,
         actor_id: str | None = None,
+        original_input: dict[str, Any] | None = None,
         **extra_fields: Any,
     ) -> dict[str, Any]:
         target = TaskState(target)
@@ -336,6 +376,10 @@ class Ledger:
                 "waiting_reason": str(waiting_reason) if waiting_reason else None,
                 **extra_fields,
             }
+            if (
+                original_input is not None
+            ):  # 只在给了时改（记「那一轮还没确认停下」，0034）
+                fields["original_input"] = original_input
             if target in TASK_TERMINAL:
                 fields["active_attempt_id"] = None
                 fields["active_interaction_id"] = None
@@ -446,10 +490,21 @@ class Ledger:
     ) -> dict[str, Any]:
         """取消意图先持久化（AT-13），同一事务里直接收成「已取消」，不等推它的程序来落实（0034 §三.1）。
 
-        在跑的：开着的那一轮尝试一起关掉（这时不知道花了多少，记 0、预留全退），调用方照发一次中断；
-        推它的程序若还活着，这一轮跑完撞上终态就只补记花费（`record_late_cost`），安静停下。
+        开着的那一轮尝试不论委托在跑还是在等，都一起关掉（这时不知道花了多少，记 0、预留全退），
+        调用方照发一次中断；推它的程序若还活着，这一轮跑完撞上终态就只补记花费（`record_late_cost`）。
+        Codex 里那一轮可能还在跑（在跑、或等着那一轮里的审批与反问）：项目先不放行下一位（`turn_open`），
+        等那一轮确认结束（`release_turn`），最多 TURN_HOLD_SECONDS。
         """
         async with self.repo.transaction():
+            peek = await self.repo.get_task(task_id, owner_actor_id=owner_actor_id)
+            # 先锁尝试再锁委托，和结算一轮（attempt_transition）同一个顺序，免得互相等死
+            attempt = (
+                await self.repo.get_attempt(
+                    str(peek["active_attempt_id"]), for_update=True
+                )
+                if peek.get("active_attempt_id") is not None
+                else None
+            )
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner_actor_id, for_update=True
             )
@@ -459,7 +514,7 @@ class Ledger:
                     "state": task["state"],
                     "cancel_requested": False,
                 }
-            version = await self.repo.cas_task(
+            await self.repo.cas_task(
                 task_id,
                 expected_version=int(task["state_version"]),
                 cancel_requested_at=datetime.now(UTC),
@@ -472,30 +527,72 @@ class Ledger:
                 payload={"task_id": task_id},
                 task_id=task_id,
             )
-            running = TaskState(task["state"]) is TaskState.RUNNING
-            if running and task.get("active_attempt_id") is not None:
-                attempt = await self.repo.get_attempt(str(task["active_attempt_id"]))
-                if attempt["status"] not in ATTEMPT_TERMINAL:
-                    await self.repo.flush()
-                    await self.attempt_transition(
-                        str(attempt["id"]),
-                        AttemptState.CANCELLED,
-                        failure_code="cancelled",
-                    )
-                    version = int((await self.repo.get_task(task_id))["state_version"])
-            # WAITING 时那一轮可能还卡在等人批准、等人回答，在跑的那一轮还在 Codex 里：
-            # 都要调用方照样发一次中断把它收住（interrupt），不然 Codex 要等到时限
+            state = TaskState(task["state"])
+            live = state is TaskState.RUNNING or await self._waits_on_codex(task)
+            if (
+                attempt is not None
+                and str(attempt["id"]) == str(task.get("active_attempt_id"))
+                and attempt["status"] not in ATTEMPT_TERMINAL
+            ):
+                await self.attempt_transition(
+                    str(attempt["id"]),
+                    AttemptState.CANCELLED,
+                    failure_code="cancelled",
+                )
             done = await self.transition(
                 task_id,
                 TaskState.CANCELLED,
-                expected_version=version,
                 reason={"by": "user"},
+                original_input=(
+                    _turn_open(task, task.get("active_attempt_id")) if live else None
+                ),
             )
+            # WAITING 时那一轮可能还卡在等人批准、等人回答，在跑的那一轮还在 Codex 里：
+            # 都要调用方照样发一次中断把它收住（interrupt），不然 Codex 要等到时限
             return {
                 **done,
                 "cancel_requested": True,
-                "interrupt": running or TaskState(task["state"]) is TaskState.WAITING,
+                "interrupt": live or state is TaskState.WAITING,
             }
+
+    async def _waits_on_codex(self, task: dict[str, Any]) -> bool:
+        """委托在等 Codex 那一轮里的请求（审批、反问，交互带 request_id）：那一轮还开着。"""
+        if task["state"] != TaskState.WAITING or not task.get("active_interaction_id"):
+            return False
+        it = await self.repo.get_interaction(str(task["active_interaction_id"]))
+        return bool(((it.get("prompt") or {}).get("subject") or {}).get("request_id"))
+
+    async def release_turn(self, task_id: str, *, expired: bool = False) -> bool:
+        """Codex 里那一轮确认结束了（推它的程序这一轮跑完、收尾时确认停下），或等过了 TURN_HOLD_SECONDS：
+        放开项目、放行下一位（0034 §三.1）。等过时限的记一条「费用待核对」——那一轮花了多少拿不到了。"""
+        async with self.repo.transaction():
+            task = await self.repo.get_task(task_id, for_update=True)
+            original = dict(task["original_input"])
+            context = dict(original.get("client_context") or {})
+            hold = context.pop("turn_open", None)
+            if hold is None:
+                return False
+            original["client_context"] = context
+            await self.repo.cas_task(
+                task_id,
+                expected_version=int(task["state_version"]),
+                original_input=original,
+            )
+            if expired:
+                await self.repo.append_event(
+                    session_id=str(task["session_id"]),
+                    kind="task",
+                    event_type="turn/hold_expired",
+                    payload={
+                        "attempt_id": hold.get("attempt_id"),
+                        "since": hold.get("since"),
+                        "cost": "unknown",
+                    },
+                    task_id=task_id,
+                )
+            if task.get("project_id"):
+                await self._start_next_queued(str(task["project_id"]))
+            return True
 
     async def record_late_cost(
         self,
@@ -509,13 +606,15 @@ class Ledger:
         """委托已被别人收尾（取消、测试超时、对账）之后，推它的程序这一轮才跑完：花掉的钱补记上（0034 §三.1）。
 
         尝试已经关掉、预留已经退了：花费加进委托的 `budget.used` 和这一轮尝试的花费（步骤上看得到这一步花了
-        多少），记一笔 consume 和一条事件；不碰预留，不改尝试的状态。
+        多少），记一笔 consume 和一条事件；不碰预留，不改尝试的状态。按那一轮的编号去重：同一轮只记一次。
         """
         if not consumed:
             return
         async with self.repo.transaction():
-            task = await self.repo.get_task(task_id, for_update=True)
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
+            task = await self.repo.get_task(task_id, for_update=True)
+            if turn_id and turn_id in (attempt.get("turn_ids") or []):
+                return  # 这一轮已经记过：同一笔花费只记一次（重复回报、重试）
             await self.repo.update_attempt(
                 attempt_id,
                 budget_consumed={

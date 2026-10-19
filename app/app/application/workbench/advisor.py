@@ -44,6 +44,7 @@ from app.domain.workbench.states import (
     PLATFORM_FAILURE,
     TASK_TERMINAL,
     AttemptState,
+    InvalidTransition,
     TaskState,
     WaitingReason,
 )
@@ -344,10 +345,22 @@ class Advisor:
             led = Ledger(repo)
             consumed = result.cost or Decimal("0")
             task = await repo.get_task(task_id)
-            attempt = await repo.get_attempt(attempt_id)
-            if attempt["status"] in ATTEMPT_TERMINAL:
+            settled = (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL
+            if not settled:
+                try:
+                    await led.attempt_transition(
+                        attempt_id, AttemptState.RUNNING, turn_id=result.turn_id
+                    )
+                except InvalidTransition:
+                    # 读完到改之间被取消插了进来：同样当作别人已经收了尾
+                    settled = (await repo.get_attempt(attempt_id))[
+                        "status"
+                    ] in ATTEMPT_TERMINAL
+                    if not settled:
+                        raise
+            if settled:
                 # 这一轮跑着的时候委托已被别人收尾（取消、测试超时、对账；0034 §三.1），尝试也已关掉：
-                # 花掉的钱补记到委托上，安静停下
+                # 花掉的钱补记到委托上（按这一轮的编号只记一次）；这一轮结束了，放开项目，安静停下
                 await led.record_late_cost(
                     task_id,
                     attempt_id=attempt_id,
@@ -355,10 +368,8 @@ class Advisor:
                     tokens=result.tokens,
                     turn_id=result.turn_id,
                 )
-                return task["state"]
-            await led.attempt_transition(
-                attempt_id, AttemptState.RUNNING, turn_id=result.turn_id
-            )
+                await led.release_turn(task_id)
+                return (await repo.get_task(task_id))["state"]
             task = await repo.get_task(task_id)
             if task["cancel_requested_at"] is not None:
                 # 用户点了停止：这一步被中断。已经花的照记，做完的部分交回

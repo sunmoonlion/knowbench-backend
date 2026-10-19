@@ -45,6 +45,7 @@ class FakeAppServer:
         self.question_answers: list[dict] = []
         # 线程上还在跑的那一轮（上一任 runner 开的）：thread/resume 时照真 app-server 报 inProgress
         self.in_progress: dict[str, str] = {}
+        self.stubborn = False  # 打开后中断不管用：那一轮一直在跑
         self.ready = asyncio.Event()
 
     async def start(self):
@@ -351,7 +352,19 @@ class FakeAppServer:
                 }
             )
         elif m == "turn/interrupt":
+            if not self.stubborn and self.in_progress.get(p.get("threadId")) == p.get(
+                "turnId"
+            ):
+                self.in_progress.pop(p["threadId"], None)
             await send({"id": rid, "result": {}})
+        elif m == "thread/read":
+            tid = p["threadId"]
+            turns = (
+                [{"id": self.in_progress[tid], "status": "inProgress"}]
+                if tid in self.in_progress
+                else []
+            )
+            await send({"id": rid, "result": {"thread": {"id": tid, "turns": turns}}})
         elif m == "thread/inject_items" and not self.refuse_inject:
             await send({"id": rid, "result": {}})
         else:
@@ -641,7 +654,8 @@ async def test_turn_refused_when_advisor_holds_wheel(db):
             )
             r = await s.execute(
                 __import__("sqlalchemy").text(
-                    "select status from workbench_commands where session_id = :s order by created_at"
+                    # 交接后没人推的委托，对账会补一条 task.drive（0034），这里只看起线和那一轮
+                    "select status from workbench_commands where session_id = :s and kind <> 'task.drive' order by created_at"
                 ),
                 {"s": sid},
             )
@@ -865,7 +879,7 @@ async def _task(db, sid, key, *, to=("VALIDATING", "QUEUED", "RUNNING"), attempt
         task_id = (
             await led.handover(
                 HandoverRequest(
-                    idempotency_key=key,
+                    idempotency_key=f"{key}-0000",
                     session_id=sid,
                     profile_id="SMOKE",
                     original_input={"text": "q"},
@@ -1074,10 +1088,7 @@ async def test_reconcile_queues_one_drive_for_a_queued_task_however_many_rounds(
         runner, sb, sid, _ = await _started(db, fake)
         task_id, _ = await _task(db, sid, "queued-0001", to=("VALIDATING", "QUEUED"))
         for _ in range(3):  # 命令没被领走时不重复排
-            async with db() as s:
-                repo = WorkbenchRepository(s)
-                async with repo.transaction():
-                    assert await runner._reconcile(repo) == []
+            assert await runner._reconcile() == []
         async with db() as s:
             rows = (
                 (
@@ -1127,10 +1138,7 @@ async def test_reconcile_lets_the_next_task_in_when_the_one_ahead_ended_without_
                 {"t": ahead},
             )
             await s.commit()
-        async with db() as s:
-            repo = WorkbenchRepository(s)
-            async with repo.transaction():
-                await runner._reconcile(repo)
+        await runner._reconcile()
         async with db() as s:
             repo = WorkbenchRepository(s)
             dequeued = await repo.list_task_events(behind, types=("task/dequeued",))
@@ -1211,6 +1219,264 @@ async def test_a_crash_of_a_task_that_was_being_cancelled_ends_it_as_cancelled(d
             "CANCELLED",
             "cancelled",
         )
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def _second_session(db, sid):
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        project = (await repo.get_session(sid))["project_id"]
+        return (
+            await SessionService(repo).start(
+                owner_actor_id=OWNER, kind="expert", project_id=str(project), title="t"
+            )
+        )["session_id"]
+
+
+async def _other_project(db, sid, name):
+    """同一台机器、同一个沙箱上另一个项目里的对话（一个项目同时只能有一件活跃委托）。"""
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        talk = await repo.get_session(sid)
+        return (
+            await SessionService(repo).create(
+                owner_actor_id=OWNER,
+                environment_id=str(talk["environment_id"]),
+                sandbox_id=str(talk["sandbox_id"]),
+                project_root=f"/home/u/research/{name}",
+            )
+        )["session_id"]
+
+
+async def _dequeued(db, task_id):
+    async with db() as s:
+        return len(
+            await WorkbenchRepository(s).list_task_events(
+                task_id, types=("task/dequeued",)
+            )
+        )
+
+
+async def test_cancelling_a_queued_task_does_not_let_the_next_run_beside_the_running_one(
+    db,
+):
+    """A 在跑，B、C 排队：取消 B（例如排队超时），C 不能放进来和 A 同跑（0034 评审）。"""
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        a, _ = await _task(db, sid, "q-a", attempt=True)
+        b, _ = await _task(db, await _second_session(db, sid), "q-b", to=())
+        c, _ = await _task(db, await _second_session(db, sid), "q-c", to=())
+        async with db() as s:
+            await Ledger(WorkbenchRepository(s)).request_cancel(b, owner_actor_id=OWNER)
+        await runner._reconcile()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            assert (await repo.get_task(a))["state"] == "RUNNING"
+            assert (await repo.get_task(c))["state"] == "RECEIVED"
+        assert await _dequeued(db, c) == 0
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_a_cancelled_turn_holds_the_project_until_it_ends(db):
+    """取消在跑的委托：账马上收，但 Codex 那一轮确认结束前不放行下一位；推它的程序这一轮跑完（补记花费）才放行。"""
+    from decimal import Decimal
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        a, attempt = await _task(db, sid, "hold-a", attempt=True)
+        b, _ = await _task(db, await _second_session(db, sid), "hold-b", to=())
+        async with db() as s:
+            await Ledger(WorkbenchRepository(s)).request_cancel(a, owner_actor_id=OWNER)
+        await runner._reconcile()
+        assert await _dequeued(db, b) == 0  # 那一轮还没确认结束
+        async with db() as s:
+            led = Ledger(WorkbenchRepository(s))
+            await led.record_late_cost(
+                a, attempt_id=attempt, consumed=Decimal("0.2"), tokens={}, turn_id="t1"
+            )
+            assert await led.release_turn(a) is True
+        assert await _dequeued(db, b) == 1
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_the_same_late_cost_is_booked_once(db):
+    from decimal import Decimal
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        a, attempt = await _task(db, sid, "dup-a", attempt=True)
+        async with db() as s:
+            await Ledger(WorkbenchRepository(s)).request_cancel(a, owner_actor_id=OWNER)
+        for _ in range(2):  # 重复回报、结算后重试
+            async with db() as s:
+                await Ledger(WorkbenchRepository(s)).record_late_cost(
+                    a,
+                    attempt_id=attempt,
+                    consumed=Decimal("0.2"),
+                    tokens={},
+                    turn_id="t1",
+                )
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = await repo.get_task(a)
+            late = await repo.list_task_events(a, types=("attempt/late_cost",))
+        assert Decimal(str(task["budget"]["used"])) == Decimal("0.2") and len(late) == 1
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_tasks_left_before_their_first_turn_are_driven_again(db):
+    """受理了还没发出命令、核验中进程没了：都还没开工，接着推（不会双跑）；正常排在项目队列里的、
+    等用户回答开步前提问的不动。"""
+    from app.domain.workbench.models import InteractionPrompt
+    from app.domain.workbench.states import WaitingReason
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        received, _ = await _task(db, sid, "left-r", to=())
+        validating, _ = await _task(
+            db, await _other_project(db, sid, "p2"), "left-v", to=("VALIDATING",)
+        )
+        asking, _ = await _task(
+            db,
+            await _other_project(db, sid, "p3"),
+            "left-w",
+            to=("VALIDATING", "QUEUED"),
+        )
+        async with db() as s:
+            await Ledger(WorkbenchRepository(s)).open_interaction(
+                asking,
+                kind="input",
+                prompt=InteractionPrompt(title="开步前", question="看哪几年？"),
+                waiting_reason=WaitingReason.INPUT,
+            )
+            # 交接时排的那条 task.drive 丢了（进程在发出前没了）
+            await s.execute(
+                text("delete from workbench_commands where kind = 'task.drive'")
+            )
+            await s.commit()
+        assert await runner._reconcile() == []
+        async with db() as s:
+            rows = (
+                (
+                    await s.execute(
+                        text(
+                            "select payload from workbench_commands where kind = 'task.drive' and status = 'pending'"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            asking_state = (await WorkbenchRepository(s).get_task(asking))["state"]
+        assert sorted(r["task_id"] for r in rows) == sorted([received, validating])
+        assert asking_state == "WAITING"
+        await _close(runner)
+    finally:
+        await fake.close()
+
+
+async def test_a_turn_that_will_not_stop_holds_the_project_then_lets_go_and_says_cost_unknown(
+    db,
+):
+    """接手时停不下残留那一轮：委托照样收尾，但不放行下一位，不冒险并跑；等过 TURN_HOLD_SECONDS 才放行，
+    记「费用待核对」（0034 §三.1）。"""
+    from app.domain.workbench.states import TURN_HOLD_SECONDS
+
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        first, sb, sid, thread = await _started(db, fake)
+        a, _ = await _task(db, sid, "stuck-a", attempt=True)
+        b, _ = await _task(db, await _second_session(db, sid), "stuck-b", to=())
+        fake.in_progress[thread] = "turn-stuck"
+        fake.stubborn = True
+        second = await _restart(db, first)
+        second.stop_confirm_seconds = 0.3
+        await second.run_once()
+        await second.wait_drivers(timeout=5)
+        async with db() as s:
+            assert (await WorkbenchRepository(s).get_task(a))["state"] == "FAILED"
+        await second._reconcile()
+        assert await _dequeued(db, b) == 0
+        async with db() as s:  # 时限过了
+            await s.execute(
+                text(
+                    "update workbench_tasks set original_input = jsonb_set(original_input, "
+                    "'{client_context,turn_open,since}', to_jsonb((now() - make_interval(secs => :h))::text)) "
+                    "where id = :t"
+                ),
+                {"t": a, "h": TURN_HOLD_SECONDS + 1},
+            )
+            await s.commit()
+        await second._reconcile()
+        assert await _dequeued(db, b) == 1
+        async with db() as s:
+            expired = await WorkbenchRepository(s).list_task_events(
+                a, types=("turn/hold_expired",)
+            )
+        assert expired[0]["payload"]["cost"] == "unknown"
+        await _close(second)
+    finally:
+        await fake.close()
+
+
+async def test_one_bad_task_does_not_stop_the_round_for_the_others(db, monkeypatch):
+    """对账时一件出错只跳过这一件，别的照推；连着出错的轮数记下来（连着 3 轮记错误日志）。"""
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        runner, sb, sid, _ = await _started(db, fake)
+        bad, _ = await _task(db, sid, "bad-1", to=("VALIDATING", "QUEUED"))
+        good, _ = await _task(
+            db,
+            await _other_project(db, sid, "p2"),
+            "good-1",
+            to=("VALIDATING", "QUEUED"),
+        )
+        async with db() as s:
+            await s.execute(
+                text("delete from workbench_commands where kind = 'task.drive'")
+            )
+            await s.commit()
+        real = WorkbenchRepository.enqueue_command
+
+        async def flaky(self, **kw):
+            if kw.get("payload", {}).get("task_id") == bad:
+                raise RuntimeError("boom")
+            return await real(self, **kw)
+
+        monkeypatch.setattr(WorkbenchRepository, "enqueue_command", flaky)
+        await runner._reconcile()
+        async with db() as s:
+            rows = (
+                (
+                    await s.execute(
+                        text(
+                            "select payload from workbench_commands where kind = 'task.drive' and status = 'pending'"
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        assert [r["task_id"] for r in rows] == [good]
+        assert runner.reconcile_failures == 1
         await _close(runner)
     finally:
         await fake.close()
@@ -1433,7 +1699,7 @@ async def _advisor_task(db, sid, text_, key):
         task_id = (
             await led.handover(
                 HandoverRequest(
-                    idempotency_key=key,
+                    idempotency_key=f"{key}-0000",
                     session_id=sid,
                     profile_id="SMOKE",
                     original_input={"text": text_},

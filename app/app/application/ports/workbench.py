@@ -681,12 +681,17 @@ class WorkbenchStore(Protocol):
         ...
 
     async def unsettled_tasks(self, sandbox_ids: list[str]) -> list[dict[str, Any]]:
-        """这些沙箱上要有人推的委托：排队的、在跑的、等着 Codex 那一轮里的请求（审批、反问）的。
+        """这些沙箱上要有人推的委托：受理了还没排进项目队列的、核验中的、排队的、在跑的、
+        等着 Codex 那一轮里的请求（审批、反问）的。
         带 `request_id`（等的那一问）与 `drive_queued`（已有没做完的 task.drive）。"""
         ...
 
     async def projects_with_stalled_queue(self) -> list[str]:
-        """有委托在排队、却没有活跃委托的项目（前一位到了终态，放行那一刻没做成）。"""
+        """有委托在排队、却没有委托占着的项目（前一位到了终态，放行那一刻没做成）。"""
+        ...
+
+    async def expired_turn_holds(self) -> list[dict[str, Any]]:
+        """结束了、但 Codex 里那一轮一直没确认停下、已过 TURN_HOLD_SECONDS 的委托（SDD 0034 §三.1）。"""
         ...
 
     async def claim_commands(
