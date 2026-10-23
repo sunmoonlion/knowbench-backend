@@ -55,6 +55,27 @@ class Budget(Strict):
     currency: Literal["CNY"] = "CNY"
 
 
+class GrantedData(Strict):
+    """测试读的一份：knowlab 的数据编号（清单绑定、格子地址、引文写的都是它）与 knowbase 那份。"""
+
+    dataset_id: str = Field(pattern=r"^[A-Za-z0-9._:-]{1,128}$")
+    item_id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=1, max_length=128)
+    size_bytes: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DataGrant(Strict):
+    """测试运行授权（SDD 0042 第七节）：knowbase 签的、读的一方是这里，只读绑定的这几份。
+
+    每条用例的委托都钉这几份、凭它读；授权由 knowlab 在测试结束时撤，这里不交还。
+    """
+
+    grant_id: str = Field(min_length=1, max_length=64)
+    items: tuple[GrantedData, ...] = Field(min_length=1, max_length=64)
+
+
 class RunRequest(Strict):
     contract: Literal["knowbot-test-run/v1"]
     run_id: str = Field(pattern=RUN_ID)
@@ -64,6 +85,11 @@ class RunRequest(Strict):
     budget: Budget
     timeout_seconds: int = Field(ge=60, le=86400)
     max_wait_seconds: int = Field(default=259200, ge=60, le=604800)
+    # 可选：有它就按钉住的数据读，没有照旧经 knowlab 读（SDD 0042 第七节）。
+    # 没有时不进摘要，老请求重发摘要不变
+    data_grant: DataGrant | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def _unique_cases(self) -> RunRequest:

@@ -20,6 +20,7 @@ runner 的一小时等待上限约束（Codex 那一轮挂在沙箱里），超�
 from __future__ import annotations
 
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -400,6 +401,45 @@ class KnowbotTestService:
         return await self.status(run_id)
 
 
+def pins_for_test(request: RunRequest) -> list[dict[str, Any]]:
+    """测试运行授权里的那几份（SDD 0042 第七节），钉进每条用例的委托，按钉住的读。
+
+    数据编号用 knowlab 的（清单绑定、格子地址、引文写的都是它）；不是 uuid 的钉不进钉表，
+    整次照旧经 knowlab 读。授权由 knowlab 撤，这里不交还（grant_kind = test）。
+    """
+    grant = request.data_grant
+    if grant is None:
+        return []
+    raw = request.manifest.get("data_bindings")
+    needs = {
+        str(b.get("dataset_id")): b.get("need")
+        for b in (raw if isinstance(raw, list) else [])
+        if isinstance(b, dict)
+    }
+    pins = []
+    for item in grant.items:
+        try:
+            uuid.UUID(item.dataset_id)
+        except ValueError:
+            return []
+        pins.append(
+            {
+                "dataset_id": item.dataset_id,
+                "slot": needs.get(item.dataset_id),
+                "source": "cloud",
+                "item_id": item.item_id,
+                "grant_id": grant.grant_id,
+                "grant_kind": "test",
+                "path": None,
+                "name": item.name,
+                "media_type": item.media_type,
+                "size_bytes": item.size_bytes,
+                "sha256": item.sha256,
+            }
+        )
+    return pins
+
+
 class KnowbotTestConductor:
     """把在跑的测试往前推一步：开下一条用例、代答、管等待与超时、收结果、到期清理。"""
 
@@ -641,6 +681,7 @@ class KnowbotTestConductor:
             snapshot=PinnedPack(
                 pack=pack, digest=knowbots.manifest_digest(manifest), source=SOURCE_TEST
             ),
+            pins=pins_for_test(request) or None,
         )
         session = await repo.get_session(session_id)
         async with repo.transaction():

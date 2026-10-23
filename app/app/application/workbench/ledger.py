@@ -150,11 +150,13 @@ class Ledger:
                 if is_knowbot(req.profile_id)
                 else None
             )
-            needs = pinned.needs if pinned is not None and snapshot is None else ()
-            if needs and not pins:
-                raise DataRequired("choose the data this expert needs first")
-            if pins and not needs:
-                raise DataChoiceInvalid("this expert takes no data")
+            # 测试的委托（snapshot）钉的是测试运行授权里那几份，不按声明核（knowlab 核过）
+            if snapshot is None:
+                needs = pinned.needs if pinned is not None else ()
+                if needs and not pins:
+                    raise DataRequired("choose the data this expert needs first")
+                if pins and not needs:
+                    raise DataChoiceInvalid("this expert takes no data")
             task_id = str(uuid.uuid4())
             budget = Budget(currency=req.budget_currency, limit=req.budget_limit)
             client_context = dict(req.client_context)

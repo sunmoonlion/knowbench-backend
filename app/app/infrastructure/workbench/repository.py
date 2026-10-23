@@ -1409,11 +1409,13 @@ class WorkbenchRepository:
                 text(
                     """insert into workbench_task_data
                        (dataset_id, task_id, position, slot, source, item_id, grant_id,
-                        path, name, media_type, size_bytes, sha256)
-                       values (:d, :t, :p, :slot, :src, :item, :grant, :path, :n, :m, :b, :h)"""
+                        grant_kind, path, name, media_type, size_bytes, sha256)
+                       values (:d, :t, :p, :slot, :src, :item, :grant, :kind, :path, :n,
+                               :m, :b, :h)"""
                 ),
                 {
-                    "d": uuid.uuid4(),
+                    "d": item.get("dataset_id") or uuid.uuid4(),
+                    "kind": item.get("grant_kind") or "delegation",
                     "t": task_id,
                     "p": position,
                     "slot": item.get("slot"),
@@ -1501,6 +1503,7 @@ class WorkbenchRepository:
                 """select distinct d.grant_id from workbench_task_data d
                    join workbench_tasks t on t.id = d.task_id
                    where d.grant_id is not null and d.grant_released_at is null
+                     and d.grant_kind = 'delegation'
                      and t.state in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
                    limit :n"""
             ),

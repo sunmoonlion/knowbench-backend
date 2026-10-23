@@ -1229,3 +1229,82 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
     finally:
         await close(runner)
         await fake.close()
+
+
+async def test_a_test_with_a_data_grant_reads_what_is_pinned(db):
+    """SDD 0042 第七节：带测试运行授权的测试，每条用例的委托钉授权里那几份，按钉住的读；
+    授权由 knowlab 撤，这里不交还。"""
+    import hashlib
+
+    from app.application.workbench.data_choice import GrantReleaser
+    from app.application.workbench.knowbot_data import data_scope
+
+    csv = "项目,2024\n营业收入,250.25\n".encode()
+    dataset_id = str(uuid.uuid4())
+    sha = hashlib.sha256(csv).hexdigest()
+    binding = {"dataset_id": dataset_id, "version": "1", "sha256": sha}
+    doc = asking()
+    doc["data_bindings"] = [binding]
+    for step in doc["pack"]["workflow"]:
+        step["tools"] = ["list_my_data", "read_my_data"]
+    body = request("knowlab-run-0060", doc=doc).model_dump(mode="json")
+    body["data_grant"] = {
+        "grant_id": "grant-test-1",
+        "items": [
+            {
+                "dataset_id": dataset_id,
+                "item_id": "item-1",
+                "name": "营收.csv",
+                "media_type": "text/csv; charset=utf-8",
+                "size_bytes": len(csv),
+                "sha256": sha,
+            }
+        ],
+    }
+    fake = ScriptedAppServer([PLAN, ANSWER])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        await accept(db, RunRequest.model_validate(body))
+        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            task = (
+                (await s.execute(text("select * from workbench_tasks")))
+                .mappings()
+                .one()
+            )
+            pins = await repo.list_task_data(str(task["id"]))
+            assert [
+                (str(p["dataset_id"]), p["grant_id"], p["grant_kind"]) for p in pins
+            ] == [(dataset_id, "grant-test-1", "test")]
+            purpose, bound = await data_scope(repo, OWNER, dict(task))
+            assert purpose["kind"] == "pinned" and dataset_id in bound
+            await s.execute(
+                text("update workbench_tasks set state = 'SUCCEEDED' where id = :t"),
+                {"t": task["id"]},
+            )
+            await s.commit()
+
+        class Cloud:
+            released: list[str] = []
+
+            async def release(self, grant_id: str) -> None:
+                self.released.append(grant_id)
+
+        cloud = Cloud()
+        assert await GrantReleaser(workbench_stores(db), cloud).sweep() == 0  # type: ignore[arg-type]
+        assert cloud.released == []
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+def test_a_request_without_a_grant_keeps_its_digest():
+    plain = request("knowlab-run-0061")
+    assert "data_grant" not in plain.model_dump(mode="json")
+    assert (
+        plain.digest()
+        == RunRequest.model_validate(plain.model_dump(mode="json")).digest()
+    )
