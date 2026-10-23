@@ -29,6 +29,15 @@ DIGEST = "sha256:" + "d" * 64
 class Repo:
     def __init__(self, pin: dict[str, Any] | None) -> None:
         self.pin = pin
+        self.data: list[dict[str, Any]] = []  # 委托钉住的数据（SDD 0042）
+        self.relay_asked = 0
+
+    async def list_task_data(self, task_id):
+        return self.data
+
+    async def get_relay_identity(self, owner_actor_id):
+        self.relay_asked += 1
+        return {"relay_user": "relay-1"} if owner_actor_id == OWNER else None
 
     async def get_knowbot_pin(self, *, owner_actor_id, knowbot_id, version):
         if self.pin and (owner_actor_id, knowbot_id, version) == (
@@ -231,7 +240,7 @@ def test_reading_user_data_waits_long_enough_for_a_big_annual_report() -> None:
 
     knowbot_data_source.cache_clear()
     try:
-        client = knowbot_data_source()
+        client = knowbot_data_source().legacy  # type: ignore[attr-defined]
         assert isinstance(client, KnowlabDataClient)
         assert client._options == {"timeout": KNOWLAB_DATA_TIMEOUT}
         assert 20 < KNOWLAB_DATA_TIMEOUT < 60

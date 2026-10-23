@@ -48,6 +48,12 @@ class EventRepo:
     async def test_run_for_task(self, task_id: str) -> Any:
         return None
 
+    async def list_task_data(self, task_id: str) -> Any:
+        return await self.base.list_task_data(task_id)
+
+    async def get_relay_identity(self, owner_actor_id: str) -> Any:
+        return await self.base.get_relay_identity(owner_actor_id)
+
     @contextlib.asynccontextmanager
     async def transaction(self):  # type: ignore[no-untyped-def]
         yield

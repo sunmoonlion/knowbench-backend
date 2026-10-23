@@ -197,6 +197,16 @@ class UserDataUnavailable(WorkbenchError):
     http_status = 503
 
 
+class DataChanged(UserDataUnavailable):
+    """这次委托钉住的数据在委托开始后被改过、挪走或删了（SDD 0042 第五节第 4 项）。
+
+    不是专家的错：数值验收里记成平台没能核（同读不到）。
+    """
+
+    code = "data_changed"
+    http_status = 409
+
+
 class KnowbotUnavailable(WorkbenchError):
     """knowmart 暂时取不到：只影响新的「请」，在跑的委托读自己钉住的那份。"""
 

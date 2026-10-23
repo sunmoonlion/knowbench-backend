@@ -22,6 +22,7 @@ from app.application.ports.workbench import (
 )
 from app.application.workbench.agent_download import ReleaseStore
 from app.application.workbench.machines import MachineSync
+from app.application.workbench.pinned_data import DataSources, PinnedData
 from app.application.workbench.runner import Runner
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
@@ -40,6 +41,7 @@ from app.infrastructure.workbench.repository import (
     SqlWorkbenchStores,
     WorkbenchRepository,
 )
+from core.config import get_settings
 
 
 def agent_release_store(settings) -> ReleaseStore:
@@ -62,12 +64,44 @@ def knowmart_summoner() -> KnowmartSummoner:
 # 读用户数据的超时：knowlab 第一次读一份两百页的年报要抽十几、二十秒文字，默认 20 秒卡在线上；
 # 放宽到 45 秒，仍在模型调用工具的 60 秒以内（K19 预演）
 KNOWLAB_DATA_TIMEOUT = 45.0
+# 凭运行授权从 knowbase 取一份（最大 50 MB）的超时，同上不超过工具的 60 秒
+KNOWBASE_DATA_TIMEOUT = 45.0
 
 
 @lru_cache(maxsize=1)
 def knowbot_data_source() -> KnowbotDataSource:
-    """向 knowlab 读分身绑定的用户数据（0027 §3.5；令牌缓存在里面，进程内共用）。"""
-    return KnowlabDataClient(timeout=KNOWLAB_DATA_TIMEOUT)
+    """专家读用户的数据（进程内共用，抽出的文字与表按 sha256 缓存在里面）。
+
+    委托钉住的那几份（SDD 0042）：云端经 knowbase、本地经会合点服务流（没配会合点或签名私钥
+    就读不到本地的）；旧格式的专家经 knowlab 读作者绑的（0027 §3.5）。
+    """
+    from app.application.workbench.tokens import TokenIssuer
+    from app.infrastructure.documents.table_extract import CachedTableExtractor
+    from app.infrastructure.documents.text_extract import CachedTextExtractor
+    from app.infrastructure.external.knowbase_user_data import (
+        KnowbaseGrantedData,
+        KnowbaseUserData,
+    )
+
+    settings = get_settings()
+    relay_url = settings.workbench_relay_admin_url
+    signing_key = settings.workbench_token_signing_key
+    agent = (
+        build_agent_service(
+            relay_url, TokenIssuer(signing_key, issuer=settings.workbench_token_issuer)
+        )
+        if relay_url and signing_key
+        else None
+    )
+    return DataSources(
+        pinned=PinnedData(
+            cloud=KnowbaseGrantedData(KnowbaseUserData(timeout=KNOWBASE_DATA_TIMEOUT)),
+            agent=agent,
+            text=CachedTextExtractor(),
+            tables=CachedTableExtractor(),
+        ),
+        legacy=KnowlabDataClient(timeout=KNOWLAB_DATA_TIMEOUT),
+    )
 
 
 def workbench_store(session: AsyncSession) -> WorkbenchStore:

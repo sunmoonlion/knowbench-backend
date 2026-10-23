@@ -22,6 +22,8 @@ from urllib.parse import quote, urlsplit
 import httpx
 
 from app.application.errors.exceptions import ServiceUnavailableError
+from app.application.workbench.pinned_data import CHANGED
+from app.domain.workbench.errors import DataChanged, UserDataUnavailable
 from app.infrastructure.external.service_client import ServiceClient, service_relation
 
 BASE = "/api/internal/v1/user-data"
@@ -274,3 +276,27 @@ class KnowbaseUserData:
         if response.status_code == 204 or not response.content:
             return response.status_code, None, response.headers
         return response.status_code, response.json(), response.headers
+
+
+class KnowbaseGrantedData:
+    """凭这件委托的运行授权读钉住的那一份（端口 CloudDataReader，SDD 0042 第五节）。
+
+    knowbase 的拒绝转成给模型看的话：资料删了、钉的摘要对不上是「委托开始后改过」；授权不在、
+    过期、撤了是读不到（不是专家的错）。
+    """
+
+    def __init__(self, client: KnowbaseUserData) -> None:
+        self.client = client
+
+    async def content(self, *, grant_id: str, item_id: str) -> bytes:
+        try:
+            got = await self.client.read_content(grant_id, item_id)
+        except KnowbaseRefused as exc:
+            if exc.code in ("item_not_found", "sha256_mismatch"):
+                raise DataChanged(CHANGED) from None
+            raise UserDataUnavailable(
+                f"the permission to read this data has ended ({exc.code})"
+            ) from None
+        except ServiceUnavailableError:
+            raise UserDataUnavailable("the user's data is unavailable now") from None
+        return got.data

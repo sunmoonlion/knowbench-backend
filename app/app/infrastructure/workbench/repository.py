@@ -1400,6 +1400,45 @@ class WorkbenchRepository:
         row = r.mappings().first()
         return dict(row) if row else None
 
+    # ---------- 委托钉住的数据（SDD 0042 第五节）----------
+    async def pin_task_data(
+        self, task_id: str, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        for position, item in enumerate(items):
+            await self.session.execute(
+                text(
+                    """insert into workbench_task_data
+                       (dataset_id, task_id, position, slot, source, item_id, grant_id,
+                        path, name, media_type, size_bytes, sha256)
+                       values (:d, :t, :p, :slot, :src, :item, :grant, :path, :n, :m, :b, :h)"""
+                ),
+                {
+                    "d": uuid.uuid4(),
+                    "t": task_id,
+                    "p": position,
+                    "slot": item.get("slot"),
+                    "src": item["source"],
+                    "item": item.get("item_id"),
+                    "grant": item.get("grant_id"),
+                    "path": item.get("path"),
+                    "n": item["name"],
+                    "m": item["media_type"],
+                    "b": int(item["size_bytes"]),
+                    "h": item["sha256"],
+                },
+            )
+        return await self.list_task_data(task_id)
+
+    async def list_task_data(self, task_id: str) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """select * from workbench_task_data where task_id = :t
+                   order by position"""
+            ),
+            {"t": task_id},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
     async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
         # 不带 outputs：每条最多 2 MB，推进器每 5 秒、knowlab 每次刷新都走这里（审读 10-19）
         r = await self.session.execute(

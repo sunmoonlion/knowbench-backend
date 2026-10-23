@@ -16,7 +16,7 @@ import logging
 import threading
 import zipfile
 from collections import OrderedDict
-from collections.abc import Iterable, Iterator
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from typing import Any
 
 from app.domain.workbench.data_read import MAX_TEXT_CHARS, Extracted
@@ -167,7 +167,8 @@ def extract_text(data: bytes, content_type: str) -> Extracted:
 
 
 class CachedTextExtractor:
-    """按 sha256 缓存抽取结果；同一份内容并发来读只抽一次。
+    """按 sha256 缓存抽取结果；同一份内容并发来读只抽一次。缓存里没有才调 `load` 取字节
+    （字节可能要经服务流从用户电脑上一块块读，或从 knowbase 取，SDD 0042）。
 
     抽取单独跑成一个任务，来读的人只是等它：读的那头先超时走了（一份两百页的年报要抽十几、
     二十秒，调用方的超时可能更短），抽取照样做完、进缓存，下一次来读直接拿到，不会每次都从头抽、
@@ -182,7 +183,11 @@ class CachedTextExtractor:
         self._pending: dict[str, asyncio.Task[Extracted]] = {}
 
     async def extract(
-        self, *, data: bytes, content_type: str, sha256: str
+        self,
+        *,
+        load: Callable[[], Awaitable[bytes]],
+        content_type: str,
+        sha256: str,
     ) -> Extracted:
         key = f"{sha256}:{content_type}"
         with self._lock:
@@ -192,12 +197,15 @@ class CachedTextExtractor:
                 return hit
         task = self._pending.get(key)
         if task is None:
-            task = asyncio.create_task(self._extract(key, data, content_type))
+            task = asyncio.create_task(self._extract(key, load, content_type))
             self._pending[key] = task
         return await asyncio.shield(task)
 
-    async def _extract(self, key: str, data: bytes, content_type: str) -> Extracted:
+    async def _extract(
+        self, key: str, load: Callable[[], Awaitable[bytes]], content_type: str
+    ) -> Extracted:
         try:
+            data = await load()
             result = await asyncio.to_thread(extract_text, data, content_type)
             self._remember(key, result)
             return result

@@ -42,6 +42,13 @@ from app.infrastructure.documents.text_extract import (
 XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
+def _bytes(data: bytes):  # type: ignore[no-untyped-def]
+    async def load() -> bytes:
+        return data
+
+    return load
+
+
 def test_paginate_splits_at_the_page_size() -> None:
     text = "x" * (PAGE_BYTES * 2 + 5)  # 一行就超了：按字切开
     assert paginate(text, 1) == ("x" * PAGE_BYTES, 3)
@@ -165,7 +172,9 @@ async def test_the_same_content_is_extracted_once(
     sha = hashlib.sha256(b"abc").hexdigest()
     got = await asyncio.gather(
         *[
-            extractor.extract(data=b"abc", content_type="text/plain", sha256=sha)
+            extractor.extract(
+                load=_bytes(b"abc"), content_type="text/plain", sha256=sha
+            )
             for _ in range(3)
         ]
     )
@@ -189,7 +198,9 @@ async def test_a_reader_that_gives_up_still_leaves_the_text_cached(
     sha = hashlib.sha256(b"abc").hexdigest()
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(
-            extractor.extract(data=b"abc", content_type="application/pdf", sha256=sha),
+            extractor.extract(
+                load=_bytes(b"abc"), content_type="application/pdf", sha256=sha
+            ),
             timeout=0.05,
         )
     gate.set()
@@ -198,7 +209,7 @@ async def test_a_reader_that_gives_up_still_leaves_the_text_cached(
             break
         await asyncio.sleep(0.01)
     got = await extractor.extract(
-        data=b"abc", content_type="application/pdf", sha256=sha
+        load=_bytes(b"abc"), content_type="application/pdf", sha256=sha
     )
     assert got.text == "abc" and calls == ["application/pdf"]
 
@@ -392,9 +403,15 @@ async def test_the_same_table_is_parsed_once(monkeypatch: pytest.MonkeyPatch) ->
     extractor = CachedTableExtractor()
     data = b"k,v\na,1\n"
     sha = hashlib.sha256(data).hexdigest()
+    loads: list[int] = []
+
+    async def load() -> bytes:
+        loads.append(1)
+        return data
+
     for _ in range(3):
-        await extractor.tables(data=data, content_type="text/csv", sha256=sha)
-    assert calls == ["text/csv"]
+        await extractor.tables(load=load, content_type="text/csv", sha256=sha)
+    assert calls == ["text/csv"] and loads == [1]
 
 
 # ---------- 核引文（SDD 0036） ----------

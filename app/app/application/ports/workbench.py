@@ -11,6 +11,8 @@ from contextlib import AbstractAsyncContextManager
 from decimal import Decimal
 from typing import Any, Protocol
 
+from app.domain.workbench.data_read import Extracted, Tables
+
 NotificationHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 ServerRequestHandler = Callable[[Any, str, dict[str, Any]], Awaitable[None]]
 
@@ -744,6 +746,21 @@ class WorkbenchStore(Protocol):
         """这件委托是哪一次分身测试的（没有就是 None）。"""
         ...
 
+    # ---------- 委托钉住的数据（SDD 0042 第五节）----------
+    async def pin_task_data(
+        self, task_id: str, items: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """请专家那一刻记下选的那几份，按次序，各给一个数据编号（只插不改）。
+
+        每份：source（cloud / local）、slot、item_id 与 grant_id（cloud）或 path（local）、
+        name、media_type、size_bytes、sha256。返回记下的行。
+        """
+        ...
+
+    async def list_task_data(self, task_id: str) -> list[dict[str, Any]]:
+        """这件委托钉住的数据，按次序；没选过就是空的。"""
+        ...
+
     # ---------- 作为运行方跑分身测试（SDD 0027 §3.4）----------
     async def actor_for_subject(self, subject: str) -> str | None:
         """Casdoor 用户 id → 本地 actor id（测试账号用）；没登录过就是 None。"""
@@ -849,10 +866,13 @@ class KnowmartSummoner(Protocol):
 
 
 class KnowbotDataSource(Protocol):
-    """读分身绑定的用户数据（knowlab，服务身份 knowlab:read，契约 knowbot-data/v1，0027 §3.5）。
+    """专家读用户的数据（结果的形状是契约 knowbot-data/v1，0027 §3.5）。
 
-    purpose 是契约里的用途：`{"kind": "knowbot", ...}` 或 `{"kind": "test", "run_id"}`。
-    knowlab 按自己的记录再核一次，不符抛 NotFound；不可达或没配好抛 UserDataUnavailable。
+    purpose 由 knowbot_data.data_scope 给：`{"kind": "pinned", ...}` 是这件委托钉住的那几份
+    （SDD 0042，本地知识库经服务流、云端知识库经 knowbase）；`{"kind": "knowbot", ...}`、
+    `{"kind": "test", "run_id"}` 是旧路，经 knowlab 读作者绑的（服务身份 knowlab:read），
+    留到「财务分析与预测」第 1 版停用。不符抛 NotFound；读不到抛 UserDataUnavailable；
+    钉住的改过了抛 DataChanged。
     """
 
     async def list(self, purpose: dict[str, Any]) -> list[dict[str, Any]]: ...
@@ -879,6 +899,40 @@ class KnowbotDataSource(Protocol):
         """核引文（SDD 0036）：按（dataset_id、page、text）在 PDF 第 page 页找原话，
         按次序回 found、reason、version、sha256。"""
         ...
+
+
+class CloudDataReader(Protocol):
+    """凭这件委托的运行授权读 knowbase 里钉住的那一份的字节（契约 user-data/v1，SDD 0042）。
+
+    授权不在、过期、撤了，knowbase 不可达或没配好，抛 UserDataUnavailable；资料删了、钉的版本
+    对不上抛 DataChanged。
+    """
+
+    async def content(self, *, grant_id: str, item_id: str) -> bytes: ...
+
+
+class TextExtractor(Protocol):
+    """抽文字（PDF 每页前面一行「## Page N」），按 sha256 缓存；缓存里没有才调 load 取字节。"""
+
+    async def extract(
+        self,
+        *,
+        load: Callable[[], Awaitable[bytes]],
+        content_type: str,
+        sha256: str,
+    ) -> Extracted: ...
+
+
+class TableExtractor(Protocol):
+    """解析 CSV、Excel 成表，按 sha256 缓存；读不成表抛 TableUnreadable。"""
+
+    async def tables(
+        self,
+        *,
+        load: Callable[[], Awaitable[bytes]],
+        content_type: str,
+        sha256: str,
+    ) -> Tables: ...
 
 
 class WorkbenchStores(Protocol):

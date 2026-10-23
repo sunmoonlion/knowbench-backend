@@ -21,7 +21,7 @@ import re
 import threading
 import zipfile
 from collections import OrderedDict
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
@@ -188,19 +188,26 @@ def extract_tables(data: bytes, content_type: str) -> Tables:
 
 
 class CachedTableExtractor:
-    """按 sha256 缓存解析结果（只留最近 16 份）。"""
+    """按 sha256 缓存解析结果（只留最近 16 份）；缓存里没有才调 `load` 取字节。"""
 
     def __init__(self, size: int = CACHE_TABLES) -> None:
         self._cache: OrderedDict[str, Tables] = OrderedDict()
         self._size = size
         self._lock = threading.Lock()
 
-    async def tables(self, *, data: bytes, content_type: str, sha256: str) -> Tables:
+    async def tables(
+        self,
+        *,
+        load: Callable[[], Awaitable[bytes]],
+        content_type: str,
+        sha256: str,
+    ) -> Tables:
         key = f"{sha256}:{content_type}"
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
                 return self._cache[key]
+        data = await load()
         result = await asyncio.to_thread(extract_tables, data, content_type)
         with self._lock:
             self._cache[key] = result
