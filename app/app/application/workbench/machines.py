@@ -3,7 +3,7 @@
 代理不直接找工作台：它只出站连会合点，hello 里带上机器名、白名单目录和它自己定的上限。
 会合点记着现在谁在线；这里隔一会儿问它一次，对一遍账：
 
-- 在线而且报了机器名的：同名的机器有就更新、没有就建，置为在线；这个人名下别的机器置为离线
+- 在线而且报了机器名的：报了设备编号（0.5.2 起）按编号认，没报按名字认；有就更新、没有就建，置为在线；这个人名下别的机器置为离线
   （一个人同一时刻只有一个代理连得上，新的会把旧的顶掉）。
 - 不在线的：这个人名下的机器全部置为离线。
 - 在线但没报机器名的（老代理）：不动。它的机器是手工登记的，分不清是哪一台。
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 from app.application.ports.workbench import RelayAdmin, WorkbenchStores
@@ -26,6 +27,7 @@ log = logging.getLogger(__name__)
 
 SANDBOX_MODES = ("read-only", "workspace-write", "danger-full-access")
 MAX_ROOTS = 64
+DEVICE_ID = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 
 def _absolute(path: Any) -> bool:
@@ -54,12 +56,19 @@ def machine_report(agent: dict[str, Any]) -> dict[str, Any] | None:
         ceiling["sandbox"] = reported["sandbox"]
     if isinstance(reported.get("network"), bool):
         ceiling["network"] = reported["network"]
+    device = machine.get("device_id")
     return {
         "name": name,
         "roots": [r[:1024] for r in roots if _absolute(r)][:MAX_ROOTS],
         "ceiling": ceiling,
         "agent_version": str(agent.get("software") or "")[:64] or None,
         "codex_version": str(agent.get("codex") or "")[:64] or None,
+        # 0.5.2 起（账 143）：按设备编号认这份本地 link；主机名与系统用来发现配置被拷到别的电脑
+        "device_id": device
+        if isinstance(device, str) and DEVICE_ID.fullmatch(device)
+        else None,
+        "host": str(machine.get("host") or "")[:128] or None,
+        "os": str(machine.get("os") or "")[:64] or None,
     }
 
 
@@ -98,6 +107,9 @@ class MachineSync:
                         codex_version=report["codex_version"],
                         roots=report["roots"],
                         ceiling=report["ceiling"],
+                        device_id=report["device_id"],
+                        host=report["host"],
+                        os=report["os"],
                     )
                     counts["online"] += 1
                     counts["offline"] += await repo.set_environments_offline(

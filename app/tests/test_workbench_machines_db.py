@@ -169,3 +169,82 @@ async def test_an_agent_coming_and_going_shows_up_as_a_workspace_then_offline(db
         "laptop": "offline",
         "desktop": "offline",
     }
+
+
+DEV_A = "0f8fad5b-d9cb-469f-a165-70867728950e"
+DEV_B = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+
+
+async def report(repo, *, name, device=None, host=None, owner=OWNER):
+    return await repo.report_environment(
+        owner_actor_id=owner,
+        name=name,
+        agent_version="0.5.2",
+        codex_version="0.155.1",
+        roots=[],
+        ceiling={},
+        device_id=device,
+        host=host,
+        os="Windows" if device else None,
+    )
+
+
+async def test_device_id_keeps_same_named_links_apart_and_follows_renames(db):
+    """账 143：按设备编号认本地 link。同名的两台不并成一条；改了电脑名还是原来那条。"""
+    async with book(db) as repo:
+        a = await report(repo, name="my-pc", device=DEV_A, host="DESKTOP-A")
+        b = await report(repo, name="my-pc", device=DEV_B, host="DESKTOP-B")
+    async with book(db) as repo:
+        renamed = await report(repo, name="study-pc", device=DEV_A, host="DESKTOP-A")
+    assert a != b and renamed == a
+    async with db() as session:
+        rows = await WorkbenchRepository(session).list_environments(
+            owner_actor_id=OWNER
+        )
+    by_id = {str(r["id"]): r for r in rows}
+    assert by_id[a]["name"] == "study-pc" and by_id[a]["device_id"] == DEV_A
+    assert by_id[a]["host"] == "DESKTOP-A" and by_id[a]["first_host"] == "DESKTOP-A"
+    assert by_id[a]["os"] == "Windows" and by_id[b]["device_id"] == DEV_B
+
+
+async def test_new_link_adopts_its_legacy_row_so_projects_stay_attached(db):
+    """老代理按名字登记过的那条，换上 0.5.2 后第一次报到时被认领（项目挂在它上面），不另起一条。"""
+    async with book(db) as repo:
+        legacy = await report(repo, name="laptop")
+    async with book(db) as repo:
+        adopted = await report(repo, name="laptop", device=DEV_A, host="LAPTOP")
+        # 同名、但另一个编号：已有编号的那条不能再被认领，另起一条
+        fresh = await report(repo, name="laptop", device=DEV_B, host="LAPTOP-2")
+    assert adopted == legacy and fresh != legacy
+    async with db() as session:
+        assigned = await WorkbenchRepository(session).assigned_environment(OWNER)
+    assert assigned is not None and assigned["device_id"] == DEV_B
+
+
+async def test_copied_config_shows_as_a_host_change(db):
+    """配置目录被整个拷到别的电脑：编号跟过去，主机名对不上，first_host 留着第一次的。"""
+    async with book(db) as repo:
+        env = await report(repo, name="pc", device=DEV_A, host="OLD-PC")
+    async with book(db) as repo:
+        same = await report(repo, name="pc", device=DEV_A, host="NEW-PC")
+    async with db() as session:
+        assigned = await WorkbenchRepository(session).assigned_environment(OWNER)
+    assert same == env
+    assert assigned["first_host"] == "OLD-PC" and assigned["host"] == "NEW-PC"
+
+
+async def test_sync_registers_by_the_device_id_the_relay_passes_on(db):
+    await identity(db, OWNER, "u-owner")
+    online = agent("laptop", ["/home/u/a"])
+    online["machine"].update({"device_id": DEV_A, "host": "LAPTOP", "os": "Windows"})
+    sync = MachineSync(SqlWorkbenchStores(db), Relay({"u-owner": online}))
+    assert (await sync.sync_once())["online"] == 1
+    online["machine"]["device_id"] = "not-a-uuid"
+    online["machine"]["name"] = "laptop-2"
+    await sync.sync_once()
+    async with db() as session:
+        rows = await WorkbenchRepository(session).list_environments(
+            owner_actor_id=OWNER
+        )
+    devices = sorted((r["name"], r["device_id"]) for r in rows)
+    assert devices == [("laptop", DEV_A), ("laptop-2", None)]

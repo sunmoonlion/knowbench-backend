@@ -350,3 +350,59 @@ async def test_prefs_carry_mcp_source_switches(make_client):
         json={"approval_policy": "on-request", "mcp_sources": {"records": True}},
     )
     assert r.status_code == 422
+
+
+async def test_local_link_reports_the_assigned_link_and_token_expiry(make_client, db):  # noqa: F811
+    """账 143：网页打开工作台时问后端「配给当前账号的那份本地 link」的编号乙、连没连着、令牌哪天到期。"""
+    import base64
+    import json as _json
+
+    from cryptography.fernet import Fernet
+
+    from app.infrastructure.workbench.repository import WorkbenchRepository
+    from app.interfaces.endpoints.workbench_routes import credential_cipher
+
+    http = make_client(A)
+    key = Fernet.generate_key()
+    http._transport.app.dependency_overrides[credential_cipher] = lambda: Fernet(key)  # type: ignore[attr-defined]
+    empty = (await http.get("/api/workbench/local-link")).json()
+    assert (
+        empty["assigned"] is None
+        and empty["token_expires_at"] is None
+        and empty["copied"] is False
+    )
+
+    payload = (
+        base64.urlsafe_b64encode(_json.dumps({"exp": 1793836800, "sub": "u"}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    token = f"eyJhbGciOiJFUzI1NiJ9.{payload}.sig"
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            await repo.put_relay_identity(
+                A,
+                relay_user="u-a",
+                agent_token_ciphertext=Fernet(key).encrypt(token.encode()).decode(),
+                sandbox_token_ciphertext="s",
+            )
+            await repo.report_environment(
+                owner_actor_id=A,
+                name="pc",
+                agent_version="0.5.2",
+                codex_version="0.155.1",
+                roots=[],
+                ceiling={},
+                device_id="0f8fad5b-d9cb-469f-a165-70867728950e",
+                host="DESKTOP-A",
+                os="Windows",
+            )
+    body = (await http.get("/api/workbench/local-link")).json()
+    assert body["assigned"]["device_id"] == "0f8fad5b-d9cb-469f-a165-70867728950e"
+    assert body["assigned"]["status"] == "online" and body["copied"] is False
+    assert body["token_expires_at"].startswith("2026-11-05")
+    assert "agent_token_ciphertext" not in _json.dumps(body)
+    # 别人看不到
+    other = (await make_client(B).get("/api/workbench/local-link")).json()
+    assert other["assigned"] is None

@@ -106,11 +106,15 @@ class WorkbenchRepository:
         codex_version: str | None,
         roots: list[str],
         ceiling: dict,
+        device_id: str | None = None,
+        host: str | None = None,
+        os: str | None = None,
     ) -> str:
         env_id = str(uuid.uuid4())
         await self.session.execute(
-            text("""insert into workbench_environments (id, owner_actor_id, name, agent_version, codex_version, roots, ceiling, status, last_seen_at)
-                    values (:id, :owner, :name, :av, :cv, cast(:roots as jsonb), cast(:ceiling as jsonb), 'online', now())"""),
+            text("""insert into workbench_environments (id, owner_actor_id, name, agent_version, codex_version, roots, ceiling, status, last_seen_at,
+                      device_id, host, os, first_host)
+                    values (:id, :owner, :name, :av, :cv, cast(:roots as jsonb), cast(:ceiling as jsonb), 'online', now(), :dev, :host, :os, :host)"""),
             {
                 "id": env_id,
                 "owner": owner_actor_id,
@@ -119,6 +123,9 @@ class WorkbenchRepository:
                 "cv": codex_version,
                 "roots": _j(roots),
                 "ceiling": _j(ceiling),
+                "dev": device_id,
+                "host": host,
+                "os": os,
             },
         )
         return env_id
@@ -163,15 +170,31 @@ class WorkbenchRepository:
         codex_version: str | None,
         roots: list[str],
         ceiling: dict,
+        device_id: str | None = None,
+        host: str | None = None,
+        os: str | None = None,
     ) -> str:
-        r = await self.session.execute(
-            text(
-                """select id from workbench_environments where owner_actor_id = :o and name = :n
-                   order by created_at limit 1 for update"""
-            ),
-            {"o": owner_actor_id, "n": name},
-        )
-        row = r.first()
+        row = None
+        if device_id:
+            r = await self.session.execute(
+                text(
+                    """select id from workbench_environments where owner_actor_id = :o and device_id = :d
+                       limit 1 for update"""
+                ),
+                {"o": owner_actor_id, "d": device_id},
+            )
+            row = r.first()
+        if row is None:
+            # 老代理按名字认；新代理第一次报到时认领同名、还没编号的那条（项目挂在它上面，不能另起一条）
+            r = await self.session.execute(
+                text(
+                    """select id from workbench_environments where owner_actor_id = :o and name = :n
+                         and (cast(:d as text) is null or device_id is null)
+                       order by created_at limit 1 for update"""
+                ),
+                {"o": owner_actor_id, "n": name, "d": device_id},
+            )
+            row = r.first()
         if row is None:
             return await self.register_environment(
                 owner_actor_id=owner_actor_id,
@@ -180,22 +203,42 @@ class WorkbenchRepository:
                 codex_version=codex_version,
                 roots=roots,
                 ceiling=ceiling,
+                device_id=device_id,
+                host=host,
+                os=os,
             )
         await self.session.execute(
             text(
-                """update workbench_environments set agent_version = :av, codex_version = :cv,
+                """update workbench_environments set name = :n, agent_version = :av, codex_version = :cv,
                      roots = cast(:roots as jsonb), ceiling = cast(:ceiling as jsonb),
+                     device_id = coalesce(:dev, device_id), host = coalesce(:host, host), os = coalesce(:os, os),
+                     first_host = coalesce(first_host, :host),
                      status = 'online', last_seen_at = now(), updated_at = now() where id = :id"""
             ),
             {
                 "id": row[0],
+                "n": name,
                 "av": agent_version,
                 "cv": codex_version,
                 "roots": _j(roots),
                 "ceiling": _j(ceiling),
+                "dev": device_id,
+                "host": host,
+                "os": os,
             },
         )
         return str(row[0])
+
+    async def assigned_environment(self, owner_actor_id: str) -> dict[str, Any] | None:
+        r = await self.session.execute(
+            text(
+                """select * from workbench_environments where owner_actor_id = :o and device_id is not null
+                   order by last_seen_at desc nulls last, created_at desc limit 1"""
+            ),
+            {"o": owner_actor_id},
+        )
+        m = r.mappings().first()
+        return dict(m) if m else None
 
     async def set_environments_offline(
         self, owner_actor_id: str, *, except_id: str | None = None
@@ -1335,6 +1378,8 @@ class WorkbenchRepository:
             "started_at",
             "finished_at",
             "cleanup_after",
+            "blocked_reason",
+            "blocked_logged_at",
         }
         assert set(changes) <= allowed, sorted(set(changes) - allowed)
         sets = ", ".join(f"{k} = :{k}" for k in changes)

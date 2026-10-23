@@ -68,6 +68,9 @@ from app.domain.workbench.tool_policy import DECISION_ACCEPT, DECISION_DECLINE
 
 log = logging.getLogger(__name__)
 
+# 测试没开跑、在等测试电脑时（账 141）：原因变了马上记一行日志，同一原因每隔这么久记一行
+BLOCKED_LOG_EVERY = timedelta(minutes=10)
+
 ACTIVE = ("accepted", "running", "waiting")
 KEEP = timedelta(days=7)  # 测试产出保留 7 天（0027 决定 11 ④）
 KEEP_OUTPUTS = timedelta(
@@ -266,6 +269,12 @@ class KnowbotTestService:
             "finished_at": _iso(run.get("finished_at")),
             "questions": questions,
             "waited_seconds": int(run.get("waited_seconds") or 0),
+            # 还没开跑时在等什么（账 141）：测试电脑不在线，或给不出干净的目录
+            **(
+                {"blocked": run["blocked_reason"]}
+                if status == "accepted" and run.get("blocked_reason")
+                else {}
+            ),
             **(
                 {"progress": progress}
                 if run["status"] not in FINAL
@@ -478,6 +487,31 @@ class KnowbotTestConductor:
             others_online=others,
         )
 
+    async def _note_blocked(
+        self, repo: Any, run: dict[str, Any], reason: str, now: datetime
+    ) -> None:
+        """测试还没开跑、在等测试电脑（账 141）：记下原因随结果给 knowlab；日志只在原因变了时、或同一原因
+        每 10 分钟记一行，不刷屏。原来这两处静默返回，测试停在「已受理」只能从零日志猜。"""
+        last = run.get("blocked_logged_at")
+        if (
+            run.get("blocked_reason") == reason
+            and last is not None
+            and now - last < BLOCKED_LOG_EVERY
+        ):
+            return
+        waited = int((now - run["created_at"]).total_seconds())
+        log.info(
+            "knowbot test waiting run=%s reason=%s waited=%ss",
+            run["run_id"],
+            reason,
+            waited,
+        )
+        async with repo.transaction():
+            await repo.update_test_run(
+                run["run_id"], blocked_reason=reason, blocked_logged_at=now
+            )
+        run["blocked_reason"], run["blocked_logged_at"] = reason, now
+
     async def advance(self, run_id: str) -> None:
         async with self.stores() as repo:
             run = await repo.get_test_run(run_id)
@@ -494,6 +528,7 @@ class KnowbotTestConductor:
                 return
             if run["started_at"] is None:
                 if not account.online:
+                    await self._note_blocked(repo, run, "computer_offline", now)
                     # 测试电脑不在线不开跑，免得委托落到测试账号下别的电脑上（账 133）；过了时限报错
                     if (now - run["created_at"]).total_seconds() > run[
                         "timeout_seconds"
@@ -522,6 +557,7 @@ class KnowbotTestConductor:
                     )
                     return
                 if not ready:
+                    await self._note_blocked(repo, run, "folder_not_ready", now)
                     # 测试电脑没法给出一个干净的目录（离线、删不掉别人的）：不开跑，下一轮再试；
                     # 等过了这次测试的时限还不行，就报错结束，不一直挂着
                     waited = (now - run["created_at"]).total_seconds()
@@ -534,7 +570,9 @@ class KnowbotTestConductor:
                         )
                     return
                 async with repo.transaction():
-                    await repo.update_test_run(run_id, status="running", started_at=now)
+                    await repo.update_test_run(
+                        run_id, status="running", started_at=now, blocked_reason=None
+                    )
                 run = await repo.get_test_run(run_id)
                 assert run is not None
             request = _request(run)

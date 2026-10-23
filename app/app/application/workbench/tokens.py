@@ -152,6 +152,21 @@ class TokenIssuer:
         return str(owner) if owner else None
 
 
+def exp_of(token: str) -> int | None:
+    """不验签地取 exp（给设置页显示令牌到期日；令牌是我们自己签的）。非 JWT 或没有返回 None。"""
+    parts = token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload = json.loads(
+            base64.urlsafe_b64decode(parts[1] + "=" * (-len(parts[1]) % 4))
+        )
+    except (ValueError, UnicodeDecodeError):
+        return None
+    exp = payload.get("exp") if isinstance(payload, dict) else None
+    return exp if isinstance(exp, int) and not isinstance(exp, bool) else None
+
+
 def jti_of(token: str) -> str | None:
     """不验签地取 jti（吊销时用；令牌是我们自己签的）。非 JWT 返回 None。"""
     parts = token.split(".")

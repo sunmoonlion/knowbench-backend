@@ -115,7 +115,28 @@ def test_a_report_keeps_only_what_can_be_registered():
         "ceiling": {"sandbox": "read-only", "network": True},
         "agent_version": "0.2.0",
         "codex_version": "0.155.1",
+        "device_id": None,
+        "host": None,
+        "os": None,
     }
+
+
+def test_a_report_carries_a_well_formed_device_id_host_and_os():
+    """账 143：0.5.2 起本地 link 报设备编号、主机名、系统；编号不合格式就当没报。"""
+    machine = {
+        "name": "pc",
+        "roots": [],
+        "ceiling": {},
+        "device_id": "0f8fad5b-d9cb-469f-a165-70867728950e",
+        "host": "DESKTOP-" + "x" * 300,
+        "os": "Windows",
+    }
+    report = machine_report({"codex": "0.155.1", "machine": machine})
+    assert report is not None
+    assert report["device_id"] == "0f8fad5b-d9cb-469f-a165-70867728950e"
+    assert len(report["host"]) == 128 and report["os"] == "Windows"
+    bad = machine_report({"machine": machine | {"device_id": "PC-1"}})
+    assert bad is not None and bad["device_id"] is None
 
 
 @pytest.mark.parametrize(

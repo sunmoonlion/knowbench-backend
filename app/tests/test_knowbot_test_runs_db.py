@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -604,6 +605,9 @@ async def test_no_clean_folder_means_no_start_and_then_an_error(db):
         async with db() as s:
             run = await WorkbenchRepository(s).get_test_run("knowlab-run-0014")
             assert run["started_at"] is None and run["status"] == "accepted"
+        # 账 141：结果里写明在等什么
+        got = await status(db, "knowlab-run-0014")
+        assert got["status"] == "accepted" and got["blocked"] == "folder_not_ready"
         clock.at += timedelta(seconds=3601)
         await conductor.tick()
         assert (await status(db, "knowlab-run-0014"))["status"] == "error"
@@ -614,7 +618,7 @@ async def test_no_clean_folder_means_no_start_and_then_an_error(db):
         await fake.close()
 
 
-async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db):
+async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db, caplog):
     """账 133：测试电脑不在线不开跑；测试账号下在线的是别的电脑时，报错里写出来。"""
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()
@@ -640,7 +644,23 @@ async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db):
                 )
         await accept(db, request("knowlab-run-0015"))
         conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, now=clock)
-        await conductor.tick()
+        with caplog.at_level(
+            logging.INFO, logger="app.application.workbench.test_runs"
+        ):
+            await conductor.tick()
+            clock.at += timedelta(seconds=30)
+            await conductor.tick()  # 同一原因不到 10 分钟：不再记
+            clock.at += timedelta(minutes=10)
+            await conductor.tick()  # 满 10 分钟：再记一行
+        waiting = [
+            r.getMessage()
+            for r in caplog.records
+            if "knowbot test waiting" in r.getMessage()
+        ]
+        assert len(waiting) == 2 and all(
+            "run=knowlab-run-0015 reason=computer_offline" in m for m in waiting
+        )
+        assert (await status(db, "knowlab-run-0015"))["blocked"] == "computer_offline"
         async with db() as s:
             repo = WorkbenchRepository(s)
             assert (await repo.get_test_run("knowlab-run-0015"))["started_at"] is None

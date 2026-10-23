@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -39,7 +40,7 @@ from app.application.workbench.provisioning import (
 )
 from app.application.workbench.run_files import task_dossier
 from app.application.workbench.session_service import SessionService
-from app.application.workbench.tokens import TokenIssuer
+from app.application.workbench.tokens import TokenIssuer, exp_of
 from app.bootstrap.workbench import (
     agent_release_store,
     build_agent_service,
@@ -276,6 +277,41 @@ async def list_environments(
             _plain(e)
             for e in await repo.list_environments(owner_actor_id=_actor(principal))
         ],
+    }
+
+
+@router.get("/local-link")
+async def local_link(
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    cipher=Depends(credential_cipher),
+):
+    """打开工作台时的核对（会合点备忘第五节，账 143）：配给当前账号的那份本地 link 在哪台机器上（带设备编号乙）、
+    它连没连着；配置像不像是从别的电脑拷来的（第一次登记时的主机名和现在的对不上）；令牌哪天到期。
+    网页拿乙和浏览器所在电脑上本地 link 自己报的编号（甲）比，不在这里判。"""
+    owner = _actor(principal)
+    repo = workbench_store(session)
+    env = await repo.assigned_environment(owner)
+    identity = await repo.get_relay_identity(owner)
+    expires_at = None
+    if identity and identity.get("agent_token_ciphertext"):
+        try:
+            token = cipher.decrypt(identity["agent_token_ciphertext"].encode()).decode()
+        except Exception:  # noqa: BLE001  密文对不上就当不知道，不挡页面
+            token = ""
+        exp = exp_of(token) if token else None
+        expires_at = datetime.fromtimestamp(exp, UTC).isoformat() if exp else None
+    copied = bool(
+        env
+        and env.get("first_host")
+        and env.get("host")
+        and env["first_host"] != env["host"]
+    )
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "assigned": _plain(env) if env else None,
+        "copied": copied,
+        "token_expires_at": expires_at,
     }
 
 

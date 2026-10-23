@@ -174,8 +174,16 @@ class WorkbenchStore(Protocol):
         codex_version: str | None,
         roots: list[str],
         ceiling: dict,
+        device_id: str | None = None,
+        host: str | None = None,
+        os: str | None = None,
     ) -> str:
-        """本地代理报到：这个人名下同名的机器有就更新、没有就建，置为在线。返回机器的 id。"""
+        """本地 link 报到，置为在线，返回机器的 id。报了设备编号（0.5.2 起）就按编号认：有就更新，没有就认领
+        同名、还没编号的那条，再没有就建；没报编号（老代理）按名字认（账 143）。"""
+        ...
+
+    async def assigned_environment(self, owner_actor_id: str) -> dict[str, Any] | None:
+        """配给这个人的那份本地 link 所在的机器：带设备编号、最近一次看到连着的那条；没有就 None。"""
         ...
 
     async def set_environments_offline(
