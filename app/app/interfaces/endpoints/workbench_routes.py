@@ -35,6 +35,7 @@ from app.application.workbench.agent_service import (
     AgentServiceUnconfigured,
     validate_path,
 )
+from app.application.workbench.delegation import DelegationService
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.interactions import cancel_task as stop_task
 from app.application.workbench.ledger import Ledger
@@ -50,9 +51,11 @@ from app.bootstrap.workbench import (
     build_agent_service,
     build_provisioner,
     build_relay_admin,
+    data_chooser,
     workbench_store,
 )
 from app.domain.security import Principal
+from app.domain.workbench.data_needs import DataChoice
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.provider_url import (
@@ -61,7 +64,10 @@ from app.domain.workbench.provider_url import (
 )
 from app.infrastructure.storage.postgres import get_db_session, get_postgres
 from app.infrastructure.storage.redis import get_redis
-from app.interfaces.http.middleware.auth import get_web_current_user
+from app.interfaces.http.middleware.auth import (
+    get_web_current_user,
+    get_web_knowbase_token_provider,
+)
 from core.config import get_settings
 
 # 2：项目、对话的种类（PRD/apps/investment.md）。旧的建会话入参仍然接受。
@@ -136,6 +142,8 @@ class Handover(Strict):
     budget_currency: str = "CNY"
     requested_deadline: str | None = None
     client_context: dict[str, Any] = Field(default_factory=dict)
+    # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
+    data: list[DataChoice] = Field(default_factory=list, max_length=64)
 
 
 class RespondInteraction(Strict):
@@ -873,11 +881,19 @@ async def handover(
     body: Handover,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ):
     repo = workbench_store(session)
-    req = HandoverRequest(session_id=session_id, **body.model_dump())
+    fields = body.model_dump(exclude={"data"})
+    data = [c.model_dump(exclude_none=True) for c in body.data]
+    req = HandoverRequest(session_id=session_id, data=data, **fields)
     try:
-        result = await Ledger(repo).handover(req, owner_actor_id=_actor(principal))
+        result = await DelegationService(repo).handover(
+            req,
+            owner_actor_id=_actor(principal),
+            chooser=data_chooser(),
+            user_token=user_token,
+        )
         if result["created"] and not result.get("queued_behind"):
             s = await repo.get_session(session_id)
             async with repo.transaction():

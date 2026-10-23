@@ -1439,6 +1439,46 @@ class WorkbenchRepository:
         )
         return [dict(m) for m in r.mappings().all()]
 
+    async def last_task_data(
+        self, *, owner_actor_id: str, project_id: str, knowbot_id: str
+    ) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """select d.* from workbench_task_data d
+                   where d.task_id = (
+                     select t.id from workbench_tasks t
+                     where t.owner_actor_id = :o and t.project_id = :p
+                       and t.profile_id like :k
+                       and exists (select 1 from workbench_task_data x where x.task_id = t.id)
+                     order by t.created_at desc limit 1)
+                   order by d.position"""
+            ),
+            {"o": owner_actor_id, "p": project_id, "k": f"knowbot:{knowbot_id}@%"},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
+        r = await self.session.execute(
+            text(
+                """select distinct d.grant_id from workbench_task_data d
+                   join workbench_tasks t on t.id = d.task_id
+                   where d.grant_id is not null and d.grant_released_at is null
+                     and t.state in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
+                   limit :n"""
+            ),
+            {"n": limit},
+        )
+        return [str(row[0]) for row in r.all()]
+
+    async def mark_grant_released(self, grant_id: str) -> None:
+        await self.session.execute(
+            text(
+                """update workbench_task_data set grant_released_at = now()
+                   where grant_id = :g and grant_released_at is null"""
+            ),
+            {"g": grant_id},
+        )
+
     async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
         # 不带 outputs：每条最多 2 MB，推进器每 5 秒、knowlab 每次刷新都走这里（审读 10-19）
         r = await self.session.execute(

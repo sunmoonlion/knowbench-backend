@@ -181,6 +181,11 @@ class ExpertDesk:
                 task["budget"], running=await self._running_cost(task)
             ),
             "data": data,  # 第 2 步做完之前是 None：还不知道
+            # 请专家时选的、钉进这件委托的数据（SDD 0042）：哪一样、名字、从哪来
+            "chosen_data": [
+                {"need": d["slot"], "name": d["name"], "source": d["source"]}
+                for d in await self.repo.list_task_data(str(task["id"]))
+            ],
             "started_at": started,
             "ended_at": ended,
             "seconds": int((until - started).total_seconds()) if started else None,

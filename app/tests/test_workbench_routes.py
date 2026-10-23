@@ -14,7 +14,10 @@ from app.bootstrap.api import create_app
 from app.domain.security import Principal
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import require_workbench_enabled
-from app.interfaces.http.middleware.auth import get_web_current_user
+from app.interfaces.http.middleware.auth import (
+    get_web_current_user,
+    get_web_knowbase_token_provider,
+)
 from core.config import Settings
 
 
@@ -49,12 +52,21 @@ def make_client(db, monkeypatch):  # noqa: F811
     # get_settings 是缓存的：开关用依赖覆盖，不靠环境变量
     app.dependency_overrides[require_workbench_enabled] = lambda: None
 
+    # 请专家时才换的 knowbase 用户令牌（SDD 0042）：测试里不经 Casdoor，要用的测试自己换掉
+    async def no_knowbase_token() -> str:
+        raise AssertionError("this test did not expect a knowbase token")
+
+    app.dependency_overrides[get_web_knowbase_token_provider] = lambda: (
+        no_knowbase_token
+    )
+
     def as_user(actor_id: str):
         app.dependency_overrides[get_web_current_user] = lambda: principal(actor_id)
         return AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         )
 
+    as_user.app = app  # type: ignore[attr-defined]  # 要换别的依赖的测试用
     return as_user
 
 

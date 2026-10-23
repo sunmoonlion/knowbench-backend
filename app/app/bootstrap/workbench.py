@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.ports.workbench import (
     AppServerConnector,
+    CloudGrants,
     EventPublisher,
     KnowbotDataSource,
     KnowmartSummoner,
@@ -21,6 +22,7 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench.agent_download import ReleaseStore
+from app.application.workbench.data_choice import DataChooser, GrantReleaser
 from app.application.workbench.machines import MachineSync
 from app.application.workbench.pinned_data import DataSources, PinnedData
 from app.application.workbench.runner import Runner
@@ -75,7 +77,6 @@ def knowbot_data_source() -> KnowbotDataSource:
     委托钉住的那几份（SDD 0042）：云端经 knowbase、本地经会合点服务流（没配会合点或签名私钥
     就读不到本地的）；旧格式的专家经 knowlab 读作者绑的（0027 §3.5）。
     """
-    from app.application.workbench.tokens import TokenIssuer
     from app.infrastructure.documents.table_extract import CachedTableExtractor
     from app.infrastructure.documents.text_extract import CachedTextExtractor
     from app.infrastructure.external.knowbase_user_data import (
@@ -83,25 +84,51 @@ def knowbot_data_source() -> KnowbotDataSource:
         KnowbaseUserData,
     )
 
-    settings = get_settings()
-    relay_url = settings.workbench_relay_admin_url
-    signing_key = settings.workbench_token_signing_key
-    agent = (
-        build_agent_service(
-            relay_url, TokenIssuer(signing_key, issuer=settings.workbench_token_issuer)
-        )
-        if relay_url and signing_key
-        else None
-    )
     return DataSources(
         pinned=PinnedData(
             cloud=KnowbaseGrantedData(KnowbaseUserData(timeout=KNOWBASE_DATA_TIMEOUT)),
-            agent=agent,
+            agent=_service_agent(),
             text=CachedTextExtractor(),
             tables=CachedTableExtractor(),
         ),
         legacy=KnowlabDataClient(timeout=KNOWLAB_DATA_TIMEOUT),
     )
+
+
+def _service_agent() -> AgentService | None:
+    """经会合点服务流问用户电脑上的 link；没配会合点或签名私钥就没有（None）。"""
+    from app.application.workbench.tokens import TokenIssuer
+
+    settings = get_settings()
+    relay_url = settings.workbench_relay_admin_url
+    signing_key = settings.workbench_token_signing_key
+    if not (relay_url and signing_key):
+        return None
+    return build_agent_service(
+        relay_url, TokenIssuer(signing_key, issuer=settings.workbench_token_issuer)
+    )
+
+
+def _cloud_grants() -> CloudGrants:
+    from app.infrastructure.external.knowbase_user_data import (
+        KnowbaseCloudGrants,
+        KnowbaseUserData,
+    )
+
+    return KnowbaseCloudGrants(KnowbaseUserData())
+
+
+@lru_cache(maxsize=1)
+def data_chooser() -> DataChooser:
+    """请专家时选数据、签运行授权（SDD 0042；进程内共用）。"""
+    return DataChooser(cloud=_cloud_grants(), agent=_service_agent())
+
+
+def build_grant_releaser(
+    session_factory: async_sessionmaker[AsyncSession],
+) -> GrantReleaser:
+    """委托结束后交还运行授权（runner 里一条线）。"""
+    return GrantReleaser(workbench_stores(session_factory), _cloud_grants())
 
 
 def workbench_store(session: AsyncSession) -> WorkbenchStore:

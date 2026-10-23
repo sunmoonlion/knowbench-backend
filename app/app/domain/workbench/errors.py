@@ -207,6 +207,20 @@ class DataChanged(UserDataUnavailable):
     http_status = 409
 
 
+class DataRequired(WorkbenchError):
+    """这位专家写了数据需求声明，请它要先按声明选好数据（SDD 0042 第五节第 6 项）。"""
+
+    code = "data_required"
+    http_status = 422
+
+
+class DataChoiceInvalid(WorkbenchError):
+    """选的数据不合这位专家的声明：缺了必填的、份数不对、格式不收、不在知识库里……"""
+
+    code = "data_choice_invalid"
+    http_status = 422
+
+
 class KnowbotUnavailable(WorkbenchError):
     """knowmart 暂时取不到：只影响新的「请」，在跑的委托读自己钉住的那份。"""
 

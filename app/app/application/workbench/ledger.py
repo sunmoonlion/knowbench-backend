@@ -16,6 +16,8 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.catalog import PinnedPack, pack_for_task, pinned_pack
 from app.domain.workbench.errors import (
     BudgetExhausted,
+    DataChoiceInvalid,
+    DataRequired,
     EnvironmentOffline,
     IdempotencyConflict,
     InteractionRejected,
@@ -87,10 +89,13 @@ class Ledger:
         profile_version: str | None = None,
         expert_pack_version: str | None = None,
         snapshot: PinnedPack | None = None,
+        pins: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """F-INTAKE-01/02、F-ADMIT-01、F-WHEEL-01：幂等建单、首事件、wheel=advisor，同一提交。
 
         snapshot：调用方已经核好的专家包快照（跑分身测试时是草稿，SDD 0027 §3.4）。
+        pins：按专家的数据需求声明选好、核过的数据（data_choice.DataChooser），同一提交钉进委托；
+        写了声明的专家没有就不建（SDD 0042）。
         """
         digest = req.digest()
         async with self.repo.transaction():
@@ -145,6 +150,11 @@ class Ledger:
                 if is_knowbot(req.profile_id)
                 else None
             )
+            needs = pinned.needs if pinned is not None and snapshot is None else ()
+            if needs and not pins:
+                raise DataRequired("choose the data this expert needs first")
+            if pins and not needs:
+                raise DataChoiceInvalid("this expert takes no data")
             task_id = str(uuid.uuid4())
             budget = Budget(currency=req.budget_currency, limit=req.budget_limit)
             client_context = dict(req.client_context)
@@ -181,6 +191,8 @@ class Ledger:
                     "budget": budget.as_json(),
                 }
             )
+            if pins:
+                await self.repo.pin_task_data(task_id, pins)
             # 交给专家 = 这段对话从此是专家对话（原地转，同一条线）
             from app.application.workbench.session_service import SessionService
 

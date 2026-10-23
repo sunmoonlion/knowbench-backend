@@ -2,7 +2,7 @@
 
 请专家那一刻，用户按专家的数据需求声明从本地知识库（A，本地 link 算 sha256）或云端知识库
 （B，knowbase 的资料编号与摘要、这件委托的运行授权）选的每一份记一行。专家只能读这几份，
-读时再核摘要；数值验收按钉住的内容复核。`dataset_id` 是工作台给这一份起的编号，读数据工具、
+读时再核摘要；数值验收按钉住的内容复核。委托结束后交还运行授权（`grant_released_at`）。`dataset_id` 是工作台给这一份起的编号，读数据工具、
 格子地址、引文都用它（形状与原来 knowlab 的数据编号一样）。
 
 Revision ID: 20261023_0024
@@ -39,6 +39,8 @@ def upgrade() -> None:
         # B：knowbase 的资料编号与这件委托的运行授权
         sa.Column("item_id", sa.String(64)),
         sa.Column("grant_id", sa.String(64)),
+        # 委托结束后向 knowbase 交还了运行授权的时间（没交还的由 runner 补）
+        sa.Column("grant_released_at", sa.DateTime(timezone=True)),
         # A：用户电脑上的绝对路径（本地知识库目录里）
         sa.Column("path", sa.String(1024)),
         sa.Column("name", sa.String(255), nullable=False),
@@ -58,7 +60,15 @@ def upgrade() -> None:
             " AND grant_id IS NULL)",
             name="ck_workbench_task_data_source",
         ),
-        sa.UniqueConstraint("task_id", "position", name="uq_workbench_task_data_position"),
+        sa.UniqueConstraint(
+            "task_id", "position", name="uq_workbench_task_data_position"
+        ),
+    )
+    op.create_index(
+        "ix_workbench_task_data_unreleased",
+        "workbench_task_data",
+        ["grant_id"],
+        postgresql_where=sa.text("grant_id IS NOT NULL AND grant_released_at IS NULL"),
     )
 
 

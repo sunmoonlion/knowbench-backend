@@ -94,6 +94,29 @@ async def get_web_knowbase_token(
     return await web_auth_service.user_token(session_id, audience=audience)
 
 
+async def get_web_knowbase_token_provider(
+    session: Annotated[BrowserSession, Depends(get_web_browser_session)],
+    session_cookie: str | None = Cookie(
+        default=None, alias=_web_profile.session_cookie_name
+    ),
+) -> Callable[[], Awaitable[str]]:
+    """同 get_web_knowbase_token，但真要用时才换（请专家只在选了云端数据时才要）。
+
+    参数不叫 session_id：挂在 /sessions/{session_id}/… 上时会和路径参数撞名。
+    """
+    del session
+
+    async def provide() -> str:
+        audience = get_settings().knowbase_user_audience.strip()
+        if not audience:
+            raise ServiceUnavailableError(
+                "knowbase is not configured", code="knowbase_unconfigured"
+            )
+        return await web_auth_service.user_token(session_cookie, audience=audience)
+
+    return provide
+
+
 async def get_admin_current_user(
     session: Annotated[BrowserSession, Depends(get_admin_browser_session)],
 ) -> Principal:

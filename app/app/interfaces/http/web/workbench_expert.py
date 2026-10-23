@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
 
@@ -20,8 +21,9 @@ from app.application.workbench.catalog import (
 )
 from app.application.workbench.delegation import DelegationService
 from app.application.workbench.expert_desk import ExpertDesk
-from app.bootstrap.workbench import knowmart_summoner, workbench_store
+from app.bootstrap.workbench import data_chooser, knowmart_summoner, workbench_store
 from app.domain.security import Principal
+from app.domain.workbench.data_needs import DataChoice
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
@@ -33,7 +35,10 @@ from app.interfaces.endpoints.workbench_routes import (
     _publish_commands_wakeup,
     require_workbench_enabled,
 )
-from app.interfaces.http.middleware.auth import get_web_current_user
+from app.interfaces.http.middleware.auth import (
+    get_web_current_user,
+    get_web_knowbase_token_provider,
+)
 
 router = APIRouter(
     prefix="/workbench",
@@ -55,6 +60,8 @@ class Delegate(Strict):
     # 上限可以不给：不给就没有上限。页面上实时显示花了多少，用户随时可以停
     budget_limit: Decimal | None = Field(default=None, gt=0, le=Decimal("100000"))
     budget_currency: str = Field(default="CNY", pattern=r"^CNY$")
+    # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
+    data: list[DataChoice] = Field(default_factory=list, max_length=64)
 
 
 class PinKnowbot(Strict):
@@ -102,6 +109,26 @@ async def one_pack(
         raise _http(exc) from exc
     source = "knowbot" if pack_id.startswith("knowbot:") else "builtin"
     return {"contract_version": CONTRACT_VERSION, "pack": _view(pack, source)}
+
+
+@router.get("/packs/{pack_id}/data-needs")
+async def data_needs(
+    pack_id: str,
+    project_id: str | None = Query(default=None, max_length=64),
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """请这位专家要提供哪些数据（数据需求声明），和同一项目上次选的那几份（弹框默认选上）。
+
+    内置专家、旧格式的分身没有声明：needs 是空的，不用选。
+    """
+    try:
+        found = await DelegationService(workbench_store(session)).data_needs(
+            owner_actor_id=_actor(principal), profile_id=pack_id, project_id=project_id
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **found}
 
 
 @router.post("/knowbots/pin")
@@ -166,6 +193,7 @@ async def delegate(
     body: Delegate,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ) -> dict[str, Any]:
     """从专家入口请专家：新建一段工作对话并立刻交给专家。要么都成，要么什么都不留下。"""
     question = body.question.strip()
@@ -180,6 +208,9 @@ async def delegate(
             budget_limit=body.budget_limit,
             budget_currency=body.budget_currency,
             idempotency_key=body.idempotency_key,
+            data=[c.model_dump(exclude_none=True) for c in body.data],
+            chooser=data_chooser(),
+            user_token=user_token,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc

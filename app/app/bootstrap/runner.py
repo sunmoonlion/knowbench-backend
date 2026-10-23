@@ -12,6 +12,7 @@ import signal
 
 from app.bootstrap.workbench import (
     build_deliverable_check,
+    build_grant_releaser,
     build_machine_sync,
     build_runner,
     build_test_conductor,
@@ -80,10 +81,15 @@ async def main() -> None:
         if tests
         else None
     )
+    # 请专家用自己的数据（SDD 0042）：委托结束后交还它的运行授权
+    releasing = asyncio.create_task(
+        build_grant_releaser(get_postgres().session_factory).run_forever(stopping)
+    )
     try:
         await runner.run_forever()
     finally:
         stopping.set()
+        await releasing
         if syncing is not None:
             await syncing
         if testing is not None:

@@ -761,6 +761,18 @@ class WorkbenchStore(Protocol):
         """这件委托钉住的数据，按次序；没选过就是空的。"""
         ...
 
+    async def last_task_data(
+        self, *, owner_actor_id: str, project_id: str, knowbot_id: str
+    ) -> list[dict[str, Any]]:
+        """同一项目里上次请这位专家（任一版）时钉住的那几份；没有就是空的。"""
+        ...
+
+    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
+        """委托已结束、运行授权还没交还的。"""
+        ...
+
+    async def mark_grant_released(self, grant_id: str) -> None: ...
+
     # ---------- 作为运行方跑分身测试（SDD 0027 §3.4）----------
     async def actor_for_subject(self, subject: str) -> str | None:
         """Casdoor 用户 id → 本地 actor id（测试账号用）；没登录过就是 None。"""
@@ -909,6 +921,34 @@ class CloudDataReader(Protocol):
     """
 
     async def content(self, *, grant_id: str, item_id: str) -> bytes: ...
+
+
+class CloudGrants(Protocol):
+    """请专家时核用户从云端知识库选的那几份、签这件委托的运行授权，委托结束交还
+    （knowbase 契约 user-data/v1，SDD 0042 第五节）。
+
+    knowbase 不可达、没配好抛 UserDataUnavailable；资料不在这个用户的 knowbench 分区里抛
+    DataChoiceInvalid；用户令牌要重新登录时照原样抛出（网页据此叫用户重新登录）。
+    """
+
+    async def item(self, user_token: str, item_id: str) -> dict[str, Any]:
+        """一份资料：name、media_type、size_bytes、sha256。"""
+        ...
+
+    async def grant(
+        self,
+        user_token: str,
+        *,
+        ref: str,
+        items: list[dict[str, str]],
+        ttl_seconds: int,
+    ) -> str:
+        """签委托运行授权（只读这几份、钉这几个摘要），回授权编号。"""
+        ...
+
+    async def release(self, grant_id: str) -> None:
+        """读的一方交还授权（服务身份，不用用户在场）。"""
+        ...
 
 
 class TextExtractor(Protocol):

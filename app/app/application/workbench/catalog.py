@@ -12,6 +12,7 @@ from typing import Any
 
 from app.application.ports.workbench import KnowmartSummoner, WorkbenchStore
 from app.domain.workbench import knowbots
+from app.domain.workbench.data_needs import BadNeeds, DataNeed, needs_of
 from app.domain.workbench.errors import ExpertNotReady, KnowbotInvalid, NoSuchExpert
 from app.domain.workbench.packs import ExpertPack, find_pack
 
@@ -29,6 +30,8 @@ class PinnedPack:
     pack: ExpertPack
     digest: str
     source: str = SOURCE_KNOWMART
+    # 数据需求声明（SDD 0042）：有的话请它要先选数据；旧格式、测试中的草稿是空的
+    needs: tuple[DataNeed, ...] = ()
 
     def task_columns(self) -> dict[str, Any]:
         """建委托时写进委托的三列。"""
@@ -70,7 +73,11 @@ def pack_from_pin(pin: dict[str, Any]) -> PinnedPack:
     pack = knowbots.pack_from_manifest(
         pin["manifest"], knowbot_id=knowbot_id, version=version
     )
-    return PinnedPack(pack=pack, digest=str(pin["digest"]))
+    try:
+        needs = tuple(needs_of(pin["manifest"]))
+    except BadNeeds as exc:
+        raise KnowbotInvalid(str(exc), knowbot=knowbot_id) from None
+    return PinnedPack(pack=pack, digest=str(pin["digest"]), needs=needs)
 
 
 async def pinned_pack(

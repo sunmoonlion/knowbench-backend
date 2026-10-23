@@ -23,7 +23,11 @@ import httpx
 
 from app.application.errors.exceptions import ServiceUnavailableError
 from app.application.workbench.pinned_data import CHANGED
-from app.domain.workbench.errors import DataChanged, UserDataUnavailable
+from app.domain.workbench.errors import (
+    DataChanged,
+    DataChoiceInvalid,
+    UserDataUnavailable,
+)
 from app.infrastructure.external.service_client import ServiceClient, service_relation
 
 BASE = "/api/internal/v1/user-data"
@@ -159,6 +163,11 @@ class KnowbaseUserData:
         token = await self._service_token("user-data-read")
         _, body, _ = await self._send("GET", f"/grants/{_segment(grant_id)}", token)
         return body
+
+    async def release(self, grant_id: str) -> None:
+        """读的一方交还给自己的授权（委托结束时）。"""
+        token = await self._service_token("user-data-read")
+        await self._send("POST", f"/grants/{_segment(grant_id)}/release", token)
 
     async def read_content(self, grant_id: str, item_id: str) -> Content:
         token = await self._service_token("user-data-read")
@@ -300,3 +309,76 @@ class KnowbaseGrantedData:
         except ServiceUnavailableError:
             raise UserDataUnavailable("the user's data is unavailable now") from None
         return got.data
+
+
+class KnowbaseCloudGrants:
+    """请专家选云端数据时核资料、签委托运行授权，委托结束交还（端口 CloudGrants，SDD 0042）。"""
+
+    def __init__(self, client: KnowbaseUserData) -> None:
+        self.client = client
+
+    async def item(self, user_token: str, item_id: str) -> dict[str, Any]:
+        try:
+            return await self.client.item(user_token, item_id)
+        except KnowbaseRefused as exc:
+            if exc.status == 404:
+                raise DataChoiceInvalid(
+                    "a chosen item is not in your cloud knowledge base"
+                ) from None
+            raise DataChoiceInvalid(
+                f"the cloud knowledge base refused ({exc.code})"
+            ) from None
+        except ServiceUnavailableError:
+            raise UserDataUnavailable(
+                "the cloud knowledge base is unavailable now"
+            ) from None
+
+    async def grant(
+        self,
+        user_token: str,
+        *,
+        ref: str,
+        items: list[dict[str, str]],
+        ttl_seconds: int,
+    ) -> str:
+        try:
+            body = await self.client.grant(
+                user_token,
+                kind="delegation",
+                reader_app="knowbench",
+                ref=ref,
+                items=items,
+                ttl_seconds=ttl_seconds,
+            )
+        except KnowbaseRefused as exc:
+            if exc.code == "sha256_mismatch":
+                raise DataChoiceInvalid(
+                    "a chosen item changed just now; choose it again"
+                ) from None
+            raise DataChoiceInvalid(
+                f"the cloud knowledge base refused ({exc.code})"
+            ) from None
+        except ServiceUnavailableError:
+            raise UserDataUnavailable(
+                "the cloud knowledge base is unavailable now"
+            ) from None
+        grant_id = body.get("grant_id") if isinstance(body, dict) else None
+        if not isinstance(grant_id, str) or not grant_id:
+            raise UserDataUnavailable(
+                "the cloud knowledge base answered outside the contract"
+            )
+        return grant_id
+
+    async def release(self, grant_id: str) -> None:
+        try:
+            await self.client.release(grant_id)
+        except KnowbaseRefused as exc:
+            if exc.status == 404:
+                return  # 已经没有了：与交还了一样
+            raise UserDataUnavailable(
+                f"handing back the grant failed ({exc.code})"
+            ) from None
+        except ServiceUnavailableError:
+            raise UserDataUnavailable(
+                "the cloud knowledge base is unavailable now"
+            ) from None
