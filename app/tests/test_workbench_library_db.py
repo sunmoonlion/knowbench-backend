@@ -1,5 +1,6 @@
 """知识库第一期（SDD 0011；F-LIB-01/03/04/05/08，AT-LIB-01/03/04/05）：
-底稿与交回物自动归入、读、改名、拿掉；网页与 MCP 两条路；别人看不到。真数据库。"""
+底稿与交回物自动归入、读、改名、拿掉；MCP 一条路（网页的「知识库」页 10-23 起换成云端知识库，
+SDD 0042）；别人看不到。真数据库。"""
 
 from __future__ import annotations
 
@@ -15,7 +16,6 @@ from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_mcp_routes import bearer, client, rpc, served, tool  # noqa: F401
 from test_workbench_records_db import world
 from test_workbench_review_db import unbalanced
-from test_workbench_routes import make_client as make_client  # noqa: F401
 from test_workbench_step_view_db import run
 
 from app.application.workbench.library import Library
@@ -141,42 +141,6 @@ async def test_the_user_can_rename_and_take_an_item_out(db):
         # 原委托的记录不动（删的是「从知识库拿掉」）
         repo = WorkbenchRepository(s)
         assert await repo.get_artifact(task_id=task_id, name="metrics") is not None
-
-
-async def test_the_web_routes(db, make_client):  # noqa: F811
-    task_id = await finished(db)
-    as_user = make_client
-    async with as_user(OWNER) as http:
-        listed = await http.get("/api/workbench/library")
-        assert listed.status_code == 200
-        items = listed.json()["items"]
-        assert any(i["id"] == f"dossier:{task_id}" for i in items)
-        one = await http.get(f"/api/workbench/library/deliverable:{task_id}:metrics")
-        assert one.status_code == 200
-        assert one.json()["item"]["version_list"][0]["version"] == 1
-        content = await http.get(
-            f"/api/workbench/library/deliverable:{task_id}:metrics/versions/1/content"
-        )
-        assert content.status_code == 200 and content.json()["content"] == METRICS
-        renamed = await http.patch(
-            f"/api/workbench/library/deliverable:{task_id}:metrics",
-            json={"title": "我的表"},
-        )
-        assert (
-            renamed.status_code == 200 and renamed.json()["item"]["title"] == "我的表"
-        )
-        assert (
-            await http.delete(f"/api/workbench/library/deliverable:{task_id}:metrics")
-        ).status_code == 204
-        assert (
-            await http.get(f"/api/workbench/library/deliverable:{task_id}:metrics")
-        ).status_code == 404
-        assert (await http.get("/api/workbench/library/nonsense")).status_code == 404
-    async with as_user(OTHER) as http:
-        assert (await http.get("/api/workbench/library")).json()["items"] == []
-        assert (
-            await http.get(f"/api/workbench/library/dossier:{task_id}")
-        ).status_code == 404
 
 
 async def test_codex_reads_the_library_without_a_task(served, db):  # noqa: F811

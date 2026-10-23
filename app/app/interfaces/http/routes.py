@@ -21,11 +21,11 @@ from app.interfaces.http.internal.delivery_metrics import (
 from app.interfaces.http.web.auth import router as web_auth_router
 from app.interfaces.http.web.cross_app import router as web_cross_app_router
 from app.interfaces.http.web.interactions import router as web_interactions_router
+from app.interfaces.http.web.workbench_cloud_library import (
+    router as workbench_cloud_library_router,
+)
 from app.interfaces.http.web.workbench_expert import (
     router as workbench_expert_router,
-)
-from app.interfaces.http.web.workbench_library import (
-    router as workbench_library_router,
 )
 from app.interfaces.http.web.workbench_projects import (
     router as workbench_projects_router,
@@ -45,6 +45,7 @@ router.include_router(agent_onboarding_public_router)
 router.include_router(agent_onboarding_owner_router)
 router.include_router(workbench_projects_router)
 router.include_router(workbench_expert_router)
-router.include_router(workbench_library_router)
+# 云端知识库（SDD 0042）：取代原来按交回物算出的「知识库」页
+router.include_router(workbench_cloud_library_router)
 router.include_router(workbench_mcp_router)
 router.include_router(knowbot_runtime_router)
