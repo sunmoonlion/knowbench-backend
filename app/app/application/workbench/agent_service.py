@@ -19,6 +19,8 @@ MAX_READ_BYTES = (
 )  # fs/readFile 一次 ≤ 512 KiB 原文：base64 后约 683 KiB，稳在 1 MiB 帧内（astra 2026-10-12 实测 1 MiB 会超）
 MAX_PATH_CHARS = 1024
 CALL_TIMEOUT_SECONDS = 30.0
+# 远程登录 link 的电脑上拉仓库（账 165）：本地 link 那头拉仓库最多 15 分钟（localProjects.ts CLONE_TIMEOUT_MS），这里多等一分钟
+CLONE_TIMEOUT_SECONDS = 16 * 60.0
 
 
 class AgentServiceUnconfigured(WorkbenchError):
@@ -61,6 +63,13 @@ class AgentRefused(WorkbenchError):
 
     def __init__(self, rpc_code: int, message: str) -> None:
         code, status = RPC_ERRORS.get(rpc_code, ("agent_refused", 502))
+        if rpc_code == PROJECT_REFUSED:
+            # 新建项目被拒（账 165）：代理把 LocalProjects 的代码放在 message 里，认得的照搬给网页
+            code, status = (
+                (message, PROJECT_ERRORS[message])
+                if message in PROJECT_ERRORS
+                else ("project_failed", 502)
+            )
         self.code = code
         self.http_status = status
         super().__init__(message, rpc_code=rpc_code)
@@ -75,6 +84,26 @@ RPC_ERRORS: dict[int, tuple[str, int]] = {
     -32014: ("local_denied", 403),
     -32602: ("invalid_params", 400),
     -32601: ("method_not_found", 502),
+}
+
+# 新建项目被拒（账 165，sunmoon-link service.ts SERVICE_PROJECT_REFUSED）：message 是 LocalProjects 的代码
+PROJECT_REFUSED = -32020
+PROJECT_ERRORS: dict[str, int] = {
+    "invalid_params": 400,
+    "invalid_url": 400,
+    "outside_whitelist": 403,
+    "local_read_only": 403,
+    "not_found": 404,
+    "repo_not_found": 404,
+    "not_a_directory": 409,
+    "target_not_empty": 409,
+    "host_key_unknown": 409,
+    "auth_required": 401,
+    "ssh_auth_failed": 401,
+    "clone_failed": 502,
+    "clone_timeout": 504,
+    "git_missing": 503,
+    "local_failed": 503,
 }
 
 REJECT_REASONS: dict[str, type[WorkbenchError]] = {
@@ -95,5 +124,10 @@ def validate_path(path: str) -> str:
 
 class AgentService(Protocol):
     async def call(
-        self, relay_user: str, method: str, params: dict[str, Any] | None = None
+        self,
+        relay_user: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        wait_seconds: float | None = None,
     ) -> dict[str, Any]: ...

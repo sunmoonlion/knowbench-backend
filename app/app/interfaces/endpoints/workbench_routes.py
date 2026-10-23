@@ -27,9 +27,13 @@ from app.application.workbench.agent_download import (
     byte_range,
 )
 from app.application.workbench.agent_service import (
+    CLONE_TIMEOUT_SECONDS,
+    MAX_PATH_CHARS,
+    MAX_READ_BYTES,
     AgentOffline,
     AgentService,
     AgentServiceUnconfigured,
+    validate_path,
 )
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.interactions import cancel_task as stop_task
@@ -351,10 +355,16 @@ async def _ask_agent(
     environment_id: str,
     method: str,
     params: dict[str, Any] | None = None,
+    *,
+    wait_seconds: float | None = None,
 ) -> dict[str, Any]:
     repo = workbench_store(session)
     try:
         relay_user = await _relay_user_of(repo, _actor(principal), environment_id)
+        if wait_seconds is not None:
+            return await service.call(
+                relay_user, method, params, wait_seconds=wait_seconds
+            )
         return await service.call(relay_user, method, params)
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -371,6 +381,134 @@ async def agent_service_hello(
     return await _ask_agent(
         service, session, principal, environment_id, "service/hello"
     )
+
+
+# ---------------- 远程登录 link 的电脑（账 165，会合点备忘第十一节）----------------
+# 浏览器不在装有本地 link 的电脑上时，看文件、新建项目走这里：工作台经会合点服务流转给那台电脑上的本地 link，
+# 内容只在内存里经过、不落盘、不记日志（访问令牌也一样）。能不能读、写到哪，照旧由本地 link 按白名单判。
+class RemoteFolder(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
+
+
+class RemoteCloneAuth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    username: str | None = Field(default=None, max_length=256)
+    token: str = Field(min_length=1, max_length=4096)
+    remember: bool | None = None
+
+
+class RemoteClone(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    url: str = Field(min_length=1, max_length=2048)
+    path: str = Field(min_length=1, max_length=MAX_PATH_CHARS)
+    auth: RemoteCloneAuth | None = None
+
+
+@router.get("/environments/{environment_id}/remote/fs/dir")
+async def remote_directory(
+    environment_id: str,
+    path: str = Query(min_length=1, max_length=MAX_PATH_CHARS),
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(agent_service),
+):
+    return await _ask_agent(
+        service,
+        session,
+        principal,
+        environment_id,
+        "fs/readDirectory",
+        {"path": _checked_path(path)},
+    )
+
+
+@router.get("/environments/{environment_id}/remote/fs/meta")
+async def remote_metadata(
+    environment_id: str,
+    path: str = Query(min_length=1, max_length=MAX_PATH_CHARS),
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(agent_service),
+):
+    return await _ask_agent(
+        service,
+        session,
+        principal,
+        environment_id,
+        "fs/getMetadata",
+        {"path": _checked_path(path)},
+    )
+
+
+@router.get("/environments/{environment_id}/remote/fs/file")
+async def remote_file(
+    environment_id: str,
+    path: str = Query(min_length=1, max_length=MAX_PATH_CHARS),
+    offset: int = Query(default=0, ge=0),
+    length: int = Query(default=MAX_READ_BYTES, ge=1, le=MAX_READ_BYTES),
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(agent_service),
+):
+    """一次最多 512 KiB 原文，base64 放在 content 里（和服务流一样），网页按 offset 接着要。"""
+    return await _ask_agent(
+        service,
+        session,
+        principal,
+        environment_id,
+        "fs/readFile",
+        {"path": _checked_path(path), "offset": offset, "length": length},
+    )
+
+
+@router.post("/environments/{environment_id}/remote/projects/folder")
+async def remote_project_folder(
+    environment_id: str,
+    body: RemoteFolder,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(agent_service),
+):
+    return await _ask_agent(
+        service,
+        session,
+        principal,
+        environment_id,
+        "projects/folder",
+        {"path": _checked_path(body.path)},
+    )
+
+
+@router.post("/environments/{environment_id}/remote/projects/clone")
+async def remote_project_clone(
+    environment_id: str,
+    body: RemoteClone,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    service: AgentService = Depends(agent_service),
+):
+    """拉仓库：先用那台电脑上 git 现有的登录（不带 auth）；拉不下来回 401 auth_required，网页提醒令牌会经云端转发、
+    不落盘后再带 auth 来。令牌只转给本地 link，不进日志、不存。"""
+    params: dict[str, Any] = {"url": body.url, "path": _checked_path(body.path)}
+    if body.auth is not None:
+        params["auth"] = body.auth.model_dump(exclude_none=True)
+    return await _ask_agent(
+        service,
+        session,
+        principal,
+        environment_id,
+        "projects/clone",
+        params,
+        wait_seconds=CLONE_TIMEOUT_SECONDS,
+    )
+
+
+def _checked_path(path: str) -> str:
+    try:
+        return validate_path(path)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/environments/{environment_id}/local-ticket")

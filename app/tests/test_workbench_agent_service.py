@@ -166,9 +166,11 @@ class FakeService:
         self.result = result or {"ok": True}
         self.raise_ = raise_
         self.calls: list[tuple[str, str, dict[str, Any] | None]] = []
+        self.waits: list[float | None] = []
 
-    async def call(self, relay_user, method, params=None):
+    async def call(self, relay_user, method, params=None, *, wait_seconds=None):
         self.calls.append((relay_user, method, params))
+        self.waits.append(wait_seconds)
         if self.raise_:
             raise self.raise_
         return self.result
@@ -274,6 +276,83 @@ async def test_routes_translate_agent_refusals(make_client, db):  # noqa: F811
             use(http, FakeService(raise_=exc))
             r = await http.get(f"/api/workbench/environments/{env}/service")
             assert (r.status_code, r.json()["code"]) == (status, code)
+
+
+async def test_remote_files_pass_through_for_the_owner_only(make_client, db):  # noqa: F811
+    """账 165：远程登录 link 的电脑看文件，经服务流转给本地 link；别人的电脑 404、不去问。"""
+    async with make_client(A) as http:
+        env = await paired_environment(http, db, A)
+        fake = FakeService(
+            {"entries": [{"name": "a.md", "type": "file"}], "truncated": False}
+        )
+        use(http, fake)
+        base = f"/api/workbench/environments/{env}/remote"
+        r = await http.get(f"{base}/fs/dir", params={"path": "C:\\r"})
+        assert r.status_code == 200 and r.json()["entries"][0]["name"] == "a.md"
+        assert fake.calls[-1] == ("u-aaa", "fs/readDirectory", {"path": "C:\\r"})
+        await http.get(f"{base}/fs/meta", params={"path": "C:\\r\\a.md"})
+        assert fake.calls[-1][1:] == ("fs/getMetadata", {"path": "C:\\r\\a.md"})
+        await http.get(f"{base}/fs/file", params={"path": "C:\\r\\a.md", "offset": 5})
+        assert fake.calls[-1][1:] == (
+            "fs/readFile",
+            {"path": "C:\\r\\a.md", "offset": 5, "length": 512 * 1024},
+        )
+        r = await http.get(
+            f"{base}/fs/file", params={"path": "x", "length": 512 * 1024 + 1}
+        )
+        assert r.status_code == 422
+        before = len(fake.calls)
+    async with make_client(B) as other:
+        use(other, fake)
+        r = await other.get(
+            f"/api/workbench/environments/{env}/remote/fs/dir", params={"path": "C:\\r"}
+        )
+        assert r.status_code == 404 and len(fake.calls) == before
+
+
+async def test_remote_projects_folder_and_clone(make_client, db):  # noqa: F811
+    """账 165：远程建文件夹、拉仓库。先不带令牌拉；要登录时回 401 auth_required，带上令牌再拉；拉仓库多等一会儿。"""
+    from app.application.workbench.agent_service import CLONE_TIMEOUT_SECONDS
+
+    async with make_client(A) as http:
+        env = await paired_environment(http, db, A)
+        base = f"/api/workbench/environments/{env}/remote/projects"
+        fake = FakeService({"path": "C:\\r\\new", "created": True})
+        use(http, fake)
+        r = await http.post(f"{base}/folder", json={"path": "C:\\r\\new"})
+        assert r.status_code == 200 and r.json()["created"] is True
+        assert fake.calls[-1][1:] == ("projects/folder", {"path": "C:\\r\\new"})
+        assert fake.waits[-1] is None
+        use(http, FakeService(raise_=AgentRefused(-32020, "auth_required")))
+        r = await http.post(
+            f"{base}/clone", json={"url": "https://github.com/a/b", "path": "C:\\r\\b"}
+        )
+        assert (r.status_code, r.json()["code"]) == (401, "auth_required")
+        fake = FakeService({"path": "C:\\r\\b", "branch": "main"})
+        use(http, fake)
+        r = await http.post(
+            f"{base}/clone",
+            json={
+                "url": "https://github.com/a/b",
+                "path": "C:\\r\\b",
+                "auth": {"token": "ghp_secret", "remember": False},
+            },
+        )
+        assert r.status_code == 200 and "ghp_secret" not in r.text
+        assert fake.calls[-1][1:] == (
+            "projects/clone",
+            {
+                "url": "https://github.com/a/b",
+                "path": "C:\\r\\b",
+                "auth": {"token": "ghp_secret", "remember": False},
+            },
+        )
+        assert fake.waits[-1] == CLONE_TIMEOUT_SECONDS
+        use(http, FakeService(raise_=AgentRefused(-32020, "something new")))
+        r = await http.post(f"{base}/folder", json={"path": "C:\\r\\x"})
+        assert (r.status_code, r.json()["code"]) == (502, "project_failed")
+        r = await http.post(f"{base}/folder", json={"path": "C:\\r\\x", "extra": 1})
+        assert r.status_code == 422
 
 
 def test_uuid_fixture_values_are_valid():

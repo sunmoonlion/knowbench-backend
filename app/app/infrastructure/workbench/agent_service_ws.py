@@ -35,7 +35,12 @@ class WsAgentService:
         self.timeout = timeout
 
     async def call(
-        self, relay_user: str, method: str, params: dict[str, Any] | None = None
+        self,
+        relay_user: str,
+        method: str,
+        params: dict[str, Any] | None = None,
+        *,
+        wait_seconds: float | None = None,
     ) -> dict[str, Any]:
         from websockets.asyncio.client import connect
 
@@ -62,7 +67,9 @@ class WsAgentService:
                 if first.get("type") != "welcome":
                     raise AgentServiceFailed("relay did not welcome the service stream")
                 await ws.send(json.dumps(request))
-                deadline = time.monotonic() + self.timeout
+                deadline = time.monotonic() + (
+                    self.timeout if wait_seconds is None else wait_seconds
+                )
                 while True:
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
