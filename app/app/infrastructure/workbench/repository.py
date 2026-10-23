@@ -1457,6 +1457,44 @@ class WorkbenchRepository:
         )
         return [dict(m) for m in r.mappings().all()]
 
+    async def session_data(self, session_id: str) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """select * from workbench_session_data where session_id = :s
+                   order by position"""
+            ),
+            {"s": session_id},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def replace_session_data(
+        self, session_id: str, items: list[dict[str, Any]]
+    ) -> None:
+        await self.session.execute(
+            text("delete from workbench_session_data where session_id = :s"),
+            {"s": session_id},
+        )
+        for position, item in enumerate(items):
+            await self.session.execute(
+                text(
+                    """insert into workbench_session_data
+                       (session_id, position, item_id, grant_id, name, media_type,
+                        size_bytes, sha256, expires_at)
+                       values (:s, :p, :i, :g, :n, :m, :b, :h, :e)"""
+                ),
+                {
+                    "s": session_id,
+                    "p": position,
+                    "i": item["item_id"],
+                    "g": item["grant_id"],
+                    "n": item["name"],
+                    "m": item["media_type"],
+                    "b": int(item["size_bytes"]),
+                    "h": item["sha256"],
+                    "e": item["expires_at"],
+                },
+            )
+
     async def grants_to_release(self, *, limit: int = 50) -> list[str]:
         r = await self.session.execute(
             text(
@@ -1648,63 +1686,6 @@ class WorkbenchRepository:
                 "update workbench_test_runs set cleanup_after = null where run_id = :r"
             ),
             {"r": run_id},
-        )
-
-    # ---------- 知识库（SDD 0011）----------
-    async def list_owner_step_artifacts(
-        self, *, owner_actor_id: str
-    ) -> list[dict[str, Any]]:
-        r = await self.session.execute(
-            text(
-                """select a.id, a.task_id, a.name, a.version, a.kind, a.digest, a.created_at,
-                          length(a.content::text) as size_bytes,
-                          t.project_id, t.session_id, t.profile_id, t.profile_version, t.state,
-                          t.original_input, t.created_at as task_created_at,
-                          t.pack_source, t.pack_snapshot->>'name' as pack_name
-                   from workbench_artifacts a join workbench_tasks t on t.id = a.task_id
-                   where t.owner_actor_id = :o and a.kind in ('step', 'user_draft')
-                   order by a.created_at"""
-            ),
-            {"o": owner_actor_id},
-        )
-        return [dict(m) for m in r.mappings().all()]
-
-    async def library_overlay(
-        self, *, owner_actor_id: str
-    ) -> dict[str, dict[str, Any]]:
-        r = await self.session.execute(
-            text(
-                "select item_id, title, deleted_at from workbench_library_items where owner_actor_id = :o"
-            ),
-            {"o": owner_actor_id},
-        )
-        return {m["item_id"]: dict(m) for m in r.mappings().all()}
-
-    async def put_library_overlay(
-        self,
-        *,
-        owner_actor_id: str,
-        item_id: str,
-        title: str | None = None,
-        deleted: bool | None = None,
-    ) -> None:
-        await self.session.execute(
-            text(
-                """insert into workbench_library_items (owner_actor_id, item_id, title, deleted_at)
-                   values (:o, :i, :t, case when :d then now() else null end)
-                   on conflict (owner_actor_id, item_id) do update set
-                     title = coalesce(excluded.title, workbench_library_items.title),
-                     deleted_at = case when cast(:d_set as boolean) then excluded.deleted_at
-                                       else workbench_library_items.deleted_at end,
-                     updated_at = now()"""
-            ),
-            {
-                "o": owner_actor_id,
-                "i": item_id,
-                "t": title,
-                "d": bool(deleted),
-                "d_set": deleted is not None,
-            },
         )
 
     # ---------- user prefs / credentials（设置面） ----------

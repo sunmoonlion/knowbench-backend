@@ -340,11 +340,12 @@ class KnowbaseCloudGrants:
         ref: str,
         items: list[dict[str, str]],
         ttl_seconds: int,
+        kind: str = "delegation",
     ) -> str:
         try:
             body = await self.client.grant(
                 user_token,
-                kind="delegation",
+                kind=kind,
                 reader_app="knowbench",
                 ref=ref,
                 items=items,

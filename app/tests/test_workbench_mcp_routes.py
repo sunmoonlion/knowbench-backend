@@ -259,3 +259,75 @@ async def test_a_result_too_large_for_the_model_is_refused_in_words(
     finally:
         await close(runner)
         await fake.close()
+
+
+async def test_the_library_tools_read_what_the_conversation_chose(
+    served,
+    db,  # noqa: F811
+    monkeypatch,
+):
+    """SDD 0042 第四节：list_library、read_library_item 只读这段对话选用的云端知识库。"""
+    import hashlib
+    from datetime import UTC, datetime, timedelta
+
+    from test_workbench_session_data_db import CSV, Cloud, source
+
+    import app.interfaces.mcp.workbench_mcp as mcp
+    from app.infrastructure.workbench.repository import WorkbenchRepository
+
+    monkeypatch.setattr(mcp, "knowbot_data_source", lambda: source(Cloud()))
+    fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
+    try:
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.replace_session_data(
+                    ids["chat"],
+                    [
+                        {
+                            "item_id": "i1",
+                            "grant_id": "g-1",
+                            "name": "营收.csv",
+                            "media_type": "text/csv; charset=utf-8",
+                            "size_bytes": len(CSV),
+                            "sha256": hashlib.sha256(CSV).hexdigest(),
+                            "expires_at": datetime.now(UTC) + timedelta(hours=1),
+                        }
+                    ],
+                )
+        async with client(served) as http:
+            listed = (
+                await http.post(
+                    URL,
+                    json=tool("list_library", conversation=ids["chat"]),
+                    headers=bearer(),
+                )
+            ).json()["result"]
+            assert listed["isError"] is False
+            assert [i["name"] for i in listed["structuredContent"]["items"]] == [
+                "营收.csv"
+            ]
+            read = (
+                await http.post(
+                    URL,
+                    json=tool("read_library_item", conversation=ids["chat"], item="i1"),
+                    headers=bearer(),
+                )
+            ).json()["result"]
+            assert "营业收入" in read["structuredContent"]["text"]
+            for call in (
+                tool("list_library"),  # 没说是哪段对话
+                tool("list_library", conversation=ids["work"]),  # 这段没选
+                tool("read_library_item", conversation=ids["chat"], item="other"),
+            ):
+                refused = (await http.post(URL, json=call, headers=bearer())).json()
+                assert refused["result"]["isError"] is True, call
+            other = await http.post(
+                URL,
+                json=tool("list_library", conversation=ids["chat"]),
+                headers=bearer(owner=str(uuid.uuid4())),
+            )
+            assert other.json()["result"]["isError"] is True
+    finally:
+        await close(runner)
+        await fake.close()

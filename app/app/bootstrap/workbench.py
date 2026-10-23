@@ -109,6 +109,12 @@ def _service_agent() -> AgentService | None:
     )
 
 
+@lru_cache(maxsize=1)
+def cloud_grants() -> CloudGrants:
+    """向 knowbase 核用户选的云端资料、签与交还运行授权（进程内共用）。"""
+    return _cloud_grants()
+
+
 def _cloud_grants() -> CloudGrants:
     from app.infrastructure.external.knowbase_user_data import (
         KnowbaseCloudGrants,

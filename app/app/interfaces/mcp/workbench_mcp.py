@@ -1,10 +1,12 @@
 """工作台的工具服务：专家读本项目里别的对话与底稿（PRD/apps/investment.md 7.4），
-分身读用户自己绑定的数据（SDD 0027 §3.5）、按格子读与计算（SDD 0030 §3.1、§3.2）。
+专家读用户的数据（SDD 0027 §3.5、SDD 0042：请专家时钉住的那几份）、按格子读与计算
+（SDD 0030 §3.1、§3.2），读这段对话选用的云端知识库（SDD 0042 第四节）。
 
 Streamable HTTP，只用 JSON 响应，不开流。和知识服务的工具并列，由沙箱里的 Codex 调用。
 - 鉴权：`Authorization: Bearer <令牌>`，令牌由工作台签发、工作台自己验，绑定用户；
-- 每个工具都要带 `task`（委托编号，专家每一步的说明里给）。能读哪个项目、现在能不能读，
-  每次调用按这个委托重新核对；
+- 项目、用户数据、计算的工具都要带 `task`（委托编号，专家每一步的说明里给）。能读哪个项目、
+  现在能不能读，每次调用按这个委托重新核对；知识库的两个带对话编号（这一轮的说明里给）
+  或委托编号，只读那段对话选用的几份；
 - 只读：没有改用户东西的工具。`compute` 只把算过的记进委托的计算记录（数值验收按它回查）。
 """
 
@@ -23,11 +25,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.knowbot_data import KnowbotData
-from app.application.workbench.library import Library
-from app.application.workbench.records import ProjectRecords
+from app.application.workbench.records import ProjectRecords, as_id
+from app.application.workbench.session_data import SessionLibrary
 from app.application.workbench.tokens import TokenIssuer
 from app.bootstrap.workbench import knowbot_data_source, workbench_store
-from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.errors import RecordsRefused, WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -79,43 +81,48 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # 知识库（SDD 0011）：用户在我们这里的资料，跨项目。不需要 task；给了就把这次读记在那个委托的账上
+    # 云端知识库里用户在这段对话里选用的几份（SDD 0042 第四节）：凭「会话」运行授权读。
+    # 聊天里没有委托：带对话编号（这一轮的说明里写着）；在委托里也可以只带委托编号
     "list_library": {
         "description": (
-            "List the user's library: working papers the experts handed back and the "
-            "deliverables of each step, across all projects. Each item has an id, kind "
-            "(dossier or deliverable), title, project, number of versions and the "
-            "question it came from. Optional filters: kind, q (title contains)."
+            "List the items of the user's cloud knowledge base chosen for this "
+            "conversation: item_id, name, media_type, size_bytes, sha256. Only these can "
+            "be read. Give the conversation id from your instructions (or the task id "
+            "when working on one)."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id given in your instructions.",
+                },
                 "task": {
                     **_TASK,
                     "description": "Optional. The task id if you are working on one.",
                 },
-                "kind": {"type": "string", "enum": ["dossier", "deliverable"]},
-                "q": {"type": "string", "maxLength": 200},
             },
             "additionalProperties": False,
         },
     },
     "read_library_item": {
         "description": (
-            "Read one library item as text (a dossier as Markdown; a deliverable as its "
-            "content). Paged; ask for the next page when `pages` is greater than `page`. "
-            "The reply carries a citation {library_item_id, version, sha256}: quote it "
-            "when you use the content."
+            "Read one chosen item of the user's cloud knowledge base as text. Paged; ask "
+            "for the next page when `pages` is greater than `page`. The reply carries a "
+            "citation {item_id, sha256, page, pages}: quote it when you use the content."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
+                "conversation": {
+                    "type": "string",
+                    "description": "The conversation id given in your instructions.",
+                },
                 "task": {
                     **_TASK,
                     "description": "Optional. The task id if you are working on one.",
                 },
-                "item": {"type": "string", "description": "Id from list_library."},
-                "version": {"type": "integer", "minimum": 1},
+                "item": {"type": "string", "description": "item_id from list_library."},
                 "page": {"type": "integer", "minimum": 1, "default": 1},
             },
             "required": ["item"],
@@ -257,15 +264,23 @@ def _tool_error(mid: Any, message: str) -> dict[str, Any]:
 async def _library_call(
     records: ProjectRecords, name: str, args: dict[str, Any]
 ) -> Any:
-    library = Library(records.repo, owner_actor_id=records.owner)
     # 在委托里读的，记到那个委托的账上（F-LIB-06）；聊天里读的没有委托，不记
     working = await records._working(args["task"]) if args.get("task") else None
-    if name == "list_library":
-        result = await library.tool_list(kind=args.get("kind"), q=args.get("q"))
-    else:
-        result = await library.tool_read(
-            args.get("item"), version=args.get("version"), page=args.get("page", 1)
+    conversation = args.get("conversation")
+    if isinstance(conversation, str) and conversation:
+        session = await records.repo.get_session(
+            as_id(conversation, "conversation"), owner_actor_id=records.owner
         )
+        session_id = str(session["id"])
+    elif working is not None:
+        session_id = str(working["session_id"])
+    else:
+        raise RecordsRefused("give the conversation id from your instructions")
+    library = SessionLibrary(records.repo, knowbot_data_source())
+    if name == "list_library":
+        result = await library.list(session_id)
+    else:
+        result = await library.read(session_id, args.get("item"), args.get("page", 1))
     if working is not None:
         await records._noted(working, name, item=args.get("item"))
     return result

@@ -44,6 +44,7 @@ from app.application.workbench.provisioning import (
     SandboxProvisioning,
 )
 from app.application.workbench.run_files import task_dossier
+from app.application.workbench.session_data import SessionCloudData
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.tokens import TokenIssuer, exp_of
 from app.bootstrap.workbench import (
@@ -51,6 +52,7 @@ from app.bootstrap.workbench import (
     build_agent_service,
     build_provisioner,
     build_relay_admin,
+    cloud_grants,
     data_chooser,
     workbench_store,
 )
@@ -144,6 +146,12 @@ class Handover(Strict):
     client_context: dict[str, Any] = Field(default_factory=dict)
     # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
     data: list[DataChoice] = Field(default_factory=list, max_length=64)
+
+
+class SessionCloudChoice(Strict):
+    """这段对话选用云端知识库的哪几份（SDD 0042 第四节）；空的就是不用了。"""
+
+    items: list[str] = Field(default_factory=list, max_length=20)
 
 
 class RespondInteraction(Strict):
@@ -872,6 +880,45 @@ async def stream_events(
             await pubsub.aclose()
 
     return StreamingResponse(gen(), media_type="text/event-stream")
+
+
+# ---------------- 这段对话选用的云端知识库（SDD 0042 第四节）----------------
+@router.get("/sessions/{session_id}/cloud-data")
+async def session_cloud_data(
+    session_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        found = await SessionCloudData(
+            workbench_store(session), cloud=cloud_grants()
+        ).listing(session_id=session_id, owner_actor_id=_actor(principal))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **found}
+
+
+@router.put("/sessions/{session_id}/cloud-data")
+async def choose_session_cloud_data(
+    session_id: str,
+    body: SessionCloudChoice,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    """换成这几份：凭本人令牌核过、签一条「会话」运行授权，交还旧的。模型下一轮就知道。"""
+    try:
+        found = await SessionCloudData(
+            workbench_store(session), cloud=cloud_grants()
+        ).choose(
+            session_id=session_id,
+            owner_actor_id=_actor(principal),
+            item_ids=[i for i in body.items if i],
+            user_token=user_token,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **found}
 
 
 # ---------------- handover / tasks ----------------

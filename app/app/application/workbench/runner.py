@@ -28,6 +28,7 @@ from app.application.workbench.advisor import Advisor, TurnResult
 from app.application.workbench.catalog import pack_for_task
 from app.application.workbench.deliverable_check import DeliverableCheck
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.session_data import session_note
 from app.domain.workbench import missing_data
 from app.domain.workbench.deliverables import changed_paths
 from app.domain.workbench.errors import StaleStateVersion
@@ -1755,6 +1756,13 @@ class Runner:
                     str(session["owner_actor_id"]), enabled_only=True
                 )
             )
+            # 这段对话选用的云端知识库（SDD 0042 第四节）：选了、改了，说明跟着换，下一轮重新插
+            chosen = session_note(
+                str(session["id"]),
+                await repo.session_data(str(session["id"])),
+                datetime.now(UTC),
+            )
+        remembered = "\n\n".join(n for n in (remembered, chosen) if n) or None
         return TurnPlan(
             settings=turn_settings(
                 kind,

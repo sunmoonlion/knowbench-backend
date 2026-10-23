@@ -767,6 +767,16 @@ class WorkbenchStore(Protocol):
         """同一项目里上次请这位专家（任一版）时钉住的那几份；没有就是空的。"""
         ...
 
+    async def session_data(self, session_id: str) -> list[dict[str, Any]]:
+        """这段对话选用的云端知识库的几份（SDD 0042 第四节），按次序。"""
+        ...
+
+    async def replace_session_data(
+        self, session_id: str, items: list[dict[str, Any]]
+    ) -> None:
+        """换成这几份（item_id、grant_id、name、media_type、size_bytes、sha256、expires_at）。"""
+        ...
+
     async def grants_to_release(self, *, limit: int = 50) -> list[str]:
         """委托已结束、运行授权还没交还的。"""
         ...
@@ -838,30 +848,6 @@ class WorkbenchStore(Protocol):
 
     async def clear_test_outputs(self, finished_before: Any) -> None:
         """收尾早于这个时刻的测试：清空每条用例取好的产出（SDD 0037）；测试结果留着。"""
-        ...
-
-    # ---------- 知识库（SDD 0011）----------
-    async def list_owner_step_artifacts(
-        self, *, owner_actor_id: str
-    ) -> list[dict[str, Any]]:
-        """这个人全部委托里的交回物（不带内容）：每个版本一条，带所属委托的 project_id、session_id。"""
-        ...
-
-    async def library_overlay(
-        self, *, owner_actor_id: str
-    ) -> dict[str, dict[str, Any]]:
-        """用户对自己资料动过的那几条：资料标识 → {title, deleted_at}。"""
-        ...
-
-    async def put_library_overlay(
-        self,
-        *,
-        owner_actor_id: str,
-        item_id: str,
-        title: str | None = None,
-        deleted: bool | None = None,
-    ) -> None:
-        """改名（title 给非 None）或拿掉 / 放回（deleted 给非 None）。"""
         ...
 
 
@@ -942,8 +928,12 @@ class CloudGrants(Protocol):
         ref: str,
         items: list[dict[str, str]],
         ttl_seconds: int,
+        kind: str = "delegation",
     ) -> str:
-        """签委托运行授权（只读这几份、钉这几个摘要），回授权编号。"""
+        """签运行授权：委托（delegation）或会话（session）；只读这几份、钉这几个摘要。
+
+        回授权编号。
+        """
         ...
 
     async def release(self, grant_id: str) -> None:
