@@ -72,9 +72,10 @@ class AgentTestFolders:
             return False
         target = ""
         try:
+            # 本地 link 服务流 fs/readDirectory 的条目是 {name, type: dir|file|link|other, …}（sunmoon-link service.ts）
             for entry in listed.get("entries") or []:
-                name = str(entry.get("fileName") or "")
-                if name and name != mine and entry.get("isDirectory"):
+                name = str(entry.get("name") or "")
+                if name and name != mine and entry.get("type") == "dir":
                     target = join_path(runs, name)
                     await self.service.call(relay_user, "fs/remove", {"path": target})
             target = join_path(root, folder)

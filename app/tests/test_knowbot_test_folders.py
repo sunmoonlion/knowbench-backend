@@ -57,9 +57,9 @@ def test_folder_name_starts_with_when_it_was_accepted():
 async def test_prepare_removes_other_runs_and_makes_this_one():
     service = Service(
         entries=[
-            {"fileName": "20261017-old", "isDirectory": True, "isFile": False},
-            {"fileName": "mine", "isDirectory": True, "isFile": False},
-            {"fileName": "note.txt", "isDirectory": False, "isFile": True},
+            {"name": "20261017-old", "type": "dir"},
+            {"name": "mine", "type": "dir"},
+            {"name": "note.txt", "type": "file"},
         ]
     )
     folders = AgentTestFolders(service, stores)
@@ -84,7 +84,7 @@ async def test_prepare_fails_closed_when_the_computer_cannot_be_reached_or_clean
             owner="tester", root="/workspace", folder="runs/a"
         )
     dirty = Service(
-        entries=[{"fileName": "other", "isDirectory": True, "isFile": False}],
+        entries=[{"name": "other", "type": "dir"}],
         fail="fs/remove",
     )
     assert not await AgentTestFolders(dirty, stores).prepare(
@@ -99,7 +99,7 @@ async def test_prepare_fails_closed_when_the_computer_cannot_be_reached_or_clean
 async def test_a_refused_remove_says_which_folder_at_once():
     """代理拒了删（不是离线）：等下去也不会好，立刻说是哪个目录（审读第 15 条）。"""
     dirty = Service(
-        entries=[{"fileName": "other", "isDirectory": True, "isFile": False}],
+        entries=[{"name": "other", "type": "dir"}],
         deny="fs/remove",
     )
     try:
