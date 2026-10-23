@@ -236,6 +236,19 @@ class OidcProviderClient:
         code_verifier: str,
         nonce: str,
     ) -> dict[str, Any]:
+        claims, _ = await self.exchange_authorization_code_tokens(
+            code=code, code_verifier=code_verifier, nonce=nonce
+        )
+        return claims
+
+    async def exchange_authorization_code_tokens(
+        self,
+        *,
+        code: str,
+        code_verifier: str,
+        nonce: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Claims of the verified identity token, plus the access token if issued."""
         metadata = await self.get_metadata()
         try:
             token_url, routing_headers = self._backchannel_target(
@@ -275,7 +288,58 @@ class OidcProviderClient:
             raise UnauthorizedError(
                 "The identity token is invalid", code="token_invalid"
             )
-        return await self.verify_id_token(id_token, nonce=nonce, metadata=metadata)
+        claims = await self.verify_id_token(id_token, nonce=nonce, metadata=metadata)
+        access_token = token_response.get("access_token")
+        if not isinstance(access_token, str) or not access_token:
+            access_token = None
+        return claims, access_token
+
+    async def exchange_token(self, *, subject_token: str, audience: str) -> str:
+        """RFC 8693: trade the user's access token for one addressed to `audience`.
+
+        Casdoor 4.12 only accepts a token this client was issued itself, keeps the user
+        (`sub`), names this client as the acting party (`azp`) and refuses revoked
+        tokens; tried on a scratch Casdoor 2026-10-23 (k8s scripts/results, 0042).
+        """
+        metadata = await self.get_metadata()
+        try:
+            token_url, routing_headers = self._backchannel_target(
+                metadata.token_endpoint, "token_endpoint"
+            )
+            async with self._client() as client:
+                response = await client.post(
+                    token_url,
+                    data={
+                        "grant_type": "urn:ietf:params:oauth:grant-type:token-exchange",
+                        "client_id": self._profile.client_id,
+                        "client_secret": self._profile.client_secret,
+                        "subject_token": subject_token,
+                        "subject_token_type": (
+                            "urn:ietf:params:oauth:token-type:access_token"
+                        ),
+                        "audience": audience,
+                    },
+                    headers={"Accept": "application/json", **routing_headers},
+                )
+        except httpx.HTTPError as exc:
+            raise ServiceUnavailableError("OIDC token endpoint unavailable") from exc
+        if response.status_code in (400, 401):
+            # 用户令牌过期、被吊销：要用户重新登录，不当成平台故障
+            raise UnauthorizedError("Sign in again to continue", code="reauth_required")
+        if response.status_code != 200:
+            raise ServiceUnavailableError("OIDC token exchange unavailable")
+        try:
+            token_response = response.json()
+        except ValueError as exc:
+            raise ServiceUnavailableError("OIDC token exchange unavailable") from exc
+        token = (
+            token_response.get("access_token")
+            if isinstance(token_response, dict)
+            else None
+        )
+        if not isinstance(token, str) or not token:
+            raise ServiceUnavailableError("OIDC token exchange unavailable")
+        return token
 
     async def end_session_url(
         self, *, post_logout_redirect_uri: str, state: str

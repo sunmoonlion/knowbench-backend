@@ -5,7 +5,7 @@ Implementations live in `app/infrastructure/`; `app/bootstrap/auth.py` wires the
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
 class IdentityProvider(Protocol):
@@ -37,6 +37,30 @@ class IdentityProvider(Protocol):
 
         Identifies this client by client_id, so no token has to be kept for logout.
         """
+        ...
+
+
+@runtime_checkable
+class TokenExchange(Protocol):
+    """Optional provider capability: keep and trade the user's access token (SDD 0042).
+
+    Apps that call knowbase on the user's behalf exchange the access token the provider
+    issued to this client for one addressed to knowbase (RFC 8693). Providers without
+    the capability still sign users in; only the exchange is unavailable.
+    """
+
+    async def exchange_authorization_code_tokens(
+        self,
+        *,
+        code: str,
+        code_verifier: str,
+        nonce: str,
+    ) -> tuple[dict[str, Any], str | None]:
+        """Verified identity-token claims and the access token (None if absent)."""
+        ...
+
+    async def exchange_token(self, *, subject_token: str, audience: str) -> str:
+        """An access token for `audience` that still names the same user."""
         ...
 
 

@@ -6,7 +6,11 @@ from typing import Annotated
 from fastapi import Cookie, Depends, Header, Request
 
 from app.application.audit_context import set_actor
-from app.application.errors.exceptions import ForbiddenError, UnauthorizedError
+from app.application.errors.exceptions import (
+    ForbiddenError,
+    ServiceUnavailableError,
+    UnauthorizedError,
+)
 from app.application.services.auth_service import AuthService
 from app.bootstrap.auth import build_auth_service
 from app.domain.security import BrowserSession, Principal
@@ -69,6 +73,25 @@ async def get_web_browser_session(
         session_id=auth_session_id,
         csrf_token=csrf_token,
     )
+
+
+async def get_web_knowbase_token(
+    session: Annotated[BrowserSession, Depends(get_web_browser_session)],
+    session_id: str | None = Cookie(
+        default=None, alias=_web_profile.session_cookie_name
+    ),
+) -> str:
+    """调 knowbase 用户资料用的用户令牌（SDD 0042）：这个会话的访问令牌换来的。
+
+    先过会话与 CSRF 的检查（依赖 get_web_browser_session），再换；没配 knowbase 就 503。
+    """
+    del session
+    audience = get_settings().knowbase_user_audience.strip()
+    if not audience:
+        raise ServiceUnavailableError(
+            "knowbase is not configured", code="knowbase_unconfigured"
+        )
+    return await web_auth_service.user_token(session_id, audience=audience)
 
 
 async def get_admin_current_user(

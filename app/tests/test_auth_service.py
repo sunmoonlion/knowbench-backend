@@ -417,3 +417,100 @@ async def test_end_session_falls_back_to_local_logout_when_provider_is_down(
     )
     assert await service.end_session(session_start.session_id) is None
     assert await service.get_browser_session(session_start.session_id) is None
+
+
+class ExchangingOidc(FakeOidc):
+    """会交出访问令牌、能换令牌的提供方（SDD 0042）。"""
+
+    def __init__(self, *, refuse: bool = False) -> None:
+        self.refuse = refuse
+        self.exchanged: list[tuple[str, str]] = []
+
+    async def exchange_authorization_code_tokens(
+        self, **values: str
+    ) -> tuple[dict[str, object], str | None]:
+        return await self.exchange_authorization_code(**values), "user-access-token"
+
+    async def exchange_token(self, *, subject_token: str, audience: str) -> str:
+        if self.refuse:
+            raise UnauthorizedError("Sign in again", code="reauth_required")
+        self.exchanged.append((subject_token, audience))
+        return f"for-{audience}"
+
+
+async def _session_with(oidc: object, monkeypatch: pytest.MonkeyPatch):
+    redis = FakeRedis()
+    monkeypatch.setattr(
+        session_store_module, "get_redis", lambda: FakeRedisHolder(redis)
+    )
+    config = settings()
+    service = StubAuthService(
+        "web",
+        config,
+        oidc,  # type: ignore[arg-type]
+        sessions=RedisSessionStore(),
+        users=NoUserDirectory(),
+    )
+    start = await service.begin_login()
+    state = parse_qs(urlsplit(start.authorization_url).query)["state"][0]
+    session_start, _ = await service.complete_login(
+        code="code", state=state, transaction_id=start.transaction_id
+    )
+    key = (
+        f"{config.browser_profile('web').session_key_prefix}{session_start.session_id}"
+    )
+    return service, session_start.session_id, redis, key
+
+
+@pytest.mark.asyncio
+async def test_the_access_token_is_kept_beside_the_session_and_traded(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    oidc = ExchangingOidc()
+    service, session_id, redis, key = await _session_with(oidc, monkeypatch)
+    # 另存一个键，会话本身的内容不变、不带令牌
+    assert redis.values[key + ":access"] == "user-access-token"
+    assert "user-access-token" not in redis.values[key]
+    token = await service.user_token(session_id, audience="knowbase-client")
+    assert token == "for-knowbase-client"
+    assert oidc.exchanged == [("user-access-token", "knowbase-client")]
+    # 退出时一起删
+    await service.end_session(session_id)
+    assert key + ":access" not in redis.values
+
+
+@pytest.mark.asyncio
+async def test_trading_needs_a_live_session_and_a_kept_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, session_id, redis, key = await _session_with(ExchangingOidc(), monkeypatch)
+    with pytest.raises(UnauthorizedError):
+        await service.user_token("no-such-session", audience="knowbase")
+    # 部署前建的会话没存令牌：要用户重新登录
+    del redis.values[key + ":access"]
+    with pytest.raises(UnauthorizedError) as caught:
+        await service.user_token(session_id, audience="knowbase")
+    assert caught.value.code == "reauth_required"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_trade_asks_the_user_to_sign_in_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, session_id, *_ = await _session_with(
+        ExchangingOidc(refuse=True), monkeypatch
+    )
+    with pytest.raises(UnauthorizedError) as caught:
+        await service.user_token(session_id, audience="knowbase")
+    assert caught.value.code == "reauth_required"
+
+
+@pytest.mark.asyncio
+async def test_providers_without_the_capability_still_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, session_id, redis, key = await _session_with(FakeOidc(), monkeypatch)
+    assert key in redis.values and key + ":access" not in redis.values
+    with pytest.raises(ServiceUnavailableError) as caught:
+        await service.user_token(session_id, audience="knowbase")
+    assert caught.value.code == "token_exchange_unavailable"

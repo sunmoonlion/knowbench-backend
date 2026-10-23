@@ -16,13 +16,21 @@ from pydantic import ValidationError as PydanticValidationError
 from app.application.errors.exceptions import (
     AppException,
     ForbiddenError,
+    ServiceUnavailableError,
     UnauthorizedError,
 )
-from app.application.ports.auth import IdentityProvider, SessionStore, UserDirectory
+from app.application.ports.auth import (
+    IdentityProvider,
+    SessionStore,
+    TokenExchange,
+    UserDirectory,
+)
 from app.domain.security import BrowserSession, LoginStart, Principal, SessionStart
 from core.config import BrowserSurface, BrowserSurfaceProfile, Settings
 
 SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+# 用户的访问令牌另存一个键，和会话同寿命；只在服务端，换令牌时用（SDD 0042）
+ACCESS_TOKEN_SUFFIX = ":access"
 
 
 class AuthService:
@@ -158,11 +166,19 @@ class AuthService:
         if not isinstance(nonce, str) or not isinstance(code_verifier, str):
             raise self._transaction_error()
 
-        claims = await self._oidc.exchange_authorization_code(
-            code=code,
-            code_verifier=code_verifier,
-            nonce=nonce,
-        )
+        access_token: str | None = None
+        if isinstance(self._oidc, TokenExchange):
+            claims, access_token = await self._oidc.exchange_authorization_code_tokens(
+                code=code,
+                code_verifier=code_verifier,
+                nonce=nonce,
+            )
+        else:
+            claims = await self._oidc.exchange_authorization_code(
+                code=code,
+                code_verifier=code_verifier,
+                nonce=nonce,
+            )
         principal = await self._principal_from_verified_claims(claims)
         session_id = self._new_secret()
         browser_session = BrowserSession(
@@ -179,6 +195,12 @@ class AuthService:
             raise UnauthorizedError(
                 "The session could not be created",
                 code="session_expired",
+            )
+        if access_token:
+            await self._sessions.create(
+                f"{self._profile.session_key_prefix}{session_id}{ACCESS_TOKEN_SUFFIX}",
+                access_token,
+                ttl_seconds=ttl,
             )
         return (
             SessionStart(session_id=session_id, expires_at=principal.expires_at),
@@ -334,9 +356,28 @@ class AuthService:
 
     async def delete_session(self, session_id: str | None) -> None:
         if session_id and len(session_id) <= 256:
-            await self._sessions.delete(
-                f"{self._profile.session_key_prefix}{session_id}"
+            key = f"{self._profile.session_key_prefix}{session_id}"
+            await self._sessions.delete(key)
+            await self._sessions.delete(key + ACCESS_TOKEN_SUFFIX)
+
+    async def user_token(self, session_id: str | None, *, audience: str) -> str:
+        """A token for `audience` on behalf of this session's user (SDD 0042).
+
+        Sessions created before the access token was kept, or whose token the provider
+        no longer accepts, get `reauth_required`: the user signs in again.
+        """
+        if await self.get_browser_session(session_id) is None:
+            raise UnauthorizedError()
+        if not isinstance(self._oidc, TokenExchange):
+            raise ServiceUnavailableError(
+                "Token exchange is not available", code="token_exchange_unavailable"
             )
+        subject = await self._sessions.read(
+            f"{self._profile.session_key_prefix}{session_id}{ACCESS_TOKEN_SUFFIX}"
+        )
+        if not subject:
+            raise UnauthorizedError("Sign in again to continue", code="reauth_required")
+        return await self._oidc.exchange_token(subject_token=subject, audience=audience)
 
     @property
     def post_logout_redirect_uri(self) -> str:

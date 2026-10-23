@@ -218,6 +218,8 @@ class Settings(BaseSettings):
     # The JSON object maps an exact token subject to its maximum allowed scopes.
     service_auth_audience: str = ""
     service_auth_subject_bindings_json: str = "{}"
+    # 调 knowbase 用户资料时，用户令牌换成给谁：knowbase 在 Casdoor 里的客户端编号（SDD 0042）
+    knowbase_user_audience: str = ""
 
     celery_broker_url: str | None = Field(
         default=None, validation_alias="CELERY_BROKER_URL"

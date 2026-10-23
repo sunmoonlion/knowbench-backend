@@ -192,6 +192,56 @@ async def test_client_credentials_use_explicit_service_identity() -> None:
     assert observed["scope"] == ["knowbase:read"]
 
 
+def exchanging(status: int, body: object, observed: dict[str, list[str]]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/openid-configuration"):
+            return httpx.Response(
+                200,
+                json={
+                    "issuer": "https://identity.example.test",
+                    "authorization_endpoint": "https://identity.example.test/authorize",
+                    "token_endpoint": "https://identity.example.test/token",
+                    "jwks_uri": "https://identity.example.test/jwks",
+                },
+            )
+        observed.update(parse_qs(request.content.decode()))
+        return httpx.Response(status, json=body)
+
+    config = settings()
+    return OidcProviderClient(
+        config, config.browser_profile("web"), transport=httpx.MockTransport(handler)
+    )
+
+
+@pytest.mark.asyncio
+async def test_token_exchange_trades_the_users_token_as_this_client() -> None:
+    """RFC 8693（SDD 0042）：用本面的客户端身份，把用户的访问令牌换成给 knowbase 的。"""
+    observed: dict[str, list[str]] = {}
+    oidc = exchanging(200, {"access_token": "for-knowbase"}, observed)
+    assert (
+        await oidc.exchange_token(subject_token="user-token", audience="knowbase")
+        == "for-knowbase"
+    )
+    assert observed["grant_type"] == ["urn:ietf:params:oauth:grant-type:token-exchange"]
+    assert observed["subject_token"] == ["user-token"]
+    assert observed["subject_token_type"] == [
+        "urn:ietf:params:oauth:token-type:access_token"
+    ]
+    assert observed["audience"] == ["knowbase"]
+    assert observed["client_id"] == [settings().browser_profile("web").client_id]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_token_exchange_asks_to_sign_in_again() -> None:
+    oidc = exchanging(400, {"error": "invalid_grant"}, {})
+    with pytest.raises(UnauthorizedError) as caught:
+        await oidc.exchange_token(subject_token="revoked", audience="knowbase")
+    assert caught.value.code == "reauth_required"
+    broken = exchanging(500, {}, {})
+    with pytest.raises(ServiceUnavailableError):
+        await broken.exchange_token(subject_token="t", audience="knowbase")
+
+
 @pytest.mark.asyncio
 async def test_workload_access_token_requires_exact_audience_and_signature() -> None:
     key = RSAKey.generate_key(parameters={"kid": "test-key"})
