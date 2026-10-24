@@ -908,6 +908,13 @@ class CloudDataReader(Protocol):
 
     async def content(self, *, grant_id: str, item_id: str) -> bytes: ...
 
+    async def check(self, *, grant_id: str, item_id: str) -> str:
+        """不取内容，核这个授权还能读这一份（拒法同 content），回 knowbase 那份的 sha256。
+
+        读的一方用缓存的抽取结果前调这个（Astra 评审 F01）。
+        """
+        ...
+
 
 class CloudGrants(Protocol):
     """请专家时核用户从云端知识库选的那几份、签这件委托的运行授权，委托结束交还

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import uuid
@@ -75,25 +76,42 @@ class Cloud:
     def __init__(self, data: bytes = CSV) -> None:
         self.data = data
         self.reads: list[tuple[str, str]] = []
+        self.checks: list[tuple[str, str]] = []
         self.refuse: Exception | None = None
+        self.refused_grants: set[str] = set()
 
     async def content(self, *, grant_id: str, item_id: str) -> bytes:
         self.reads.append((grant_id, item_id))
+        await asyncio.sleep(0)  # 让并发来读的人赶上这一次抽取
         if self.refuse is not None:
             raise self.refuse
         return self.data
+
+    async def check(self, *, grant_id: str, item_id: str) -> str:
+        self.checks.append((grant_id, item_id))
+        if self.refuse is not None or grant_id in self.refused_grants:
+            raise UserDataUnavailable("the permission to read this data has ended")
+        return _sha(self.data)
 
 
 class Agent:
     """本地 link 的替身：按 offset、length 回一块，像 service.ts 的 fs/readFile。"""
 
-    def __init__(self, data: bytes = CSV) -> None:
+    def __init__(self, data: bytes = CSV, *, digest: bool = True) -> None:
         self.data = data
+        self.digest = digest  # 老的 link 没有 fs/digest
         self.calls: list[dict[str, Any]] = []
+        self.digests: list[str] = []
         self.fail: list[Exception] = []
 
     async def call(self, relay_user, method, params=None, *, wait_seconds=None):  # type: ignore[no-untyped-def]
-        assert (relay_user, method) == ("relay-1", "fs/readFile")
+        assert relay_user == "relay-1"
+        if method == "fs/digest":
+            if not self.digest:
+                raise AgentRefused(-32601, "no such method")
+            self.digests.append(params["path"])
+            return {"size": len(self.data), "sha256": _sha(self.data)}
+        assert method == "fs/readFile"
         self.calls.append(params)
         if self.fail:
             raise self.fail.pop(0)
@@ -180,8 +198,70 @@ async def test_cloud_data_is_read_under_the_tasks_grant_and_cached() -> None:
     first = await data.read("t", str(pin["dataset_id"]))
     assert "营业收入" in first["text"] and first["pages"] == 1
     assert first["citation"]["version"] == "cloud"
+    assert cloud.checks == []  # 取了字节就是核过了
     await data.read("t", str(pin["dataset_id"]))
-    assert cloud.reads == [("grant-1", "item-1")]  # 第二次走缓存，不再去取
+    await data.table("t", str(pin["dataset_id"]))
+    assert cloud.reads == [("grant-1", "item-1")] * 2  # 文字、表各抽一次
+    assert cloud.checks == [("grant-1", "item-1")]  # 缓存里有：不取字节，仍核一次
+
+
+# ---------- 缓存不跳过授权与摘要（Astra 评审 F01） ----------
+
+
+async def test_a_revoked_grant_stops_cached_reads() -> None:
+    pin = cloud_pin()
+    cloud = Cloud()
+    data = KnowbotData(records_with(pin), source(cloud))  # type: ignore[arg-type]
+    await data.read("t", str(pin["dataset_id"]))
+    cloud.refuse = UserDataUnavailable("the permission to read this data has ended")
+    with pytest.raises(UserDataUnavailable, match="ended"):
+        await data.read("t", str(pin["dataset_id"]))
+
+
+async def test_the_same_content_under_another_grant_is_checked_on_its_own() -> None:
+    """两件委托钉了同一份内容（摘要一样）：缓存是一份，授权各核各的。"""
+    mine, theirs = cloud_pin(), cloud_pin(grant_id="grant-2")
+    cloud = Cloud()
+    pinned = source(cloud)
+    await KnowbotData(records_with(mine), pinned).read("t", str(mine["dataset_id"]))  # type: ignore[arg-type]
+    cloud.refused_grants.add("grant-2")
+    with pytest.raises(UserDataUnavailable):
+        await KnowbotData(records_with(theirs), pinned).read(  # type: ignore[arg-type]
+            "t", str(theirs["dataset_id"])
+        )
+    assert cloud.reads == [("grant-1", "item-1")]
+
+
+async def test_concurrent_readers_that_share_one_extraction_are_each_checked() -> None:
+    pin = cloud_pin()
+    cloud = Cloud()
+    data = KnowbotData(records_with(pin), source(cloud))  # type: ignore[arg-type]
+    await asyncio.gather(*(data.read("t", str(pin["dataset_id"])) for _ in range(3)))
+    assert len(cloud.reads) == 1 and len(cloud.checks) == 2
+
+
+async def test_a_local_file_changed_after_caching_is_refused() -> None:
+    pin = local_pin()
+    agent = Agent()
+    data = KnowbotData(records_with(pin), source(agent=agent))  # type: ignore[arg-type]
+    await data.read("t", str(pin["dataset_id"]))
+    assert agent.digests == []
+    await data.read("t", str(pin["dataset_id"]))
+    assert agent.digests == ["C:\\资料\\利润表.csv"]
+    agent.data = CSV.replace(b"250.25", b"250.26")
+    with pytest.raises(DataChanged):
+        await data.read("t", str(pin["dataset_id"]))
+
+
+async def test_an_old_link_without_digest_is_read_whole_to_check() -> None:
+    pin = local_pin()
+    agent = Agent(digest=False)
+    data = KnowbotData(records_with(pin), source(agent=agent))  # type: ignore[arg-type]
+    await data.read("t", str(pin["dataset_id"]))
+    agent.data = CSV.replace(b"250.25", b"250.26")
+    with pytest.raises(DataChanged):
+        await data.read("t", str(pin["dataset_id"]))
+    assert len(agent.calls) == 2
 
 
 async def test_content_changed_since_the_task_started_is_refused() -> None:
@@ -210,6 +290,19 @@ async def test_knowbase_refusals_become_plain_words(refusal, expected) -> None:
     assert expected is not UserDataUnavailable or not isinstance(
         caught.value, DataChanged
     )
+
+
+async def test_knowbase_check_refusals_read_like_content_refusals() -> None:
+    class Client:
+        async def read_check(self, grant_id: str, item_id: str) -> dict[str, Any]:
+            if grant_id == "gone":
+                raise KnowbaseRefused(403, "grant_inactive")
+            return {"item_id": item_id, "sha256": "abc"}
+
+    reader = KnowbaseGrantedData(Client())  # type: ignore[arg-type]
+    assert await reader.check(grant_id="g", item_id="i") == "abc"
+    with pytest.raises(UserDataUnavailable, match="grant_inactive"):
+        await reader.check(grant_id="gone", item_id="i")
 
 
 async def test_knowbase_hands_back_the_bytes() -> None:

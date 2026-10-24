@@ -99,6 +99,15 @@ async def test_service_calls_use_their_own_relation_and_cache_the_token():
     assert seen[1].url.path == "/api/internal/v1/user-data/grants/g1/items/i2/content"
 
 
+async def test_a_check_asks_without_taking_the_content():
+    kb, seen, oidc = client(
+        lambda r: httpx.Response(200, json={"item_id": "i1", "sha256": "ab" * 32})
+    )
+    assert (await kb.read_check("g1", "i1"))["sha256"] == "ab" * 32
+    assert oidc.calls == ["knowbase:user-data-read"]
+    assert seen[0].url.path == "/api/internal/v1/user-data/grants/g1/items/i1/check"
+
+
 async def test_test_grants_and_purchases_use_their_relations():
     kb, seen, oidc = client(lambda r: httpx.Response(201, json={"ok": True}))
     await kb.test_grant(

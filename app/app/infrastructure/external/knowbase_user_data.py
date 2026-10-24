@@ -175,6 +175,16 @@ class KnowbaseUserData:
             f"/grants/{_segment(grant_id)}/items/{_segment(item_id)}/content", token
         )
 
+    async def read_check(self, grant_id: str, item_id: str) -> dict[str, Any]:
+        """不取内容，核这个授权还能读这一份：回 item_id、sha256。"""
+        token = await self._service_token("user-data-read")
+        _, body, _ = await self._send(
+            "GET",
+            f"/grants/{_segment(grant_id)}/items/{_segment(item_id)}/check",
+            token,
+        )
+        return body
+
     async def read_format(self, grant_id: str, item_id: str) -> dict[str, Any]:
         token = await self._service_token("user-data-read")
         _, body, _ = await self._send(
@@ -300,15 +310,26 @@ class KnowbaseGrantedData:
     async def content(self, *, grant_id: str, item_id: str) -> bytes:
         try:
             got = await self.client.read_content(grant_id, item_id)
-        except KnowbaseRefused as exc:
-            if exc.code in ("item_not_found", "sha256_mismatch"):
-                raise DataChanged(CHANGED) from None
-            raise UserDataUnavailable(
-                f"the permission to read this data has ended ({exc.code})"
-            ) from None
-        except ServiceUnavailableError:
-            raise UserDataUnavailable("the user's data is unavailable now") from None
+        except (KnowbaseRefused, ServiceUnavailableError) as exc:
+            raise _unreadable(exc) from None
         return got.data
+
+    async def check(self, *, grant_id: str, item_id: str) -> str:
+        try:
+            got = await self.client.read_check(grant_id, item_id)
+        except (KnowbaseRefused, ServiceUnavailableError) as exc:
+            raise _unreadable(exc) from None
+        return str(got.get("sha256") or "") if isinstance(got, dict) else ""
+
+
+def _unreadable(exc: Exception) -> Exception:
+    if isinstance(exc, KnowbaseRefused):
+        if exc.code in ("item_not_found", "sha256_mismatch"):
+            return DataChanged(CHANGED)
+        return UserDataUnavailable(
+            f"the permission to read this data has ended ({exc.code})"
+        )
+    return UserDataUnavailable("the user's data is unavailable now")
 
 
 class KnowbaseCloudGrants:

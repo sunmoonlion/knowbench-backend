@@ -5,7 +5,9 @@
 取到字节先核 sha256，与请专家那一刻记下的不一样就报「数据在这次委托开始后被改过」，不给内容。
 抽文字、分页、按格子取、核引文用读数层（domain/workbench/data_read），结果的形状与原来 knowlab
 的 `knowbot-data/v1` 一样，模型看到的工具结果不变。抽出来的文字、表按 sha256 缓存，缓存里有就
-不再去取字节。
+不再去取字节，但每次读仍先核这次读算不算数（Astra 评审 F01）：云端问 knowbase「这个授权还能
+读这一份吗、版本对吗」（不取内容），本地请 link 重算整份的摘要（`fs/digest`）。缓存只省抽取，
+不省授权与摘要的核对：用户撤了授权、本地文件改了，下一次读就拒。
 
 委托该不该读、读哪几份由 knowbot_data.data_scope 先核；这里只认 purpose 里带来的那几份。
 """
@@ -118,11 +120,7 @@ class PinnedData:
         self, purpose: dict[str, Any], dataset_id: str, page: int
     ) -> dict[str, Any]:
         pin = self._pin(purpose, dataset_id)
-        extracted = await self.text.extract(
-            load=lambda: self._bytes(purpose, pin),
-            content_type=str(pin["media_type"]),
-            sha256=str(pin["sha256"]),
-        )
+        extracted = await self._text(purpose, pin)
         text, pages = paginate(extracted.text, page)
         note = f"There are only {pages} pages." if page > pages else extracted.note
         return _dump(
@@ -214,11 +212,7 @@ class PinnedData:
             if str(pin["media_type"]).split(";")[0].strip() != PDF:
                 pages[dataset_id] = (pin, {}, False)
                 continue
-            extracted = await self.text.extract(
-                load=lambda pin=pin: self._bytes(purpose, pin),
-                content_type=str(pin["media_type"]),
-                sha256=str(pin["sha256"]),
-            )
+            extracted = await self._text(purpose, pin)
             pages[dataset_id] = (pin, pdf_pages(extracted.text), extracted.truncated)
         found = []
         for ref in quotes:
@@ -246,15 +240,47 @@ class PinnedData:
                 return pin
         raise NotFound("data not found")
 
+    async def _text(self, purpose: dict[str, Any], pin: dict[str, Any]) -> Any:
+        loaded: list[bool] = []
+        extracted = await self.text.extract(
+            load=lambda: self._load(purpose, pin, loaded),
+            content_type=str(pin["media_type"]),
+            sha256=str(pin["sha256"]),
+        )
+        if not loaded:
+            await self._vouch(purpose, pin)
+        return extracted
+
     async def _tables(self, purpose: dict[str, Any], pin: dict[str, Any]) -> Tables:
+        loaded: list[bool] = []
         try:
-            return await self.tables_of.tables(
-                load=lambda: self._bytes(purpose, pin),
+            tables = await self.tables_of.tables(
+                load=lambda: self._load(purpose, pin, loaded),
                 content_type=str(pin["media_type"]),
                 sha256=str(pin["sha256"]),
             )
         except TableUnreadable:
             raise UserDataUnavailable(NOT_A_TABLE) from None
+        if not loaded:
+            await self._vouch(purpose, pin)
+        return tables
+
+    async def _load(
+        self, purpose: dict[str, Any], pin: dict[str, Any], loaded: list[bool]
+    ) -> bytes:
+        loaded.append(True)
+        return await self._bytes(purpose, pin)
+
+    async def _vouch(self, purpose: dict[str, Any], pin: dict[str, Any]) -> None:
+        """抽取结果来自缓存（这次没取字节）：仍核这次读算不算数，同取字节时一样拒。"""
+        if pin["source"] == CLOUD:
+            sha256 = await self.cloud.check(
+                grant_id=str(pin["grant_id"]), item_id=str(pin["item_id"])
+            )
+        else:
+            sha256 = await self._local_digest(purpose.get("relay_user"), pin)
+        if sha256 != pin["sha256"]:
+            raise DataChanged(CHANGED)
 
     async def _bytes(self, purpose: dict[str, Any], pin: dict[str, Any]) -> bytes:
         if pin["source"] == CLOUD:
@@ -267,18 +293,36 @@ class PinnedData:
             raise DataChanged(CHANGED)
         return data
 
-    async def _local(self, relay_user: str | None, pin: dict[str, Any]) -> bytes:
+    async def _local_digest(self, relay_user: str | None, pin: dict[str, Any]) -> str:
+        """请 link 重算整份的摘要；老的 link 没有 fs/digest 就整份读回来在这里算。"""
+        relay = self._relay(relay_user)
+        try:
+            got = await self._ask(relay, "fs/digest", {"path": str(pin["path"])})
+        except AgentRefused as exc:
+            if exc.code != "method_not_found":
+                raise self._refused(exc) from None
+            data = await self._local(relay_user, pin)
+            return hashlib.sha256(data).hexdigest()
+        if int(got.get("size") or 0) != int(pin["size_bytes"]):
+            raise DataChanged(CHANGED)
+        return str(got.get("sha256") or "")
+
+    def _relay(self, relay_user: str | None) -> str:
         if self.agent is None:
             raise UserDataUnavailable("the user's computer cannot be reached from here")
         if not relay_user:
             raise UserDataUnavailable("the user's computer is not paired")
+        return relay_user
+
+    async def _local(self, relay_user: str | None, pin: dict[str, Any]) -> bytes:
+        relay = self._relay(relay_user)
         expected = int(pin["size_bytes"])
         if expected > MAX_FILE_BYTES:
             raise UserDataUnavailable("the file is too large to read")
         chunks: list[bytes] = []
         offset = 0
         while True:
-            got = await self._read_block(relay_user, str(pin["path"]), offset)
+            got = await self._read_block(relay, str(pin["path"]), offset)
             if int(got.get("size") or 0) != expected:
                 raise DataChanged(CHANGED)
             piece = base64.b64decode(str(got.get("content") or ""), validate=True)
@@ -294,28 +338,41 @@ class PinnedData:
     async def _read_block(
         self, relay_user: str, path: str, offset: int
     ) -> dict[str, Any]:
+        try:
+            return await self._ask(
+                relay_user,
+                "fs/readFile",
+                {"path": path, "offset": offset, "length": MAX_READ_BYTES},
+            )
+        except AgentRefused as exc:
+            raise self._refused(exc) from None
+
+    async def _ask(
+        self, relay_user: str, method: str, params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """问 link 一句；太快了歇一下再问，别的拒绝照原样抛给调用的一方。"""
         assert self.agent is not None
         for attempt in range(RATE_RETRIES + 1):
             try:
-                return await self.agent.call(
-                    relay_user,
-                    "fs/readFile",
-                    {"path": path, "offset": offset, "length": MAX_READ_BYTES},
-                )
+                return await self.agent.call(relay_user, method, params)
             except AgentRefused as exc:
                 if exc.code == "rate_limited" and attempt < RATE_RETRIES:
                     await _pause(attempt)
                     continue
-                if exc.code == "not_found":
-                    raise DataChanged(CHANGED) from None
-                raise UserDataUnavailable(
-                    f"the user's computer refused to read the file ({exc.code})"
-                ) from None
+                raise
             except WorkbenchError:
                 raise UserDataUnavailable(
                     "the user's computer is offline or cannot be reached now"
                 ) from None
         raise UserDataUnavailable("the user's computer is busy")  # pragma: no cover
+
+    @staticmethod
+    def _refused(exc: AgentRefused) -> WorkbenchError:
+        if exc.code == "not_found":
+            return DataChanged(CHANGED)
+        return UserDataUnavailable(
+            f"the user's computer refused to read the file ({exc.code})"
+        )
 
 
 async def _pause(attempt: int) -> None:
