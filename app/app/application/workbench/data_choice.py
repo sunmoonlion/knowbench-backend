@@ -233,7 +233,8 @@ class DataChooser:
         except AgentRefused as exc:
             if exc.code != "method_not_found":
                 raise self._refused(exc) from None
-        # 老的 link：一块块读回来算
+        # 老的 link：一块块读回来算（记一行，看还有多少人没升级，Qwen 评审 Q-08）
+        log.info("link without fs/digest; hashing by reading the whole file")
         meta = await self._call(relay_user, "fs/getMetadata", {"path": path})
         if meta.get("type") != "file":
             raise DataChoiceInvalid("a chosen local path is not a file")

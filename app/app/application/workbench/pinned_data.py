@@ -17,6 +17,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import logging
 from typing import Any
 
 from app.application.ports.workbench import (
@@ -52,6 +53,8 @@ from app.domain.workbench.errors import (
     UserDataUnavailable,
     WorkbenchError,
 )
+
+log = logging.getLogger(__name__)
 
 PINNED = "pinned"
 CLOUD = "cloud"
@@ -301,6 +304,7 @@ class PinnedData:
         except AgentRefused as exc:
             if exc.code != "method_not_found":
                 raise self._refused(exc) from None
+            log.info("link without fs/digest; hashing by reading the whole file")
             data = await self._local(relay_user, pin)
             return hashlib.sha256(data).hexdigest()
         if int(got.get("size") or 0) != int(pin["size_bytes"]):
