@@ -126,6 +126,9 @@ async def data_scope(
         run = await repo.test_run_for_task(str(working["id"]))
         if run is None or run["status"] not in ACTIVE:
             raise RecordsRefused(NO_DATA)
+        if (run["request"] or {}).get("data_grant"):
+            # 带了测试运行授权却没钉上：只凭授权读，不退回经 knowlab 读（Astra 评审 F02）
+            raise RecordsRefused(NO_DATA)
         purpose = {"kind": "test", "run_id": run["run_id"]}
         bound = knowbots.data_bindings((run["request"] or {}).get("manifest"))
     else:

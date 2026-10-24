@@ -128,6 +128,31 @@ async def test_without_a_bound_version_nothing_is_asked(task, pin) -> None:
     assert source.purposes == []
 
 
+@pytest.mark.parametrize("granted", [False, True])
+async def test_a_test_with_a_grant_never_falls_back_to_knowlab(granted) -> None:
+    """带了测试运行授权的测试只凭钉住的读；没钉上也不退回经 knowlab 读（Astra 评审 F02）。"""
+    doc = manifest()
+    doc["data_bindings"] = [BINDING]
+    body = {"manifest": doc} | ({"data_grant": {"grant_id": "g"}} if granted else {})
+    records = Records(_task(pack_source="knowlab-test"), None)
+    records.repo.test_run_for_task = (  # type: ignore[attr-defined]
+        lambda task_id: _run({"status": "running", "run_id": "r", "request": body})
+    )
+    source = Source()
+    data = KnowbotData(records, source)  # type: ignore[arg-type]
+    if granted:
+        with pytest.raises(RecordsRefused):
+            await data.list("t")
+        assert source.purposes == []
+    else:  # 没搬进 knowbase 的老数据：照旧经 knowlab 读
+        await data.list("t")
+        assert source.purposes == [{"kind": "test", "run_id": "r"}]
+
+
+async def _run(run: dict[str, Any]) -> dict[str, Any]:
+    return run
+
+
 async def test_only_bound_data_is_read() -> None:
     source = Source()
     with pytest.raises(NotFound):

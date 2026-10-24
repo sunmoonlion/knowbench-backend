@@ -46,6 +46,7 @@ from app.application.workbench.test_folders import (
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
     InteractionRejected,
+    KnowbotInvalid,
     KnowbotTestBudgetExhausted,
     KnowbotTestConflict,
     KnowbotTestUnconfigured,
@@ -218,6 +219,7 @@ class KnowbotTestService:
             version=str(manifest.get("version")),
             profile=trial_profile_id(request.run_id),
         )
+        pins_for_test(request)  # 授权里的编号不合格同样不受理
         limit = Decimal(request.budget.limit)
         async with self.repo.transaction():
             committed = await self.repo.committed_test_spend(_month_start(self.now()))
@@ -405,7 +407,8 @@ def pins_for_test(request: RunRequest) -> list[dict[str, Any]]:
     """测试运行授权里的那几份（SDD 0042 第七节），钉进每条用例的委托，按钉住的读。
 
     数据编号用 knowlab 的（清单绑定、格子地址、引文写的都是它）；不是 uuid 的钉不进钉表，
-    整次照旧经 knowlab 读。授权由 knowlab 撤，这里不交还（grant_kind = test）。
+    抛 KnowbotInvalid，受理时就不收：带了授权就只凭授权读，不退回经 knowlab 读（Astra 评审
+    F02）。授权由 knowlab 撤，这里不交还（grant_kind = test）。
     """
     grant = request.data_grant
     if grant is None:
@@ -421,7 +424,9 @@ def pins_for_test(request: RunRequest) -> list[dict[str, Any]]:
         try:
             uuid.UUID(item.dataset_id)
         except ValueError:
-            return []
+            raise KnowbotInvalid(
+                "a granted dataset id is not a knowlab data id"
+            ) from None
         pins.append(
             {
                 "dataset_id": item.dataset_id,

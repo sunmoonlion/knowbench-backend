@@ -1301,6 +1301,29 @@ async def test_a_test_with_a_data_grant_reads_what_is_pinned(db):
         await fake.close()
 
 
+def test_a_grant_with_a_dataset_id_that_is_not_knowlabs_is_refused():
+    """授权里的数据编号不是 knowlab 的：不受理，不退回经 knowlab 读（Astra 评审 F02）。"""
+    from app.application.workbench.test_runs import pins_for_test
+    from app.domain.workbench.errors import KnowbotInvalid
+
+    body = request("knowlab-run-0062").model_dump(mode="json")
+    body["data_grant"] = {
+        "grant_id": "g",
+        "items": [
+            {
+                "dataset_id": "not-a-uuid",
+                "item_id": "i",
+                "name": "a.csv",
+                "media_type": "text/csv",
+                "size_bytes": 1,
+                "sha256": "a" * 64,
+            }
+        ],
+    }
+    with pytest.raises(KnowbotInvalid):
+        pins_for_test(RunRequest.model_validate(body))
+
+
 def test_a_request_without_a_grant_keeps_its_digest():
     plain = request("knowlab-run-0061")
     assert "data_grant" not in plain.model_dump(mode="json")
