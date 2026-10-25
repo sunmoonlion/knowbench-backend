@@ -19,7 +19,8 @@ UPSERT_USER = text(
         :id, :issuer, :subject, :username, :email, :display_name,
         CAST(:roles AS jsonb), CAST(:scopes AS jsonb)
     )
-    ON CONFLICT (issuer, subject) DO UPDATE SET
+    ON CONFLICT (subject) DO UPDATE SET
+        issuer = EXCLUDED.issuer,
         username = EXCLUDED.username,
         email = EXCLUDED.email,
         display_name = EXCLUDED.display_name,

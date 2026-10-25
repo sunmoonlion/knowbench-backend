@@ -242,10 +242,13 @@ class WorkbenchRepository:
         return str(row[0])
 
     async def assigned_environment(self, owner_actor_id: str) -> dict[str, Any] | None:
+        # 有设备编号的优先；没有编号的（0.5.1 前配的，或会合点还没转编号）也算配给这个账号的那份，
+        # 不然「现在的状态」会对在线的电脑说「还没有颁发令牌」（账 178）
         r = await self.session.execute(
             text(
-                """select * from workbench_environments where owner_actor_id = :o and device_id is not null
-                   order by last_seen_at desc nulls last, created_at desc limit 1"""
+                """select * from workbench_environments where owner_actor_id = :o
+                   order by (device_id is not null) desc, last_seen_at desc nulls last, created_at desc
+                   limit 1"""
             ),
             {"o": owner_actor_id},
         )

@@ -81,7 +81,7 @@ class SessionStore(Protocol):
 
 
 class UserDirectory(Protocol):
-    """Local users, keyed by the provider's issuer and subject."""
+    """Local users keyed by the provider subject; the issuer is recorded, not a key."""
 
     async def upsert(
         self,

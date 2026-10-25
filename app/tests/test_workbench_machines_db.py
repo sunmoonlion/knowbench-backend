@@ -254,6 +254,16 @@ async def test_new_link_adopts_its_legacy_row_so_projects_stay_attached(db):
     assert assigned is not None and assigned["device_id"] == DEV_B
 
 
+async def test_a_link_without_device_id_is_still_the_assigned_one(db):
+    """没有设备编号的配对（0.5.1 前配的，或会合点没转编号）也是配给这个账号的那份（账 178）。"""
+    async with book(db) as repo:
+        legacy = await report(repo, name="pc")
+    async with db() as session:
+        assigned = await WorkbenchRepository(session).assigned_environment(OWNER)
+    assert assigned is not None and str(assigned["id"]) == str(legacy)
+    assert assigned["device_id"] is None
+
+
 async def test_copied_config_shows_as_a_host_change(db):
     """配置目录被整个拷到别的电脑：编号跟过去，主机名对不上，first_host 留着第一次的。"""
     async with book(db) as repo:

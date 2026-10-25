@@ -179,14 +179,18 @@ async def test_user_directory_creates_once_then_refreshes_the_same_user(
         roles=[],
         scopes=[],
     )
-    assert other["id"] != created["id"]
+    # 换了 issuer 还是同一个人（账 175：换域名不再切出第二份）
+    assert other["id"] == created["id"]
     async with db() as session:
         rows = (
             await session.execute(
-                text("SELECT username FROM auth_user ORDER BY created_at, username")
+                text(
+                    "SELECT issuer, username FROM auth_user"
+                    " ORDER BY created_at, username"
+                )
             )
-        ).scalars()
-        assert sorted(rows) == ["second", "third"]
+        ).all()
+        assert [tuple(row) for row in rows] == [("https://other.example.test", "third")]
 
 
 @pytest.mark.asyncio

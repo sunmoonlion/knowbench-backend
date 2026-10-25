@@ -8,7 +8,7 @@ from app.infrastructure.models.base import Base, TimestampMixin, UUIDMixin
 
 
 class AuthUser(UUIDMixin, TimestampMixin, Base):
-    """Local authorization binding keyed by the Provider issuer and subject."""
+    """Local authorization binding keyed by the provider subject (issuer recorded)."""
 
     __tablename__ = "auth_user"
 
@@ -21,6 +21,7 @@ class AuthUser(UUIDMixin, TimestampMixin, Base):
     scopes: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
     __table_args__ = (
-        UniqueConstraint("issuer", "subject", name="uq_auth_user_issuer_subject"),
+        # 只按 subject 认人（账 175）：换了 Casdoor 地址同一个人还是同一份
+        UniqueConstraint("subject", name="uq_auth_user_subject"),
         Index("ix_auth_user_subject", "subject"),
     )
