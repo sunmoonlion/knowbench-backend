@@ -48,7 +48,12 @@ def _refused(exc: KnowbaseRefused) -> AppException:
 
 def _item(raw: dict[str, Any]) -> dict[str, Any]:
     keep = ("item_id", "name", "media_type", "size_bytes", "sha256", "origin")
-    return {**{k: raw.get(k) for k in keep}, "created_at": raw.get("created_at")}
+    return {
+        **{k: raw.get(k) for k in keep},
+        "created_at": raw.get("created_at"),
+        # 买来、卖家写明不许转卖的（Fable 评审 P2-16）
+        "no_resale": raw.get("no_resale") is True,
+    }
 
 
 @router.get("/cloud-library")

@@ -84,6 +84,7 @@ async def test_listing_shows_the_users_items_without_internal_fields(api):
     body = (await client.get("/api/workbench/cloud-library")).json()
     assert [i["name"] for i in body["items"]] == ["茅台 2023 年报.pdf"]
     assert "origin_ref" not in body["items"][0] and "app" not in body["items"][0]
+    assert body["items"][0]["no_resale"] is False  # 买来不许转卖的才为真（Fable P2-16）
     assert knowbase.calls == [("items", "user-token")]
 
 
