@@ -195,6 +195,18 @@ class WorkbenchRepository:
                 {"o": owner_actor_id, "n": name, "d": device_id},
             )
             row = r.first()
+        if row is None and device_id and host:
+            # 同一台电脑上重新 init 换了编号（老的 link 会这样）：认领同名、同一台主机、已经离线
+            # 的那条，项目挂在它上面，不另起一条（Fable 评审 P2-15）
+            r = await self.session.execute(
+                text(
+                    """select id from workbench_environments where owner_actor_id = :o and name = :n
+                         and first_host = :h and status <> 'online'
+                       order by last_seen_at desc nulls last limit 1 for update"""
+                ),
+                {"o": owner_actor_id, "n": name, "h": host},
+            )
+            row = r.first()
         if row is None:
             return await self.register_environment(
                 owner_actor_id=owner_actor_id,

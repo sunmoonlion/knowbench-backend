@@ -95,6 +95,39 @@ async def test_reporting_twice_keeps_one_machine_and_refreshes_it(db):
     assert env["agent_version"] == "0.3.0" and env["codex_version"] == "0.156.0"
 
 
+async def test_a_new_device_id_on_the_same_computer_takes_over_the_old_record(db):
+    """同一台电脑上重新 init 换了设备编号：认领同名、同主机、已离线的老记录，项目不落在
+    永远离线的那条上；别的主机上同名的另起一条（Fable 评审 P2-15）。"""
+    common = {
+        "owner_actor_id": OWNER,
+        "name": "laptop",
+        "agent_version": "0.5.2",
+        "codex_version": None,
+        "roots": [],
+        "ceiling": {},
+    }
+    old_id, new_id = (
+        "11111111-1111-4111-8111-111111111111",
+        "22222222-2222-4222-8222-222222222222",
+    )
+    async with book(db) as repo:
+        first = await repo.report_environment(
+            device_id=old_id, host="LAPTOP-1", **common
+        )
+        await repo.set_environment_status(first, "offline")
+    async with book(db) as repo:
+        again = await repo.report_environment(
+            device_id=new_id, host="LAPTOP-1", **common
+        )
+    assert again == first
+    async with book(db) as repo:
+        await repo.set_environment_status(first, "offline")
+        copied = await repo.report_environment(
+            device_id="33333333-3333-4333-8333-333333333333", host="OTHER-PC", **common
+        )
+    assert copied != first
+
+
 async def test_going_offline_touches_only_that_persons_online_machines(db):
     async with book(db) as repo:
         ids = {}
