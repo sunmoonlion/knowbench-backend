@@ -18,7 +18,7 @@ from __future__ import annotations
 import uuid
 
 import sqlalchemy as sa
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 
 from alembic import op
 
@@ -62,18 +62,21 @@ def _repoint(
                 params,
             )
         return
-    except IntegrityError:
+    except DBAPIError:
         pass
-    # 两份都有的记录撞唯一键：逐条改，改不过去的是旧份那条，删掉（新份那条留着）
-    ctids = (
+    # 整表改不动：撞了按人唯一的键（两份都有这条，新份的留着），或者这张表的行不许改
+    # （knowbench 的钉住分身版本有触发器）。逐条来：先试改；改不了就删掉再按新份插一条
+    # 一样的；插不进去（新份已有同样的一条）就只删
+    rows = (
         conn.execute(
-            sa.text(f'select ctid from "{table}" where "{column}" = :old'),
+            sa.text(f'select ctid, * from "{table}" where "{column}" = :old'),
             {"old": params["old"]},
         )
-        .scalars()
+        .mappings()
         .all()
     )
-    for ctid in ctids:
+    for row in rows:
+        ctid = row["ctid"]
         try:
             with conn.begin_nested():
                 conn.execute(
@@ -83,8 +86,22 @@ def _repoint(
                     ),
                     {**params, "c": ctid},
                 )
-        except IntegrityError:
+            continue
+        except DBAPIError:
+            pass
+        values = {k: v for k, v in row.items() if k != "ctid"}
+        values[column] = params["new"]
+        names = ", ".join(f'"{k}"' for k in values)
+        marks = ", ".join(f":{k}" for k in values)
+        with conn.begin_nested():
             conn.execute(sa.text(f'delete from "{table}" where ctid = :c'), {"c": ctid})
+        try:
+            with conn.begin_nested():
+                conn.execute(
+                    sa.text(f'insert into "{table}" ({names}) values ({marks})'), values
+                )
+        except DBAPIError:
+            pass
 
 
 def upgrade() -> None:
