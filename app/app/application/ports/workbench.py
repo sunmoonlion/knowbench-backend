@@ -746,6 +746,10 @@ class WorkbenchStore(Protocol):
         """这件委托是哪一次分身测试的（没有就是 None）。"""
         ...
 
+    async def is_test_session(self, session_id: str) -> bool:
+        """这段对话是分身测试的一条用例。"""
+        ...
+
     # ---------- 委托钉住的数据（SDD 0042 第五节）----------
     async def pin_task_data(
         self, task_id: str, items: list[dict[str, Any]]

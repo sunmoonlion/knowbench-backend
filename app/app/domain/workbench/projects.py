@@ -307,11 +307,17 @@ def turn_settings(
     environment_online: bool,
     approval: str | None,
     expert: bool = False,
+    test_round: bool = False,
 ) -> dict[str, Any]:
     """这一轮发给 Codex 的四样：执行环境、目录、沙箱策略、审批。每一轮都带全。
 
     同一条线上可以先聊天、再工作、再交给专家，所以不能指望上一轮留下的设置：
     这一轮是什么，就明明白白发什么。页面传来的设置一概不用（F-PROJ-03）。
+
+    test_round：分身测试的一轮。测试电脑上整个 Pod 共用 /tmp，上一次测试写的下一次读得到、
+    写满还会被驱逐（Fable 评审 P2-14），所以 /tmp 不给写，临时文件只写 TMPDIR：测试电脑把
+    它设到 `<工作区>/runs/.tmp`，开测前随别的目录一起清掉、再建。TMPDIR 照旧可写，没改
+    TMPDIR 的测试电脑上它还是 /tmp，行为不变。
     """
     mode = mode_of(
         kind,
@@ -328,6 +334,11 @@ def turn_settings(
                 "type": "workspaceWrite",
                 "writableRoots": [],
                 "networkAccess": False,
+                **(
+                    {"excludeSlashTmp": True, "excludeTmpdirEnvVar": False}
+                    if test_round
+                    else {}
+                ),
             },
             "approvalPolicy": approval_policy(approval),
         }

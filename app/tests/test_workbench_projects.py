@@ -157,6 +157,21 @@ def test_chat_outside_a_project_has_no_environment_and_is_read_only():
     }
 
 
+def test_a_test_round_writes_temporary_files_only_to_tmpdir():
+    """分身测试的一轮：/tmp 不给写（整个测试电脑共用），TMPDIR 照旧可写（Fable 评审 P2-14）。"""
+    common = {
+        "directory": "/workspace/runs/20261025-a",
+        "environment_key": "test-pc",
+        "environment_online": True,
+        "approval": "never",
+        "expert": True,
+    }
+    test = turn_settings("work", test_round=True, **common)["sandboxPolicy"]
+    assert (test["excludeSlashTmp"], test["excludeTmpdirEnvVar"]) == (True, False)
+    plain = turn_settings("work", **common)["sandboxPolicy"]
+    assert "excludeSlashTmp" not in plain
+
+
 def test_chat_in_a_project_reads_files_only_while_the_machine_is_online():
     common = {
         "directory": "/home/me/research/a",
@@ -383,4 +398,6 @@ def test_windows_work_notes_say_how_to_write_files_and_run_scripts() -> None:
     assert "apply_patch is not a program" not in mode_note(
         "chat_in_project", directory="D:/data"
     )
-    assert "apply_patch is not a program" not in mode_note("work", directory="/home/zym/proj")
+    assert "apply_patch is not a program" not in mode_note(
+        "work", directory="/home/zym/proj"
+    )

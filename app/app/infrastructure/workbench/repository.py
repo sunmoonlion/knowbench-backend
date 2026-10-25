@@ -1400,6 +1400,13 @@ class WorkbenchRepository:
         row = r.mappings().first()
         return dict(row) if row else None
 
+    async def is_test_session(self, session_id: str) -> bool:
+        r = await self.session.execute(
+            text("select 1 from workbench_test_cases where session_id = :s limit 1"),
+            {"s": session_id},
+        )
+        return r.first() is not None
+
     # ---------- 委托钉住的数据（SDD 0042 第五节）----------
     async def pin_task_data(
         self, task_id: str, items: list[dict[str, Any]]

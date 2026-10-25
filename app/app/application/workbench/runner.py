@@ -1735,6 +1735,7 @@ class Runner:
             if session is None:
                 return TurnPlan()
             prefs = await repo.get_prefs(str(session["owner_actor_id"]))
+            test_round = await repo.is_test_session(str(session["id"]))
             online = True
             if session.get("environment_id") is not None:
                 env = await repo.get_environment(str(session["environment_id"]))
@@ -1767,6 +1768,7 @@ class Runner:
             settings=turn_settings(
                 kind,
                 approval=legacy.get("approvalPolicy") or prefs.get("approval_policy"),
+                test_round=test_round,
                 **facts,
             ),
             mode=str(mode_of(kind, **facts)),

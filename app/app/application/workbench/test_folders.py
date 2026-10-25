@@ -20,6 +20,7 @@ from app.domain.workbench.errors import WorkbenchError
 log = logging.getLogger(__name__)
 
 RUNS = "runs"
+TMP = ".tmp"  # runs 下给测试放临时文件的目录（测试电脑的 TMPDIR 指到这里）
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
 
 
@@ -91,6 +92,13 @@ class AgentTestFolders:
         try:
             await self.service.call(
                 relay_user, "fs/createDirectory", {"path": target, "recursive": True}
+            )
+            # 临时文件的目录（测试电脑的 TMPDIR）：上面随别的目录清掉了，这里再建一个空的
+            # （Fable 评审 P2-14）
+            await self.service.call(
+                relay_user,
+                "fs/createDirectory",
+                {"path": join_path(runs, TMP), "recursive": True},
             )
         except AgentRefused as exc:
             raise FolderRefused(f"{target}: {exc.code}") from None

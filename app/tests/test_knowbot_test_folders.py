@@ -68,6 +68,8 @@ async def test_prepare_removes_other_runs_and_makes_this_one():
         ("fs/readDirectory", {"path": "/workspace/runs"}),
         ("fs/remove", {"path": "/workspace/runs/20261017-old"}),
         ("fs/createDirectory", {"path": "/workspace/runs/mine", "recursive": True}),
+        # 放临时文件的目录随别的清掉、再建空的（Fable 评审 P2-14）
+        ("fs/createDirectory", {"path": "/workspace/runs/.tmp", "recursive": True}),
     ]
 
 
@@ -75,7 +77,7 @@ async def test_prepare_on_a_fresh_computer_just_makes_the_folder():
     service = Service(refuse="not_found")
     folders = AgentTestFolders(service, stores)
     assert await folders.prepare(owner="tester", root="/workspace", folder="runs/a")
-    assert service.calls[-1][0] == "fs/createDirectory"
+    assert service.calls[-2][0] == "fs/createDirectory"
 
 
 async def test_prepare_fails_closed_when_the_computer_cannot_be_reached_or_cleaned():

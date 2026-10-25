@@ -1275,6 +1275,9 @@ async def test_a_test_with_a_data_grant_reads_what_is_pinned(db):
                 .mappings()
                 .one()
             )
+            # 这段对话是测试的一条用例：沙箱不给写 /tmp（Fable 评审 P2-14）
+            assert await repo.is_test_session(str(task["session_id"]))
+            assert not await repo.is_test_session(str(uuid.uuid4()))
             pins = await repo.list_task_data(str(task["id"]))
             assert [
                 (str(p["dataset_id"]), p["grant_id"], p["grant_kind"]) for p in pins
