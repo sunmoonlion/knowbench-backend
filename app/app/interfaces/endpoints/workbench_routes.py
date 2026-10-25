@@ -411,6 +411,7 @@ class RemoteCloneAuth(BaseModel):
     model_config = ConfigDict(extra="forbid")
     username: str | None = Field(default=None, max_length=256)
     token: str = Field(min_length=1, max_length=4096)
+    # 旧网页还会带，收下但不转：远程的令牌「只用这一次、不落盘」（Fable 评审 P1-4）
     remember: bool | None = None
 
 
@@ -508,7 +509,7 @@ async def remote_project_clone(
     不落盘后再带 auth 来。令牌只转给本地 link，不进日志、不存。"""
     params: dict[str, Any] = {"url": body.url, "path": _checked_path(body.path)}
     if body.auth is not None:
-        params["auth"] = body.auth.model_dump(exclude_none=True)
+        params["auth"] = body.auth.model_dump(exclude_none=True, exclude={"remember"})
     return await _ask_agent(
         service,
         session,

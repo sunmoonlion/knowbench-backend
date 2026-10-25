@@ -335,16 +335,17 @@ async def test_remote_projects_folder_and_clone(make_client, db):  # noqa: F811
             json={
                 "url": "https://github.com/a/b",
                 "path": "C:\\r\\b",
-                "auth": {"token": "ghp_secret", "remember": False},
+                "auth": {"token": "ghp_secret", "remember": True},
             },
         )
         assert r.status_code == 200 and "ghp_secret" not in r.text
+        # 记不记住不转给那台电脑：远程的令牌只用这一次（Fable 评审 P1-4）
         assert fake.calls[-1][1:] == (
             "projects/clone",
             {
                 "url": "https://github.com/a/b",
                 "path": "C:\\r\\b",
-                "auth": {"token": "ghp_secret", "remember": False},
+                "auth": {"token": "ghp_secret"},
             },
         )
         assert fake.waits[-1] == CLONE_TIMEOUT_SECONDS
