@@ -161,6 +161,8 @@ class WorkbenchRepository:
         """移除没连着的电脑（账 179）：不删行（会话、项目还引用它），记成 removed、列表里不再出现；
         同一台电脑再连上来会按名字或设备编号认领回去。连着的不许移除。"""
         env = await self.get_environment(environment_id, owner_actor_id=owner_actor_id)
+        if env.get("status") == "removed":
+            raise NotFound("environment not found", environment_id=environment_id)
         if env.get("status") == "online":
             raise MachineStillConnected(
                 "this computer is connected now", environment_id=environment_id
