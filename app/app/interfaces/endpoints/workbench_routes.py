@@ -399,6 +399,29 @@ async def _ask_agent(
         raise _http(exc) from exc
 
 
+@router.delete("/environments/{environment_id}")
+async def remove_environment(
+    environment_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    """移除一台没连着的电脑（账 179）：账 175 合并后旧配对的记录也在列表里，用户要能清掉。
+    只记成 removed，不删行；连着的不许移除。"""
+    repo = workbench_store(session)
+    try:
+        async with repo.transaction():
+            await repo.remove_environment(
+                environment_id, owner_actor_id=_actor(principal)
+            )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "environment_id": environment_id,
+        "removed": True,
+    }
+
+
 @router.get("/environments/{environment_id}/service")
 async def agent_service_hello(
     environment_id: str,

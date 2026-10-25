@@ -163,6 +163,10 @@ class WorkbenchStore(Protocol):
         self, environment_id: str, *, owner_actor_id: str | None = None
     ) -> dict[str, Any]: ...
 
+    async def remove_environment(
+        self, environment_id: str, *, owner_actor_id: str
+    ) -> None: ...
+
     async def set_environment_status(
         self, environment_id: str, status: str
     ) -> None: ...

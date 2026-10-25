@@ -418,3 +418,35 @@ async def test_local_link_reports_the_assigned_link_and_token_expiry(make_client
     # 别人看不到
     other = (await make_client(B).get("/api/workbench/local-link")).json()
     assert other["assigned"] is None
+
+
+async def test_an_offline_computer_can_be_removed_but_a_connected_one_cannot(
+    make_client, db
+):  # noqa: F811
+    """账 179：账 175 合并后旧配对的记录也在列表里；没连着的能移除（只记 removed，不删行），连着的不许。"""
+    from app.infrastructure.workbench.repository import WorkbenchRepository
+
+    http = make_client(A)
+    env, _sb, _session = await bootstrap(http)
+    listed = (await http.get("/api/workbench/environments")).json()["environments"]
+    assert [e["id"] for e in listed] == [env]
+
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            await repo.set_environment_status(env, "online")
+    busy = await http.delete(f"/api/workbench/environments/{env}")
+    assert busy.status_code == 409 and busy.json()["code"] == "machine_still_connected"
+
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            await repo.set_environment_status(env, "offline")
+    gone = await http.delete(f"/api/workbench/environments/{env}")
+    assert gone.status_code == 200 and gone.json()["removed"] is True
+    assert (await http.get("/api/workbench/environments")).json()["environments"] == []
+    # 行还在（会话引用它），别人看不见，再移一次是 404
+    assert (await http.delete(f"/api/workbench/environments/{env}")).status_code == 404
+    assert (
+        await make_client(B).delete(f"/api/workbench/environments/{env}")
+    ).status_code == 404

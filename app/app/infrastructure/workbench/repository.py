@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.application.dto.outbox import OutboxEvent
 from app.domain.workbench.errors import (
     KnowbotInvalid,
+    MachineStillConnected,
     NotFound,
     ProjectBusy,
     ProjectExists,
@@ -133,7 +134,8 @@ class WorkbenchRepository:
     async def list_environments(self, *, owner_actor_id: str) -> list[dict[str, Any]]:
         r = await self.session.execute(
             text(
-                "select * from workbench_environments where owner_actor_id = :o order by created_at"
+                "select * from workbench_environments where owner_actor_id = :o"
+                " and status <> 'removed' order by created_at"
             ),
             {"o": owner_actor_id},
         )
@@ -152,6 +154,24 @@ class WorkbenchRepository:
         ):
             raise NotFound("environment not found", environment_id=environment_id)
         return dict(row)
+
+    async def remove_environment(
+        self, environment_id: str, *, owner_actor_id: str
+    ) -> None:
+        """移除没连着的电脑（账 179）：不删行（会话、项目还引用它），记成 removed、列表里不再出现；
+        同一台电脑再连上来会按名字或设备编号认领回去。连着的不许移除。"""
+        env = await self.get_environment(environment_id, owner_actor_id=owner_actor_id)
+        if env.get("status") == "online":
+            raise MachineStillConnected(
+                "this computer is connected now", environment_id=environment_id
+            )
+        await self.session.execute(
+            text(
+                "update workbench_environments set status = 'removed', updated_at = now()"
+                " where id = :id and owner_actor_id = :o"
+            ),
+            {"id": environment_id, "o": owner_actor_id},
+        )
 
     async def set_environment_status(self, environment_id: str, status: str) -> None:
         await self.session.execute(
@@ -247,6 +267,7 @@ class WorkbenchRepository:
         r = await self.session.execute(
             text(
                 """select * from workbench_environments where owner_actor_id = :o
+                   and status <> 'removed'
                    order by (device_id is not null) desc, last_seen_at desc nulls last, created_at desc
                    limit 1"""
             ),

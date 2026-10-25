@@ -268,3 +268,10 @@ class MachineNotConnected(WorkbenchError):
 
     code = "machine_not_connected"
     http_status = 409
+
+
+class MachineStillConnected(WorkbenchError):
+    """要移除的电脑现在连着：先在那台电脑上退出本地 link，或者在别的电脑上接入（账 179）。"""
+
+    code = "machine_still_connected"
+    http_status = 409
