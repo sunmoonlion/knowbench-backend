@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any, Protocol
 
@@ -15,6 +16,8 @@ from app.application.ports.workbench import WorkbenchStores
 from app.application.workbench.agent_service import AgentRefused, AgentService
 from app.application.workbench.deliverable_check import join_path
 from app.domain.workbench.errors import WorkbenchError
+
+log = logging.getLogger(__name__)
 
 RUNS = "runs"
 _UNSAFE = re.compile(r"[^A-Za-z0-9._-]")
@@ -70,15 +73,22 @@ class AgentTestFolders:
             listed = {"entries": []}
         except WorkbenchError:
             return False
-        target = ""
         try:
             # 本地 link 服务流 fs/readDirectory 的条目是 {name, type: dir|file|link|other, …}（sunmoon-link service.ts）
             for entry in listed.get("entries") or []:
                 name = str(entry.get("name") or "")
                 if name and name != mine and entry.get("type") == "dir":
-                    target = join_path(runs, name)
-                    await self.service.call(relay_user, "fs/remove", {"path": target})
-            target = join_path(root, folder)
+                    old = join_path(runs, name)
+                    try:
+                        await self.service.call(relay_user, "fs/remove", {"path": old})
+                    except AgentRefused as exc:
+                        # 上一次留下删不掉的（比如只读目录）：记一行，不挡这一次；
+                        # 一次删不掉就让以后所有测试都开不了跑更糟（Fable 评审 P1-3）
+                        log.warning("old test folder not removed %s: %s", old, exc.code)
+        except WorkbenchError:
+            return False
+        target = join_path(root, folder)
+        try:
             await self.service.call(
                 relay_user, "fs/createDirectory", {"path": target, "recursive": True}
             )

@@ -96,21 +96,29 @@ async def test_prepare_fails_closed_when_the_computer_cannot_be_reached_or_clean
     )
 
 
-async def test_a_refused_remove_says_which_folder_at_once():
-    """代理拒了删（不是离线）：等下去也不会好，立刻说是哪个目录（审读第 15 条）。"""
+async def test_an_old_folder_that_cannot_be_removed_does_not_stop_the_next_test(caplog):
+    """上一次留下删不掉的（如只读目录）：记一行，照样建这一次的（Fable 评审 P1-3）；
+    建不了这一次的才立刻报错，写明是哪个目录（审读第 15 条）。"""
     dirty = Service(
         entries=[{"name": "other", "type": "dir"}],
         deny="fs/remove",
     )
+    assert await AgentTestFolders(dirty, stores).prepare(
+        owner="tester", root="/workspace", folder="runs/a"
+    )
+    assert ("fs/createDirectory", {"path": "/workspace/runs/a", "recursive": True}) in (
+        dirty.calls
+    )
+    assert "/workspace/runs/other" in caplog.text
+    blocked = Service(deny="fs/createDirectory")
     try:
-        await AgentTestFolders(dirty, stores).prepare(
+        await AgentTestFolders(blocked, stores).prepare(
             owner="tester", root="/workspace", folder="runs/a"
         )
     except FolderRefused as exc:
-        assert exc.message.startswith("/workspace/runs/other: ")
+        assert exc.message.startswith("/workspace/runs/a: ")
     else:
         raise AssertionError("expected FolderRefused")
-    assert not any(m == "fs/createDirectory" for m, _ in dirty.calls)
 
 
 async def test_remove_never_raises():
