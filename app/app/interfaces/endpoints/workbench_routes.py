@@ -58,7 +58,7 @@ from app.bootstrap.workbench import (
 )
 from app.domain.security import Principal
 from app.domain.workbench.data_needs import DataChoice
-from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.errors import MachineNotConnected, WorkbenchError
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.provider_url import (
     normalize_mcp_sources,
@@ -355,9 +355,20 @@ async def register_environment(
 
 
 # ---------------- 代理（0022，账 87）：服务流给云端自用；本机访问票给网页敲回环口 ----------------
-async def _relay_user_of(repo, actor: str, environment_id: str) -> str:
-    """这台电脑是不是他的、他有没有配对过的会合点身份。都对才知道该连谁。"""
-    await repo.get_environment(environment_id, owner_actor_id=actor)
+async def _relay_user_of(
+    repo, actor: str, environment_id: str, *, connected: bool = False
+) -> str:
+    """这台电脑是不是他的、他有没有配对过的会合点身份。都对才知道该连谁。
+
+    connected：经会合点转过去的（远程看文件、新建项目），还要这台此刻正连着——一个人同一
+    时刻只连得上一份本地 link，选了 B、连着的却是 A，就会落到 A 上（Fable 评审 P2-11）。
+    哪台连着由对账（MachineSync，按设备编号认）每 10 秒记一次。
+    """
+    environment = await repo.get_environment(environment_id, owner_actor_id=actor)
+    if connected and environment.get("status") != "online":
+        raise MachineNotConnected(
+            "this computer is not the one connected now", environment_id=environment_id
+        )
     identity = await repo.get_relay_identity(actor)
     if not identity or not identity.get("relay_user"):
         raise AgentOffline("no agent has been paired for this account")
@@ -376,7 +387,9 @@ async def _ask_agent(
 ) -> dict[str, Any]:
     repo = workbench_store(session)
     try:
-        relay_user = await _relay_user_of(repo, _actor(principal), environment_id)
+        relay_user = await _relay_user_of(
+            repo, _actor(principal), environment_id, connected=True
+        )
         if wait_seconds is not None:
             return await service.call(
                 relay_user, method, params, wait_seconds=wait_seconds

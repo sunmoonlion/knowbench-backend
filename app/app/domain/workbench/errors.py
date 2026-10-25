@@ -261,3 +261,10 @@ class ComputeRefused(WorkbenchError):
 
     code = "compute_refused"
     http_status = 422
+
+
+class MachineNotConnected(WorkbenchError):
+    """选的这台电脑现在没连着：他此刻连着的是别的电脑上的本地 link（Fable 评审 P2-11）。"""
+
+    code = "machine_not_connected"
+    http_status = 409

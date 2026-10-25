@@ -310,6 +310,23 @@ async def test_remote_files_pass_through_for_the_owner_only(make_client, db):  #
         assert r.status_code == 404 and len(fake.calls) == before
 
 
+async def test_remote_calls_go_only_to_the_computer_connected_now(make_client, db):  # noqa: F811
+    """选的这台此刻没连着（连着的是另一台的本地 link）：不转，回 409（Fable 评审 P2-11）。"""
+    async with make_client(A) as http:
+        env = await paired_environment(http, db, A)
+        async with db() as s:
+            repo = workbench_store(s)
+            async with repo.transaction():
+                await repo.set_environment_status(env, "offline")
+        fake = FakeService({"entries": [], "truncated": False})
+        use(http, fake)
+        r = await http.get(
+            f"/api/workbench/environments/{env}/remote/fs/dir", params={"path": "C:\\r"}
+        )
+        assert (r.status_code, r.json()["code"]) == (409, "machine_not_connected")
+        assert fake.calls == []
+
+
 async def test_remote_projects_folder_and_clone(make_client, db):  # noqa: F811
     """账 165：远程建文件夹、拉仓库。先不带令牌拉；要登录时回 401 auth_required，带上令牌再拉；拉仓库多等一会儿。"""
     from app.application.workbench.agent_service import CLONE_TIMEOUT_SECONDS
