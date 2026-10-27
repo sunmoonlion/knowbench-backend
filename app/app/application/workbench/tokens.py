@@ -21,6 +21,9 @@ from joserfc.jwk import ECKey
 
 ALG = "ES256"
 RECORDS_AUDIENCE = "workbench-records"
+# knowbase 数据 MCP（0048 第三节）：工作台中继时一问一签，几分钟就过期
+DATA_AUDIENCE = "knowbase-data"
+DATA_TTL_SECONDS = 5 * 60
 AGENT_TTL_SECONDS = 30 * 24 * 3600  # 所有者 2026-10-09 定：仅代理 30 天
 WORKBENCH_SERVICE_TTL_SECONDS = (
     10 * 60
@@ -139,6 +142,11 @@ class TokenIssuer:
 
     def owner_of_records_token(self, token: str) -> str | None:
         """验这张令牌是不是我们签的、给读记录用的、没过期。是就返回用户编号。"""
+        found = self.records_identity(token)
+        return found[0] if found else None
+
+    def records_identity(self, token: str) -> tuple[str, str] | None:
+        """读记录令牌验过以后的（用户编号，沙箱）；不是就 None。"""
         try:
             claims = verify(
                 token,
@@ -149,7 +157,32 @@ class TokenIssuer:
         except (JoseError, ValueError):
             return None
         owner = claims.get("owner")
-        return str(owner) if owner else None
+        if not owner:
+            return None
+        return str(owner), str(claims.get("sandbox") or "")
+
+    def data_token(
+        self,
+        subject: str,
+        *,
+        sandbox: str,
+        tools: list[str],
+        ttl_seconds: int = DATA_TTL_SECONDS,
+    ) -> Issued:
+        """工作台中继 knowbase 数据 MCP 时当场签（0048 第三节）：`sub` 是用户（Casdoor
+        编号，knowbase 认的那个）、`azp` 是执行的应用、沙箱、只许这次调的工具。令牌只
+        证明「这个沙箱代这个用户、以 knowbench 名义在用」，能读什么由 knowbase 每次按
+        运行授权或会话范围核。"""
+        return self._issue(
+            {
+                "aud": DATA_AUDIENCE,
+                "sub": subject,
+                "azp": "knowbench",
+                "sandbox": sandbox or "unknown",
+                "tools": list(tools),
+            },
+            ttl_seconds,
+        )
 
 
 def exp_of(token: str) -> int | None:

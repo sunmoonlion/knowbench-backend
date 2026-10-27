@@ -11,6 +11,7 @@ import logging
 import signal
 
 from app.bootstrap.workbench import (
+    build_data_waiter,
     build_deliverable_check,
     build_grant_releaser,
     build_machine_sync,
@@ -85,11 +86,16 @@ async def main() -> None:
     releasing = asyncio.create_task(
         build_grant_releaser(get_postgres().session_factory).run_forever(stopping)
     )
+    # 清单 v2 的专家等数据（SDD 0043 第 3.4 节）：数据齐了自动接着跑
+    waiting = asyncio.create_task(
+        build_data_waiter(get_postgres().session_factory).run_forever(stopping)
+    )
     try:
         await runner.run_forever()
     finally:
         stopping.set()
         await releasing
+        await waiting
         if syncing is not None:
             await syncing
         if testing is not None:

@@ -57,6 +57,8 @@ class WaitingReason(StrEnum):
     APPROVAL = "APPROVAL"
     RESOURCE = "RESOURCE"
     ENVIRONMENT = "ENVIRONMENT"
+    # 清单 v2 的专家：要补采的数据交给 knowfeed 了，齐了自动接着跑（SDD 0043 第 3.4 节）
+    DATA = "DATA"
 
 
 class AttemptState(StrEnum):

@@ -84,30 +84,24 @@ async def test_the_handshake_and_the_list_of_tools(served):
         assert noted.status_code == 202
         listed = (await http.post(URL, json=rpc("tools/list"), headers=bearer())).json()
         names = [t["name"] for t in listed["result"]["tools"]]
+        # knowbase 没配：数据工具不列，项目、用户数据与计算照常
         assert names == [
             "list_project_conversations",
             "read_project_conversation",
-            "list_library",
-            "read_library_item",
             "list_my_data",
             "read_my_data",
             "read_my_table",
+            "request_data",
             "compute",
         ]
-        # 只读：除了 compute（只记计算记录）没有写的工具；项目、用户数据与计算都要带委托编号，
-        # 知识库的两个不用（聊天里也能读）
+        # 只读：除了 compute（只记计算记录）与 request_data（只列进用户的确认清单）没有
+        # 写的工具；都要带委托编号
         for spec in listed["result"]["tools"]:
-            assert (
-                spec["name"].startswith(("list_", "read_")) or spec["name"] == "compute"
+            assert spec["name"].startswith(("list_", "read_")) or spec["name"] in (
+                "compute",
+                "request_data",
             )
-            if (
-                "project" in spec["name"]
-                or "my_" in spec["name"]
-                or spec["name"] == "compute"
-            ):
-                assert "task" in spec["inputSchema"]["required"]
-            else:
-                assert "task" not in spec["inputSchema"].get("required", [])
+            assert "task" in spec["inputSchema"]["required"]
         assert (await http.get(URL, headers=bearer())).status_code == 405
         unknown = await http.post(URL, json=rpc("resources/list"), headers=bearer())
         assert unknown.json()["error"]["code"] == -32601
@@ -243,7 +237,7 @@ async def test_a_result_too_large_for_the_model_is_refused_in_words(
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
 
-        async def huge(records, name, args):
+        async def huge(records, name, args, reader=None):
             return {"text": "年" * (TOOL_RESULT_MAX_BYTES // 3 + 1)}
 
         monkeypatch.setattr(workbench_mcp, "call", huge)
@@ -261,73 +255,160 @@ async def test_a_result_too_large_for_the_model_is_refused_in_words(
         await fake.close()
 
 
-async def test_the_library_tools_read_what_the_conversation_chose(
-    served,
-    db,  # noqa: F811
-    monkeypatch,
-):
-    """SDD 0042 第四节：list_library、read_library_item 只读这段对话选用的云端知识库。"""
-    import hashlib
-    from datetime import UTC, datetime, timedelta
+class FakeDataMcp:
+    """knowbase 数据 MCP 的替身：记下转来的每一条与令牌。"""
 
-    from test_workbench_session_data_db import CSV, Cloud, source
+    FACT = "fact:11111111-2222-3333-4444-555555555555"
 
+    def __init__(self) -> None:
+        self.seen: list[tuple[dict, dict]] = []
+
+    async def data_mcp(self, token, message):
+        import base64
+
+        body = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
+        self.seen.append((claims, message))
+        if message["method"] == "tools/list":
+            return {
+                "jsonrpc": "2.0",
+                "id": message["id"],
+                "result": {
+                    "tools": [
+                        {
+                            "name": "list_inputs",
+                            "description": "x",
+                            "inputSchema": {
+                                "type": "object",
+                                "properties": {"run": {"type": "string"}},
+                                "required": ["run"],
+                            },
+                        },
+                        {"name": "not_relayed", "inputSchema": {"type": "object"}},
+                    ]
+                },
+            }
+        name = message["params"]["name"]
+        structured = {"ok": True}
+        if name == "read_facts":
+            structured = {
+                "facts": [{"ref": self.FACT, "value": "1500.000000"}],
+                "not_found": [],
+            }
+        return {
+            "jsonrpc": "2.0",
+            "id": message["id"],
+            "result": {
+                "content": [{"type": "text", "text": json.dumps(structured)}],
+                "structuredContent": structured,
+                "isError": False,
+            },
+        }
+
+
+async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch):  # noqa: F811
+    """0048：数据工具照 knowbase 的定义挂出来（run 换成 task），带 task 换成运行授权
+    ref，令牌当场签、只许这一个工具；全市场不要授权；没登记会话的对话读不了。"""
+    from sqlalchemy import text
+
+    import app.application.workbench.data_relay as relay_module
     import app.interfaces.mcp.workbench_mcp as mcp
     from app.infrastructure.workbench.repository import WorkbenchRepository
 
-    monkeypatch.setattr(mcp, "knowbot_data_source", lambda: source(Cloud()))
+    fake_kb = FakeDataMcp()
+    monkeypatch.setattr(mcp, "knowbase_v2", lambda: fake_kb)
+    relay_module._tools_cache.update(at=0.0, tools=[])
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
         async with db() as s:
-            repo = WorkbenchRepository(s)
-            async with repo.transaction():
-                await repo.replace_session_data(
-                    ids["chat"],
-                    [
-                        {
-                            "item_id": "i1",
-                            "grant_id": "g-1",
-                            "name": "营收.csv",
-                            "media_type": "text/csv; charset=utf-8",
-                            "size_bytes": len(CSV),
-                            "sha256": hashlib.sha256(CSV).hexdigest(),
-                            "expires_at": datetime.now(UTC) + timedelta(hours=1),
-                        }
-                    ],
-                )
+            await s.execute(
+                text(
+                    """insert into auth_user (id, issuer, subject, roles, scopes)
+                       values (:i, 'https://casdoor.test', 'casdoor-alice', '[]', '[]')"""
+                ),
+                {"i": OWNER},
+            )
+            await s.commit()
+            task = await WorkbenchRepository(s).get_task(ids["task"])
         async with client(served) as http:
             listed = (
-                await http.post(
-                    URL,
-                    json=tool("list_library", conversation=ids["chat"]),
-                    headers=bearer(),
-                )
-            ).json()["result"]
-            assert listed["isError"] is False
-            assert [i["name"] for i in listed["structuredContent"]["items"]] == [
-                "营收.csv"
-            ]
-            read = (
-                await http.post(
-                    URL,
-                    json=tool("read_library_item", conversation=ids["chat"], item="i1"),
-                    headers=bearer(),
-                )
-            ).json()["result"]
-            assert "营业收入" in read["structuredContent"]["text"]
-            for call in (
-                tool("list_library"),  # 没说是哪段对话
-                tool("list_library", conversation=ids["work"]),  # 这段没选
-                tool("read_library_item", conversation=ids["chat"], item="other"),
-            ):
-                refused = (await http.post(URL, json=call, headers=bearer())).json()
-                assert refused["result"]["isError"] is True, call
-            other = await http.post(
-                URL,
-                json=tool("list_library", conversation=ids["chat"]),
-                headers=bearer(owner=str(uuid.uuid4())),
+                await http.post(URL, json=rpc("tools/list"), headers=bearer())
+            ).json()
+            relayed = {t["name"]: t for t in listed["result"]["tools"]}
+            assert "not_relayed" not in relayed
+            schema = relayed["list_inputs"]["inputSchema"]
+            assert schema["required"] == ["task"] and "run" not in schema["properties"]
+
+            got = await http.post(
+                URL, json=tool("list_inputs", task=ids["task"]), headers=bearer()
             )
-            assert other.json()["result"]["isError"] is True
+            assert got.json()["result"]["structuredContent"] == {"ok": True}
+            claims, message = fake_kb.seen[-1]
+            assert message["params"]["arguments"] == {
+                "run": f"knowbench:{task['idempotency_key']}"
+            }
+            assert (claims["aud"], claims["sub"], claims["azp"], claims["tools"]) == (
+                "knowbase-data",
+                "casdoor-alice",
+                "knowbench",
+                ["list_inputs"],
+            )
+            assert claims["sandbox"] == "u-abc" and claims["exp"] - claims["iat"] <= 300
+
+            await http.post(
+                URL,
+                json=tool("query_facts", scope="market", codes=["IS.REVENUE"]),
+                headers=bearer(),
+            )
+            assert "run" not in fake_kb.seen[-1][1]["params"]["arguments"]
+
+            chat = await http.post(
+                URL,
+                json=tool("read_input", conversation=ids["chat"], material_id="m"),
+                headers=bearer(),
+            )
+            assert "no data session" in chat.json()["result"]["content"][0]["text"]
+            stranger = await http.post(
+                URL,
+                json=tool("list_inputs", task=str(uuid.uuid4())),
+                headers=bearer(),
+            )
+            assert stranger.json()["result"]["isError"] is True
+
+            computed = await http.post(
+                URL,
+                json=rpc(
+                    "tools/call",
+                    {
+                        "name": "compute",
+                        "arguments": {
+                            "task": ids["task"],
+                            "name": "营业收入的两倍",
+                            "expression": "x * 2",
+                            "inputs": {"x": FakeDataMcp.FACT},
+                        },
+                    },
+                ),
+                headers=bearer(),
+            )
+            result = computed.json()["result"]
+            assert result["isError"] is False, result
+            assert result["structuredContent"]["value"] == "3000"
+            assert fake_kb.seen[-1][1]["params"]["name"] == "read_facts"
+
+            asked = await http.post(
+                URL,
+                json=tool(
+                    "request_data",
+                    task=ids["task"],
+                    needs=[{"doc_type": "annual_report", "reason": "上一年"}],
+                ),
+                headers=bearer(),
+            )
+            assert (
+                "does not use listed data"
+                in asked.json()["result"]["content"][0]["text"]
+            )
     finally:
         await close(runner)
         await fake.close()

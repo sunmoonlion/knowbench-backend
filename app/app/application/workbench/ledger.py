@@ -90,12 +90,15 @@ class Ledger:
         expert_pack_version: str | None = None,
         snapshot: PinnedPack | None = None,
         pins: list[dict[str, Any]] | None = None,
+        resolution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """F-INTAKE-01/02、F-ADMIT-01、F-WHEEL-01：幂等建单、首事件、wheel=advisor，同一提交。
 
         snapshot：调用方已经核好的专家包快照（跑分身测试时是草稿，SDD 0027 §3.4）。
         pins：按专家的数据需求声明选好、核过的数据（data_choice.DataChooser），同一提交钉进委托；
         写了声明的专家没有就不建（SDD 0042）。
+        resolution：清单 v2 的专家（expert_data.ExpertData）：解析清单、授权 ref、确认与
+        需求单、等数据状态，同一提交记下；要补采的委托没有钉住的，核验时进「等数据」。
         """
         digest = req.digest()
         async with self.repo.transaction():
@@ -151,7 +154,10 @@ class Ledger:
                 else None
             )
             # 测试的委托（snapshot）钉的是测试运行授权里那几份，不按声明核（knowlab 核过）
-            if snapshot is None:
+            if snapshot is None and pinned is not None and pinned.v2:
+                if pinned.needs_v2 and resolution is None:
+                    raise DataRequired("list the data this expert needs first")
+            elif snapshot is None:
                 needs = pinned.needs if pinned is not None else ()
                 if needs and not pins:
                     raise DataRequired("choose the data this expert needs first")
@@ -195,6 +201,10 @@ class Ledger:
             )
             if pins:
                 await self.repo.pin_task_data(task_id, pins)
+            if resolution is not None:
+                await self.repo.insert_task_resolution(
+                    {**resolution, "task_id": task_id}
+                )
             # 交给专家 = 这段对话从此是专家对话（原地转，同一条线）
             from app.application.workbench.session_service import SessionService
 
@@ -496,6 +506,51 @@ class Ledger:
                 sandbox_id=str(session["sandbox_id"]),
                 kind="task.drive",
                 payload={"task_id": task_id, "resumed": True},
+            )
+            return True
+
+    async def resume_data(self, task_id: str) -> bool:
+        """等数据的委托数据齐了、钉好了（DataWaiter 与钉住同一事务调）：回到核验、
+        排上驾驶。委托不在等数据（还没走到、已取消）就什么也不做——还没走到的，核验时
+        看到清单已就绪会直接往下走。"""
+        async with self.repo.transaction():
+            task = await self.repo.get_task(task_id, for_update=True)
+            if (
+                task["state"] != TaskState.WAITING
+                or task.get("waiting_reason") != WaitingReason.DATA
+                or task.get("cancel_requested_at") is not None
+            ):
+                return False
+            session = await self.repo.get_session(str(task["session_id"]))
+            await self.transition(
+                task_id,
+                TaskState.VALIDATING,
+                expected_version=int(task["state_version"]),
+                reason={"data": "ready"},
+            )
+            await self.repo.enqueue_command(
+                session_id=str(task["session_id"]),
+                sandbox_id=str(session["sandbox_id"]),
+                kind="task.drive",
+                payload={"task_id": task_id, "resumed": True},
+            )
+            return True
+
+    async def fail_waiting_data(self, task_id: str, message: str) -> bool:
+        """必填的数据没取到、确认过期、数据服务拒绝：等数据的委托失败，说清缺什么。
+        还没走到等数据的，核验时看到清单失败会打回（Advisor），这里不动。"""
+        async with self.repo.transaction():
+            task = await self.repo.get_task(task_id, for_update=True)
+            if (
+                task["state"] != TaskState.WAITING
+                or task.get("waiting_reason") != WaitingReason.DATA
+            ):
+                return False
+            await self.transition(
+                task_id,
+                TaskState.FAILED,
+                expected_version=int(task["state_version"]),
+                reason={"code": "data_unavailable", "message": message[:500]},
             )
             return True
 

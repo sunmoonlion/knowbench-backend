@@ -27,8 +27,8 @@ from app.application.ports.workbench import (
 from app.application.workbench.advisor import Advisor, TurnResult
 from app.application.workbench.catalog import pack_for_task
 from app.application.workbench.deliverable_check import DeliverableCheck
+from app.application.workbench.expert_data import data_session_note
 from app.application.workbench.ledger import Ledger
-from app.application.workbench.session_data import session_note
 from app.domain.workbench import missing_data
 from app.domain.workbench.deliverables import changed_paths
 from app.domain.workbench.errors import StaleStateVersion
@@ -1322,10 +1322,13 @@ class Runner:
         prices: PriceList | None = None,
         deliverables: DeliverableCheck | None = None,
         data: KnowbotDataSource | None = None,
+        reader: Any = None,
     ):
         self.records = records
         self.deliverables = deliverables
         self.data = data
+        # 第四版：数值验收回查事实编号、资料页码（run_reader.RunReader）
+        self.reader = reader
         self.prices = prices or DEFAULT_PRICES
         self.stores = stores
         self.connector = connector
@@ -1757,11 +1760,9 @@ class Runner:
                     str(session["owner_actor_id"]), enabled_only=True
                 )
             )
-            # 这段对话选用的云端知识库（SDD 0042 第四节）：选了、改了，说明跟着换，下一轮重新插
-            chosen = session_note(
-                str(session["id"]),
-                await repo.session_data(str(session["id"])),
-                datetime.now(UTC),
+            # 这段对话能读用户的数据（0048 第五节）：在 knowbase 登记过会话才说
+            chosen = data_session_note(
+                await repo.get_session(str(session["id"])), datetime.now(UTC)
             )
         remembered = "\n\n".join(n for n in (remembered, chosen) if n) or None
         return TurnPlan(
@@ -1850,6 +1851,7 @@ class Runner:
             records=self.records,
             deliverables=self.deliverables,
             data=self.data,
+            reader=self.reader,
         )
         try:
             state = await advisor.drive(task_id)

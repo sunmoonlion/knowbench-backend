@@ -5,8 +5,13 @@
 委托上的是这一版的包快照与摘要，之后编排、底稿、验收都读快照，knowmart 停了也不影响在跑的。
 
 分身是用户的方法，不是我们的：工具与审批只能比平台默认更严，不许自带命令放行前缀；
-不许用数据线的工具（`C-L2`：分身运行时只读用户自己的数据）。读用户数据只有两个工具，
-`list_my_data` 与 `read_my_data`，经工作台转到 knowlab，只读这一版清单 `data_bindings` 里的（0027 §3.5）。
+不许用数据线的工具（`C-L2`：分身运行时只读用户自己的数据）。
+
+- 清单 v1：读用户数据用 `list_my_data`、`read_my_data`、`read_my_table`，读请的人选的
+  （或旧格式里作者绑的）那几份（0027 §3.5、0042）。
+- 清单 v2（SDD 0043）：数据需求声明换成 knowbase 的 `knowbot-data-needs/v2`，作者绑的
+  数据只带冻结的引用（`bindings`）；读数据用 knowbase 数据 MCP 的工具（经工作台中继，
+  0048），缺数据用 `request_data` 提出要什么，算数仍用 `compute`。
 """
 
 from __future__ import annotations
@@ -14,9 +19,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.domain.workbench.errors import KnowbotInvalid
 from app.domain.workbench.packs import ExpertPack
@@ -24,6 +29,8 @@ from app.domain.workbench.tool_policy import TIER_ORDER, ToolPolicy
 
 PREFIX = "knowbot:"
 MANIFEST_SCHEMA = "knowbot-manifest/v1"
+MANIFEST_SCHEMA_V2 = "knowbot-manifest/v2"
+MANIFEST_SCHEMAS = (MANIFEST_SCHEMA, MANIFEST_SCHEMA_V2)
 RUNTIME = "knowbench"
 KNOWBOT_ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 VERSION = r"[1-9][0-9]{0,5}"
@@ -34,7 +41,37 @@ DATA_TOOLS: frozenset[str] = frozenset(
     {"list_my_data", "read_my_data", "read_my_table", "compute"}
 )
 KNOWBOT_TOOLS: frozenset[str] = DATA_TOOLS
+# 清单 v2：knowbase 数据 MCP 的读工具（工作台中继，0048 第四节）、要数据、计算
+DATA_MCP_TOOLS: frozenset[str] = frozenset(
+    {
+        "list_inputs",
+        "read_input",
+        "query_facts",
+        "query_metric",
+        "read_facts",
+        "describe_items",
+        "search_evidence",
+        "lookup",
+    }
+)
+V2_TOOLS: frozenset[str] = DATA_MCP_TOOLS | {"compute", "request_data"}
 _PLATFORM = ToolPolicy()
+_FROZEN = r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$"
+
+
+class FrozenBinding(BaseModel):
+    """清单 v2 里作者绑给这位专家、交付时冻结的一份（契约 knowbot-manifest/v2）。"""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    need: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,39}$")
+    material_id: str = Field(min_length=1, max_length=64)
+    version_no: int = Field(ge=1)
+    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    rendition_kind: Literal["text", "pages", "table", "index", "parse"] | None = None
+    rendition_no: int | None = Field(default=None, ge=1)
+    rendition_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    basis_ref: str = Field(pattern=_FROZEN)
 
 
 def parse_ref(value: str | None) -> tuple[str, str] | None:
@@ -54,6 +91,38 @@ def parse_profile(value: str | None) -> tuple[str, str] | None:
 
 def is_knowbot(value: str | None) -> bool:
     return (value or "").startswith(PREFIX)
+
+
+def is_v2(manifest: object) -> bool:
+    return isinstance(manifest, dict) and manifest.get("schema") == MANIFEST_SCHEMA_V2
+
+
+def consumer_of(knowbot_id: str, version: str) -> str:
+    """在 knowbase 那边这位专家这一版叫什么：解析的使用者、冻结绑定的依据都是它。"""
+    return f"expert:{knowbot_id}@{version}"
+
+
+def frozen_bindings(manifest: object, *, knowbot_id: str) -> tuple[FrozenBinding, ...]:
+    """清单 v2 冻结的作者绑定；都要是这位专家这一版的（knowmart 交付时核过，这里再核）。"""
+    raw = manifest.get("bindings") if isinstance(manifest, dict) else None
+    if raw is None:
+        return ()
+    if not isinstance(raw, list) or len(raw) > 200:
+        raise KnowbotInvalid(
+            "bindings must be a list of at most 200", knowbot=knowbot_id
+        )
+    try:
+        found = tuple(FrozenBinding.model_validate(b) for b in raw)
+    except ValidationError:
+        raise KnowbotInvalid(
+            "a frozen binding is invalid", knowbot=knowbot_id
+        ) from None
+    version = str(manifest.get("version")) if isinstance(manifest, dict) else ""
+    if any(b.basis_ref != consumer_of(knowbot_id, version) for b in found):
+        raise KnowbotInvalid(
+            "a binding is frozen for another expert version", knowbot=knowbot_id
+        )
+    return found
 
 
 def manifest_digest(manifest: dict[str, Any]) -> str:
@@ -88,8 +157,8 @@ def pack_from_manifest(
     if not isinstance(manifest, dict):
         raise KnowbotInvalid("the knowbot manifest is not an object")
     problems: list[str] = []
-    if manifest.get("schema") != MANIFEST_SCHEMA:
-        problems.append(f"schema must be {MANIFEST_SCHEMA}")
+    if manifest.get("schema") not in MANIFEST_SCHEMAS:
+        problems.append(f"schema must be one of {', '.join(MANIFEST_SCHEMAS)}")
     if manifest.get("runtime") != RUNTIME:
         problems.append(f"runtime must be {RUNTIME}")
     if manifest.get("version") != version:
@@ -121,10 +190,11 @@ def pack_from_manifest(
     if pack.version != version:
         problems.append("pack.version differs from the version")
     problems += _no_looser_than_platform(pack.tool_policy)
+    allowed = V2_TOOLS if is_v2(manifest) else KNOWBOT_TOOLS
     for step in pack.workflow:
         if step.tool_policy is not None and step.tool_policy.command_allow:
             problems.append(f"step {step.step_id} allows commands by prefix")
-        extra = set(step.tools) - KNOWBOT_TOOLS
+        extra = set(step.tools) - allowed
         if extra:
             problems.append(f"step {step.step_id} uses tools a knowbot cannot use")
     if pack.requires_tools:

@@ -1,10 +1,11 @@
-"""请专家时选数据、钉住（SDD 0042 第五节第 4、6 项）。
+"""请专家时选数据、钉住（SDD 0042 第五节第 4、6 项）——清单 v1 专家的兼容分支。
 
-用户按专家的数据需求声明逐样从本地知识库（A）或云端知识库（B）选：
-- B：凭用户本人的令牌向 knowbase 核这一份在他的 knowbench 分区里，记下名字、类型、大小、摘要；
-  选好的几份签一条这件委托的运行授权（只读这几份、钉这几个摘要）。
-- A：经会合点服务流问本地 link：路径要在它报的本地知识库目录里（项目目录不算，项目里是产出），
-  由 link 算整份的 sha256（`fs/digest`；老的 link 没有这个方法就一块块读回来在这里算）。
+清单 v2 的专家改走解析（expert_data.py）。v1 的专家到「财务分析与预测」第 2 版上架为止
+照旧逐样从云端知识库选（SDD 0043 第 3.1 节兼容分支）：凭用户本人的令牌向 knowbase 核这一份
+在他的 knowbench 分区里，记下名字、类型、大小、摘要；选好的几份签一条这件委托的运行授权。
+本地知识库（经 link 读本地文件）已退役（0043 第 4.1 节），新请求里选本地的一律拒；
+老委托里钉的本地来源只读。
+
 按声明核过（必填不缺、份数、格式、不重复）才钉；钉进委托在建委托的同一次提交里（Ledger）。
 建委托没成就把刚签的授权交还。委托结束后由 runner 交还授权（GrantReleaser），用户就能删了。
 """
@@ -12,29 +13,20 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.application.ports.workbench import CloudGrants, WorkbenchStore, WorkbenchStores
-from app.application.workbench.agent_service import (
-    MAX_READ_BYTES,
-    AgentRefused,
-    AgentService,
-)
 from app.domain.workbench.data_needs import (
     DataNeed,
     choice_problems,
     format_of,
-    kind_of_name,
 )
 from app.domain.workbench.errors import (
     DataChoiceInvalid,
     DataRequired,
-    UserDataUnavailable,
     WorkbenchError,
 )
 
@@ -71,25 +63,9 @@ def choice_of(raw: dict[str, Any]) -> dict[str, Any]:
     return {"need": raw.get("need"), "source": LOCAL, "path": raw.get("path")}
 
 
-def under(path: str, directory: str) -> bool:
-    """path 在 directory 里（Windows 路径不分大小写、两种斜杠都认）。
-
-    只做字面比较；`..`、链接、别名由本地 link 在读的时候挡。
-    """
-    windows = "\\" in directory or (len(directory) > 1 and directory[1] == ":")
-    sep = "\\" if windows else "/"
-    p = path.replace("/", "\\") if windows else path
-    d = directory.replace("/", "\\") if windows else directory
-    if windows:
-        p, d = p.lower(), d.lower()
-    d = d.rstrip(sep)
-    return p.startswith(d + sep) and ".." not in p[len(d) :].split(sep)
-
-
 class DataChooser:
-    def __init__(self, *, cloud: CloudGrants, agent: AgentService | None) -> None:
+    def __init__(self, *, cloud: CloudGrants) -> None:
         self.cloud = cloud
-        self.agent = agent
 
     async def prepare(
         self,
@@ -107,19 +83,15 @@ class DataChooser:
             return Prepared()
         if not choices:
             raise DataRequired("choose the data this expert needs first")
-        token: str | None = None
-        library: str | None = None
-        chosen: list[Chosen] = []
-        for position, raw in enumerate(choices):
-            choice = choice_of(raw)
-            if choice["source"] == CLOUD:
-                if token is None:
-                    token = await user_token()
-                chosen.append(await self._cloud(token, choice, position))
-            else:
-                if library is None:
-                    library = await self._library(relay_user)
-                chosen.append(await self._local(relay_user, library, choice, position))
+        if any(choice_of(raw)["source"] != CLOUD for raw in choices):
+            raise DataChoiceInvalid(
+                "local data sources are retired; put the file in your cloud knowledge base"
+            )
+        token = await user_token()
+        chosen = [
+            await self._cloud(token, choice_of(raw), position)
+            for position, raw in enumerate(choices)
+        ]
         problems = choice_problems(
             needs,
             [
@@ -177,111 +149,6 @@ class DataChooser:
             identity=f"cloud:{item_id}",
         )
 
-    async def _library(self, relay_user: str | None) -> str:
-        if self.agent is None:
-            raise UserDataUnavailable("the user's computer cannot be reached from here")
-        if not relay_user:
-            raise DataChoiceInvalid("this account has no computer paired")
-        hello = await self._call(relay_user, "service/hello", None)
-        library = hello.get("libraryDir")
-        if not isinstance(library, str) or not library:
-            raise DataChoiceInvalid(
-                "no local knowledge base folder is set on the computer"
-            )
-        return library
-
-    async def _local(
-        self,
-        relay_user: str | None,
-        library: str,
-        choice: dict[str, Any],
-        position: int,
-    ) -> Chosen:
-        assert relay_user is not None
-        path = choice.get("path")
-        if not isinstance(path, str) or not path or len(path) > 1024:
-            raise DataChoiceInvalid("a local file is not named")
-        if not under(path, library):
-            raise DataChoiceInvalid(
-                "local data must come from the local knowledge base folder"
-            )
-        name = path.replace("\\", "/").rsplit("/", 1)[-1]
-        kind = kind_of_name(name)
-        size, sha256 = await self._digest(relay_user, path)
-        if size > MAX_FILE_BYTES:
-            raise DataChoiceInvalid(f"{name} is larger than 50 MB")
-        return Chosen(
-            pin={
-                "position": position,
-                "slot": choice.get("need"),
-                "source": LOCAL,
-                "item_id": None,
-                "path": path,
-                "name": name[:255],
-                "media_type": kind[0] if kind else "application/octet-stream",
-                "size_bytes": size,
-                "sha256": sha256,
-            },
-            format=kind[1] if kind else None,
-            identity=f"local:{path}",
-        )
-
-    async def _digest(self, relay_user: str, path: str) -> tuple[int, str]:
-        try:
-            got = await self._call(relay_user, "fs/digest", {"path": path})
-            return int(got["size"]), str(got["sha256"])
-        except AgentRefused as exc:
-            if exc.code != "method_not_found":
-                raise self._refused(exc) from None
-        # 老的 link：一块块读回来算（记一行，看还有多少人没升级，Qwen 评审 Q-08）
-        log.info("link without fs/digest; hashing by reading the whole file")
-        meta = await self._call(relay_user, "fs/getMetadata", {"path": path})
-        if meta.get("type") != "file":
-            raise DataChoiceInvalid("a chosen local path is not a file")
-        size = int(meta.get("size") or 0)
-        if size > MAX_FILE_BYTES:
-            return size, ""
-        digest = hashlib.sha256()
-        offset = 0
-        while offset < size:
-            got = await self._call(
-                relay_user,
-                "fs/readFile",
-                {"path": path, "offset": offset, "length": MAX_READ_BYTES},
-            )
-            piece = base64.b64decode(str(got.get("content") or ""), validate=True)
-            if not piece or int(got.get("size") or 0) != size:
-                raise DataChoiceInvalid("a chosen local file changed while it was read")
-            digest.update(piece)
-            offset += len(piece)
-        return size, digest.hexdigest()
-
-    async def _call(
-        self, relay_user: str, method: str, params: dict[str, Any] | None
-    ) -> dict[str, Any]:
-        assert self.agent is not None
-        for attempt in range(4):
-            try:
-                return await self.agent.call(relay_user, method, params)
-            except AgentRefused as exc:
-                if exc.code == "rate_limited" and attempt < 3:
-                    await asyncio.sleep(0.2 * (attempt + 1))
-                    continue
-                if exc.code == "method_not_found":
-                    raise
-                raise self._refused(exc) from None
-        raise UserDataUnavailable("the user's computer is busy")  # pragma: no cover
-
-    @staticmethod
-    def _refused(exc: AgentRefused) -> WorkbenchError:
-        if exc.code == "not_found":
-            return DataChoiceInvalid("a chosen local file is not there")
-        if exc.code in ("outside_whitelist", "local_denied"):
-            return DataChoiceInvalid("the computer does not let this file be read")
-        if exc.code == "too_large":
-            return DataChoiceInvalid("a chosen local file is too large")
-        return UserDataUnavailable("the user's computer refused to read the file")
-
 
 def last_choices(pins: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """上次钉住的几份，变成网页弹框里默认选上的样子。"""
@@ -308,21 +175,37 @@ class GrantReleaser:
         stores: WorkbenchStores,
         cloud: CloudGrants,
         *,
+        release_v2: Callable[[str], Awaitable[None]] | None = None,
         interval_seconds: float = 30.0,
     ) -> None:
         self.stores = stores
         self.cloud = cloud
+        # 第四版（钉住来源 knowbase）的授权走 v2 的交还接口
+        self.release_v2 = release_v2
         self.interval_seconds = interval_seconds
 
     async def sweep(self) -> int:
         async with self.stores() as repo:
             found = await repo.grants_to_release()
         released = 0
-        for grant_id in found:
+        for row in found:
+            grant_id = str(row["grant_id"])
             try:
-                await self.cloud.release(grant_id)
+                if row.get("source") == "knowbase":
+                    if self.release_v2 is None:
+                        continue
+                    await self.release_v2(grant_id)
+                else:
+                    await self.cloud.release(grant_id)
             except WorkbenchError as exc:
                 log.warning("grant release failed grant=%s code=%s", grant_id, exc.code)
+                continue
+            except Exception as exc:  # noqa: BLE001 — 交还不成下一轮再来
+                log.warning(
+                    "grant release failed grant=%s error=%s",
+                    grant_id,
+                    getattr(exc, "code", type(exc).__name__),
+                )
                 continue
             async with self.stores() as repo:
                 await _mark(repo, grant_id)

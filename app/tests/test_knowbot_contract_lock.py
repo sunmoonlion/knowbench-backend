@@ -48,3 +48,34 @@ def test_a_manifest_the_workbench_runs_satisfies_the_provider_schema() -> None:
     doc = manifest()
     pack_from_manifest(doc, knowbot_id=KNOWBOT, version="1")
     jsonschema.validate(doc, json.loads(schema.read_text(encoding="utf-8")))
+
+
+LOCK_V2 = PARENT / "contracts/knowmart-knowbot-manifest-v2-lock.json"
+
+
+def test_the_v2_lock_matches_the_provider_schema() -> None:
+    """清单 v2（SDD 0043）：锁钉住 knowmart 的 v2 schema；工作台认的 v2 样例也合它。"""
+    if not LOCK_V2.exists():
+        pytest.skip("parent contracts/ is not checked out")
+    lock = json.loads(LOCK_V2.read_text(encoding="utf-8"))
+    assert lock["contract"] == "knowbot-manifest" and lock["major_version"] == 2
+    schema = _provider_schema(lock)
+    assert hashlib.sha256(schema.read_bytes()).hexdigest() == lock["sha256"]
+    jsonschema = pytest.importorskip("jsonschema")
+    doc = {
+        **manifest(),
+        "schema": "knowbot-manifest/v2",
+        "data_needs": [
+            {
+                "key": "annual",
+                "name": "年报",
+                "doc_type": "annual_report",
+                "period": {"kind": "latest", "count": 2},
+                "formats": ["pdf"],
+            }
+        ],
+        "bindings": [],
+    }
+    doc.pop("data_bindings", None)
+    pack_from_manifest(doc, knowbot_id=KNOWBOT, version="1")
+    jsonschema.validate(doc, json.loads(schema.read_text(encoding="utf-8")))

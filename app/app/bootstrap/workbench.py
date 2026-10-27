@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -127,14 +127,84 @@ def _cloud_grants() -> CloudGrants:
 @lru_cache(maxsize=1)
 def data_chooser() -> DataChooser:
     """请专家时选数据、签运行授权（SDD 0042；进程内共用）。"""
-    return DataChooser(cloud=_cloud_grants(), agent=_service_agent())
+    return DataChooser(cloud=_cloud_grants())
 
 
 def build_grant_releaser(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> GrantReleaser:
-    """委托结束后交还运行授权（runner 里一条线）。"""
-    return GrantReleaser(workbench_stores(session_factory), _cloud_grants())
+    """委托结束后交还运行授权（runner 里一条线）：v1 与第四版各走各的交还接口。"""
+    return GrantReleaser(
+        workbench_stores(session_factory),
+        _cloud_grants(),
+        release_v2=knowbase_v2().release_run_grant,
+    )
+
+
+@lru_cache(maxsize=1)
+def knowbase_v2():
+    """knowbase 资料库第四版（解析、确认、运行授权、会话、数据 MCP；进程内共用）。"""
+    from app.infrastructure.external.knowbase_data_v2 import KnowbaseDataV2
+
+    return KnowbaseDataV2(timeout=KNOWBASE_DATA_TIMEOUT)
+
+
+@lru_cache(maxsize=1)
+def knowfeed_supply():
+    """knowfeed 的需求单（请专家要补采的；进程内共用）。"""
+    from app.infrastructure.external.knowfeed_supply import KnowfeedSupply
+
+    return KnowfeedSupply()
+
+
+def expert_data():
+    """清单 v2 的专家请来用数据：解析、确认、补采、开跑（SDD 0043 块 6）。"""
+    from app.application.workbench.expert_data import ExpertData
+
+    return ExpertData(
+        knowbase_v2(),
+        knowfeed_supply(),
+        supply_enabled=get_settings().workbench_data_supply_enabled,
+    )
+
+
+async def _pinned_of_task(repo: WorkbenchStore, task: dict[str, Any]):
+    from app.application.workbench.catalog import pinned_pack
+
+    return await pinned_pack(
+        repo,
+        owner_actor_id=str(task["owner_actor_id"]),
+        profile_id=str(task["profile_id"]),
+    )
+
+
+def _run_reader():
+    """工作台凭委托的运行授权读 knowbase（数值验收回查）；没配签名密钥就没有。"""
+    from app.application.workbench.run_reader import RunReader
+    from app.application.workbench.tokens import TokenIssuer
+
+    settings = get_settings()
+    if not settings.workbench_token_signing_key:
+        return None
+    return RunReader(
+        knowbase_v2(),
+        TokenIssuer(
+            settings.workbench_token_signing_key,
+            issuer=settings.workbench_token_issuer,
+        ),
+    )
+
+
+def build_data_waiter(session_factory: async_sessionmaker[AsyncSession]):
+    """等数据的委托：查需求单，齐了重解析、续签、钉住、接着跑（runner 里一条线）。"""
+    from app.application.workbench.expert_data import DataWaiter
+
+    return DataWaiter(
+        workbench_stores(session_factory),
+        knowbase_v2(),
+        knowfeed_supply(),
+        pinned_of=_pinned_of_task,
+    )
 
 
 def workbench_store(session: AsyncSession) -> WorkbenchStore:
@@ -202,6 +272,7 @@ def build_runner(
         prices=prices,
         deliverables=deliverables,
         data=knowbot_data_source(),
+        reader=_run_reader(),
     )
 
 

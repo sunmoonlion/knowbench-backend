@@ -54,6 +54,9 @@ def _segment(value: str) -> str:
 
 
 class KnowbaseUserData:
+    # 资料库接口的路径前缀（第四版的子类换成 v2）
+    path = BASE
+
     def __init__(
         self,
         environ: Mapping[str, str] | None = None,
@@ -226,7 +229,7 @@ class KnowbaseUserData:
             raise ServiceUnavailableError(
                 "knowbase is not configured", code="knowbase_unconfigured"
             )
-        return url.rstrip("/") + BASE
+        return url.rstrip("/") + self.path
 
     async def _service_token(self, relation: str) -> str:
         client = self._services.get(relation)

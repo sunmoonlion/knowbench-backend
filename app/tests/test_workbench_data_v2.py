@@ -1,0 +1,169 @@
+"""清单 v2 的专家（SDD 0043、0048）：清单的收与拒、按解析清单定计划（纯函数）。"""
+
+from __future__ import annotations
+
+import pytest
+from knowbot_fixtures import KNOWBOT, manifest
+
+from app.application.workbench.catalog import pack_from_pin
+from app.domain.workbench import knowbots
+from app.domain.workbench.data_needs_v2 import DataNeed
+from app.domain.workbench.data_plan import item_ref, plan
+from app.domain.workbench.errors import KnowbotInvalid
+
+ANNUAL = {
+    "key": "annual",
+    "name": "年报",
+    "doc_type": "annual_report",
+    "period": {"kind": "latest", "count": 2},
+    "formats": ["pdf"],
+}
+NEWS = {
+    **ANNUAL,
+    "key": "news",
+    "name": "公告",
+    "doc_type": "disclosure",
+    "period": {"kind": "recent", "months": 12},
+    "required": False,
+}
+BOUND = {
+    "material_id": "m-bound",
+    "version_no": 3,
+    "sha256": "e" * 64,
+    "basis_ref": f"expert:{KNOWBOT}@1",
+}
+
+
+def v2(**over):
+    return {
+        **manifest(),
+        "schema": "knowbot-manifest/v2",
+        "data_needs": [ANNUAL],
+        "bindings": [],
+        **over,
+    }
+
+
+def test_a_v2_manifest_is_accepted_with_its_needs_bindings_and_tools():
+    doc = v2(bindings=[BOUND])
+    doc["pack"]["workflow"][0]["tools"] = [
+        "list_inputs",
+        "query_facts",
+        "compute",
+        "request_data",
+    ]
+    pinned = pack_from_pin(
+        {"knowbot_id": KNOWBOT, "version": "1", "manifest": doc, "digest": "d"}
+    )
+    assert pinned.v2 and pinned.consumer == f"expert:{KNOWBOT}@1"
+    assert [n.key for n in pinned.needs_v2] == ["annual"]
+    assert pinned.bindings[0].material_id == "m-bound"
+    # v1 的读数据工具不在 v2 里；v2 的工具不在 v1 里
+    doc["pack"]["workflow"][0]["tools"] = ["list_my_data"]
+    with pytest.raises(KnowbotInvalid):
+        knowbots.pack_from_manifest(doc, knowbot_id=KNOWBOT, version="1")
+    old = manifest()
+    old["pack"]["workflow"][0]["tools"] = ["query_facts"]
+    with pytest.raises(KnowbotInvalid):
+        knowbots.pack_from_manifest(old, knowbot_id=KNOWBOT, version="1")
+
+
+def test_bindings_must_be_frozen_for_this_expert_version():
+    for bad in (
+        {**BOUND, "basis_ref": f"expert:{KNOWBOT}@2"},
+        {**BOUND, "sha256": "short"},
+    ):
+        with pytest.raises(KnowbotInvalid):
+            pack_from_pin(
+                {
+                    "knowbot_id": KNOWBOT,
+                    "version": "1",
+                    "manifest": v2(bindings=[bad]),
+                    "digest": "d",
+                }
+            )
+
+
+def candidate(mid: str, basis: str = "display") -> dict:
+    return {
+        "material_id": mid,
+        "version_no": 1,
+        "sha256": "a" * 64,
+        "basis": basis,
+        "name": f"{mid}.pdf",
+        "media_type": "application/pdf",
+        "size_bytes": 1,
+    }
+
+
+def entry(status: str, year: str = "2025", need: str = "annual", **more) -> dict:
+    return {
+        "need_key": need,
+        "status": status,
+        "key": {
+            "subject": "600519.SH",
+            "doc_type": "annual_report",
+            "period_start": f"{year}-01-01",
+            "period_end": f"{year}-12-31",
+        },
+        "chosen": more.get("chosen", []),
+        "candidates": more.get("candidates", []),
+        "reason": None,
+    }
+
+
+NEEDS = [DataNeed.model_validate(ANNUAL), DataNeed.model_validate(NEWS)]
+
+
+def test_the_plan_pins_what_is_settled_and_confirms_what_is_missing():
+    resolution = {
+        "items": [
+            entry("resolved", chosen=[candidate("m1", "public")]),
+            entry("to_confirm", "2024"),
+            entry("not_collectable", need="news"),
+        ]
+    }
+    off = plan(resolution, NEEDS)
+    assert off.problems == ["年报 600519.SH 2024-01-01–2024-12-31：暂不能补采"]
+    on = plan(resolution, NEEDS, supply_enabled=True)
+    assert on.problems == [] and [c["need_key"] for c in on.confirm] == ["annual"]
+    assert [(p["item_id"], p["basis"], p["basis_ref"]) for p in on.pins] == [
+        ("m1", "public", "public:disclosure")
+    ]
+    assert on.incomplete == [
+        "公告 600519.SH 2025-01-01–2025-12-31：采不来，要本人到 knowbase 上传"
+    ]
+    assert on.grant_items[0]["material_id"] == "m1"
+
+
+def test_ambiguous_items_need_a_pick_and_required_ones_cannot_be_dropped():
+    both = [candidate("m1"), candidate("m2")]
+    resolution = {"items": [entry("ambiguous", candidates=both)]}
+    ref = item_ref(resolution["items"][0])
+    assert "要选一份" in plan(resolution, NEEDS[:1]).problems[0]
+    picked = plan(
+        resolution, NEEDS[:1], picks={ref: {"material_id": "m2", "version_no": 1}}
+    )
+    assert [p["item_id"] for p in picked.pins] == ["m2"] and not picked.problems
+    assert (
+        "不在候选里"
+        in plan(
+            resolution, NEEDS[:1], picks={ref: {"material_id": "mx", "version_no": 1}}
+        ).problems[0]
+    )
+    assert "必填的不能去掉" in plan(resolution, NEEDS[:1], dropped=[ref]).problems[0]
+    hidden = plan(
+        {"items": [entry("not_shown", candidates=[candidate("m3")])]}, NEEDS[:1]
+    )
+    assert "放开给 knowbench" in hidden.problems[0]
+
+
+def test_bindings_ride_along_and_after_supply_missing_is_missing():
+    bound = knowbots.FrozenBinding.model_validate({**BOUND, "need": "annual"})
+    done = plan(
+        {"items": [entry("waiting", "2024")]}, NEEDS[:1], (bound,), after_supply=True
+    )
+    assert done.problems == ["年报 600519.SH 2024-01-01–2024-12-31：没取到"]
+    assert [(p["item_id"], p["basis"]) for p in done.pins] == [
+        ("m-bound", "frozen_binding")
+    ]

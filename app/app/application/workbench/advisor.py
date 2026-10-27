@@ -22,6 +22,7 @@ from app.application.workbench.acceptance import judge, out_of_scope, timed_out
 from app.application.workbench.acceptance_numbers import judge_numbers
 from app.application.workbench.catalog import SNAPSHOT_SOURCES, pack_for_task
 from app.application.workbench.deliverable_check import DeliverableCheck, harden
+from app.application.workbench.expert_data import holds_task, pending_requests
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench import knowbots, missing_data
 from app.domain.workbench.deliverables import (
@@ -99,6 +100,7 @@ class Advisor:
         records: bool = False,
         deliverables: DeliverableCheck | None = None,
         data: KnowbotDataSource | None = None,
+        reader: Any = None,
     ):
         self.stores = stores  # 每次调用开一个工作单元
         self.driver = driver
@@ -109,6 +111,8 @@ class Advisor:
         # 数值验收 sourced 要重新取用户的数（0030 §3.3）、quoted 要回原文核引文（0036）：
         # 没配就判不过，不放行
         self.data = data
+        # 第四版的事实编号、资料页码回查（run_reader.RunReader）；没配同上判不过
+        self.reader = reader
 
     # ---------------- 入口 ----------------
     async def drive(self, task_id: str) -> str:
@@ -150,6 +154,9 @@ class Advisor:
                         },
                     )
                     return TaskState.REJECTED
+                held = await self._data_hold(repo, led, task_id)
+                if held is not None:
+                    return held
                 await repo.cas_task(
                     task_id,
                     expected_version=(await repo.get_task(task_id))["state_version"],
@@ -167,7 +174,35 @@ class Advisor:
             if state != TaskState.QUEUED:
                 return state
 
+    async def _data_hold(self, repo, led: Ledger, task_id: str) -> str | None:
+        """清单 v2 的专家：要补采的数据还没齐就进「等数据」（齐了 DataWaiter 送回来）；
+        没取到就打回并说清缺什么。锁住清单那一行，和 DataWaiter 不会两边都错过。"""
+        async with repo.transaction():
+            row = await repo.get_task_resolution(task_id, for_update=True)
+            if row is None or (row["status"] == "ready" and not holds_task(row)):
+                return None
+            if holds_task(row):
+                await led.transition(
+                    task_id,
+                    TaskState.WAITING,
+                    waiting_reason=WaitingReason.DATA,
+                    reason=_waiting_reason(row),
+                )
+                return TaskState.WAITING
+            await led.transition(
+                task_id,
+                TaskState.REJECTED,
+                reason={
+                    "code": "data_unavailable",
+                    "message": str(
+                        (row.get("detail") or {}).get("reason") or "要的数据没取到"
+                    ),
+                },
+            )
+            return TaskState.REJECTED
+
     # ---------------- 一步 ----------------
+
     async def _step_once(self, task_id: str) -> str:
         async with self.stores() as repo:
             led = Ledger(repo)
@@ -325,6 +360,13 @@ class Advisor:
                     if self.records
                     and task.get("pack_source") in SNAPSHOT_SOURCES
                     and knowbots.DATA_TOOLS & set(step.tools)
+                    else None
+                ),
+                listed_data_task=(
+                    task_id
+                    if self.records
+                    and task.get("pack_source") in SNAPSHOT_SOURCES
+                    and knowbots.DATA_MCP_TOOLS & set(step.tools)
                     else None
                 ),
                 ask_before_answers=answered["ask_before"],
@@ -498,6 +540,7 @@ class Advisor:
                     repo=repo,
                     task=task,
                     source=self.data,
+                    reader=self.reader,
                 )
             )
             # 成稿文件写了没有：先认这一轮报过的 fileChange；没见到就经会合点问代理那个文件在不在
@@ -576,6 +619,17 @@ class Advisor:
                     return await self._finish(
                         led, repo, await repo.get_task(task_id), pack
                     )
+                # 专家这一步要了新数据（request_data）：在步骤边界停下等用户确认、补齐
+                async with repo.transaction():
+                    row = await repo.get_task_resolution(task_id, for_update=True)
+                    if holds_task(row):
+                        await led.transition(
+                            task_id,
+                            TaskState.WAITING,
+                            waiting_reason=WaitingReason.DATA,
+                            reason=_waiting_reason(row),
+                        )
+                        return TaskState.WAITING
                 await self._requeue(led, task_id)
                 return TaskState.QUEUED
             # 不合格
@@ -951,6 +1005,7 @@ class Advisor:
         rework_failures: list[str] | None = None,
         records_task: str | None = None,
         data_task: str | None = None,
+        listed_data_task: str | None = None,
         ask_before_answers: dict[str, Any] | None = None,
         change_request: str | None = None,
         user_facts: str | None = None,
@@ -1052,6 +1107,28 @@ class Advisor:
                     "as is, write its cell address next to it. Do not copy numbers by "
                     "hand.",
                 ]
+        if listed_data_task:
+            # 清单 v2 的专家（0048）：数据经工作台中继到 knowbase 数据 MCP，钉住的就是这件委托能读的
+            parts += [
+                "",
+                "## The data of this task",
+                "The data for this task was listed and pinned before it started. List it "
+                f'with list_inputs and read it with read_input; pass task="{listed_data_task}" '
+                "on every data call. Take figures with query_facts (each row has a ref and "
+                "cites material, version and page) or query_metric; find passages with "
+                "search_evidence. Numbers come only from this data and the inputs above: "
+                "never from memory. If the data does not contain what this step needs, "
+                "ask for it with request_data and say in this step what is missing; do not "
+                "guess.",
+            ]
+            if "compute" in step.tools:
+                parts += [
+                    "Compute every derived number with compute, never in your head: give "
+                    "fact refs (fact:… from query_facts) as its inputs and put the returned "
+                    "id as compute_id next to the number. For a figure taken as is, write "
+                    "its fact ref as the address. Quote passages as {material_id, page, "
+                    "text} exactly as read.",
+                ]
         if step.output_file:
             # 成稿是项目里的文件，给用户看的唯一一份（0015 §3.3）；JSON 仍回正文做机器验收
             parts += [
@@ -1084,3 +1161,16 @@ class Advisor:
                     for f in rework_failures[:REWORK_FAILURES_SHOWN]
                 ]
         return "\n".join(parts)
+
+
+def _waiting_reason(row: dict[str, Any]) -> dict[str, Any]:
+    """「等数据」给页面看的：在补采哪几项，或专家新要了什么、等确认。"""
+    detail = row.get("detail") or {}
+    pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
+    if pending:
+        return {
+            "data": "requested",
+            "requests": [r["id"] for r in pending],
+            "waiting_for": [label for r in pending for label in r.get("labels") or []],
+        }
+    return {"data": "waiting", "waiting_for": detail.get("waiting_for")}

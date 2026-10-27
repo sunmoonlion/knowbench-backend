@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -17,19 +18,27 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.workbench.catalog import (
     my_knowbots,
     pin_knowbot,
+    pinned_pack,
     viewable_expert,
 )
 from app.application.workbench.delegation import DelegationService
+from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
-from app.bootstrap.workbench import data_chooser, knowmart_summoner, workbench_store
+from app.bootstrap.workbench import (
+    data_chooser,
+    expert_data,
+    knowmart_summoner,
+    workbench_store,
+)
 from app.domain.security import Principal
 from app.domain.workbench.data_needs import DataChoice
-from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.errors import DataChoiceInvalid, WorkbenchError
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     CONTRACT_VERSION,
+    DataChoiceV2,
     _actor,
     _http,
     _publish_commands_wakeup,
@@ -62,6 +71,16 @@ class Delegate(Strict):
     budget_currency: str = Field(default="CNY", pattern=r"^CNY$")
     # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
     data: list[DataChoice] = Field(default_factory=list, max_length=64)
+    # 清单 v2 的专家（SDD 0043）：在解析清单上的选择
+    data_v2: DataChoiceV2 | None = None
+
+
+class DataPlanIn(Strict):
+    """开跑前列出：请专家的人给的任务参数。"""
+
+    subjects: list[str] = Field(min_length=1, max_length=10)
+    period_start: date | None = None
+    period_end: date | None = None
 
 
 class PinKnowbot(Strict):
@@ -126,6 +145,43 @@ async def data_needs(
         found = await DelegationService(workbench_store(session)).data_needs(
             owner_actor_id=_actor(principal), profile_id=pack_id, project_id=project_id
         )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **found}
+
+
+@router.post("/packs/{pack_id}/data-plan")
+async def data_plan(
+    pack_id: str,
+    body: DataPlanIn,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+) -> dict[str, Any]:
+    """清单 v2 的专家开跑前列出（SDD 0043 第 3.5 节）：knowbase 按声明与任务参数解析，
+    回每一样用哪份、哪一版、为什么；待确认的、有歧义的、缺的都在里面。"""
+    try:
+        pinned = await pinned_pack(
+            workbench_store(session),
+            owner_actor_id=_actor(principal),
+            profile_id=pack_id,
+        )
+        if not pinned.v2:
+            raise DataChoiceInvalid("this expert lists data the old way")
+        try:
+            found = await expert_data().listing(
+                pinned,
+                subjects=[s.strip() for s in body.subjects],
+                period=(body.period_start, body.period_end),
+                user_token=user_token,
+            )
+        except WorkbenchError:
+            raise
+        except Exception as exc:
+            translated = refusal(exc)
+            if translated is None:
+                raise
+            raise translated from None
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **found}
@@ -211,12 +267,107 @@ async def delegate(
             data=[c.model_dump(exclude_none=True) for c in body.data],
             chooser=data_chooser(),
             user_token=user_token,
+            data_v2=body.data_v2.model_dump(mode="json") if body.data_v2 else None,
+            expert_data=expert_data(),
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
     if made["created"]:
         await _publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **made}
+
+
+@router.get("/tasks/{task_id}/data")
+async def task_data(
+    task_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """这件委托用的数据（清单 v2 的专家）：钉了哪几份、在等哪几项、专家新要了什么、
+    缺了的可选项。不是清单 v2 的委托回 `listed: false`。"""
+    repo = workbench_store(session)
+    try:
+        await repo.get_task(task_id, owner_actor_id=_actor(principal))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    row = await repo.get_task_resolution(task_id)
+    pins = await repo.list_task_data(task_id)
+    if row is None:
+        return {"contract_version": CONTRACT_VERSION, "listed": False}
+    detail = row.get("detail") or {}
+    return {
+        "contract_version": CONTRACT_VERSION,
+        "listed": True,
+        "status": row["status"],
+        "waiting_for": detail.get("waiting_for") or [],
+        "demand_status": detail.get("demand_status"),
+        "reason": detail.get("reason"),
+        "incomplete": detail.get("incomplete") or [],
+        "requests": [
+            {
+                "id": r.get("id"),
+                "labels": r.get("labels") or [],
+                "status": r.get("status"),
+                "requested_at": r.get("requested_at"),
+            }
+            for r in detail.get("requests") or []
+        ],
+        "pinned": [
+            {
+                "name": p["name"],
+                "need": p["slot"],
+                "version_no": p.get("version_no"),
+                "basis": p.get("basis"),
+            }
+            for p in pins
+            if p["source"] == "knowbase"
+        ],
+    }
+
+
+@router.post("/tasks/{task_id}/data-requests/confirm")
+async def confirm_data_requests(
+    task_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+) -> dict[str, Any]:
+    """用户确认专家运行中新要的数据（0048 第五节）：齐的签上、钉上，缺的去取。"""
+    repo = workbench_store(session)
+    try:
+        task = await repo.get_task(task_id, owner_actor_id=_actor(principal))
+        try:
+            done = await expert_data().confirm_requests(
+                repo, task, owner_subject=principal.subject, user_token=user_token
+            )
+        except WorkbenchError:
+            raise
+        except Exception as exc:
+            translated = refusal(exc)
+            if translated is None:
+                raise
+            raise translated from None
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    await _publish_commands_wakeup()
+    return {"contract_version": CONTRACT_VERSION, **done}
+
+
+@router.post("/tasks/{task_id}/data-requests/decline")
+async def decline_data_requests(
+    task_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """用户不要专家新要的数据：委托照现有的接着做。"""
+    repo = workbench_store(session)
+    try:
+        task = await repo.get_task(task_id, owner_actor_id=_actor(principal))
+        done = await expert_data().decline_requests(repo, task)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    await _publish_commands_wakeup()
+    return {"contract_version": CONTRACT_VERSION, **done}
 
 
 @router.get("/expert/overview")

@@ -13,6 +13,7 @@ import hashlib
 import json
 import uuid
 from contextlib import asynccontextmanager
+from datetime import datetime
 from decimal import Decimal
 from functools import wraps
 from typing import Any
@@ -1449,16 +1450,33 @@ class WorkbenchRepository:
     async def pin_task_data(
         self, task_id: str, items: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        for position, item in enumerate(items):
+        """钉进委托；运行中追加的（第四版 request_data 补齐后）接在已有的后面。"""
+        r = await self.session.execute(
+            text(
+                "select coalesce(max(position) + 1, 0) from workbench_task_data"
+                " where task_id = :t"
+            ),
+            {"t": task_id},
+        )
+        start = int(r.scalar_one())
+        for position, item in enumerate(items, start=start):
             await self.session.execute(
                 text(
                     """insert into workbench_task_data
                        (dataset_id, task_id, position, slot, source, item_id, grant_id,
-                        grant_kind, path, name, media_type, size_bytes, sha256)
+                        grant_kind, path, name, media_type, size_bytes, sha256,
+                        version_no, rendition_kind, rendition_no, rendition_sha256,
+                        basis, basis_ref)
                        values (:d, :t, :p, :slot, :src, :item, :grant, :kind, :path, :n,
-                               :m, :b, :h)"""
+                               :m, :b, :h, :vn, :rk, :rn, :rh, :basis, :bref)"""
                 ),
                 {
+                    "vn": item.get("version_no"),
+                    "rk": item.get("rendition_kind"),
+                    "rn": item.get("rendition_no"),
+                    "rh": item.get("rendition_sha256"),
+                    "basis": item.get("basis"),
+                    "bref": item.get("basis_ref"),
                     "d": item.get("dataset_id") or uuid.uuid4(),
                     "kind": item.get("grant_kind") or "delegation",
                     "t": task_id,
@@ -1504,48 +1522,11 @@ class WorkbenchRepository:
         )
         return [dict(m) for m in r.mappings().all()]
 
-    async def session_data(self, session_id: str) -> list[dict[str, Any]]:
+    async def grants_to_release(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """委托结束、还没交还的授权：v1（cloud）与第四版（knowbase）各走各的交还接口。"""
         r = await self.session.execute(
             text(
-                """select * from workbench_session_data where session_id = :s
-                   order by position"""
-            ),
-            {"s": session_id},
-        )
-        return [dict(m) for m in r.mappings().all()]
-
-    async def replace_session_data(
-        self, session_id: str, items: list[dict[str, Any]]
-    ) -> None:
-        await self.session.execute(
-            text("delete from workbench_session_data where session_id = :s"),
-            {"s": session_id},
-        )
-        for position, item in enumerate(items):
-            await self.session.execute(
-                text(
-                    """insert into workbench_session_data
-                       (session_id, position, item_id, grant_id, name, media_type,
-                        size_bytes, sha256, expires_at)
-                       values (:s, :p, :i, :g, :n, :m, :b, :h, :e)"""
-                ),
-                {
-                    "s": session_id,
-                    "p": position,
-                    "i": item["item_id"],
-                    "g": item["grant_id"],
-                    "n": item["name"],
-                    "m": item["media_type"],
-                    "b": int(item["size_bytes"]),
-                    "h": item["sha256"],
-                    "e": item["expires_at"],
-                },
-            )
-
-    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
-        r = await self.session.execute(
-            text(
-                """select distinct d.grant_id from workbench_task_data d
+                """select distinct d.grant_id, d.source from workbench_task_data d
                    join workbench_tasks t on t.id = d.task_id
                    where d.grant_id is not null and d.grant_released_at is null
                      and d.grant_kind = 'delegation'
@@ -1554,7 +1535,7 @@ class WorkbenchRepository:
             ),
             {"n": limit},
         )
-        return [str(row[0]) for row in r.all()]
+        return [{"grant_id": str(row[0]), "source": row[1]} for row in r.all()]
 
     async def mark_grant_released(self, grant_id: str) -> None:
         await self.session.execute(
@@ -1563,6 +1544,111 @@ class WorkbenchRepository:
                    where grant_id = :g and grant_released_at is null"""
             ),
             {"g": grant_id},
+        )
+
+    # ---------- 第四版：解析清单、等数据（SDD 0043 第三节）----------
+    async def insert_task_resolution(self, row: dict[str, Any]) -> None:
+        await self.session.execute(
+            text(
+                """insert into workbench_task_resolution
+                   (task_id, resolution_id, revision, consumer, params, grant_ref,
+                    confirmation_id, demand_id, picks, dropped, status, detail,
+                    next_check_at, deadline)
+                   values (:t, :rid, :rev, :c, cast(:params as jsonb), :ref, :conf,
+                           :dem, cast(:picks as jsonb), cast(:dropped as jsonb), :st,
+                           cast(:detail as jsonb), :nca, :dl)"""
+            ),
+            {
+                "t": row["task_id"],
+                "rid": row["resolution_id"],
+                "rev": int(row["revision"]),
+                "c": row["consumer"],
+                "params": json.dumps(row["params"], ensure_ascii=False),
+                "ref": row["grant_ref"],
+                "conf": row.get("confirmation_id"),
+                "dem": row.get("demand_id"),
+                "picks": json.dumps(row.get("picks") or {}, ensure_ascii=False),
+                "dropped": json.dumps(row.get("dropped") or [], ensure_ascii=False),
+                "st": row["status"],
+                "detail": json.dumps(row.get("detail") or {}, ensure_ascii=False),
+                "nca": row.get("next_check_at"),
+                "dl": row.get("deadline"),
+            },
+        )
+
+    async def get_task_resolution(
+        self, task_id: str, *, for_update: bool = False
+    ) -> dict[str, Any] | None:
+        r = await self.session.execute(
+            text(
+                "select * from workbench_task_resolution where task_id = :t"
+                + (" for update" if for_update else "")
+            ),
+            {"t": task_id},
+        )
+        row = r.mappings().first()
+        return dict(row) if row else None
+
+    async def update_task_resolution(self, task_id: str, **fields: Any) -> None:
+        allowed = {
+            "revision",
+            "status",
+            "detail",
+            "next_check_at",
+            "checks",
+            "demand_id",
+            "confirmation_id",
+            "deadline",
+        }
+        assert set(fields) <= allowed, set(fields) - allowed
+        sets, values = [], {"t": task_id}
+        for name, value in fields.items():
+            if name == "detail":
+                sets.append("detail = cast(:detail as jsonb)")
+                values["detail"] = json.dumps(value, ensure_ascii=False, default=str)
+            else:
+                sets.append(f"{name} = :{name}")
+                values[name] = value
+        await self.session.execute(
+            text(
+                f"update workbench_task_resolution set {', '.join(sets)},"
+                " updated_at = now() where task_id = :t"
+            ),
+            values,
+        )
+
+    async def due_task_resolutions(
+        self, now: datetime, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """等数据、到了该查的时候的那几件（含委托已经结束的：要取消需求单）。"""
+        r = await self.session.execute(
+            text(
+                """select r.*, t.state as task_state, t.owner_actor_id
+                   from workbench_task_resolution r
+                   join workbench_tasks t on t.id = r.task_id
+                   where r.status = 'waiting' and r.next_check_at <= :now
+                   order by r.next_check_at limit :n"""
+            ),
+            {"now": now, "n": limit},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def subject_of_actor(self, actor_id: str) -> str | None:
+        r = await self.session.execute(
+            text("select subject from auth_user where id = :a"), {"a": actor_id}
+        )
+        row = r.first()
+        return str(row[0]) if row else None
+
+    async def set_knowbase_session(
+        self, session_id: str, knowbase_session_id: str, expires_at: datetime
+    ) -> None:
+        await self.session.execute(
+            text(
+                """update workbench_sessions set knowbase_session_id = :k,
+                   knowbase_session_expires_at = :e where id = :s"""
+            ),
+            {"s": session_id, "k": knowbase_session_id, "e": expires_at},
         )
 
     async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:

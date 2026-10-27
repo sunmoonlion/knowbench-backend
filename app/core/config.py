@@ -346,6 +346,11 @@ class Settings(BaseSettings):
     workbench_records_mcp_rate_per_minute: int = Field(
         default=60, ge=1, validation_alias="WORKBENCH_RECORDS_MCP_RATE_PER_MINUTE"
     )
+    # 清单 v2 的专家要补采的数据交 knowfeed（SDD 0043 第 4.1 节）：开关开着、knowfeed 的
+    # 服务关系也配好了才补采；关着时「待确认」一律回「暂不能补采」（fail-closed）
+    workbench_data_supply_enabled: bool = Field(
+        default=False, validation_alias="WORKBENCH_DATA_SUPPLY_ENABLED"
+    )
 
     @field_validator("cross_app_sources_json")
     @classmethod

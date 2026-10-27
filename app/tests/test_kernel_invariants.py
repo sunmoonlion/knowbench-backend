@@ -68,6 +68,8 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261023_0023_test_run_blocked.py",
         "20261023_0024_task_data.py",
         "20261023_0025_session_data.py",
+        "20261025_0026_auth_user_by_subject.py",
+        "20261027_0027_data_v4.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert sum("down_revision = None" in content for content in contents) == 1

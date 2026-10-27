@@ -36,6 +36,7 @@ from app.application.workbench.agent_service import (
     validate_path,
 )
 from app.application.workbench.delegation import DelegationService
+from app.application.workbench.expert_data import ensure_data_session
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.interactions import cancel_task as stop_task
 from app.application.workbench.ledger import Ledger
@@ -44,7 +45,6 @@ from app.application.workbench.provisioning import (
     SandboxProvisioning,
 )
 from app.application.workbench.run_files import task_dossier
-from app.application.workbench.session_data import SessionCloudData
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.tokens import TokenIssuer, exp_of
 from app.bootstrap.workbench import (
@@ -52,8 +52,9 @@ from app.bootstrap.workbench import (
     build_agent_service,
     build_provisioner,
     build_relay_admin,
-    cloud_grants,
     data_chooser,
+    expert_data,
+    knowbase_v2,
     workbench_store,
 )
 from app.domain.security import Principal
@@ -133,6 +134,21 @@ class Interrupt(Strict):
     turn_id: str | None = None
 
 
+class Pick(Strict):
+    material_id: str = Field(min_length=1, max_length=64)
+    version_no: int = Field(ge=1)
+
+
+class DataChoiceV2(Strict):
+    """在 knowbase 解析清单上的选择：清单编号与修订、换过的（条目编号 → 资料与版本）、
+    去掉的可选条目。待确认的条目随请专家一并确认（用户点的就是这一下）。"""
+
+    resolution_id: str = Field(min_length=1, max_length=64)
+    revision: int = Field(ge=1)
+    picks: dict[str, Pick] = Field(default_factory=dict, max_length=200)
+    dropped: list[str] = Field(default_factory=list, max_length=200)
+
+
 class Handover(Strict):
     idempotency_key: str = Field(min_length=8, max_length=128)
     profile_id: str = Field(min_length=1, max_length=128)
@@ -146,12 +162,8 @@ class Handover(Strict):
     client_context: dict[str, Any] = Field(default_factory=dict)
     # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
     data: list[DataChoice] = Field(default_factory=list, max_length=64)
-
-
-class SessionCloudChoice(Strict):
-    """这段对话选用云端知识库的哪几份（SDD 0042 第四节）；空的就是不用了。"""
-
-    items: list[str] = Field(default_factory=list, max_length=20)
+    # 清单 v2 的专家（SDD 0043）：在解析清单上的选择
+    data_v2: DataChoiceV2 | None = None
 
 
 class RespondInteraction(Strict):
@@ -741,6 +753,7 @@ async def start_turn(
     body: StartTurn,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ):
     repo = workbench_store(session)
     try:
@@ -751,6 +764,9 @@ async def start_turn(
             request_id=body.request_id,
         )
         s = await repo.get_session(session_id)
+        # 对话里读用户的数据（0048 第五节）：在 knowbase 登记一段会话；不成不挡聊天
+        if s.get("kind") != "expert":
+            await ensure_data_session(repo, knowbase_v2(), s, user_token)
         async with repo.transaction():
             cid = await repo.enqueue_command(
                 session_id=session_id,
@@ -920,44 +936,6 @@ async def stream_events(
 
 
 # ---------------- 这段对话选用的云端知识库（SDD 0042 第四节）----------------
-@router.get("/sessions/{session_id}/cloud-data")
-async def session_cloud_data(
-    session_id: str,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    try:
-        found = await SessionCloudData(
-            workbench_store(session), cloud=cloud_grants()
-        ).listing(session_id=session_id, owner_actor_id=_actor(principal))
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-    return {"contract_version": CONTRACT_VERSION, **found}
-
-
-@router.put("/sessions/{session_id}/cloud-data")
-async def choose_session_cloud_data(
-    session_id: str,
-    body: SessionCloudChoice,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
-):
-    """换成这几份：凭本人令牌核过、签一条「会话」运行授权，交还旧的。模型下一轮就知道。"""
-    try:
-        found = await SessionCloudData(
-            workbench_store(session), cloud=cloud_grants()
-        ).choose(
-            session_id=session_id,
-            owner_actor_id=_actor(principal),
-            item_ids=[i for i in body.items if i],
-            user_token=user_token,
-        )
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-    return {"contract_version": CONTRACT_VERSION, **found}
-
-
 # ---------------- handover / tasks ----------------
 @router.post("/sessions/{session_id}/handover", status_code=201)
 async def handover(
@@ -968,15 +946,21 @@ async def handover(
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ):
     repo = workbench_store(session)
-    fields = body.model_dump(exclude={"data"})
+    fields = body.model_dump(exclude={"data", "data_v2"})
     data = [c.model_dump(exclude_none=True) for c in body.data]
-    req = HandoverRequest(session_id=session_id, data=data, **fields)
+    req = HandoverRequest(
+        session_id=session_id,
+        data=data,
+        data_v2=body.data_v2.model_dump(mode="json") if body.data_v2 else None,
+        **fields,
+    )
     try:
         result = await DelegationService(repo).handover(
             req,
             owner_actor_id=_actor(principal),
             chooser=data_chooser(),
             user_token=user_token,
+            expert_data=expert_data(),
         )
         if result["created"] and not result.get("queued_behind"):
             s = await repo.get_session(session_id)

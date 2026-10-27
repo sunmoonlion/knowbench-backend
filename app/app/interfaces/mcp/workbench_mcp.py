@@ -1,13 +1,16 @@
 """工作台的工具服务：专家读本项目里别的对话与底稿（PRD/apps/investment.md 7.4），
 专家读用户的数据（SDD 0027 §3.5、SDD 0042：请专家时钉住的那几份）、按格子读与计算
-（SDD 0030 §3.1、§3.2），读这段对话选用的云端知识库（SDD 0042 第四节）。
+（SDD 0030 §3.1、§3.2）。对话里读用户的数据改经 knowbase 数据 MCP（0048 第五节；
+原来逐份选云端知识库的两个工具按 0043 第 4.1 节退役）。
 
 Streamable HTTP，只用 JSON 响应，不开流。和知识服务的工具并列，由沙箱里的 Codex 调用。
 - 鉴权：`Authorization: Bearer <令牌>`，令牌由工作台签发、工作台自己验，绑定用户；
 - 项目、用户数据、计算的工具都要带 `task`（委托编号，专家每一步的说明里给）。能读哪个项目、
-  现在能不能读，每次调用按这个委托重新核对；知识库的两个带对话编号（这一轮的说明里给）
-  或委托编号，只读那段对话选用的几份；
+  现在能不能读，每次调用按这个委托重新核对；对话里读数据带对话编号（这一轮的说明里给）；
 - 只读：没有改用户东西的工具。`compute` 只把算过的记进委托的计算记录（数值验收按它回查）。
+- 清单 v2 的专家（SDD 0048）：knowbase 数据 MCP 的读工具照它的定义挂在这里（工具层中继，
+  `data_relay.py`），带 `task` 或 `conversation`；缺数据用 `request_data` 提出要什么，
+  列进用户的确认清单，任务在步骤边界停下等确认。
 """
 
 from __future__ import annotations
@@ -23,13 +26,15 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.workbench.data_relay import RELAYED, DataRelay
+from app.application.workbench.expert_data import request_data
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.knowbot_data import KnowbotData
-from app.application.workbench.records import ProjectRecords, as_id
-from app.application.workbench.session_data import SessionLibrary
+from app.application.workbench.records import ProjectRecords
+from app.application.workbench.run_reader import RunReader
 from app.application.workbench.tokens import TokenIssuer
-from app.bootstrap.workbench import knowbot_data_source, workbench_store
-from app.domain.workbench.errors import RecordsRefused, WorkbenchError
+from app.bootstrap.workbench import knowbase_v2, knowbot_data_source, workbench_store
+from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -83,53 +88,6 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     # 云端知识库里用户在这段对话里选用的几份（SDD 0042 第四节）：凭「会话」运行授权读。
     # 聊天里没有委托：带对话编号（这一轮的说明里写着）；在委托里也可以只带委托编号
-    "list_library": {
-        "description": (
-            "List the items of the user's cloud knowledge base chosen for this "
-            "conversation: item_id, name, media_type, size_bytes, sha256. Only these can "
-            "be read. Give the conversation id from your instructions (or the task id "
-            "when working on one)."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "conversation": {
-                    "type": "string",
-                    "description": "The conversation id given in your instructions.",
-                },
-                "task": {
-                    **_TASK,
-                    "description": "Optional. The task id if you are working on one.",
-                },
-            },
-            "additionalProperties": False,
-        },
-    },
-    "read_library_item": {
-        "description": (
-            "Read one chosen item of the user's cloud knowledge base as text. Paged; ask "
-            "for the next page when `pages` is greater than `page`. The reply carries a "
-            "citation {item_id, sha256, page, pages}: quote it when you use the content."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "conversation": {
-                    "type": "string",
-                    "description": "The conversation id given in your instructions.",
-                },
-                "task": {
-                    **_TASK,
-                    "description": "Optional. The task id if you are working on one.",
-                },
-                "item": {"type": "string", "description": "item_id from list_library."},
-                "page": {"type": "integer", "minimum": 1, "default": 1},
-            },
-            "required": ["item"],
-            "additionalProperties": False,
-        },
-    },
-    # 分身读用户自己的数据（0027 §3.5）：只有这一版清单绑定的那几份，经 knowlab 读出文字
     "list_my_data": {
         "description": (
             "List the user's own data bound to this expert: dataset_id, name, "
@@ -184,6 +142,45 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "page": {"type": "integer", "minimum": 1, "default": 1},
             },
             "required": ["task", "dataset"],
+            "additionalProperties": False,
+        },
+    },
+    "request_data": {
+        "description": (
+            "Ask for data that is not pinned to this task (for example one more "
+            "year's annual report). It is listed for the user to confirm; you cannot "
+            "read it before that and the task pauses after this step. Each item: "
+            "doc_type (a type or class from describe_items, e.g. annual_report or "
+            "interim_announcement), period ({kind: latest, count} for periodic "
+            "reports; {kind: recent, months} or {kind: fixed, start, end} for "
+            "others), reading (original, text, pages or table), optional topics and "
+            "edition, and reason (why this step needs it). The subjects are the "
+            "task's."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": _TASK,
+                "needs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 5,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "doc_type": {"type": "string"},
+                            "period": {"type": "object"},
+                            "reading": {"enum": ["original", "text", "pages", "table"]},
+                            "topics": {"type": "array", "items": {"type": "string"}},
+                            "edition": {"enum": ["full", "summary", "english"]},
+                            "max_count": {"type": "integer", "minimum": 1},
+                            "reason": {"type": "string", "maxLength": 500},
+                        },
+                        "required": ["doc_type", "reason"],
+                    },
+                },
+            },
+            "required": ["task", "needs"],
             "additionalProperties": False,
         },
     },
@@ -261,34 +258,17 @@ def _tool_error(mid: Any, message: str) -> dict[str, Any]:
     return _ok(mid, {"content": [{"type": "text", "text": message}], "isError": True})
 
 
-async def _library_call(
-    records: ProjectRecords, name: str, args: dict[str, Any]
+async def call(
+    records: ProjectRecords,
+    name: str,
+    args: dict[str, Any],
+    reader: RunReader | None = None,
 ) -> Any:
-    # 在委托里读的，记到那个委托的账上（F-LIB-06）；聊天里读的没有委托，不记
-    working = await records._working(args["task"]) if args.get("task") else None
-    conversation = args.get("conversation")
-    if isinstance(conversation, str) and conversation:
-        session = await records.repo.get_session(
-            as_id(conversation, "conversation"), owner_actor_id=records.owner
+    if name == "request_data":
+        working = await records._working(args.get("task"))
+        return await request_data(
+            records.repo, knowbase_v2(), working, args.get("needs") or []
         )
-        session_id = str(session["id"])
-    elif working is not None:
-        session_id = str(working["session_id"])
-    else:
-        raise RecordsRefused("give the conversation id from your instructions")
-    library = SessionLibrary(records.repo, knowbot_data_source())
-    if name == "list_library":
-        result = await library.list(session_id)
-    else:
-        result = await library.read(session_id, args.get("item"), args.get("page", 1))
-    if working is not None:
-        await records._noted(working, name, item=args.get("item"))
-    return result
-
-
-async def call(records: ProjectRecords, name: str, args: dict[str, Any]) -> Any:
-    if name in ("list_library", "read_library_item"):
-        return await _library_call(records, name, args)
     if name == "list_my_data":
         return await KnowbotData(records, knowbot_data_source()).list(args.get("task"))
     if name == "read_my_data":
@@ -303,7 +283,7 @@ async def call(records: ProjectRecords, name: str, args: dict[str, Any]) -> Any:
             args.get("page", 1),
         )
     if name == "compute":
-        return await KnowbotCompute(records, knowbot_data_source()).compute(
+        return await KnowbotCompute(records, knowbot_data_source(), reader).compute(
             args.get("task"),
             args.get("name"),
             args.get("expression"),
@@ -320,7 +300,12 @@ async def call(records: ProjectRecords, name: str, args: dict[str, Any]) -> Any:
 
 
 async def handle(
-    records: ProjectRecords, message: dict[str, Any], *, owner: str, per_minute: int
+    records: ProjectRecords,
+    message: dict[str, Any],
+    *,
+    owner: str,
+    per_minute: int,
+    relay: DataRelay | None = None,
 ) -> dict[str, Any] | None:
     method = message.get("method")
     mid = message.get("id")
@@ -335,10 +320,10 @@ async def handle(
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": SERVER_KNOWFEED,
                 "instructions": (
-                    "Read-only records of the user's project, the user's library and "
-                    "the user's own data bound to this expert, and exact computation "
-                    "on that data. Project, data and compute tools need the task id "
-                    "from the step instructions; the library tools work without it."
+                    "Read-only records of the user's project, the user's data pinned "
+                    "to this task or readable in this conversation, and exact "
+                    "computation on that data. Pass the task id from the step "
+                    "instructions, or in a chat the conversation id."
                 ),
             },
         )
@@ -347,21 +332,39 @@ async def handle(
     if method == "ping":
         return _ok(mid, {})
     if method == "tools/list":
+        data_tools = await relay.tools() if relay is not None else []
         return _ok(
-            mid, {"tools": [{"name": name, **spec} for name, spec in TOOLS.items()]}
+            mid,
+            {
+                "tools": [{"name": name, **spec} for name, spec in TOOLS.items()]
+                + data_tools
+            },
         )
     if method != "tools/call":
         return None if mid is None else _err(mid, -32601, f"method not found: {method}")
     name = str(params.get("name") or "")
     args = params.get("arguments") or {}
-    if name not in TOOLS:
+    relayed = relay is not None and name in RELAYED
+    if name not in TOOLS and not relayed:
         return _err(mid, -32602, f"unknown tool: {name}")
     if not isinstance(args, dict):
         return _err(mid, -32602, "arguments must be an object")
     if not limiter.allow(owner, per_minute):
         return _tool_error(mid, "rate limit exceeded; retry later")
+    if relayed:
+        assert relay is not None
+        try:
+            return await relay.call(mid, name, args)
+        except WorkbenchError as exc:
+            log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
+            return _tool_error(mid, exc.message)
+        except Exception:  # 内部错误的细节不给模型
+            log.exception("workbench_mcp_relay_failed tool=%s", name)
+            return _tool_error(mid, "the data service is temporarily unavailable")
     try:
-        result = jsonable_encoder(await call(records, name, args))
+        result = jsonable_encoder(
+            await call(records, name, args, relay.reader if relay else None)
+        )
     except WorkbenchError as exc:
         # 给模型看的话：不带编号之外的细节
         log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
@@ -418,19 +421,23 @@ async def rpc(
     scheme, _, token = (authorization or "").partition(" ")
     if issuer is None or scheme.lower() != "bearer" or not token or " " in token:
         return _unauthorized()
-    owner = issuer.owner_of_records_token(token)
-    if owner is None:
+    identity = issuer.records_identity(token)
+    if identity is None:
         return _unauthorized()
+    owner, sandbox = identity
     try:
         body = json.loads(await request.body())
     except ValueError:
         return JSONResponse(_err(None, -32700, "parse error"), status_code=400)
     records = ProjectRecords(workbench_store(session), owner_actor_id=owner)
+    relay = DataRelay(records, knowbase_v2(), issuer, sandbox=sandbox)
     messages = body if isinstance(body, list) else [body]
     replies = []
     for message in messages:
         if isinstance(message, dict):
-            reply = await handle(records, message, owner=owner, per_minute=per_minute)
+            reply = await handle(
+                records, message, owner=owner, per_minute=per_minute, relay=relay
+            )
             if reply is not None:
                 replies.append(reply)
     if not replies:

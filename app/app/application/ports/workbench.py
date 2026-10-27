@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager
+from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
@@ -775,21 +776,41 @@ class WorkbenchStore(Protocol):
         """同一项目里上次请这位专家（任一版）时钉住的那几份；没有就是空的。"""
         ...
 
-    async def session_data(self, session_id: str) -> list[dict[str, Any]]:
-        """这段对话选用的云端知识库的几份（SDD 0042 第四节），按次序。"""
-        ...
-
-    async def replace_session_data(
-        self, session_id: str, items: list[dict[str, Any]]
-    ) -> None:
-        """换成这几份（item_id、grant_id、name、media_type、size_bytes、sha256、expires_at）。"""
-        ...
-
-    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
-        """委托已结束、运行授权还没交还的。"""
+    async def grants_to_release(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """委托已结束、运行授权还没交还的：grant_id 与 source（cloud 或 knowbase）。"""
         ...
 
     async def mark_grant_released(self, grant_id: str) -> None: ...
+
+    # ---------- 第四版：解析清单、等数据（SDD 0043 第三节）----------
+    async def insert_task_resolution(self, row: dict[str, Any]) -> None:
+        """清单 v2 的委托：记解析清单、授权 ref、确认与需求单、等数据状态。"""
+        ...
+
+    async def get_task_resolution(
+        self, task_id: str, *, for_update: bool = False
+    ) -> dict[str, Any] | None: ...
+
+    async def update_task_resolution(self, task_id: str, **fields: Any) -> None:
+        """改 revision、status、detail、next_check_at、checks、demand_id、
+        confirmation_id、deadline。"""
+        ...
+
+    async def due_task_resolutions(
+        self, now: datetime, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """等数据、该查了的（带 task_state、owner_actor_id）。"""
+        ...
+
+    async def subject_of_actor(self, actor_id: str) -> str | None:
+        """本地 actor id → Casdoor 用户 id（knowbase、knowfeed 认的用户）。"""
+        ...
+
+    async def set_knowbase_session(
+        self, session_id: str, knowbase_session_id: str, expires_at: datetime
+    ) -> None:
+        """这段对话在 knowbase 登记的会话（0048 第五节）。"""
+        ...
 
     # ---------- 作为运行方跑分身测试（SDD 0027 §3.4）----------
     async def actor_for_subject(self, subject: str) -> str | None:

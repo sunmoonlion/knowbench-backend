@@ -62,9 +62,7 @@ def world(make_client, monkeypatch):  # noqa: F811
     fake.give(f"sub-{A}", {**manifest(), "data_needs": [REPORTS]})
     monkeypatch.setattr(expert_routes, "knowmart_summoner", lambda: fake)
     cloud = Cloud()
-    monkeypatch.setattr(
-        expert_routes, "data_chooser", lambda: DataChooser(cloud=cloud, agent=None)
-    )
+    monkeypatch.setattr(expert_routes, "data_chooser", lambda: DataChooser(cloud=cloud))
 
     async def user_token() -> str:
         return "user-token"
