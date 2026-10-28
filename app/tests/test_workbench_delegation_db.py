@@ -6,7 +6,7 @@ import json
 from decimal import Decimal
 
 import pytest
-from test_fin_review_advisor_db import ALL, say
+from sample_replies import ALL, say
 from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db

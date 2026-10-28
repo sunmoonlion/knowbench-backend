@@ -95,10 +95,10 @@ class Ledger:
         """F-INTAKE-01/02、F-ADMIT-01、F-WHEEL-01：幂等建单、首事件、wheel=advisor，同一提交。
 
         snapshot：调用方已经核好的专家包快照（跑分身测试时是草稿，SDD 0027 §3.4）。
-        pins：按专家的数据需求声明选好、核过的数据（data_choice.DataChooser），同一提交钉进委托；
-        写了声明的专家没有就不建（SDD 0042）。
-        resolution：清单 v2 的专家（expert_data.ExpertData）：解析清单、授权 ref、确认与
-        需求单、等数据状态，同一提交记下；要补采的委托没有钉住的，核验时进「等数据」。
+        pins：分身作者挑选的数据（expert_data.ExpertData 签好的），或测试用例的测试集，
+        同一提交钉进委托；内置专家不收数据。
+        resolution：分身（清单 v2，expert_data.ExpertData）的解析清单、授权 ref、确认与
+        需求单、等数据状态，同一提交记下；没有就不建（请专家页才建得出）。
         """
         digest = req.digest()
         async with self.repo.transaction():
@@ -153,17 +153,13 @@ class Ledger:
                 if is_knowbot(req.profile_id)
                 else None
             )
-            # 测试的委托（snapshot）钉的是测试运行授权里那几份，不按声明核（knowlab 核过）
-            if snapshot is None and pinned is not None and pinned.v2:
-                # 清单 v2：请专家时建好了空清单，要什么数据由第 0 步提（decisions ⑭）
+            # 测试的委托（snapshot）钉的是这条用例的测试集（knowlab 核过）
+            if snapshot is None and pinned is not None:
+                # 分身：请专家时建好了空清单，要什么数据由第 0 步提（decisions ⑭）
                 if resolution is None:
                     raise DataRequired("ask this expert from the page again")
-            elif snapshot is None:
-                needs = pinned.needs if pinned is not None else ()
-                if needs and not pins:
-                    raise DataRequired("choose the data this expert needs first")
-                if pins and not needs:
-                    raise DataChoiceInvalid("this expert takes no data")
+            elif snapshot is None and pins:
+                raise DataChoiceInvalid("this expert takes no data")
             task_id = str(uuid.uuid4())
             budget = Budget(currency=req.budget_currency, limit=req.budget_limit)
             client_context = dict(req.client_context)

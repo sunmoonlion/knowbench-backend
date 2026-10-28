@@ -7,7 +7,7 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from test_fin_review_pack import PROFILE, SCOPE
+from sample_replies import PROFILE, SCOPE
 from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
@@ -84,13 +84,11 @@ async def test_the_handshake_and_the_list_of_tools(served):
         assert noted.status_code == 202
         listed = (await http.post(URL, json=rpc("tools/list"), headers=bearer())).json()
         names = [t["name"] for t in listed["result"]["tools"]]
-        # knowbase 没配：数据工具不列，项目、用户数据与计算照常
+        # knowbase 没配：数据工具不列，项目、要数据、查主体与计算照常；v1 的三个读数据
+        # 工具（list_my_data、read_my_data、read_my_table）没了（decisions ⑰）
         assert names == [
             "list_project_conversations",
             "read_project_conversation",
-            "list_my_data",
-            "read_my_data",
-            "read_my_table",
             "find_subject",
             "request_data",
             "compute",

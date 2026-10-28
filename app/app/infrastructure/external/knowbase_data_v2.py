@@ -1,9 +1,8 @@
 """knowbase 资料库第四版（契约 user-data/v2，SDD 0043、0048）：请专家的解析、确认、
 运行授权，会话登记，等数据时的服务路，数据 MCP 的中继。
 
-两种身份同 v1（`knowbase_user_data.py`）：本人令牌（换来的用户令牌，`azp` 是本应用），
-服务身份走关系 `user-data-read`。knowbase 回 4xx 抛 KnowbaseRefused（带它的 code），
-不可达、5xx 抛 ServiceUnavailableError。令牌只在内存里，不进日志。
+两种身份、拒绝与不可达见公共底子 `knowbase_client.py`：本人令牌（换来的用户令牌，`azp`
+是本应用），服务身份走关系 `user-data-read`。
 """
 
 from __future__ import annotations
@@ -13,15 +12,15 @@ from typing import Any
 import httpx
 
 from app.application.errors.exceptions import ServiceUnavailableError
-from app.infrastructure.external.knowbase_user_data import KnowbaseUserData, _segment
+from app.infrastructure.external.knowbase_client import KnowbaseClient, _segment
 
 BASE_V2 = "/api/internal/v2/user-data"
 DATA_MCP_PATH = "/api/mcp/data"
 READ = "user-data-read"
 
 
-class KnowbaseDataV2(KnowbaseUserData):
-    path = BASE_V2
+class KnowbaseDataV2(KnowbaseClient):
+    BASE = BASE_V2
 
     # —— 本人 ——
 

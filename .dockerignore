@@ -2,9 +2,8 @@ app/.venv
 app/.env
 app/.env.*
 app/tests
-# 测试夹具与评测不是产品代码，不进镜像（工程结构规则，2026-09-29）
+# 测试夹具不是产品代码，不进镜像（工程结构规则，2026-09-29）
 app/scripts
-app/eval
 db-access-bootstrap/.env.local.*
 **/__pycache__
 **/*.pyc

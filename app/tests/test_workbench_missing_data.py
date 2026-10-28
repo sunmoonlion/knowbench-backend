@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import pytest
+from sample_packs import FIN_REVIEW
 
 from app.domain.workbench.missing_data import from_step, from_tool_call, security_of
-from app.domain.workbench.packs import FIN_REVIEW
 
 PROFILE_STEP = next(s for s in FIN_REVIEW.workflow if s.step_id == "profile")
 SCOPE_STEP = next(s for s in FIN_REVIEW.workflow if s.step_id == "scope")

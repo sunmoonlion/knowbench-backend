@@ -1,17 +1,16 @@
 """用户自己的分身（SDD 0027 P4）：从 knowmart 请来的清单，变成工作台能跑的专家包。
 
-清单外层（`knowbot-manifest/v1`）归 knowmart，里面的 `pack` 就是工作台的专家包形状，由这里
+清单外层（`knowbot-manifest/v2`）归 knowmart，里面的 `pack` 就是工作台的专家包形状，由这里
 按 ExpertPack 完整校验。分身只归请它的那个用户：专家 id 写作 `knowbot:<分身>@<版本>`，钉在
 委托上的是这一版的包快照与摘要，之后编排、底稿、验收都读快照，knowmart 停了也不影响在跑的。
 
 分身是用户的方法，不是我们的：工具与审批只能比平台默认更严，不许自带命令放行前缀；
 不许用数据线的工具（`C-L2`：分身运行时只读用户自己的数据）。
 
-- 清单 v1：读用户数据用 `list_my_data`、`read_my_data`、`read_my_table`，读请的人选的
-  （或旧格式里作者绑的）那几份（0027 §3.5、0042）。
-- 清单 v2（SDD 0043，decisions ⑭）= 逻辑 + 作者挑选的数据（`bindings`，只带冻结的
-  引用）；没有数据需求声明：委托第 0 步模型用 `request_data` 按问题提出要哪些数据、
-  用户确认；读数据用 knowbase 数据 MCP 的工具（经工作台中继，0048），算数仍用 `compute`。
+只认清单 v2（SDD 0043，decisions ⑭；v1 不留兼容，decisions ⑰）= 逻辑 + 作者挑选的数据
+（`bindings`，只带冻结的引用）；没有数据需求声明：委托第 0 步模型用 `request_data` 按问题
+提出要哪些数据、用户确认；读数据用 knowbase 数据 MCP 的工具（经工作台中继，0048），算数用
+`compute`。
 """
 
 from __future__ import annotations
@@ -28,20 +27,13 @@ from app.domain.workbench.packs import ExpertPack
 from app.domain.workbench.tool_policy import TIER_ORDER, ToolPolicy
 
 PREFIX = "knowbot:"
-MANIFEST_SCHEMA = "knowbot-manifest/v1"
 MANIFEST_SCHEMA_V2 = "knowbot-manifest/v2"
-MANIFEST_SCHEMAS = (MANIFEST_SCHEMA, MANIFEST_SCHEMA_V2)
 RUNTIME = "knowbench"
 KNOWBOT_ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 VERSION = r"[1-9][0-9]{0,5}"
 REF = re.compile(rf"^({KNOWBOT_ID})@({VERSION})$")
 PROFILE = re.compile(rf"^{PREFIX}({KNOWBOT_ID})@({VERSION})$")
-# 分身能用的工具：读用户自己的数据（0027 §3.5）、按格子读与计算（0030 §3.1、§3.2）
-DATA_TOOLS: frozenset[str] = frozenset(
-    {"list_my_data", "read_my_data", "read_my_table", "compute"}
-)
-KNOWBOT_TOOLS: frozenset[str] = DATA_TOOLS
-# 清单 v2：knowbase 数据 MCP 的读工具（工作台中继，0048 第四节）、要数据、计算
+# 分身能用的工具：knowbase 数据 MCP 的读工具（工作台中继，0048 第四节）、要数据、查主体、计算
 DATA_MCP_TOOLS: frozenset[str] = frozenset(
     {
         "list_inputs",
@@ -90,10 +82,6 @@ def parse_profile(value: str | None) -> tuple[str, str] | None:
 
 def is_knowbot(value: str | None) -> bool:
     return (value or "").startswith(PREFIX)
-
-
-def is_v2(manifest: object) -> bool:
-    return isinstance(manifest, dict) and manifest.get("schema") == MANIFEST_SCHEMA_V2
 
 
 def consumer_of(knowbot_id: str, version: str) -> str:
@@ -162,8 +150,8 @@ def pack_from_manifest(
     if not isinstance(manifest, dict):
         raise KnowbotInvalid("the knowbot manifest is not an object")
     problems: list[str] = []
-    if manifest.get("schema") not in MANIFEST_SCHEMAS:
-        problems.append(f"schema must be one of {', '.join(MANIFEST_SCHEMAS)}")
+    if manifest.get("schema") != MANIFEST_SCHEMA_V2:
+        problems.append(f"schema must be {MANIFEST_SCHEMA_V2}")
     if manifest.get("runtime") != RUNTIME:
         problems.append(f"runtime must be {RUNTIME}")
     if manifest.get("version") != version:
@@ -195,11 +183,10 @@ def pack_from_manifest(
     if pack.version != version:
         problems.append("pack.version differs from the version")
     problems += _no_looser_than_platform(pack.tool_policy)
-    allowed = V2_TOOLS if is_v2(manifest) else KNOWBOT_TOOLS
     for step in pack.workflow:
         if step.tool_policy is not None and step.tool_policy.command_allow:
             problems.append(f"step {step.step_id} allows commands by prefix")
-        extra = set(step.tools) - allowed
+        extra = set(step.tools) - V2_TOOLS
         if extra:
             problems.append(f"step {step.step_id} uses tools a knowbot cannot use")
     if pack.requires_tools:
@@ -207,16 +194,3 @@ def pack_from_manifest(
     if problems:
         raise KnowbotInvalid("; ".join(problems), knowbot=knowbot_id)
     return pack
-
-
-def data_bindings(manifest: object) -> dict[str, tuple[str, str]]:
-    """清单里这一版能读的用户数据：数据 id → （版本，sha256）。"""
-    raw = manifest.get("data_bindings") if isinstance(manifest, dict) else None
-    found: dict[str, tuple[str, str]] = {}
-    for item in raw if isinstance(raw, list) else []:
-        if isinstance(item, dict) and isinstance(item.get("dataset_id"), str):
-            found[item["dataset_id"]] = (
-                str(item.get("version")),
-                str(item.get("sha256")),
-            )
-    return found

@@ -3,17 +3,14 @@
 新建一段工作对话并立刻交给专家：建对话、建委托、交出方向盘、排上驾驶的命令，在同一次提交里。
 哪一步不成，整个都不留下：不会剩一段空的对话（AT-INV-08）。
 
-写了数据需求声明的专家（SDD 0042）：建委托之前先按声明核用户选的数据、签运行授权
-（data_choice.DataChooser），钉住的数据随委托在同一次提交里写下；建委托没成就交还授权。
-同一把幂等钥匙重发时不再选、不再签。
-
-清单 v2 的专家（SDD 0043）：按用户在解析清单上的选择定计划（expert_data.ExpertData），
-都齐了本人签授权、钉住；要补采的确认、提需求单，委托建好后进「等数据」。
+分身（清单 v2，SDD 0043）：建委托之前建空的解析清单、本人签作者挑选的数据
+（expert_data.ExpertData），钉住的数据随委托在同一次提交里写下；建委托没成就交还授权。
+要什么数据由委托第 0 步按问题提出、用户确认（decisions ⑭）。同一把幂等钥匙重发时不再签。
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from decimal import Decimal
 from typing import Any
 
@@ -24,30 +21,23 @@ from app.application.workbench.catalog import (
     offerable_expert,
     pinned_pack,
 )
-from app.application.workbench.data_choice import (
-    DataChooser,
-    Prepared,
-    UserToken,
-    choice_of,
-    last_choices,
-)
-from app.application.workbench.expert_data import ExpertData, refusal
-from app.application.workbench.expert_data import Prepared as PreparedV2
+from app.application.workbench.expert_data import ExpertData, Prepared, refusal
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
-from app.domain.workbench.data_needs import DataNeed
 from app.domain.workbench.errors import (
     DataChoiceInvalid,
     IdempotencyConflict,
     WorkbenchError,
 )
-from app.domain.workbench.knowbots import is_knowbot, parse_profile
+from app.domain.workbench.knowbots import MANIFEST_SCHEMA_V2, is_knowbot
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.projects import default_title
 
 # 只看内置专家的老入口（同步、不认分身），保留给已有的调用方
 expert_on_view = builtin_on_view
 expert_on_offer = builtin_on_offer
+
+UserToken = Callable[[], Awaitable[str]]
 
 
 class DelegationService:
@@ -65,8 +55,6 @@ class DelegationService:
         budget_currency: str = "CNY",
         idempotency_key: str,
         tenant: str = "default",
-        data: list[dict[str, Any]] | None = None,
-        chooser: DataChooser | None = None,
         user_token: UserToken | None = None,
         expert_data: ExpertData | None = None,
     ) -> dict[str, Any]:
@@ -74,7 +62,6 @@ class DelegationService:
         pack = await offerable_expert(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
-        choices = [choice_of(c) for c in data or []]
 
         def request(session_id: str) -> HandoverRequest:
             return HandoverRequest(
@@ -85,10 +72,9 @@ class DelegationService:
                 budget_limit=budget_limit,
                 budget_currency=budget_currency,
                 client_context={"entry": "expert"},
-                data=choices,
             )
 
-        v2 = await self._prepare_v2(
+        prepared = await self._prepare(
             owner_actor_id=owner_actor_id,
             profile_id=pack.profile_id,
             idempotency_key=idempotency_key,
@@ -96,20 +82,6 @@ class DelegationService:
             expert_data=expert_data,
             user_token=user_token,
         )
-        prepared = (
-            await self._prepare(
-                owner_actor_id=owner_actor_id,
-                profile_id=pack.profile_id,
-                idempotency_key=idempotency_key,
-                tenant=tenant,
-                choices=choices,
-                chooser=chooser,
-                user_token=user_token,
-            )
-            if v2 is None
-            else Prepared()
-        )
-        pins = v2.pins if v2 is not None else prepared.pins
         try:
             made = await self._from_expert_entry(
                 owner_actor_id=owner_actor_id,
@@ -119,15 +91,15 @@ class DelegationService:
                 idempotency_key=idempotency_key,
                 tenant=tenant,
                 request=request,
-                pins=pins,
-                resolution=v2.resolution_row if v2 is not None else None,
+                pins=prepared.pins if prepared else [],
+                resolution=prepared.resolution_row if prepared else None,
             )
         except BaseException:
-            await self._release(chooser, prepared, expert_data, v2)
+            await self._release(expert_data, prepared)
             raise
         if not made["created"]:
-            # 并发重发：另一份已经建好，这一份的授权与需求单不要
-            await self._release(chooser, prepared, expert_data, v2)
+            # 并发重发：另一份已经建好，这一份的授权不要
+            await self._release(expert_data, prepared)
         return made
 
     async def handover(
@@ -136,14 +108,11 @@ class DelegationService:
         *,
         owner_actor_id: str,
         tenant: str = "default",
-        chooser: DataChooser | None = None,
         user_token: UserToken | None = None,
         expert_data: ExpertData | None = None,
     ) -> dict[str, Any]:
-        """对话里把方向盘交给专家（工作台接口 /sessions/{id}/handover）：同上先选数据再建委托。"""
-        choices = [choice_of(c) for c in req.data]
-        req = req.model_copy(update={"data": choices})
-        v2 = await self._prepare_v2(
+        """对话里把方向盘交给专家（工作台接口 /sessions/{id}/handover）：同上先签再建委托。"""
+        prepared = await self._prepare(
             owner_actor_id=owner_actor_id,
             profile_id=req.profile_id,
             idempotency_key=req.idempotency_key,
@@ -151,79 +120,33 @@ class DelegationService:
             expert_data=expert_data,
             user_token=user_token,
         )
-        prepared = (
-            await self._prepare(
-                owner_actor_id=owner_actor_id,
-                profile_id=req.profile_id,
-                idempotency_key=req.idempotency_key,
-                tenant=tenant,
-                choices=choices,
-                chooser=chooser,
-                user_token=user_token,
-            )
-            if v2 is None
-            else Prepared()
-        )
-        pins = v2.pins if v2 is not None else prepared.pins
         try:
             made = await Ledger(self.repo).handover(
                 req,
                 owner_actor_id=owner_actor_id,
                 tenant=tenant,
-                pins=pins or None,
-                resolution=v2.resolution_row if v2 is not None else None,
+                pins=(prepared.pins if prepared else None) or None,
+                resolution=prepared.resolution_row if prepared else None,
             )
         except BaseException:
-            await self._release(chooser, prepared, expert_data, v2)
+            await self._release(expert_data, prepared)
             raise
         if not made["created"]:
-            await self._release(chooser, prepared, expert_data, v2)
+            await self._release(expert_data, prepared)
         return made
 
     async def data_needs(
-        self, *, owner_actor_id: str, profile_id: str, project_id: str | None
+        self, *, owner_actor_id: str, profile_id: str
     ) -> dict[str, Any]:
-        """选数据的弹框要的：声明，与同一项目上次请这位专家时选的那几份（默认选上）。
-
-        清单 v2 的专家回 `contract` 与作者挑选的数据的份数：没有声明，要什么数据由委托
-        第 0 步按问题提出、用户确认（decisions ⑭），请专家页上不用选。
-        """
-        if is_knowbot(profile_id):
-            pinned = await pinned_pack(
-                self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
-            )
-            if pinned.v2:
-                return {
-                    "contract": pinned.contract,
-                    "needs": [],
-                    "bound": len(pinned.bindings),
-                    "last": [],
-                }
-        needs = await self.needs_of(
-            owner_actor_id=owner_actor_id, profile_id=profile_id
-        )
-        ref = parse_profile(profile_id)
-        last = (
-            await self.repo.last_task_data(
-                owner_actor_id=owner_actor_id, project_id=project_id, knowbot_id=ref[0]
-            )
-            if needs and project_id and ref
-            else []
-        )
-        keys = {n.key for n in needs}
-        return {
-            "needs": [n.model_dump(mode="json") for n in needs],
-            "last": [c for c in last_choices(last) if c["need"] in keys],
-        }
-
-    async def needs_of(self, *, owner_actor_id: str, profile_id: str) -> list[DataNeed]:
-        """这位专家的数据需求声明；内置专家、旧格式的分身是空的。"""
+        """请专家页要的：分身回清单的版本与作者挑选的数据的份数。没有数据需求声明，要什么
+        数据由委托第 0 步按问题提出、用户确认（decisions ⑭），请专家页上不用选；内置专家
+        不用数据，`contract` 是空的。"""
         if not is_knowbot(profile_id):
-            return []
+            return {"contract": None, "bound": 0}
         pinned = await pinned_pack(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
-        return list(pinned.needs)
+        return {"contract": MANIFEST_SCHEMA_V2, "bound": len(pinned.bindings)}
 
     async def _prepare(
         self,
@@ -232,54 +155,16 @@ class DelegationService:
         profile_id: str,
         idempotency_key: str,
         tenant: str,
-        choices: list[dict[str, Any]],
-        chooser: DataChooser | None,
-        user_token: UserToken | None,
-    ) -> Prepared:
-        """按声明核选的数据、签授权；同一把钥匙已经建过委托就不再做（交给后面回原来那份）。"""
-        needs = await self.needs_of(
-            owner_actor_id=owner_actor_id, profile_id=profile_id
-        )
-        if not needs and not choices:
-            return Prepared()
-        prior = await self.repo.find_task_by_idempotency(
-            tenant=tenant,
-            owner_actor_id=owner_actor_id,
-            profile_id=profile_id,
-            idempotency_key=idempotency_key,
-        )
-        if prior is not None:
-            return Prepared()
-        if chooser is None or user_token is None:
-            raise DataChoiceInvalid("data cannot be chosen here")
-        identity = await self.repo.get_relay_identity(owner_actor_id)
-        return await chooser.prepare(
-            needs=needs,
-            choices=choices,
-            relay_user=str(identity["relay_user"]) if identity else None,
-            user_token=user_token,
-            ref=f"knowbench:{idempotency_key}"[:255],
-        )
-
-    async def _prepare_v2(
-        self,
-        *,
-        owner_actor_id: str,
-        profile_id: str,
-        idempotency_key: str,
-        tenant: str,
         expert_data: ExpertData | None,
         user_token: UserToken | None,
-    ) -> PreparedV2 | None:
-        """清单 v2 的专家：建空清单、签作者挑选的数据（本人在场）；不是 v2 的回 None
-        （走旧路）。同一把钥匙已经建过委托就不再做（交给后面回原来那份）。"""
+    ) -> Prepared | None:
+        """分身：建空清单、签作者挑选的数据（本人在场）；内置专家不用数据，回 None。
+        同一把钥匙已经建过委托就不再做（交给后面回原来那份）。"""
         if not is_knowbot(profile_id):
             return None
         pinned = await pinned_pack(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
-        if not pinned.v2:
-            return None
         prior = await self.repo.find_task_by_idempotency(
             tenant=tenant,
             owner_actor_id=owner_actor_id,
@@ -287,7 +172,7 @@ class DelegationService:
             idempotency_key=idempotency_key,
         )
         if prior is not None:
-            return PreparedV2()
+            return Prepared()
         if expert_data is None or user_token is None:
             raise DataChoiceInvalid("data cannot be chosen here")
         if await self.repo.subject_of_actor(owner_actor_id) is None:
@@ -308,16 +193,10 @@ class DelegationService:
 
     @staticmethod
     async def _release(
-        chooser: DataChooser | None,
-        prepared: Prepared,
-        expert_data: ExpertData | None,
-        v2: PreparedV2 | None,
+        expert_data: ExpertData | None, prepared: Prepared | None
     ) -> None:
-        if v2 is not None:
-            if expert_data is not None:
-                await expert_data.release(v2)
-        elif chooser is not None:
-            await chooser.release(prepared)
+        if prepared is not None and expert_data is not None:
+            await expert_data.release(prepared)
 
     async def _from_expert_entry(
         self,

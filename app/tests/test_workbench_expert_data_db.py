@@ -310,7 +310,7 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
             "knowbot-manifest/v2",
             1,
         )
-        assert needs.json()["needs"] == []
+        assert set(needs.json()) == {"contract_version", "contract", "bound"}
         task_id, turn, state = await asked(http, db, world, "k-v2-0001")
         # 请专家：空清单、作者挑选的那一份本人签、钉住
         [(_, resolved)] = [c for c in kb.calls if c[0] == "resolve"]

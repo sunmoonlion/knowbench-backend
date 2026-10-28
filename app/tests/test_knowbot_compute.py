@@ -1,58 +1,50 @@
-"""分身的计算工具与数值验收（SDD 0030 §3.2、§3.3）：求值白名单、按地址取数、计算记录、三种数值验收。"""
+"""分身的计算工具与数值验收（SDD 0030 §3.2、§3.3，第四版的取数）：求值白名单、按事实编号取数、
+计算记录、数值验收。事实与引文都由工作台凭委托的运行授权回 knowbase 查（run_reader），这里用替身。"""
 
 from __future__ import annotations
 
 import contextlib
+import json
+import uuid
 from decimal import Decimal
 from typing import Any
 
 import pytest
-from test_workbench_knowbot_data import BINDING, DATASET, Records, _pin, _task
 
 from app.application.workbench.acceptance import judge
 from app.application.workbench.acceptance_numbers import judge_numbers
 from app.application.workbench.knowbot_compute import COMPUTE_EVENT, KnowbotCompute
 from app.domain.workbench import compute as calc
-from app.domain.workbench.errors import ComputeRefused, NotFound, RecordsRefused
-from app.domain.workbench.knowbots import KNOWBOT_TOOLS
+from app.domain.workbench.errors import ComputeRefused, UserDataUnavailable
+from app.domain.workbench.knowbots import V2_TOOLS
 from app.domain.workbench.packs import AcceptanceRule
 
-SHEET = "利润表"
-CELLS = {
-    ("营业收入", "2024-03-31"): ("100.10", "100.10"),
-    ("营业收入", "2024-06-30"): ("250.25", "250.25"),
-    ("营业成本", "2024-06-30"): ("(150)", "-150"),
-    ("备注", "2024-06-30"): ("未审计", None),
-    ("零", "2024-06-30"): ("0", "0"),
+OWNER = str(uuid.uuid4())
+
+
+def fact(n: int) -> str:
+    return f"fact:{uuid.UUID(int=n)}"
+
+
+FACTS = {
+    fact(1): Decimal("100.10"),  # 2024Q1 营业收入
+    fact(2): Decimal("250.25"),  # 2024H1 营业收入
+    fact(3): Decimal("-150"),  # 2024H1 营业成本
+    fact(4): Decimal("0"),
 }
-
-
-def at(row: str, column: str, dataset: str = DATASET) -> str:
-    return calc.address(dataset, SHEET, row, column)
+MATERIAL = "m-annual-2024"
+PAGES = {3: "报告期内营业收入同比增长15.7%，主要得益于系列酒销量增加"}
 
 
 class EventRepo:
-    """钉表（同读数据的替身）加会话事件：计算记录就记在这里。"""
+    """会话事件：计算记录就记在这里；上游交回物给 covers 用。"""
 
-    def __init__(self, base: Any) -> None:
-        self.base = base
+    def __init__(self) -> None:
         self.events: list[dict[str, Any]] = []
-        self.artifacts: list[dict[str, Any]] = []  # 上游交回物（covers 用）
+        self.artifacts: list[dict[str, Any]] = []
 
     async def list_artifacts_with_content(self, task_id: str) -> list[dict[str, Any]]:
         return self.artifacts
-
-    async def get_knowbot_pin(self, **kw: Any) -> Any:
-        return await self.base.get_knowbot_pin(**kw)
-
-    async def test_run_for_task(self, task_id: str) -> Any:
-        return None
-
-    async def list_task_data(self, task_id: str) -> Any:
-        return await self.base.list_task_data(task_id)
-
-    async def get_relay_identity(self, owner_actor_id: str) -> Any:
-        return await self.base.get_relay_identity(owner_actor_id)
 
     @contextlib.asynccontextmanager
     async def transaction(self):  # type: ignore[no-untyped-def]
@@ -69,37 +61,53 @@ class EventRepo:
         ]
 
 
-class CellSource:
-    def __init__(self, bump: str | None = None) -> None:
-        self.asked: list[list[dict[str, str]]] = []
-        self.version = bump or BINDING["version"]
+class Records:
+    """读项目记录那一层的替身：委托由测试给定。"""
 
-    async def cells(self, purpose, cells):  # type: ignore[no-untyped-def]
-        self.asked.append(cells)
-        out = []
-        for ref in cells:
-            hit = (
-                CELLS.get((ref["row"], ref["column"]))
-                if ref["sheet"] == SHEET
-                else None
-            )
-            out.append(
-                {
-                    **ref,
-                    "found": hit is not None,
-                    "raw": hit[0] if hit else None,
-                    "number": hit[1] if hit else None,
-                    "version": self.version,
-                    "sha256": BINDING["sha256"],
-                }
-            )
-        return out
+    def __init__(self) -> None:
+        self.task = {"id": str(uuid.uuid4()), "session_id": "s1"}
+        self.repo = EventRepo()
+        self.owner = OWNER
+
+    async def _working(self, task: Any) -> dict[str, Any]:
+        return self.task
 
 
-def world(source: CellSource | None = None, task: dict | None = None):  # type: ignore[no-untyped-def]
-    records = Records(task or _task(session_id="s1"), _pin())
-    records.repo = EventRepo(records.repo)
-    return records, KnowbotCompute(records, source or CellSource())  # type: ignore[arg-type]
+class Reader:
+    """run_reader 的替身：按事实编号取数、在资料那一页找原话。"""
+
+    def __init__(self, fail: Exception | None = None) -> None:
+        self.fail = fail
+        self.asked: list[list[str]] = []
+        self.quoted: list[list[dict[str, Any]]] = []
+
+    async def facts(self, repo, task, refs):  # type: ignore[no-untyped-def]
+        if self.fail is not None:
+            raise self.fail
+        self.asked.append(refs)
+        for ref in refs:
+            if ref not in FACTS:
+                raise ComputeRefused(f"no such fact in this task's data: {ref}")
+        return {ref: FACTS[ref] for ref in refs}
+
+    async def quotes(self, repo, task, quotes):  # type: ignore[no-untyped-def]
+        if self.fail is not None:
+            raise self.fail
+        self.quoted.append(quotes)
+        return [
+            {
+                "found": q["text"] in PAGES.get(q["page"], ""),
+                "reason": None
+                if q["text"] in PAGES.get(q["page"], "")
+                else "not_found",
+            }
+            for q in quotes
+        ]
+
+
+def world(reader: Reader | None = None):  # type: ignore[no-untyped-def]
+    records = Records()
+    return records, KnowbotCompute(records, reader or Reader())  # type: ignore[arg-type]
 
 
 # ---------- 求值 ----------
@@ -157,18 +165,6 @@ def test_anything_outside_the_whitelist_is_refused(expression, values, message) 
         calc.evaluate(expression, values)
 
 
-def test_addresses_split_at_the_first_bang_and_the_last_at() -> None:
-    assert calc.parse_address(f"{DATASET}:利润表!其中：利息@收入@2024-06-30") == (
-        DATASET,
-        "利润表",
-        "其中：利息@收入",
-        "2024-06-30",
-    )
-    for bad in ["d1:利润表!营业收入@2024", f"{DATASET}:利润表营业收入@x", 12, None]:
-        with pytest.raises(ComputeRefused, match="not a cell address"):
-            calc.parse_address(bad)
-
-
 def test_rounding_is_half_up_and_expressions_compare_by_tree() -> None:
     assert calc.text_of(calc.rounded(Decimal("2.345"), 2)) == "2.35"
     assert calc.text_of(calc.rounded(Decimal("-2.345"), 2)) == "-2.35"
@@ -177,37 +173,26 @@ def test_rounding_is_half_up_and_expressions_compare_by_tree() -> None:
     assert not calc.same_expression("x", "1 +")
 
 
-def test_a_knowbot_may_use_the_table_and_compute_tools() -> None:
-    assert {"read_my_table", "compute"} <= KNOWBOT_TOOLS
+def test_a_knowbot_may_compute() -> None:
+    assert "compute" in V2_TOOLS
 
 
 # ---------- 计算工具 ----------
 
 
-async def test_compute_takes_cells_by_address_and_records_the_computation() -> None:
+async def test_compute_takes_facts_by_ref_and_records_the_computation() -> None:
     records, tool = world()
     first = await tool.compute(
-        "t",
-        "2024Q2 单季营业收入",
-        "h1 - q1",
-        {"h1": at("营业收入", "2024-06-30"), "q1": at("营业收入", "2024-03-31")},
+        "t", "2024Q2 单季营业收入", "h1 - q1", {"h1": fact(2), "q1": fact(1)}
     )
     assert (first["id"], first["value"], first["formula"]) == (
         "c1",
         "150.15",
         "h1 - q1",
     )
-    assert first["inputs"][0] == {
-        "name": "h1",
-        "ref": at("营业收入", "2024-06-30"),
-        "value": "250.25",
-    }
+    assert first["inputs"][0] == {"name": "h1", "ref": fact(2), "value": "250.25"}
     margin = await tool.compute(
-        "t",
-        "毛利率",
-        "(rev + cost) / rev * 100",
-        {"rev": at("营业收入", "2024-06-30"), "cost": at("营业成本", "2024-06-30")},
-        2,
+        "t", "毛利率", "(rev + cost) / rev * 100", {"rev": fact(2), "cost": fact(3)}, 2
     )
     assert margin["value"] == "40.06"
     chained = await tool.compute(
@@ -224,17 +209,18 @@ async def test_compute_takes_cells_by_address_and_records_the_computation() -> N
 @pytest.mark.parametrize(
     ("inputs", "expression", "message"),
     [
-        ({"a": "123"}, "a", "not a cell address"),
-        ({"a": 123}, "a", "must be a cell address"),
+        ({"a": "123"}, "a", "not a fact ref"),
+        # 原来的格子地址（knowbot-data/v1）不再认
+        (
+            {"a": f"{uuid.UUID(int=9)}:利润表!营业收入@2024-06-30"},
+            "a",
+            "not a fact ref",
+        ),
+        ({"a": 123}, "a", "must be a fact ref"),
         ({"A": "x"}, "A", "lower-case"),
         ({}, "1", "inputs must be"),
-        ({"a": at("没有这行", "2024-06-30")}, "a", "no such cell"),
-        ({"a": at("备注", "2024-06-30")}, "a", "not a number"),
-        (
-            {"a": at("营业收入", "2024-06-30"), "z": at("零", "2024-06-30")},
-            "a / z",
-            "denominator is zero",
-        ),
+        ({"a": fact(99)}, "a", "no such fact"),
+        ({"a": fact(2), "z": fact(4)}, "a / z", "denominator is zero"),
         ({"a": "c99"}, "a", "no earlier computation c99"),
     ],
 )
@@ -247,26 +233,18 @@ async def test_compute_refuses_what_it_cannot_stand_behind(
     assert records.repo.events == []
 
 
-async def test_compute_reads_only_the_bound_data_of_this_version() -> None:
-    other = "0b9b8c52-3f0e-4c34-9d0b-2b7f4d3c1a11"
-    records, tool = world()
-    with pytest.raises(NotFound):
-        await tool.compute("t", "x", "a", {"a": at("营业收入", "2024-06-30", other)})
-    _, changed = world(CellSource(bump="2"))
-    with pytest.raises(NotFound):
-        await changed.compute("t", "x", "a", {"a": at("营业收入", "2024-06-30")})
-    _, builtin = world(
-        task=_task(pack_source="builtin", profile_id="fin", session_id="s1")
-    )
-    with pytest.raises(RecordsRefused):
-        await builtin.compute("t", "x", "a", {"a": at("营业收入", "2024-06-30")})
+async def test_facts_cannot_be_read_without_the_reader() -> None:
+    records = Records()
+    tool = KnowbotCompute(records)  # type: ignore[arg-type]
+    with pytest.raises(ComputeRefused, match="cannot be read here"):
+        await tool.compute("t", "x", "a", {"a": fact(2)})
 
 
 async def test_compute_limits_round_and_input_count() -> None:
     _, tool = world()
     with pytest.raises(ComputeRefused, match="round"):
-        await tool.compute("t", "x", "a", {"a": at("营业收入", "2024-06-30")}, 11)
-    many = [at("营业收入", "2024-06-30")] * (calc.MAX_INPUTS + 1)
+        await tool.compute("t", "x", "a", {"a": fact(2)}, 11)
+    many = [fact(2)] * (calc.MAX_INPUTS + 1)
     with pytest.raises(ComputeRefused, match="at most"):
         await tool.compute("t", "x", "sum(xs)", {"xs": many})
 
@@ -279,25 +257,20 @@ def rule(kind: str, path: str, **kw: Any) -> AcceptanceRule:
 
 
 async def verdict_of(
-    text: str, rules: tuple[AcceptanceRule, ...], records, source=None
+    text: str, rules: tuple[AcceptanceRule, ...], records, reader=None
 ):  # type: ignore[no-untyped-def]
     return await judge_numbers(
         judge(text, rules),
         rules,
         repo=records.repo,
         task={**records.task, "owner_actor_id": records.owner},
-        source=source if source is not None else CellSource(),
+        reader=reader if reader is not None else Reader(),
     )
 
 
 async def test_computed_numbers_must_be_in_the_record_and_match() -> None:
     records, tool = world()
-    q2 = await tool.compute(
-        "t",
-        "Q2",
-        "h1 - q1",
-        {"h1": at("营业收入", "2024-06-30"), "q1": at("营业收入", "2024-03-31")},
-    )
+    q2 = await tool.compute("t", "Q2", "h1 - q1", {"h1": fact(2), "q1": fact(1)})
     rules = (rule("computed", "figures", tolerance=0.01, expression="h1-q1"),)
     good = f'{{"figures": [{{"compute_id": "{q2["id"]}", "value": 150.15}}]}}'
     assert (await verdict_of(good, rules, records)).ok
@@ -318,9 +291,7 @@ async def test_computed_numbers_must_be_in_the_record_and_match() -> None:
 async def test_a_computed_zero_is_a_number() -> None:
     """勾稽差额算出 0：判得过；交回物说 1 就是没对上，不是崩（K19 第 3 步）。"""
     records, tool = world()
-    zero = await tool.compute(
-        "t", "diff", "a - b", {"a": at("零", "2024-06-30"), "b": at("零", "2024-06-30")}
-    )
+    zero = await tool.compute("t", "diff", "a - b", {"a": fact(4), "b": fact(4)})
     rules = (rule("computed", "diffs", tolerance=1),)
     ok = f'{{"diffs": [{{"compute_id": "{zero["id"]}", "value": "0"}}]}}'
     assert (await verdict_of(ok, rules, records)).ok
@@ -331,28 +302,32 @@ async def test_a_computed_zero_is_a_number() -> None:
 
 async def test_identity_and_sourced() -> None:
     records, tool = world()
-    a = await tool.compute("t", "a", "x * 2", {"x": at("营业收入", "2024-03-31")})
-    b = await tool.compute("t", "b", "x + x", {"x": at("营业收入", "2024-03-31")})
-    c = await tool.compute("t", "c", "x", {"x": at("营业收入", "2024-06-30")})
+    a = await tool.compute("t", "a", "x * 2", {"x": fact(1)})
+    b = await tool.compute("t", "b", "x + x", {"x": fact(1)})
+    c = await tool.compute("t", "c", "x", {"x": fact(2)})
     rules = (rule("identity", "checks"), rule("sourced", "raw"))
     text = (
         f'{{"checks": [{{"left_id": "{a["id"]}", "right_id": "{b["id"]}"}}], '
-        f'"raw": [{{"address": "{at("营业成本", "2024-06-30")}", "value": "-150"}}]}}'
+        f'"raw": [{{"address": "{fact(3)}", "value": "-150"}}]}}'
     )
     v = await verdict_of(text, rules, records)
     assert v.ok and [c["pass"] for c in v.checks] == [True, True]
     text = (
         f'{{"checks": [{{"left_id": "{a["id"]}", "right_id": "{c["id"]}"}}], '
-        f'"raw": [{{"address": "{at("营业成本", "2024-06-30")}", "value": 150}}]}}'
+        f'"raw": [{{"address": "{fact(3)}", "value": 150}}]}}'
     )
     v = await verdict_of(text, rules, records)
     assert [c["pass"] for c in v.checks] == [False, False]
     assert "data has -150" in v.checks[1]["detail"]
-    missing = (
-        f'{{"checks": [], "raw": [{{"address": "{at("没有", "2024")}", "value": 1}}]}}'
-    )
+    missing = f'{{"checks": [], "raw": [{{"address": "{fact(99)}", "value": 1}}]}}'
     v = await verdict_of(missing, rules, records)
-    assert v.checks[0]["pass"] and "no such cell" in v.checks[1]["detail"]
+    assert v.checks[0]["pass"] and "no such fact" in v.checks[1]["detail"]
+    # 不是事实编号（原来的格子地址）：交回物的错，不去取
+    reader = Reader()
+    cell = '{"checks": [], "raw": [{"address": "d:利润表!营收@2024", "value": 1}]}'
+    v = await verdict_of(cell, rules, records, reader)
+    assert "is not a fact ref" in v.checks[1]["detail"] and reader.asked == []
+    assert "platform" not in v.checks[1]
 
 
 async def test_numeric_rules_are_not_checked_when_the_output_is_not_json() -> None:
@@ -384,65 +359,37 @@ def test_numeric_rules_need_a_path_and_only_computed_takes_an_expression() -> No
         AcceptanceRule(kind="computed", path="x", tolerance=-1)
 
 
-async def test_sourced_without_a_data_source_does_not_pass() -> None:
+async def test_sourced_without_the_reader_does_not_pass() -> None:
     records, _ = world()
     rules = (rule("sourced", "raw"),)
-    text = f'{{"raw": [{{"address": "{at("营业收入", "2024-06-30")}", "value": 1}}]}}'
+    text = f'{{"raw": [{{"address": "{fact(2)}", "value": 1}}]}}'
     v = await judge_numbers(
         judge(text, rules),
         rules,
         repo=records.repo,
         task={**records.task, "owner_actor_id": records.owner},
-        source=None,
+        reader=None,
     )
     assert not v.ok and "cannot be read here" in v.checks[-1]["detail"]
     # 取不到数是平台的事，不是数对不上（审读第 3 条）
     assert v.checks[-1]["platform"] is True
+    down = Reader(fail=UserDataUnavailable("the data service cannot be reached"))
+    v = await verdict_of(text, rules, records, down)
+    assert not v.ok and v.checks[-1]["platform"] is True
 
 
 async def test_a_wrong_number_is_not_a_platform_error() -> None:
-    records, tool = world()
+    records, _ = world()
     rules = (rule("sourced", "raw"),)
-    text = f'{{"raw": [{{"address": "{at("营业成本", "2024-06-30")}", "value": 150}}]}}'
+    text = f'{{"raw": [{{"address": "{fact(3)}", "value": 150}}]}}'
     v = await verdict_of(text, rules, records)
     assert not v.ok and "platform" not in v.checks[-1]
 
 
 # ---------- 引文（SDD 0036） ----------
 
-PAGES = {3: "报告期内营业收入同比增长15.7%，主要得益于系列酒销量增加"}
-
-
-class QuoteSource(CellSource):
-    """第 3 页有一句话；原话是它的一段就算找到（真的规整与跨页在 knowlab 那边测）。"""
-
-    def __init__(self, fail: Exception | None = None, bump: str | None = None) -> None:
-        super().__init__(bump)
-        self.fail = fail
-        self.quoted: list[list[dict[str, Any]]] = []
-
-    async def quotes(self, purpose, quotes):  # type: ignore[no-untyped-def]
-        if self.fail is not None:
-            raise self.fail
-        self.quoted.append(quotes)
-        return [
-            {
-                "dataset_id": q["dataset_id"],
-                "page": q["page"],
-                "found": q["text"] in PAGES.get(q["page"], ""),
-                "reason": None
-                if q["text"] in PAGES.get(q["page"], "")
-                else "not_found",
-                "version": self.version,
-                "sha256": BINDING["sha256"],
-            }
-            for q in quotes
-        ]
-
 
 def checks_of(*items: tuple[str, list[tuple[int, str]]]) -> str:
-    import json
-
     return json.dumps(
         {
             "checks": [
@@ -450,7 +397,8 @@ def checks_of(*items: tuple[str, list[tuple[int, str]]]) -> str:
                     "conclusion": f"结论 {i}",
                     "verdict": verdict,
                     "quotes": [
-                        {"dataset_id": DATASET, "page": p, "text": t} for p, t in quotes
+                        {"material_id": MATERIAL, "page": p, "text": t}
+                        for p, t in quotes
                     ],
                 }
                 for i, (verdict, quotes) in enumerate(items)
@@ -465,23 +413,23 @@ SUPPORTED = (rule("quoted", "checks", field="verdict", equals="支持"),)
 
 async def test_supported_conclusions_must_quote_text_that_is_really_there() -> None:
     records, _ = world()
-    source = QuoteSource()
+    reader = Reader()
     good = checks_of(
         ("支持", [(3, "营业收入同比增长15.7%")]),
         ("不支持", []),  # 没提到：不引，不挡
     )
-    v = await verdict_of(good, SUPPORTED, records, source)
+    v = await verdict_of(good, SUPPORTED, records, reader)
     assert v.ok and v.checks[-1]["pass"] is True
-    assert source.quoted == [
-        [{"dataset_id": DATASET, "page": 3, "text": "营业收入同比增长15.7%"}]
+    assert reader.quoted == [
+        [{"material_id": MATERIAL, "page": 3, "text": "营业收入同比增长15.7%"}]
     ]
 
     unquoted = checks_of(("支持", []), ("不支持", []))
-    v = await verdict_of(unquoted, SUPPORTED, records, source)
+    v = await verdict_of(unquoted, SUPPORTED, records, reader)
     assert not v.ok and "#0 says 支持 but quotes nothing" in v.checks[-1]["detail"]
 
     wrong_page = checks_of(("支持", [(4, "营业收入同比增长15.7%")]))
-    v = await verdict_of(wrong_page, SUPPORTED, records, source)
+    v = await verdict_of(wrong_page, SUPPORTED, records, reader)
     assert not v.ok and "#0 page 4: not_found" in v.checks[-1]["detail"]
     assert "platform" not in v.checks[-1]
 
@@ -489,34 +437,15 @@ async def test_supported_conclusions_must_quote_text_that_is_really_there() -> N
 async def test_a_not_supported_conclusion_may_quote_but_not_make_things_up() -> None:
     records, _ = world()
     made_up = checks_of(("不支持", [(3, "毛利率大幅上升")]))
-    v = await verdict_of(made_up, SUPPORTED, records, QuoteSource())
+    v = await verdict_of(made_up, SUPPORTED, records)
     assert not v.ok and "#0 page 3: not_found" in v.checks[-1]["detail"]
     all_no = checks_of(("不支持", []), ("不支持", []))
-    assert (await verdict_of(all_no, SUPPORTED, records, QuoteSource())).ok
-
-
-async def test_quotes_must_have_the_right_shape_and_bound_data() -> None:
-    records, _ = world()
-    bad_shape = (
-        '{"checks": [{"verdict": "支持", "quotes": [{"page": "3", "text": "x"}]}]}'
-    )
-    v = await verdict_of(bad_shape, SUPPORTED, records, QuoteSource())
-    assert not v.ok and "not {dataset_id, page, text}" in v.checks[-1]["detail"]
-    other = (
-        '{"checks": [{"verdict": "支持", "quotes": '
-        '[{"dataset_id": "00000000-0000-4000-8000-000000000000", "page": 3, '
-        '"text": "营业收入"}]}]}'
-    )
-    v = await verdict_of(other, SUPPORTED, records, QuoteSource())
-    assert not v.ok and "does not bind" in v.checks[-1]["detail"]
-    assert "platform" not in v.checks[-1]
-    bumped = checks_of(("支持", [(3, "营业收入同比增长15.7%")]))
-    v = await verdict_of(bumped, SUPPORTED, records, QuoteSource(bump="2"))
-    assert not v.ok and "not the bound version" in v.checks[-1]["detail"]
+    assert (await verdict_of(all_no, SUPPORTED, records)).ok
 
 
 async def test_a_badly_shaped_quote_is_the_reply_s_fault_and_never_sent() -> None:
-    """页码 0、负数、空原文、太长、编号不像数据编号：交回物的错，不是平台的（审读 10-19 第 2 条）。"""
+    """页码 0、负数、空原文、太长、编号不像资料编号、还写着数据编号（knowbot-data/v1）：
+    交回物的错，不是平台的（审读 10-19 第 2 条）。"""
     records, _ = world()
     for page, text, why in (
         (0, "营业收入同比增长15.7%", "bad page number"),
@@ -524,37 +453,33 @@ async def test_a_badly_shaped_quote_is_the_reply_s_fault_and_never_sent() -> Non
         (3, "   ", "quote text empty or too long"),
         (3, "字" * 4001, "quote text empty or too long"),
     ):
-        source = QuoteSource()
+        reader = Reader()
         v = await verdict_of(
-            checks_of(("支持", [(page, text)])), SUPPORTED, records, source
+            checks_of(("支持", [(page, text)])), SUPPORTED, records, reader
         )
         assert not v.ok and why in v.checks[-1]["detail"], why
-        assert "platform" not in v.checks[-1] and source.quoted == []
-    odd_id = '{"checks": [{"verdict": "支持", "quotes": [{"dataset_id": "x", "page": 3, "text": "营业收入同比增长"}]}]}'
-    v = await verdict_of(odd_id, SUPPORTED, records, QuoteSource())
-    assert not v.ok and "bad dataset id" in v.checks[-1]["detail"]
-    assert "platform" not in v.checks[-1]
+        assert "platform" not in v.checks[-1] and reader.quoted == []
+    for quote, why in (
+        ({"material_id": "x/y", "page": 3, "text": "营业收入"}, "bad material id"),
+        ({"page": "3", "text": "x"}, "not {material_id, page, text}"),
+        (
+            {"dataset_id": str(uuid.UUID(int=9)), "page": 3, "text": "营业收入"},
+            "not {material_id, page, text}",
+        ),
+    ):
+        reader = Reader()
+        body = json.dumps(
+            {"checks": [{"verdict": "支持", "quotes": [quote]}]}, ensure_ascii=False
+        )
+        v = await verdict_of(body, SUPPORTED, records, reader)
+        assert not v.ok and why in v.checks[-1]["detail"], why
+        assert "platform" not in v.checks[-1] and reader.quoted == []
 
 
-async def test_a_wrong_number_of_answers_from_knowlab_is_a_platform_error() -> None:
-    class Short(QuoteSource):
-        async def quotes(self, purpose, quotes):  # type: ignore[no-untyped-def]
-            return (await super().quotes(purpose, quotes))[:-1]
-
-    records, _ = world()
-    text = checks_of(
-        ("支持", [(3, "营业收入同比增长15.7%")]), ("支持", [(3, "系列酒销量增加")])
-    )
-    v = await verdict_of(text, SUPPORTED, records, Short())
-    assert not v.ok and v.checks[-1]["platform"] is True
-
-
-async def test_knowlab_trouble_while_checking_quotes_is_a_platform_error() -> None:
-    from app.domain.workbench.errors import UserDataUnavailable
-
+async def test_trouble_while_checking_quotes_is_a_platform_error() -> None:
     records, _ = world()
     text = checks_of(("支持", [(3, "营业收入同比增长15.7%")]))
-    down = QuoteSource(fail=UserDataUnavailable("the user's data is unavailable now"))
+    down = Reader(fail=UserDataUnavailable("the data service cannot be reached"))
     v = await verdict_of(text, SUPPORTED, records, down)
     assert not v.ok and v.checks[-1]["platform"] is True
     v = await judge_numbers(
@@ -562,17 +487,9 @@ async def test_knowlab_trouble_while_checking_quotes_is_a_platform_error() -> No
         SUPPORTED,
         repo=records.repo,
         task={**records.task, "owner_actor_id": records.owner},
-        source=None,
+        reader=None,
     )
     assert not v.ok and v.checks[-1]["platform"] is True
-
-
-async def test_many_quotes_are_checked_in_batches() -> None:
-    records, _ = world()
-    source = QuoteSource()
-    text = checks_of(*[("支持", [(3, "营业收入同比增长15.7%")])] * 150)
-    v = await verdict_of(text, SUPPORTED, records, source)
-    assert v.ok and [len(b) for b in source.quoted] == [100, 50]
 
 
 def test_quoted_needs_a_path() -> None:
@@ -727,8 +644,6 @@ SHAPE = (
 
 
 def test_each_item_has_its_keys_and_one_of_the_allowed_values() -> None:
-    import json
-
     def ok(checks: list) -> bool:
         return judge(json.dumps({"checks": checks}, ensure_ascii=False), SHAPE).ok
 
@@ -763,8 +678,6 @@ COVERS = (
 
 
 async def test_every_upstream_finding_and_report_is_covered_once() -> None:
-    import json
-
     records, _ = world()
     records.repo.artifacts = [
         {"name": "indicators", "kind": "step", "content": {"findings": ["甲", "乙"]}},

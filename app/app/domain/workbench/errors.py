@@ -191,31 +191,21 @@ class KnowbotInvalid(WorkbenchError):
 
 
 class UserDataUnavailable(WorkbenchError):
-    """分身绑定的用户数据暂时读不到：knowlab 不可达或没配好（0027 §3.5）。"""
+    """委托的数据暂时读不到：knowbase 不可达、没配好或拒了（SDD 0043）。"""
 
     code = "user_data_unavailable"
     http_status = 503
 
 
-class DataChanged(UserDataUnavailable):
-    """这次委托钉住的数据在委托开始后被改过、挪走或删了（SDD 0042 第五节第 4 项）。
-
-    不是专家的错：数值验收里记成平台没能核（同读不到）。
-    """
-
-    code = "data_changed"
-    http_status = 409
-
-
 class DataRequired(WorkbenchError):
-    """这位专家写了数据需求声明，请它要先按声明选好数据（SDD 0042 第五节第 6 项）。"""
+    """分身的委托要从请专家页建（先建好解析清单，SDD 0043）。"""
 
     code = "data_required"
     http_status = 422
 
 
 class DataChoiceInvalid(WorkbenchError):
-    """选的数据不合这位专家的声明：缺了必填的、份数不对、格式不收、不在知识库里……"""
+    """用户确认、改的数据不成：没有在等确认的、清单不合规则、资料读不到、knowbase 拒了……"""
 
     code = "data_choice_invalid"
     http_status = 422

@@ -6,15 +6,10 @@ import json
 from decimal import Decimal
 
 import pytest
+from sample_packs import DATA_QUERY, FIN_FORECAST, FIN_REVIEW
 
 from app.domain.workbench.pack_view import after_rejection, pack_view
-from app.domain.workbench.packs import (
-    BUILTIN_PACKS,
-    DATA_QUERY,
-    FIN_REVIEW,
-    SMOKE,
-    listed_packs,
-)
+from app.domain.workbench.packs import BUILTIN_PACKS, SMOKE, listed_packs
 from app.domain.workbench.step_view import budget_view, money, reason_text
 
 LISTED = [p.profile_id for p in listed_packs()]
@@ -263,7 +258,6 @@ def test_the_preparing_expert_is_listed_but_cannot_be_asked(monkeypatch):
     """
     from app.application.workbench.delegation import expert_on_offer
     from app.domain.workbench.errors import ExpertNotReady
-    from app.domain.workbench.packs import FIN_FORECAST
 
     preparing = FIN_FORECAST.model_copy(
         update={
@@ -280,12 +274,11 @@ def test_the_preparing_expert_is_listed_but_cannot_be_asked(monkeypatch):
         expert_on_offer("FIN_FORECAST")
 
 
-def test_the_builtin_forecasting_expert_is_withdrawn():
-    """10-13 切成可用的内置版，10-18 撤下（待办账 111）：改由我们以普通用户经 knowlab 孵化。"""
-    from app.application.workbench.delegation import expert_on_offer
-    from app.domain.workbench.errors import NoSuchExpert
-    from app.domain.workbench.packs import FIN_FORECAST
+def test_the_builtin_experts_are_gone_from_the_product():
+    """10-18 撤下、10-28 删掉（0027、decisions ⑰）：问数、财报体检、财务分析与预测读平台的
+    旧数据工具；专家改由用户（包括我们这个普通用户）经 knowlab 孵化。只剩跑机制的 SMOKE。"""
+    from app.domain.workbench import packs
 
-    assert FIN_FORECAST.internal and FIN_FORECAST.version == "2"
-    with pytest.raises(NoSuchExpert):
-        expert_on_offer("FIN_FORECAST")
+    for name in ("DATA_QUERY", "FIN_REVIEW", "FIN_FORECAST"):
+        assert not hasattr(packs, name), name
+    assert [p.profile_id for p in packs.listed_packs()] == []

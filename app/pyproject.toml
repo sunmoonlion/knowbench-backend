@@ -17,10 +17,6 @@ dependencies = [
     "uvicorn[standard]>=0.35.0",
     "websockets>=13,<18",
     "boto3==1.43.66",
-    # 读用户的数据（SDD 0042，从 knowlab 搬来）：PDF 抽文字、Excel 读格子
-    "pdfplumber>=0.11,<0.12",
-    "openpyxl>=3.1,<4",
-    "xlrd>=2.0,<3",
 ]
 
 [dependency-groups]
@@ -30,8 +26,7 @@ dev = [
     "httpx>=0.28.0",
     "pyright>=1.1.400",
     "ruff",
-    "duckdb==1.5.5",
-    # 只有测试与评测用同步连接建库；产品代码用 asyncpg
+    # 只有测试用同步连接建库；产品代码用 asyncpg
     "psycopg[binary]>=3.3.4",
     "import-linter>=2.3",
 ]

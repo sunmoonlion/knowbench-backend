@@ -52,13 +52,11 @@ from app.bootstrap.workbench import (
     build_agent_service,
     build_provisioner,
     build_relay_admin,
-    data_chooser,
     expert_data,
     knowbase_v2,
     workbench_store,
 )
 from app.domain.security import Principal
-from app.domain.workbench.data_needs import DataChoice
 from app.domain.workbench.errors import MachineNotConnected, WorkbenchError
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.provider_url import (
@@ -150,8 +148,6 @@ class Handover(Strict):
     budget_currency: str = "CNY"
     requested_deadline: str | None = None
     client_context: dict[str, Any] = Field(default_factory=dict)
-    # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
-    data: list[DataChoice] = Field(default_factory=list, max_length=64)
 
 
 class RespondInteraction(Strict):
@@ -923,7 +919,6 @@ async def stream_events(
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-# ---------------- 这段对话选用的云端知识库（SDD 0042 第四节）----------------
 # ---------------- handover / tasks ----------------
 @router.post("/sessions/{session_id}/handover", status_code=201)
 async def handover(
@@ -934,14 +929,11 @@ async def handover(
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ):
     repo = workbench_store(session)
-    fields = body.model_dump(exclude={"data"})
-    data = [c.model_dump(exclude_none=True) for c in body.data]
-    req = HandoverRequest(session_id=session_id, data=data, **fields)
+    req = HandoverRequest(session_id=session_id, **body.model_dump())
     try:
         result = await DelegationService(repo).handover(
             req,
             owner_actor_id=_actor(principal),
-            chooser=data_chooser(),
             user_token=user_token,
             expert_data=expert_data(),
         )

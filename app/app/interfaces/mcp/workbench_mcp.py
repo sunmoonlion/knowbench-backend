@@ -1,14 +1,12 @@
 """工作台的工具服务：专家读本项目里别的对话与底稿（PRD/apps/investment.md 7.4），
-专家读用户的数据（SDD 0027 §3.5、SDD 0042：请专家时钉住的那几份）、按格子读与计算
-（SDD 0030 §3.1、§3.2）。对话里读用户的数据改经 knowbase 数据 MCP（0048 第五节；
-原来逐份选云端知识库的两个工具按 0043 第 4.1 节退役）。
+专家读用户的数据（knowbase 数据 MCP 中继，0048）、计算（SDD 0030 §3.2）。
 
 Streamable HTTP，只用 JSON 响应，不开流。和知识服务的工具并列，由沙箱里的 Codex 调用。
 - 鉴权：`Authorization: Bearer <令牌>`，令牌由工作台签发、工作台自己验，绑定用户；
-- 项目、用户数据、计算的工具都要带 `task`（委托编号，专家每一步的说明里给）。能读哪个项目、
+- 项目、计算的工具都要带 `task`（委托编号，专家每一步的说明里给）。能读哪个项目、
   现在能不能读，每次调用按这个委托重新核对；对话里读数据带对话编号（这一轮的说明里给）；
 - 只读：没有改用户东西的工具。`compute` 只把算过的记进委托的计算记录（数值验收按它回查）。
-- 清单 v2 的专家（SDD 0048）：knowbase 数据 MCP 的读工具照它的定义挂在这里（工具层中继，
+- 读数据：knowbase 数据 MCP 的读工具照它的定义挂在这里（工具层中继，
   `data_relay.py`），带 `task` 或 `conversation`；第 0 步与运行中用 `request_data` 提出要
   什么（decisions ⑭），列进用户的确认清单，任务在步骤边界停下等确认；`find_subject`
   按名字查证券代码。
@@ -30,16 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.workbench.data_relay import RELAYED, DataRelay
 from app.application.workbench.expert_data import find_subject, request_data
 from app.application.workbench.knowbot_compute import KnowbotCompute
-from app.application.workbench.knowbot_data import KnowbotData
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader
 from app.application.workbench.tokens import TokenIssuer
-from app.bootstrap.workbench import (
-    knowbase_v2,
-    knowbot_data_source,
-    knowfeed_supply,
-    workbench_store,
-)
+from app.bootstrap.workbench import knowbase_v2, knowfeed_supply, workbench_store
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
@@ -89,65 +81,6 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "page": {"type": "integer", "minimum": 1, "default": 1},
             },
             "required": ["task", "conversation"],
-            "additionalProperties": False,
-        },
-    },
-    # 云端知识库里用户在这段对话里选用的几份（SDD 0042 第四节）：凭「会话」运行授权读。
-    # 聊天里没有委托：带对话编号（这一轮的说明里写着）；在委托里也可以只带委托编号
-    "list_my_data": {
-        "description": (
-            "List the user's own data bound to this expert: dataset_id, name, "
-            "content_type, size_bytes, version, sha256. Only these can be read."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"task": _TASK},
-            "required": ["task"],
-            "additionalProperties": False,
-        },
-    },
-    "read_my_data": {
-        "description": (
-            "Read one of the user's datasets as text (CSV as is; Excel as CSV per "
-            "sheet; PDF page by page). Paged; ask for the next page when `pages` is "
-            "greater than `page`. Quote the citation {dataset_id, version, sha256, "
-            "page} for every number you take from it. If `note` says the text was "
-            "cut or has no readable text, say so instead of guessing."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "task": _TASK,
-                "dataset": {"type": "string", "description": "Id from list_my_data."},
-                "page": {"type": "integer", "minimum": 1, "default": 1},
-            },
-            "required": ["task", "dataset"],
-            "additionalProperties": False,
-        },
-    },
-    # 按格子读与计算（0030）：每个算出来的数都由 compute 算，输入按格子地址取，模型不抄数
-    "read_my_table": {
-        "description": (
-            "Read one sheet of a CSV or Excel dataset as labelled cells: `columns` are "
-            "the header labels (dates as YYYY-MM-DD), each row has its `label` (first "
-            "column; a repeated label gets #2, #3; so does a repeated column label) and "
-            "its values. Use it to write cell addresses for compute: "
-            "<dataset_id>:<sheet>!<row label>@<column label>, "
-            "e.g. 3f…:利润表!营业收入@2024-06-30. Copy the labels exactly as returned "
-            "here; do not reformat dates. Paged like read_my_data."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "task": _TASK,
-                "dataset": {"type": "string", "description": "Id from list_my_data."},
-                "sheet": {
-                    "type": "string",
-                    "description": "Sheet name from `sheets`; the first sheet if omitted.",
-                },
-                "page": {"type": "integer", "minimum": 1, "default": 1},
-            },
-            "required": ["task", "dataset"],
             "additionalProperties": False,
         },
     },
@@ -214,8 +147,9 @@ TOOLS: dict[str, dict[str, Any]] = {
     "compute": {
         "description": (
             "Compute one number exactly (decimal) and record it. `inputs` maps short "
-            "names to cell addresses, to the id of an earlier computation of this task "
-            "(e.g. c17), or to a list of them. `expression` uses only those names, "
+            "names to fact refs (fact:… or raw:… from query_facts), to the id of an "
+            "earlier computation of this task (e.g. c17), or to a list of them. "
+            "`expression` uses only those names, "
             "numbers, + - * / ( ) and sum avg median min max abs (these take lists). "
             "You cannot pass numbers as inputs. Returns {id, value, formula, inputs}: "
             "put the id as compute_id next to every computed number you hand back. "
@@ -299,21 +233,8 @@ async def call(
     if name == "find_subject":
         await records._working(args.get("task"))
         return await find_subject(knowfeed_supply(), args.get("name"))
-    if name == "list_my_data":
-        return await KnowbotData(records, knowbot_data_source()).list(args.get("task"))
-    if name == "read_my_data":
-        return await KnowbotData(records, knowbot_data_source()).read(
-            args.get("task"), args.get("dataset"), args.get("page", 1)
-        )
-    if name == "read_my_table":
-        return await KnowbotData(records, knowbot_data_source()).table(
-            args.get("task"),
-            args.get("dataset"),
-            args.get("sheet"),
-            args.get("page", 1),
-        )
     if name == "compute":
-        return await KnowbotCompute(records, knowbot_data_source(), reader).compute(
+        return await KnowbotCompute(records, reader).compute(
             args.get("task"),
             args.get("name"),
             args.get("expression"),
@@ -410,7 +331,7 @@ async def handle(
         return _tool_error(
             mid,
             f"This result is too large to show in one go ({size} bytes); "
-            "ask for a smaller part (another page, one sheet, fewer cells).",
+            "ask for a smaller part (another page, fewer items).",
         )
     return _ok(
         mid,

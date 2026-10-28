@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from sample_packs import FIN_FORECAST
 from test_workbench_advisor_db import (
     ANSWER,
     PLAN,
@@ -180,8 +181,8 @@ def test_out_of_scope_reply_is_read_only_when_it_says_so():
 
 def test_intake_scope_comes_from_the_six_answers_unless_written():
     assert SMOKE.intake_scope() is None  # 只给我们自己用的不设关口
-    # 内置的财务分析与预测 10-18 撤下、标成内部；这里只借它的六问核推法
-    fc = packs.FIN_FORECAST.model_copy(update={"internal": False})
+    # 借样例专家（原内置的财务分析与预测，已撤）的六问核推法
+    fc = FIN_FORECAST.model_copy(update={"internal": False})
     scope = fc.intake_scope()
     assert scope is not None
     assert scope.does == fc.answers["解决什么"]
@@ -193,7 +194,8 @@ def test_intake_scope_comes_from_the_six_answers_unless_written():
 
 
 def test_builtin_experts_are_withdrawn_from_users():
-    """待办账 111、数据拓扑：平台不带自己的投资逻辑与数据，内置专家用户看不到、请不了。"""
+    """待办账 111、数据拓扑：平台不带自己的投资逻辑与数据，内置专家用户看不到、请不了；
+    10-28 从产品里删了（decisions ⑰），只剩跑机制的 SMOKE。"""
     import pytest
 
     from app.application.workbench.catalog import builtin_on_offer, builtin_on_view
@@ -201,7 +203,7 @@ def test_builtin_experts_are_withdrawn_from_users():
 
     assert packs.listed_packs() == []
     for pid in ("DATA_QUERY", "FIN_REVIEW", "FIN_FORECAST"):
-        assert packs.find_pack(pid) is not None  # 历史委托还能显示
+        assert not hasattr(packs, pid)
         for look in (builtin_on_view, builtin_on_offer):
             with pytest.raises(NoSuchExpert):
                 look(pid)

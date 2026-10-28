@@ -75,33 +75,16 @@ async def get_web_browser_session(
     )
 
 
-async def get_web_knowbase_token(
-    session: Annotated[BrowserSession, Depends(get_web_browser_session)],
-    session_id: str | None = Cookie(
-        default=None, alias=_web_profile.session_cookie_name
-    ),
-) -> str:
-    """调 knowbase 用户资料用的用户令牌（SDD 0042）：这个会话的访问令牌换来的。
-
-    先过会话与 CSRF 的检查（依赖 get_web_browser_session），再换；没配 knowbase 就 503。
-    """
-    del session
-    audience = get_settings().knowbase_user_audience.strip()
-    if not audience:
-        raise ServiceUnavailableError(
-            "knowbase is not configured", code="knowbase_unconfigured"
-        )
-    return await web_auth_service.user_token(session_id, audience=audience)
-
-
 async def get_web_knowbase_token_provider(
     session: Annotated[BrowserSession, Depends(get_web_browser_session)],
     session_cookie: str | None = Cookie(
         default=None, alias=_web_profile.session_cookie_name
     ),
 ) -> Callable[[], Awaitable[str]]:
-    """同 get_web_knowbase_token，但真要用时才换（请专家只在选了云端数据时才要）。
+    """调 knowbase 用户资料用的用户令牌（SDD 0043）：这个会话的访问令牌换来的，真要用时
+    才换（内置专家的委托用不着）。
 
+    先过会话与 CSRF 的检查（依赖 get_web_browser_session）；没配 knowbase 就 503。
     参数不叫 session_id：挂在 /sessions/{session_id}/… 上时会和路径参数撞名。
     """
     del session

@@ -10,8 +10,8 @@ import json
 import uuid
 
 import pytest
-from test_fin_review_advisor_db import ALL, say
-from test_fin_review_pack import (
+from sample_replies import (
+    ALL,
     CROSSCHECK,
     FACTS,
     METRICS,
@@ -19,6 +19,7 @@ from test_fin_review_pack import (
     PROFILE,
     RECONCILE,
     SCOPE,
+    say,
 )
 from test_workbench_advisor_db import ScriptedAppServer, close, drive, seed
 from test_workbench_ledger_db import OWNER

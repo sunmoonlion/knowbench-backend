@@ -1464,10 +1464,10 @@ class WorkbenchRepository:
                 text(
                     """insert into workbench_task_data
                        (dataset_id, task_id, position, slot, source, item_id, grant_id,
-                        grant_kind, path, name, media_type, size_bytes, sha256,
+                        grant_kind, name, media_type, size_bytes, sha256,
                         version_no, rendition_kind, rendition_no, rendition_sha256,
                         basis, basis_ref)
-                       values (:d, :t, :p, :slot, :src, :item, :grant, :kind, :path, :n,
+                       values (:d, :t, :p, :slot, :src, :item, :grant, :kind, :n,
                                :m, :b, :h, :vn, :rk, :rn, :rh, :basis, :bref)"""
                 ),
                 {
@@ -1485,7 +1485,6 @@ class WorkbenchRepository:
                     "src": item["source"],
                     "item": item.get("item_id"),
                     "grant": item.get("grant_id"),
-                    "path": item.get("path"),
                     "n": item["name"],
                     "m": item["media_type"],
                     "b": int(item["size_bytes"]),
@@ -1504,29 +1503,11 @@ class WorkbenchRepository:
         )
         return [dict(m) for m in r.mappings().all()]
 
-    async def last_task_data(
-        self, *, owner_actor_id: str, project_id: str, knowbot_id: str
-    ) -> list[dict[str, Any]]:
+    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
+        """委托结束、还没交还的运行授权（测试的由 knowlab 撤，不在里面）。"""
         r = await self.session.execute(
             text(
-                """select d.* from workbench_task_data d
-                   where d.task_id = (
-                     select t.id from workbench_tasks t
-                     where t.owner_actor_id = :o and t.project_id = :p
-                       and t.profile_id like :k
-                       and exists (select 1 from workbench_task_data x where x.task_id = t.id)
-                     order by t.created_at desc limit 1)
-                   order by d.position"""
-            ),
-            {"o": owner_actor_id, "p": project_id, "k": f"knowbot:{knowbot_id}@%"},
-        )
-        return [dict(m) for m in r.mappings().all()]
-
-    async def grants_to_release(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """委托结束、还没交还的授权：v1（cloud）与第四版（knowbase）各走各的交还接口。"""
-        r = await self.session.execute(
-            text(
-                """select distinct d.grant_id, d.source from workbench_task_data d
+                """select distinct d.grant_id from workbench_task_data d
                    join workbench_tasks t on t.id = d.task_id
                    where d.grant_id is not null and d.grant_released_at is null
                      and d.grant_kind = 'delegation'
@@ -1535,7 +1516,7 @@ class WorkbenchRepository:
             ),
             {"n": limit},
         )
-        return [{"grant_id": str(row[0]), "source": row[1]} for row in r.all()]
+        return [str(row[0]) for row in r.all()]
 
     async def mark_grant_released(self, grant_id: str) -> None:
         await self.session.execute(

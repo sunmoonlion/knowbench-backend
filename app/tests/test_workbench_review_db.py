@@ -7,9 +7,8 @@ import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from sample_replies import ALL, METRICS, PROFILE, RECONCILE, SCOPE
 from sqlalchemy import text
-from test_fin_review_advisor_db import ALL
-from test_fin_review_pack import METRICS, PROFILE, RECONCILE, SCOPE
 from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db

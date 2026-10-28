@@ -12,7 +12,6 @@ from typing import Any
 
 from app.application.ports.workbench import KnowmartSummoner, WorkbenchStore
 from app.domain.workbench import knowbots
-from app.domain.workbench.data_needs import BadNeeds, DataNeed, needs_of
 from app.domain.workbench.errors import ExpertNotReady, KnowbotInvalid, NoSuchExpert
 from app.domain.workbench.packs import ExpertPack, find_pack
 
@@ -30,16 +29,10 @@ class PinnedPack:
     pack: ExpertPack
     digest: str
     source: str = SOURCE_KNOWMART
-    # 数据需求声明（SDD 0042）：有的话请它要先选数据；旧格式、测试中的草稿是空的
-    needs: tuple[DataNeed, ...] = ()
     # 清单 v2（SDD 0043，decisions ⑭）：冻结的作者挑选的数据；要什么数据由委托第 0 步提
     bindings: tuple[knowbots.FrozenBinding, ...] = ()
-    contract: str = knowbots.MANIFEST_SCHEMA
+    # 在 knowbase 那边这位专家这一版叫什么（测试中的草稿没有）
     consumer: str = ""
-
-    @property
-    def v2(self) -> bool:
-        return self.contract == knowbots.MANIFEST_SCHEMA_V2
 
     def task_columns(self) -> dict[str, Any]:
         """建委托时写进委托的三列。"""
@@ -80,20 +73,13 @@ def pack_from_pin(pin: dict[str, Any]) -> PinnedPack:
     knowbot_id, version = str(pin["knowbot_id"]), str(pin["version"])
     manifest = pin["manifest"]
     pack = knowbots.pack_from_manifest(manifest, knowbot_id=knowbot_id, version=version)
-    if knowbots.is_v2(manifest):
-        knowbots.no_declarations(manifest, knowbot_id=knowbot_id)
-        return PinnedPack(
-            pack=pack,
-            digest=str(pin["digest"]),
-            bindings=knowbots.frozen_bindings(manifest, knowbot_id=knowbot_id),
-            contract=knowbots.MANIFEST_SCHEMA_V2,
-            consumer=knowbots.consumer_of(knowbot_id, version),
-        )
-    try:
-        needs = tuple(needs_of(manifest))
-    except BadNeeds as exc:
-        raise KnowbotInvalid(str(exc), knowbot=knowbot_id) from None
-    return PinnedPack(pack=pack, digest=str(pin["digest"]), needs=needs)
+    knowbots.no_declarations(manifest, knowbot_id=knowbot_id)
+    return PinnedPack(
+        pack=pack,
+        digest=str(pin["digest"]),
+        bindings=knowbots.frozen_bindings(manifest, knowbot_id=knowbot_id),
+        consumer=knowbots.consumer_of(knowbot_id, version),
+    )
 
 
 async def pinned_pack(

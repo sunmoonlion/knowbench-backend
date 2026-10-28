@@ -12,8 +12,6 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
-from app.domain.workbench.data_read import Extracted, Tables
-
 NotificationHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 ServerRequestHandler = Callable[[Any, str, dict[str, Any]], Awaitable[None]]
 
@@ -755,29 +753,24 @@ class WorkbenchStore(Protocol):
         """这段对话是分身测试的一条用例。"""
         ...
 
-    # ---------- 委托钉住的数据（SDD 0042 第五节）----------
+    # ---------- 委托钉住的数据（SDD 0043）----------
     async def pin_task_data(
         self, task_id: str, items: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
-        """请专家那一刻记下选的那几份，按次序，各给一个数据编号（只插不改）。
+        """钉进委托（knowbase 的资料，凭这件委托的运行授权读），接在已有的后面，各给一个
+        数据编号（只插不改）。
 
-        每份：source（cloud / local）、slot、item_id 与 grant_id（cloud）或 path（local）、
-        name、media_type、size_bytes、sha256。返回记下的行。
+        每份：source（knowbase）、slot、item_id、grant_id 与 grant_kind、内容版本、读法与
+        摘要、权利依据、name、media_type、size_bytes、sha256。返回这件委托钉住的全部。
         """
         ...
 
     async def list_task_data(self, task_id: str) -> list[dict[str, Any]]:
-        """这件委托钉住的数据，按次序；没选过就是空的。"""
+        """这件委托钉住的数据，按次序；没钉过就是空的。"""
         ...
 
-    async def last_task_data(
-        self, *, owner_actor_id: str, project_id: str, knowbot_id: str
-    ) -> list[dict[str, Any]]:
-        """同一项目里上次请这位专家（任一版）时钉住的那几份；没有就是空的。"""
-        ...
-
-    async def grants_to_release(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        """委托已结束、运行授权还没交还的：grant_id 与 source（cloud 或 knowbase）。"""
+    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
+        """委托已结束、运行授权还没交还的授权编号（测试的由 knowlab 撤，不在里面）。"""
         ...
 
     async def mark_grant_released(self, grant_id: str) -> None: ...
@@ -890,115 +883,6 @@ class KnowmartSummoner(Protocol):
     async def summon(
         self, *, owner_subject: str, knowbot_id: str, version: str
     ) -> dict[str, Any]: ...
-
-
-class KnowbotDataSource(Protocol):
-    """专家读用户的数据（结果的形状是契约 knowbot-data/v1，0027 §3.5）。
-
-    purpose 由 knowbot_data.data_scope 给：`{"kind": "pinned", ...}` 是这件委托钉住的那几份
-    （SDD 0042，本地知识库经服务流、云端知识库经 knowbase）；`{"kind": "knowbot", ...}`、
-    `{"kind": "test", "run_id"}` 是旧路，经 knowlab 读作者绑的（服务身份 knowlab:read），
-    留到「财务分析与预测」第 1 版停用。不符抛 NotFound；读不到抛 UserDataUnavailable；
-    钉住的改过了抛 DataChanged。
-    """
-
-    async def list(self, purpose: dict[str, Any]) -> list[dict[str, Any]]: ...
-
-    async def read(
-        self, purpose: dict[str, Any], dataset_id: str, page: int
-    ) -> dict[str, Any]: ...
-
-    async def table(
-        self, purpose: dict[str, Any], dataset_id: str, sheet: str | None, page: int
-    ) -> dict[str, Any]:
-        """一张表的行标签、列标签与原文（0030 §3.1）；不是表格抛 UserDataUnavailable。"""
-        ...
-
-    async def cells(
-        self, purpose: dict[str, Any], cells: list[dict[str, str]]
-    ) -> list[dict[str, Any]]:
-        """按（dataset_id、sheet、row、column）取格子，按次序回 found、raw、number、version、sha256。"""
-        ...
-
-    async def quotes(
-        self, purpose: dict[str, Any], quotes: list[dict[str, Any]]
-    ) -> list[dict[str, Any]]:
-        """核引文（SDD 0036）：按（dataset_id、page、text）在 PDF 第 page 页找原话，
-        按次序回 found、reason、version、sha256。"""
-        ...
-
-
-class CloudDataReader(Protocol):
-    """凭这件委托的运行授权读 knowbase 里钉住的那一份的字节（契约 user-data/v1，SDD 0042）。
-
-    授权不在、过期、撤了，knowbase 不可达或没配好，抛 UserDataUnavailable；资料删了、钉的版本
-    对不上抛 DataChanged。
-    """
-
-    async def content(self, *, grant_id: str, item_id: str) -> bytes: ...
-
-    async def check(self, *, grant_id: str, item_id: str) -> str:
-        """不取内容，核这个授权还能读这一份（拒法同 content），回 knowbase 那份的 sha256。
-
-        读的一方用缓存的抽取结果前调这个（Astra 评审 F01）。
-        """
-        ...
-
-
-class CloudGrants(Protocol):
-    """请专家时核用户从云端知识库选的那几份、签这件委托的运行授权，委托结束交还
-    （knowbase 契约 user-data/v1，SDD 0042 第五节）。
-
-    knowbase 不可达、没配好抛 UserDataUnavailable；资料不在这个用户的 knowbench 分区里抛
-    DataChoiceInvalid；用户令牌要重新登录时照原样抛出（网页据此叫用户重新登录）。
-    """
-
-    async def item(self, user_token: str, item_id: str) -> dict[str, Any]:
-        """一份资料：name、media_type、size_bytes、sha256。"""
-        ...
-
-    async def grant(
-        self,
-        user_token: str,
-        *,
-        ref: str,
-        items: list[dict[str, str]],
-        ttl_seconds: int,
-        kind: str = "delegation",
-    ) -> str:
-        """签运行授权：委托（delegation）或会话（session）；只读这几份、钉这几个摘要。
-
-        回授权编号。
-        """
-        ...
-
-    async def release(self, grant_id: str) -> None:
-        """读的一方交还授权（服务身份，不用用户在场）。"""
-        ...
-
-
-class TextExtractor(Protocol):
-    """抽文字（PDF 每页前面一行「## Page N」），按 sha256 缓存；缓存里没有才调 load 取字节。"""
-
-    async def extract(
-        self,
-        *,
-        load: Callable[[], Awaitable[bytes]],
-        content_type: str,
-        sha256: str,
-    ) -> Extracted: ...
-
-
-class TableExtractor(Protocol):
-    """解析 CSV、Excel 成表，按 sha256 缓存；读不成表抛 TableUnreadable。"""
-
-    async def tables(
-        self,
-        *,
-        load: Callable[[], Awaitable[bytes]],
-        content_type: str,
-        sha256: str,
-    ) -> Tables: ...
 
 
 class WorkbenchStores(Protocol):

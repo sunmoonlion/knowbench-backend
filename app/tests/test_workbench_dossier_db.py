@@ -6,8 +6,8 @@ import json
 import uuid
 
 import pytest
-from test_fin_review_advisor_db import ALL
-from test_fin_review_pack import (
+from sample_replies import (
+    ALL,
     CROSSCHECK,
     FACTS,
     METRICS,

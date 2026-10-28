@@ -20,7 +20,6 @@ from app.application.ports.workbench import (
     AppServerConnector,
     AppServerError,
     EventPublisher,
-    KnowbotDataSource,
     WorkbenchStore,
     WorkbenchStores,
 )
@@ -1321,12 +1320,10 @@ class Runner:
         records: bool = False,
         prices: PriceList | None = None,
         deliverables: DeliverableCheck | None = None,
-        data: KnowbotDataSource | None = None,
         reader: Any = None,
     ):
         self.records = records
         self.deliverables = deliverables
-        self.data = data
         # 第四版：数值验收回查事实编号、资料页码（run_reader.RunReader）
         self.reader = reader
         self.prices = prices or DEFAULT_PRICES
@@ -1850,7 +1847,6 @@ class Runner:
             link,
             records=self.records,
             deliverables=self.deliverables,
-            data=self.data,
             reader=self.reader,
         )
         try:

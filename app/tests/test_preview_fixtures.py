@@ -50,7 +50,6 @@ from app.interfaces.endpoints.workbench_routes import (
     credential_cipher,
     provisioning_backends,
 )
-from app.interfaces.http.web import workbench_cloud_library as cloud_library_routes
 from core.config import get_settings
 
 pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
@@ -470,45 +469,6 @@ async def sandbox_status(rec: Recorder, http) -> None:
     await rec.get(http, "/api/workbench/sandboxes/provisioned")
 
 
-class PreviewKnowbase:
-    """云端知识库的真源在 knowbase（SDD 0042），预览里用替身：两份样例资料。"""
-
-    ITEMS = [
-        {
-            "item_id": "8f6c1d2e-0000-4000-8000-000000000001",
-            "name": "贵州茅台 2023 年年度报告.pdf",
-            "media_type": "application/pdf",
-            "size_bytes": 3_482_116,
-            "sha256": "1f" * 32,
-            "origin": "upload",
-            "created_at": "2026-10-20T09:12:00Z",
-        },
-        {
-            "item_id": "8f6c1d2e-0000-4000-8000-000000000002",
-            "name": "招商银行 三张报表 2019-2023.xlsx",
-            "media_type": (
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            ),
-            "size_bytes": 218_904,
-            "sha256": "2e" * 32,
-            "origin": "purchase",
-            "created_at": "2026-10-22T15:40:00Z",
-        },
-    ]
-
-    async def items(self, token: str) -> list[dict[str, Any]]:
-        return self.ITEMS
-
-
-async def cloud_library(rec: Recorder, http) -> None:
-    app = http._transport.app
-    app.dependency_overrides[cloud_library_routes.get_knowbase] = PreviewKnowbase
-    app.dependency_overrides[cloud_library_routes.get_web_knowbase_token] = lambda: (
-        "preview"
-    )
-    await rec.get(http, "/api/workbench/cloud-library")
-
-
 async def record_everything(world: World) -> None:
     rec, http = world.rec, world.http
     for path in (
@@ -555,7 +515,6 @@ async def record_everything(world: World) -> None:
     every = await http.get("/api/workbench/interactions", params={"status": "all"})
     for waiting in every.json()["interactions"]:
         await rec.get(http, f"/api/workbench/interactions/{waiting['interaction_id']}")
-    await cloud_library(rec, http)
 
 
 async def build_full(world: World) -> None:
@@ -793,7 +752,6 @@ async def build_full(world: World) -> None:
         )
     rec.page("我的机器", "/zh-CN/workbench/machines")
     rec.page("设置", "/zh-CN/workbench/settings")
-    rec.page("云端知识库", "/zh-CN/workbench/library")
 
 
 async def build_empty(world: World) -> None:

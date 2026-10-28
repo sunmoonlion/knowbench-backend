@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from sample_packs import DATA_QUERY, FIN_REVIEW
+
 from app.domain.workbench.now_view import doing_of, now_view
 from app.domain.workbench.pack_view import pack_view
-from app.domain.workbench.packs import DATA_QUERY, FIN_REVIEW, listed_packs
+from app.domain.workbench.packs import listed_packs
 
 STEPS = [{**s, "times": 0, "rejected": 0} for s in pack_view(FIN_REVIEW)["steps"]]
 

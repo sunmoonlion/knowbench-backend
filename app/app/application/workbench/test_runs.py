@@ -56,7 +56,6 @@ from app.application.workbench.test_folders import (
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
     InteractionRejected,
-    KnowbotInvalid,
     KnowbotTestBudgetExhausted,
     KnowbotTestConflict,
     KnowbotTestUnconfigured,
@@ -149,9 +148,9 @@ def data_question_id(task_id: str, request_id: str) -> str:
 
 
 def _test_planning(request: RunRequest, case: RunCase) -> dict[str, Any] | None:
-    """清单 v2 的草稿、用例没带测试集：委托先跑第 0 步，清单那一行记成「定数据」，
-    不建 knowbase 的清单（提出的报给 knowlab，作者在那边确认）。"""
-    if not knowbots.is_v2(request.manifest) or case.data is not None:
+    """用例没带测试集：委托先跑第 0 步，清单那一行记成「定数据」，不建 knowbase 的清单
+    （提出的报给 knowlab，作者在那边确认）。"""
+    if case.data is not None:
         return None
     return {
         "resolution_id": None,
@@ -262,7 +261,6 @@ class KnowbotTestService:
             version=str(manifest.get("version")),
             profile=trial_profile_id(request.run_id),
         )
-        pins_for_test(request)  # 授权里的编号不合格同样不受理
         limit = Decimal(request.budget.limit)
         async with self.repo.transaction():
             committed = (
@@ -542,54 +540,11 @@ def case_pins(data: CaseData) -> list[dict[str, Any]]:
             "name": item.name,
             "media_type": item.media_type,
             "size_bytes": item.size_bytes,
-            "path": None,
             "grant_id": data.grant_id,
             "grant_kind": "test",
         }
         for item in data.items
     ]
-
-
-def pins_for_test(request: RunRequest) -> list[dict[str, Any]]:
-    """测试运行授权里的那几份（SDD 0042 第七节），钉进每条用例的委托，按钉住的读。
-
-    数据编号用 knowlab 的（清单绑定、格子地址、引文写的都是它）；不是 uuid 的钉不进钉表，
-    抛 KnowbotInvalid，受理时就不收：带了授权就只凭授权读，不退回经 knowlab 读（Astra 评审
-    F02）。授权由 knowlab 撤，这里不交还（grant_kind = test）。
-    """
-    grant = request.data_grant
-    if grant is None:
-        return []
-    raw = request.manifest.get("data_bindings")
-    needs = {
-        str(b.get("dataset_id")): b.get("need")
-        for b in (raw if isinstance(raw, list) else [])
-        if isinstance(b, dict)
-    }
-    pins = []
-    for item in grant.items:
-        try:
-            uuid.UUID(item.dataset_id)
-        except ValueError:
-            raise KnowbotInvalid(
-                "a granted dataset id is not a knowlab data id"
-            ) from None
-        pins.append(
-            {
-                "dataset_id": item.dataset_id,
-                "slot": needs.get(item.dataset_id),
-                "source": "cloud",
-                "item_id": item.item_id,
-                "grant_id": grant.grant_id,
-                "grant_kind": "test",
-                "path": None,
-                "name": item.name,
-                "media_type": item.media_type,
-                "size_bytes": item.size_bytes,
-                "sha256": item.sha256,
-            }
-        )
-    return pins
 
 
 class KnowbotTestConductor:
@@ -862,8 +817,7 @@ class KnowbotTestConductor:
             snapshot=PinnedPack(
                 pack=pack, digest=knowbots.manifest_digest(manifest), source=SOURCE_TEST
             ),
-            pins=(case_pins(case.data) if case.data else pins_for_test(request))
-            or None,
+            pins=case_pins(case.data) if case.data else None,
             resolution=_test_planning(request, case),
         )
         session = await repo.get_session(session_id)

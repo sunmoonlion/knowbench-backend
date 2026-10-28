@@ -13,11 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
-from app.application.ports.workbench import (
-    KnowbotDataSource,
-    WorkbenchStore,
-    WorkbenchStores,
-)
+from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.acceptance import judge, out_of_scope, timed_out
 from app.application.workbench.acceptance_numbers import judge_numbers
 from app.application.workbench.catalog import SNAPSHOT_SOURCES, pack_for_task
@@ -106,7 +102,6 @@ class Advisor:
         *,
         records: bool = False,
         deliverables: DeliverableCheck | None = None,
-        data: KnowbotDataSource | None = None,
         reader: Any = None,
     ):
         self.stores = stores  # 每次调用开一个工作单元
@@ -115,10 +110,8 @@ class Advisor:
         self.records = records
         # 成稿硬检查（0022 段 4）：没配就只有软检查
         self.deliverables = deliverables
-        # 数值验收 sourced 要重新取用户的数（0030 §3.3）、quoted 要回原文核引文（0036）：
-        # 没配就判不过，不放行
-        self.data = data
-        # 第四版的事实编号、资料页码回查（run_reader.RunReader）；没配同上判不过
+        # 数值验收 sourced 回查事实编号（0030 §3.3）、quoted 回资料那一页核引文（0036），
+        # 都凭委托的运行授权读 knowbase（run_reader.RunReader）：没配就判不过，不放行
         self.reader = reader
 
     # ---------------- 入口 ----------------
@@ -373,13 +366,6 @@ class Advisor:
                 rework_failures=rejected[-1].get("failures") if rejected else None,
                 folder=folder,
                 records_task=task_id if self.records else None,
-                data_task=(
-                    task_id
-                    if self.records
-                    and task.get("pack_source") in SNAPSHOT_SOURCES
-                    and knowbots.DATA_TOOLS & set(step.tools)
-                    else None
-                ),
                 listed_data_task=(
                     task_id
                     if self.records
@@ -557,7 +543,6 @@ class Advisor:
                     step.acceptance,
                     repo=repo,
                     task=task,
-                    source=self.data,
                     reader=self.reader,
                 )
             )
@@ -1194,7 +1179,6 @@ class Advisor:
         *,
         rework_failures: list[str] | None = None,
         records_task: str | None = None,
-        data_task: str | None = None,
         listed_data_task: str | None = None,
         ask_before_answers: dict[str, Any] | None = None,
         change_request: str | None = None,
@@ -1276,27 +1260,6 @@ class Advisor:
                 "question refers to earlier work in this project. They never replace "
                 "the data tools: numbers still come from the data tools of this step.",
             ]
-        if data_task:
-            # 分身读用户自己绑定的数据（0027 §3.5）：步骤的工具里列了数据工具才说
-            parts += [
-                "",
-                "## The user's own data",
-                "The user bound their own data to this expert. List it with "
-                "list_my_data and read it with read_my_data; pass "
-                f'task="{data_task}" on every call. Numbers come only from this data '
-                "and the inputs above: quote the citation of each number you use. If "
-                "the data does not contain what this step needs, say so instead of "
-                "guessing.",
-            ]
-            if {"read_my_table", "compute"} & set(step.tools):
-                # 0030：算出来的数由平台算，取出来的数写地址；数值验收按编号与地址回查
-                parts += [
-                    "Read tables with read_my_table to see the cell addresses. Compute "
-                    "every derived number with compute, never in your head; put its id "
-                    "as compute_id next to the number. For a number taken from the data "
-                    "as is, write its cell address next to it. Do not copy numbers by "
-                    "hand.",
-                ]
         if listed_data_task:
             # 清单 v2 的专家（0048）：数据经工作台中继到 knowbase 数据 MCP，钉住的就是这件委托能读的
             parts += [

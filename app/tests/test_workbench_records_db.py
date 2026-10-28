@@ -10,8 +10,7 @@ import uuid
 from decimal import Decimal
 
 import pytest
-from test_fin_review_advisor_db import ALL, say
-from test_fin_review_pack import PROFILE, SCOPE
+from sample_replies import ALL, PROFILE, SCOPE, say
 from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db

@@ -3,19 +3,17 @@
 - `computed`：path 处每项带 `compute_id` 与 `value`。这件委托的计算记录里有这个编号，记录的结果
   与 value 之差不超过 `tolerance`；规则写了 `expression` 的，记录里的算式必须就是它（比语法树）。
 - `identity`：path 处每项带 `left_id` 与 `right_id`，两次计算的结果之差不超过 `tolerance`。
-- `sourced`：path 处每项带 `address` 与 `value`，重新向 knowlab 取这一格，与 value 一致。
-  取不到（没配读用户数据的关系、knowlab 拒了）是平台的事，不是数对不上：这一项记
-  `platform`，测试结果里那条用例记出错而不是没过（审读第 3 条）。
-- `quoted`（SDD 0036）：path 处每项带 `quotes`，一串 `{dataset_id, page, text}`；引了的都交
-  knowlab 在那份 PDF 的第 page 页找原话，都要找到。写了 `field`、`equals` 的，那样的项至少引
-  一条（如判「支持」的必须引到原文）；别的项可以不引。判成哪一种这条验收不管。取不到同上记
-  `platform`。页码、原文的形状先按契约核，不合的是交回物的错，不送 knowlab（审读 10-19）。
+- `sourced`：path 处每项带 `address`（事实编号 `fact:<行>`、`raw:<行>`）与 `value`，工作台
+  凭这件委托的运行授权回 knowbase 取这一个数（run_reader），与 value 一致。取不到（没配读
+  数据的关系、knowbase 拒了）是平台的事，不是数对不上：这一项记 `platform`，测试结果里那条
+  用例记出错而不是没过（审读第 3 条）。
+- `quoted`（SDD 0036）：path 处每项带 `quotes`，一串 `{material_id, page, text}`；引了的都凭
+  这件委托的运行授权取那一页的按页文字找原话，都要找到。写了 `field`、`equals` 的，那样的项
+  至少引一条（如判「支持」的必须引到原文）；别的项可以不引。判成哪一种这条验收不管。取不到
+  同上记 `platform`。资料编号、页码、原文的形状先核，不合的是交回物的错，不送 knowbase
+  （审读 10-19）。
 - `covers`（审读 10-19）：path（加 `also` 各处）各项的 `field`，与这件委托上游交回物 `source`
   一一对应：不多、不少、不重。如第 6 步每条结论对上第 5 步的 findings。
-
-第四版的专家（清单 v2）：`sourced` 的地址可以是事实编号（`fact:<行>`、`raw:<行>`），
-`quoted` 的引文可以是 `{material_id, page, text}`；都由工作台凭这件委托的运行授权回
-knowbase 查（run_reader）。
 
 path 处可以是一项（对象）或一串；空的一串算通过，要求非空另配 `list_min`（同 `all_equal`）。
 交回物没解析成 JSON 时 judge 已把它们记成「没有验」，这里不再判。
@@ -23,18 +21,15 @@ path 处可以是一项（对象）或一串；空的一串算通过，要求非
 
 from __future__ import annotations
 
-import re
 from decimal import Decimal
 from typing import Any
 
-from app.application.ports.workbench import KnowbotDataSource, WorkbenchStore
+from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.acceptance import Verdict, value_at
-from app.application.workbench.knowbot_compute import computations, fetch_cells
-from app.application.workbench.knowbot_data import data_scope, same_binding
+from app.application.workbench.knowbot_compute import computations
 from app.application.workbench.run_reader import MATERIAL_ID, RunReader, is_fact_ref
 from app.domain.workbench import compute as calc
 from app.domain.workbench.errors import (
-    NotFound,
     RecordsRefused,
     UserDataUnavailable,
     WorkbenchError,
@@ -42,11 +37,7 @@ from app.domain.workbench.errors import (
 from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
 
 SHOWN = 5  # 不通过时列出前几项
-QUOTES_PER_CALL = 100  # knowbot-data/v1 一次核引文最多这么多条
-# knowbot-data/v1 QuoteRef 的形状（knowlab domain/knowbots/data_read.py）：不合的先挡下，记交回物的错
-_DATASET_ID = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-)
+# 引文的形状：不合的先挡下，记交回物的错
 QUOTE_PAGE_MAX = 1_000_000
 QUOTE_TEXT_MAX = 4_000
 
@@ -118,15 +109,14 @@ def _identity(
 
 
 def _platform(exc: WorkbenchError) -> bool:
-    """取不到数是平台或配置的事（关系没配、knowlab 拒了、这一版没绑数据）；
-    地址写错、格子没有、不是数，是交回物的错。"""
+    """取不到数是平台或配置的事（关系没配、knowbase 拒了、委托没有授权）；
+    编号写错、没有这个数、不是数，是交回物的错。"""
     return isinstance(exc, UserDataUnavailable | RecordsRefused)
 
 
 async def _sourced(
     rule: AcceptanceRule,
     items: list[Any],
-    source: KnowbotDataSource | None,
     repo: WorkbenchStore,
     task: dict[str, Any],
     reader: RunReader | None = None,
@@ -138,28 +128,21 @@ async def _sourced(
     for i, item in enumerate(items):
         if not isinstance(item, dict) or not isinstance(item.get("address"), str):
             bad.append(f"#{i} has no address")
+        elif not is_fact_ref(item["address"]):
+            bad.append(f"#{i} {item['address'][:80]!r} is not a fact ref")
         else:
             addresses.append(item["address"])
     if bad:
         return bad, False
-    facts = [a for a in addresses if is_fact_ref(a)]
-    cells_wanted = [a for a in addresses if not is_fact_ref(a)]
-    if (cells_wanted and source is None) or (facts and reader is None):
+    if reader is None:
         return ["the user's data cannot be read here"], True
     try:
-        cells: dict[str, Decimal] = {}
-        if cells_wanted:
-            assert source is not None
-            purpose, bound = await data_scope(repo, str(task["owner_actor_id"]), task)
-            cells = await fetch_cells(source, purpose, bound, cells_wanted)
-        if facts:
-            assert reader is not None
-            cells |= await reader.facts(repo, task, facts)
+        found = await reader.facts(repo, task, addresses)
     except WorkbenchError as exc:
         return [f"{exc.code}: {exc.message}"], _platform(exc)
     for i, item in enumerate(items):
         value = calc.decimal_of(item.get("value"))
-        actual = cells[item["address"]]
+        actual = found[item["address"]]
         if value is None or not _close(actual, value, rule.tolerance):
             bad.append(
                 f"#{i} {item['address']} says {item.get('value')} but the data has {calc.text_of(actual)}"
@@ -182,25 +165,29 @@ def _quote_refs(
             bad.append(f"#{i} quotes is not a list")
             continue
         for q in quotes:
-            where = (
-                "material_id"
-                if isinstance(q, dict) and "material_id" in q
-                else ("dataset_id")
-            )
             if (
                 not isinstance(q, dict)
-                or not isinstance(q.get(where), str)
+                or not isinstance(q.get("material_id"), str)
                 or not isinstance(q.get("page"), int)
                 or isinstance(q.get("page"), bool)
                 or not isinstance(q.get("text"), str)
             ):
-                bad.append(f"#{i} has a quote that is not {{dataset_id, page, text}}")
+                bad.append(f"#{i} has a quote that is not {{material_id, page, text}}")
                 break
             problem = _quote_problem(q)
             if problem:
                 bad.append(f"#{i} page {q['page']}: {problem}")
                 continue
-            refs.append((i, {where: q[where], "page": q["page"], "text": q["text"]}))
+            refs.append(
+                (
+                    i,
+                    {
+                        "material_id": q["material_id"],
+                        "page": q["page"],
+                        "text": q["text"],
+                    },
+                )
+            )
         else:
             if rule.field and item.get(rule.field) == rule.equals and not quotes:
                 bad.append(f"#{i} says {rule.equals} but quotes nothing")
@@ -208,11 +195,8 @@ def _quote_refs(
 
 
 def _quote_problem(q: dict[str, Any]) -> str | None:
-    if "material_id" in q:
-        if not MATERIAL_ID.fullmatch(q["material_id"]):
-            return "bad material id"
-    elif not _DATASET_ID.fullmatch(q["dataset_id"]):
-        return "bad dataset id"
+    if not MATERIAL_ID.fullmatch(q["material_id"]):
+        return "bad material id"
     if not 1 <= q["page"] <= QUOTE_PAGE_MAX:
         return "bad page number"
     if not q["text"].strip() or len(q["text"]) > QUOTE_TEXT_MAX:
@@ -223,7 +207,6 @@ def _quote_problem(q: dict[str, Any]) -> str | None:
 async def _quoted(
     rule: AcceptanceRule,
     items: list[Any],
-    source: KnowbotDataSource | None,
     repo: WorkbenchStore,
     task: dict[str, Any],
     reader: RunReader | None = None,
@@ -232,40 +215,14 @@ async def _quoted(
     refs, bad = _quote_refs(rule, items)
     if bad or not refs:
         return bad, False
-    v2 = [(i, q) for i, q in refs if "material_id" in q]
-    if v2:
-        # 第四版：引的是资料与页码，凭这件委托的授权取那一页的按页文字找原话
-        if len(v2) != len(refs):
-            return ["quotes mix data ids and material ids"], False
-        if reader is None:
-            return ["the user's data cannot be read here"], True
-        try:
-            found = await reader.quotes(repo, task, [q for _, q in v2])
-        except WorkbenchError as exc:
-            return [f"{exc.code}: {exc.message}"], _platform(exc)
-        for (i, q), got in zip(v2, found, strict=True):
-            if not got.get("found"):
-                bad.append(f"#{i} page {q['page']}: {got.get('reason') or 'not_found'}")
-        return bad, False
-    if source is None:
+    if reader is None:
         return ["the user's data cannot be read here"], True
     try:
-        purpose, bound = await data_scope(repo, str(task["owner_actor_id"]), task)
-        if any(q["dataset_id"] not in bound for _, q in refs):
-            raise NotFound("a quote cites data this version does not bind")
-        found: list[dict[str, Any]] = []
-        for start in range(0, len(refs), QUOTES_PER_CALL):
-            found += await source.quotes(
-                purpose, [q for _, q in refs[start : start + QUOTES_PER_CALL]]
-            )
+        found = await reader.quotes(repo, task, [q for _, q in refs])
     except WorkbenchError as exc:
         return [f"{exc.code}: {exc.message}"], _platform(exc)
-    if len(found) != len(refs):  # knowlab 回的条数不对：平台的事，记进这一项
-        return ["knowlab answered a different number of quotes"], True
     for (i, q), got in zip(refs, found, strict=True):
-        if not same_binding(got, bound):
-            bad.append(f"#{i} page {q['page']}: not the bound version of the data")
-        elif not got.get("found"):
+        if not got.get("found"):
             bad.append(f"#{i} page {q['page']}: {got.get('reason') or 'not_found'}")
     return bad, False
 
@@ -303,7 +260,6 @@ async def judge_numbers(
     *,
     repo: WorkbenchStore,
     task: dict[str, Any],
-    source: KnowbotDataSource | None,
     reader: RunReader | None = None,
 ) -> Verdict:
     numeric = [r for r in rules if r.kind in NUMERIC_RULES]
@@ -331,9 +287,9 @@ async def judge_numbers(
         elif r.kind == "identity":
             bad = _identity(r, items, records)
         elif r.kind == "quoted":
-            bad, platform = await _quoted(r, items, source, repo, task, reader)
+            bad, platform = await _quoted(r, items, repo, task, reader)
         else:
-            bad, platform = await _sourced(r, items, source, repo, task, reader)
+            bad, platform = await _sourced(r, items, repo, task, reader)
         ok = not bad
         detail = (
             f"len={len(items)}" if ok and items is not None else "; ".join(bad[:SHOWN])

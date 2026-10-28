@@ -1,4 +1,4 @@
-"""分身的确定性计算（SDD 0030 §3.2）：格子地址、安全的算式求值、十进制。
+"""分身的确定性计算（SDD 0030 §3.2）：安全的算式求值、十进制。
 
 算式只许四则运算、括号、正负号、数字常数，和 sum、avg、median、min、max、abs 六个函数；
 名字只能是这次计算的输入（一个数，或一串数）。用 Python 的语法树按白名单走一遍，不 eval，
@@ -18,33 +18,12 @@ from app.domain.workbench.errors import ComputeRefused as ComputeError
 MAX_EXPRESSION = 500
 MAX_NODES = 200
 MAX_DEPTH = 20
-MAX_INPUTS = 500  # 一次计算最多这么多个格子（同 knowbot-data/v1 一次取格子的上限）
+MAX_INPUTS = 500  # 一次计算最多这么多个输入
 MAX_ROUND = 10
 PRECISION = 34
 NAME = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
 COMPUTE_ID = re.compile(r"^c[1-9][0-9]{0,9}$")
-# <数据 id>:<表>!<行标签>@<列标签>；表名到第一个「!」，列标签从最后一个「@」起
-ADDRESS = re.compile(
-    r"^(?P<dataset>[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}):"
-    r"(?P<sheet>[^!]{1,512})!(?P<row>.{1,512})@(?P<column>[^@]{1,512})$",
-    re.S,
-)
 ZERO_DIVISOR = "denominator is zero"
-
-
-def parse_address(value: Any) -> tuple[str, str, str, str]:
-    """（数据 id、表、行标签、列标签）。不合写法抛 ComputeError。"""
-    found = ADDRESS.match(value) if isinstance(value, str) else None
-    if found is None:
-        raise ComputeError(
-            f"not a cell address: {str(value)[:80]!r} "
-            "(write <dataset_id>:<sheet>!<row label>@<column label>)"
-        )
-    return found["dataset"], found["sheet"], found["row"], found["column"]
-
-
-def address(dataset: str, sheet: str, row: str, column: str) -> str:
-    return f"{dataset}:{sheet}!{row}@{column}"
 
 
 def decimal_of(value: Any) -> Decimal | None:

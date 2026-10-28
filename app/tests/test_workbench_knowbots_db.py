@@ -8,13 +8,16 @@ import pytest
 from knowbot_fixtures import KNOWBOT, FakeSummoner, manifest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from test_workbench_expert_data_db import FakeKnowbase, FakeSupply, known
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_project_routes import machine, project
 from test_workbench_routes import A, B
 from test_workbench_routes import make_client as make_client  # noqa: F401
 
 import app.interfaces.http.web.workbench_expert as expert_routes
+from app.application.workbench.expert_data import ExpertData
 from app.domain.workbench.knowbots import manifest_digest
+from app.interfaces.http.middleware.auth import get_web_knowbase_token_provider
 
 PROFILE = f"knowbot:{KNOWBOT}@1"
 
@@ -101,7 +104,22 @@ async def test_asking_a_pinned_knowbot_snapshots_it_on_the_task(
     make_client,  # noqa: F811
     db,  # noqa: F811
     knowmart,
+    monkeypatch,
 ) -> None:
+    # 分身都是清单 v2：请时建空清单（knowbase 的替身），要认得这个用户
+    monkeypatch.setattr(
+        expert_routes,
+        "expert_data",
+        lambda: ExpertData(FakeKnowbase(), FakeSupply(), supply_enabled=False),
+    )
+
+    async def user_token() -> str:
+        return "user-token"
+
+    make_client.app.dependency_overrides[get_web_knowbase_token_provider] = lambda: (
+        user_token
+    )
+    await known(db)
     async with make_client(A) as http:
         env = await machine(http)
         pid = (await project(http, env)).json()["id"]

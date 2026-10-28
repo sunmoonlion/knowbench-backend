@@ -12,9 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.application.ports.workbench import (
     AppServerConnector,
-    CloudGrants,
     EventPublisher,
-    KnowbotDataSource,
     KnowmartSummoner,
     Provisioner,
     RelayAdmin,
@@ -22,9 +20,8 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench.agent_download import ReleaseStore
-from app.application.workbench.data_choice import DataChooser, GrantReleaser
+from app.application.workbench.grant_release import GrantReleaser
 from app.application.workbench.machines import MachineSync
-from app.application.workbench.pinned_data import DataSources, PinnedData
 from app.application.workbench.runner import Runner
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
@@ -32,7 +29,6 @@ from app.application.workbench.test_runs import (
     KnowbotTestService,
 )
 from app.domain.workbench.pricing import PriceList
-from app.infrastructure.external.knowlab_data_client import KnowlabDataClient
 from app.infrastructure.external.knowmart_client import KnowmartSummonClient
 from app.infrastructure.workbench.agent_release import S3ReleaseStore
 from app.infrastructure.workbench.app_server_client import WsAppServerConnector
@@ -63,81 +59,16 @@ def knowmart_summoner() -> KnowmartSummoner:
     return KnowmartSummonClient()
 
 
-# 读用户数据的超时：knowlab 第一次读一份两百页的年报要抽十几、二十秒文字，默认 20 秒卡在线上；
-# 放宽到 45 秒，仍在模型调用工具的 60 秒以内（K19 预演）
-KNOWLAB_DATA_TIMEOUT = 45.0
-# 凭运行授权从 knowbase 取一份（最大 50 MB）的超时，同上不超过工具的 60 秒
+# 凭运行授权读 knowbase 的超时：不超过模型调用工具的 60 秒
 KNOWBASE_DATA_TIMEOUT = 45.0
-
-
-@lru_cache(maxsize=1)
-def knowbot_data_source() -> KnowbotDataSource:
-    """专家读用户的数据（进程内共用，抽出的文字与表按 sha256 缓存在里面）。
-
-    委托钉住的那几份（SDD 0042）：云端经 knowbase、本地经会合点服务流（没配会合点或签名私钥
-    就读不到本地的）；旧格式的专家经 knowlab 读作者绑的（0027 §3.5）。
-    """
-    from app.infrastructure.documents.table_extract import CachedTableExtractor
-    from app.infrastructure.documents.text_extract import CachedTextExtractor
-    from app.infrastructure.external.knowbase_user_data import (
-        KnowbaseGrantedData,
-        KnowbaseUserData,
-    )
-
-    return DataSources(
-        pinned=PinnedData(
-            cloud=KnowbaseGrantedData(KnowbaseUserData(timeout=KNOWBASE_DATA_TIMEOUT)),
-            agent=_service_agent(),
-            text=CachedTextExtractor(),
-            tables=CachedTableExtractor(),
-        ),
-        legacy=KnowlabDataClient(timeout=KNOWLAB_DATA_TIMEOUT),
-    )
-
-
-def _service_agent() -> AgentService | None:
-    """经会合点服务流问用户电脑上的 link；没配会合点或签名私钥就没有（None）。"""
-    from app.application.workbench.tokens import TokenIssuer
-
-    settings = get_settings()
-    relay_url = settings.workbench_relay_admin_url
-    signing_key = settings.workbench_token_signing_key
-    if not (relay_url and signing_key):
-        return None
-    return build_agent_service(
-        relay_url, TokenIssuer(signing_key, issuer=settings.workbench_token_issuer)
-    )
-
-
-@lru_cache(maxsize=1)
-def cloud_grants() -> CloudGrants:
-    """向 knowbase 核用户选的云端资料、签与交还运行授权（进程内共用）。"""
-    return _cloud_grants()
-
-
-def _cloud_grants() -> CloudGrants:
-    from app.infrastructure.external.knowbase_user_data import (
-        KnowbaseCloudGrants,
-        KnowbaseUserData,
-    )
-
-    return KnowbaseCloudGrants(KnowbaseUserData())
-
-
-@lru_cache(maxsize=1)
-def data_chooser() -> DataChooser:
-    """请专家时选数据、签运行授权（SDD 0042；进程内共用）。"""
-    return DataChooser(cloud=_cloud_grants())
 
 
 def build_grant_releaser(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> GrantReleaser:
-    """委托结束后交还运行授权（runner 里一条线）：v1 与第四版各走各的交还接口。"""
+    """委托结束后交还运行授权（runner 里一条线）：走 knowbase user-data/v2 的交还接口。"""
     return GrantReleaser(
-        workbench_stores(session_factory),
-        _cloud_grants(),
-        release_v2=knowbase_v2().release_run_grant,
+        workbench_stores(session_factory), knowbase_v2().release_run_grant
     )
 
 
@@ -260,7 +191,6 @@ def build_runner(
         records=records,
         prices=prices,
         deliverables=deliverables,
-        data=knowbot_data_source(),
         reader=_run_reader(),
     )
 

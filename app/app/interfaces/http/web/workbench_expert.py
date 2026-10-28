@@ -23,13 +23,11 @@ from app.application.workbench.delegation import DelegationService
 from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
 from app.bootstrap.workbench import (
-    data_chooser,
     expert_data,
     knowmart_summoner,
     workbench_store,
 )
 from app.domain.security import Principal
-from app.domain.workbench.data_needs import DataChoice
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
@@ -67,8 +65,6 @@ class Delegate(Strict):
     # 上限可以不给：不给就没有上限。页面上实时显示花了多少，用户随时可以停
     budget_limit: Decimal | None = Field(default=None, gt=0, le=Decimal("100000"))
     budget_currency: str = Field(default="CNY", pattern=r"^CNY$")
-    # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
-    data: list[DataChoice] = Field(default_factory=list, max_length=64)
 
 
 class ConfirmData(Strict):
@@ -131,17 +127,16 @@ async def one_pack(
 @router.get("/packs/{pack_id}/data-needs")
 async def data_needs(
     pack_id: str,
-    project_id: str | None = Query(default=None, max_length=64),
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """请这位专家要提供哪些数据（数据需求声明），和同一项目上次选的那几份（弹框默认选上）。
-
-    内置专家、旧格式的分身没有声明：needs 是空的，不用选。
+    """请这位专家用什么数据：分身回 `contract`（knowbot-manifest/v2）与作者挑选的数据的
+    份数 `bound`；要什么数据由委托第 0 步按问题提出、用户确认，请专家页上不用选
+    （decisions ⑭）。内置专家不用数据：`contract` 是空的。
     """
     try:
         found = await DelegationService(workbench_store(session)).data_needs(
-            owner_actor_id=_actor(principal), profile_id=pack_id, project_id=project_id
+            owner_actor_id=_actor(principal), profile_id=pack_id
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -225,8 +220,6 @@ async def delegate(
             budget_limit=body.budget_limit,
             budget_currency=body.budget_currency,
             idempotency_key=body.idempotency_key,
-            data=[c.model_dump(exclude_none=True) for c in body.data],
-            chooser=data_chooser(),
             user_token=user_token,
             expert_data=expert_data(),
         )
@@ -244,9 +237,8 @@ async def task_data(
     session: AsyncSession = Depends(get_db_session),
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ) -> dict[str, Any]:
-    """这件委托用的数据（清单 v2 的专家）：在定数据、钉了哪几份、在等哪几项、专家提出
-    了什么（每一样解析到哪、候选有哪些）、没取到的、数据不全的。不是清单 v2 的委托回
-    `listed: false`。"""
+    """这件委托用的数据（分身）：在定数据、钉了哪几份、在等哪几项、专家提出了什么（每一样
+    解析到哪、候选有哪些）、没取到的、数据不全的。内置专家的委托回 `listed: false`。"""
     repo = workbench_store(session)
     try:
         await repo.get_task(task_id, owner_actor_id=_actor(principal))
@@ -292,7 +284,6 @@ async def task_data(
                 "basis": p.get("basis"),
             }
             for p in pins
-            if p["source"] == "knowbase"
         ],
     }
 

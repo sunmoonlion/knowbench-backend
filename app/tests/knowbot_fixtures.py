@@ -1,4 +1,4 @@
-"""分身测试共用（SDD 0027 P4）：合格的分身清单（以烟测专家包为底）与假 knowmart。"""
+"""分身测试共用（SDD 0027 P4）：合格的分身清单 v2（以烟测专家包为底）与假 knowmart。"""
 
 from __future__ import annotations
 
@@ -26,13 +26,13 @@ def manifest(version: str = "1", **pack_overrides: Any) -> dict[str, Any]:
     pack.update({"pack_id": "my-method", "version": version, "title": "我的方法"})
     pack.update(pack_overrides)
     return {
-        "schema": "knowbot-manifest/v1",
+        "schema": "knowbot-manifest/v2",
         "name": "我的方法",
         "tagline": "按我的口径看一家公司",
         "version": version,
         "runtime": "knowbench",
         "pack": pack,
-        "data_bindings": [],
+        "bindings": [],
         "rule_sources": [{"rule": "口径", "source": "user_text", "ref": "第 4 问"}],
     }
 

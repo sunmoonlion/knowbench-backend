@@ -7,6 +7,7 @@ import json
 import uuid
 from decimal import Decimal
 
+from sample_packs import FIN_FORECAST
 from test_workbench_ledger_db import OWNER  # noqa: F401
 from test_workbench_ledger_db import db as db
 from usage_support import MODEL, UsageMeter
@@ -17,7 +18,7 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
 from app.bootstrap.workbench import build_runner
 from app.domain.workbench.models import HandoverRequest
-from app.domain.workbench.packs import FIN_FORECAST, SMOKE, AcceptanceRule, find_pack
+from app.domain.workbench.packs import SMOKE, AcceptanceRule, find_pack
 from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.repository import WorkbenchRepository

@@ -440,7 +440,7 @@ async def main() -> int:
                     HandoverRequest(
                         idempotency_key=f"chain2-{ts}",
                         session_id=sid,
-                        profile_id="DATA_QUERY",
+                        profile_id="SMOKE",
                         original_input={"text": "核对"},
                         budget_limit=Decimal("5"),
                     ),

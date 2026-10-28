@@ -21,6 +21,7 @@ from test_workbench_ledger_db import db as db
 
 from app.application.workbench.agent_service import AgentOffline
 from app.application.workbench.deliverable_check import ReadFile
+from app.application.workbench.grant_release import GrantReleaser
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
     KnowbotTestConfig,
@@ -1009,134 +1010,23 @@ async def test_an_answer_that_cannot_go_in_is_noted_once_not_every_tick(db, capl
         await fake.close()
 
 
-class FakeDataSource:
-    """假的 knowlab：记下用途，按清单的绑定回数据（0027 §3.5）。"""
-
-    def __init__(self, binding: dict) -> None:
-        self.binding = binding
-        self.purposes: list[dict] = []
-        self.sha = binding["sha256"]
-
-    async def list(self, purpose):
-        self.purposes.append(purpose)
-        return [{**self.binding, "name": "年报.csv", "sha256": self.sha}]
-
-    async def read(self, purpose, dataset_id, page):
-        self.purposes.append(purpose)
-        citation = {**self.binding, "sha256": self.sha, "page": page, "pages": 1}
-        return {"dataset_id": dataset_id, "text": "营收,100", "citation": citation}
-
-    async def cells(self, purpose, cells):
-        """每一格都是 100（0030 §3.1）。"""
-        self.purposes.append(purpose)
-        return [
-            {
-                **ref,
-                "found": True,
-                "raw": "100",
-                "number": "100",
-                "version": "1",
-                "sha256": self.sha,
-            }
-            for ref in cells
-        ]
-
-
-async def test_a_test_reads_its_bound_data_only_while_it_runs(db):
-    """测试中的草稿经工作台读用户数据：委托在跑才转给 knowlab，结束了就拒（0027 §3.5）。"""
-    from app.application.workbench.knowbot_data import KnowbotData
-    from app.application.workbench.records import ProjectRecords
-    from app.domain.workbench.errors import NotFound, RecordsRefused
-
-    binding = {"dataset_id": str(uuid.uuid4()), "version": "1", "sha256": "a" * 64}
-    doc = asking()
-    doc["data_bindings"] = [binding]
-    for step in doc["pack"]["workflow"]:
-        step["tools"] = ["list_my_data", "read_my_data"]
-    source = FakeDataSource(binding)
-    fake = ScriptedAppServer([PLAN, ANSWER])
-    await fake.start()
-    runner = runner_for(db, records=True)  # 沙箱里配了工作台的工具服务
-    try:
-        await setup_test_computer(db, fake)
-        await accept(db, request("knowlab-run-0040", doc=doc))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
-        await conductor.tick()
-        await drive(runner)
-        assert (await status(db, "knowlab-run-0040"))["status"] == "waiting"
-        async with db() as s:
-            task_id = str(
-                (await s.execute(text("select id from workbench_tasks"))).scalar()
-            )
-
-        def data(s, owner=OWNER):
-            return KnowbotData(
-                ProjectRecords(WorkbenchRepository(s), owner_actor_id=owner), source
-            )
-
-        async with db() as s:
-            listed = await data(s).list(task_id)
-            assert [d["dataset_id"] for d in listed["datasets"]] == [
-                binding["dataset_id"]
-            ]
-            read = await data(s).read(task_id, binding["dataset_id"])
-            assert read["text"] == "营收,100"
-            with pytest.raises(NotFound):
-                await data(s).read(
-                    task_id, str(uuid.uuid4())
-                )  # 没绑定的：不去问 knowlab
-            await s.commit()
-        assert source.purposes == [{"kind": "test", "run_id": "knowlab-run-0040"}] * 2
-        source.sha = "b" * 64  # knowlab 回来的不是绑定的那一份：不给
-        async with db() as s:
-            assert (await data(s).list(task_id))["datasets"] == []
-            with pytest.raises(NotFound):
-                await data(s).read(task_id, binding["dataset_id"])
-        source.sha = binding["sha256"]
-        async with db() as s:
-            with pytest.raises(NotFound):  # 别人的委托
-                await data(s, owner=str(uuid.uuid4())).list(task_id)
-        [q] = (await status(db, "knowlab-run-0040"))["questions"]
-        await answer(
-            db,
-            "knowlab-run-0040",
-            {
-                "answers": [
-                    {
-                        "question_id": q["question_id"],
-                        "option_id": "3y",
-                        "answered_by": "user",
-                    }
-                ]
-            },
-        )
-        await conductor.tick()
-        await drive(runner)
-        await conductor.tick()
-        await conductor.tick()
-        assert (await status(db, "knowlab-run-0040"))["status"] == "passed"
-        assert any(
-            "## The user's own data" in t and task_id in t for t in fake.turn_inputs
-        )
-        async with db() as s:
-            with pytest.raises(RecordsRefused):  # 委托结束了：不再转发
-                await data(s).list(task_id)
-    finally:
-        await close(runner)
-        await fake.close()
-
-
 async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
-    """0030：测试中的草稿用 compute 算数，记进计算记录；交回的数对不上就退回重做，对上了才过。"""
+    """0030：测试中的草稿用 compute 算数（输入是事实编号，凭这条用例的测试运行授权回
+    knowbase 取），记进计算记录；交回的数对不上就退回重做，对上了才过。"""
     from app.application.workbench.knowbot_compute import COMPUTE_EVENT, KnowbotCompute
     from app.application.workbench.records import ProjectRecords
-    from app.domain.workbench import compute as calc
 
-    binding = {"dataset_id": str(uuid.uuid4()), "version": "1", "sha256": "a" * 64}
-    doc = asking()
-    doc["data_bindings"] = [binding]
+    fact = f"fact:{uuid.UUID(int=7)}"
+
+    class Facts:
+        """run_reader 的替身：每个事实都是 100。"""
+
+        async def facts(self, repo, task, refs):  # type: ignore[no-untyped-def]
+            return dict.fromkeys(refs, Decimal("100"))
+
+    doc = {**asking(), "bindings": []}
     for step in doc["pack"]["workflow"]:
-        step["tools"] = ["list_my_data", "read_my_table", "compute"]
+        step["tools"] = ["query_facts", "compute"]
     last = doc["pack"]["workflow"][-1]
     last["acceptance"] = [
         *last["acceptance"],
@@ -1149,13 +1039,15 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
         },
     ]
     last["max_reworks"] = 1
-    source = FakeDataSource(binding)
+    body = request("knowlab-run-0050", doc=doc).model_dump(mode="json")
+    # 带了测试集：钉上、不跑第 0 步（SDD 0046 第三节）
+    body["cases"][0]["data"] = {"grant_id": "g-case-50", "items": [PIN]}
     fake = ScriptedAppServer([])
     await fake.start()
     runner = runner_for(db, records=True)
     try:
         await setup_test_computer(db, fake)
-        await accept(db, request("knowlab-run-0050", doc=doc))
+        await accept(db, RunRequest.model_validate(body))
         conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
         await conductor.tick()
         await drive(runner)
@@ -1163,12 +1055,12 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
             task_id = str(
                 (await s.execute(text("select id from workbench_tasks"))).scalar()
             )
-        cell = calc.address(binding["dataset_id"], "利润表", "营业收入", "2024-06-30")
         async with db() as s:
             tool = KnowbotCompute(
-                ProjectRecords(WorkbenchRepository(s), owner_actor_id=OWNER), source
+                ProjectRecords(WorkbenchRepository(s), owner_actor_id=OWNER),
+                Facts(),  # type: ignore[arg-type]
             )
-            done = await tool.compute(task_id, "合计", "a + b", {"a": cell, "b": cell})
+            done = await tool.compute(task_id, "合计", "a + b", {"a": fact, "b": fact})
             await s.commit()
         assert done["value"] == "200"
         async with db() as s:
@@ -1176,7 +1068,7 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
                 task_id, types=(COMPUTE_EVENT,)
             )
         assert [f"c{e['cursor']}" for e in events] == [done["id"]]
-        assert events[0]["payload"]["inputs"][0]["ref"] == cell
+        assert events[0]["payload"]["inputs"][0]["ref"] == fact
 
         def answer_with(value):
             return json.dumps(
@@ -1217,7 +1109,8 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
             if c["rule"] == "computed"
         ]
         assert computed == [("step/rejected", False), ("step/accepted", True)]
-        assert any("read_my_table" in t and "compute_id" in t for t in fake.turn_inputs)
+        assert any("query_facts" in t and "compute_id" in t for t in fake.turn_inputs)
+        assert not any("list_my_data" in t for t in fake.turn_inputs)
         assert any(
             "says 201 but computed 200" in t for t in fake.turn_inputs
         )  # 重做提示里有
@@ -1231,109 +1124,20 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
         await fake.close()
 
 
-async def test_a_test_with_a_data_grant_reads_what_is_pinned(db):
-    """SDD 0042 第七节：带测试运行授权的测试，每条用例的委托钉授权里那几份，按钉住的读；
-    授权由 knowlab 撤，这里不交还。"""
-    import hashlib
+def test_a_v1_test_grant_is_not_accepted():
+    """v1 的测试运行授权（`data_grant`，经 knowlab 的数据编号读）删了（decisions ⑰）：
+    带着它的请求不合契约；没带的摘要照旧。"""
+    from pydantic import ValidationError
 
-    from app.application.workbench.data_choice import GrantReleaser
-    from app.application.workbench.knowbot_data import data_scope
-
-    csv = "项目,2024\n营业收入,250.25\n".encode()
-    dataset_id = str(uuid.uuid4())
-    sha = hashlib.sha256(csv).hexdigest()
-    binding = {"dataset_id": dataset_id, "version": "1", "sha256": sha}
-    doc = asking()
-    doc["data_bindings"] = [binding]
-    for step in doc["pack"]["workflow"]:
-        step["tools"] = ["list_my_data", "read_my_data"]
-    body = request("knowlab-run-0060", doc=doc).model_dump(mode="json")
-    body["data_grant"] = {
-        "grant_id": "grant-test-1",
-        "items": [
-            {
-                "dataset_id": dataset_id,
-                "item_id": "item-1",
-                "name": "营收.csv",
-                "media_type": "text/csv; charset=utf-8",
-                "size_bytes": len(csv),
-                "sha256": sha,
-            }
-        ],
-    }
-    fake = ScriptedAppServer([PLAN, ANSWER])
-    await fake.start()
-    runner = runner_for(db)
-    try:
-        await setup_test_computer(db, fake)
-        await accept(db, RunRequest.model_validate(body))
-        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
-        async with db() as s:
-            repo = WorkbenchRepository(s)
-            task = (
-                (await s.execute(text("select * from workbench_tasks")))
-                .mappings()
-                .one()
-            )
-            # 这段对话是测试的一条用例：沙箱不给写 /tmp（Fable 评审 P2-14）
-            assert await repo.is_test_session(str(task["session_id"]))
-            assert not await repo.is_test_session(str(uuid.uuid4()))
-            pins = await repo.list_task_data(str(task["id"]))
-            assert [
-                (str(p["dataset_id"]), p["grant_id"], p["grant_kind"]) for p in pins
-            ] == [(dataset_id, "grant-test-1", "test")]
-            purpose, bound = await data_scope(repo, OWNER, dict(task))
-            assert purpose["kind"] == "pinned" and dataset_id in bound
-            await s.execute(
-                text("update workbench_tasks set state = 'SUCCEEDED' where id = :t"),
-                {"t": task["id"]},
-            )
-            await s.commit()
-
-        class Cloud:
-            released: list[str] = []
-
-            async def release(self, grant_id: str) -> None:
-                self.released.append(grant_id)
-
-        cloud = Cloud()
-        assert await GrantReleaser(workbench_stores(db), cloud).sweep() == 0  # type: ignore[arg-type]
-        assert cloud.released == []
-    finally:
-        await close(runner)
-        await fake.close()
-
-
-def test_a_grant_with_a_dataset_id_that_is_not_knowlabs_is_refused():
-    """授权里的数据编号不是 knowlab 的：不受理，不退回经 knowlab 读（Astra 评审 F02）。"""
-    from app.application.workbench.test_runs import pins_for_test
-    from app.domain.workbench.errors import KnowbotInvalid
-
-    body = request("knowlab-run-0062").model_dump(mode="json")
-    body["data_grant"] = {
-        "grant_id": "g",
-        "items": [
-            {
-                "dataset_id": "not-a-uuid",
-                "item_id": "i",
-                "name": "a.csv",
-                "media_type": "text/csv",
-                "size_bytes": 1,
-                "sha256": "a" * 64,
-            }
-        ],
-    }
-    with pytest.raises(KnowbotInvalid):
-        pins_for_test(RunRequest.model_validate(body))
-
-
-def test_a_request_without_a_grant_keeps_its_digest():
     plain = request("knowlab-run-0061")
-    assert "data_grant" not in plain.model_dump(mode="json")
     assert (
         plain.digest()
         == RunRequest.model_validate(plain.model_dump(mode="json")).digest()
     )
+    body = plain.model_dump(mode="json")
+    body["data_grant"] = {"grant_id": "g", "items": []}
+    with pytest.raises(ValidationError):
+        RunRequest.model_validate(body)
 
 
 # —— 清单 v2 的草稿与用户本人跑（SDD 0046 第三节，块 7）——
@@ -1450,6 +1254,24 @@ async def test_a_v2_case_with_its_test_set_is_pinned_and_skips_step_zero(db):
         assert [
             (p["item_id"], p["grant_id"], p["grant_kind"], p["basis"]) for p in pins
         ] == [("m-2025", "g-case-1", "test", "public")]
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            # 这段对话是测试的一条用例：沙箱不给写 /tmp（Fable 评审 P2-14）
+            assert await repo.is_test_session(str(task["session_id"]))
+            assert not await repo.is_test_session(str(uuid.uuid4()))
+            await s.execute(
+                text("update workbench_tasks set state = 'SUCCEEDED' where id = :t"),
+                {"t": task["id"]},
+            )
+            await s.commit()
+        # 测试运行授权由 knowlab 撤：委托结束了这里也不交还
+        released: list[str] = []
+
+        async def release(grant_id: str) -> None:
+            released.append(grant_id)
+
+        assert await GrantReleaser(workbench_stores(db), release).sweep() == 0
+        assert released == []
     finally:
         await fake.close()
 
