@@ -105,3 +105,13 @@ async def answer(
         return _out(await svc.answer(run_id, answers))
     except WorkbenchError as exc:
         raise _http(exc) from exc
+
+
+@router.get("/users/{subject}/computers")
+async def computers(
+    _: Caller,
+    svc: Service,
+    subject: Annotated[str, Path(pattern=r"^[A-Za-z0-9._:@-]{1,512}$")],
+) -> JSONResponse:
+    """用户接入过的电脑（SDD 0046 第三节「怎么选电脑」）：knowlab 列给他选，在哪台跑自己的测试。"""
+    return _out({"computers": await svc.computers(subject)})

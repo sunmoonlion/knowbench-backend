@@ -168,6 +168,8 @@ class ExpertData:
         pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
         if row is None or not pending:
             raise DataChoiceInvalid("nothing is waiting for your confirmation")
+        if row.get("resolution_id") is None:
+            raise DataChoiceInvalid("confirm the data of this test in knowlab")
         if row["status"] == "waiting":
             raise DataChoiceInvalid("data for this task is still being fetched")
         token = await user_token()
@@ -326,7 +328,7 @@ class ExpertData:
         """等用户确认的几张请求，每一样解析到哪、候选有哪些（页面上换、改、去掉用）；
         条目带编号（由这里算，页面不照算）。"""
         pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
-        if row is None or not pending:
+        if row is None or not pending or row.get("resolution_id") is None:
             return {}
         latest = await self.knowbase.resolution(
             await user_token(), str(row["resolution_id"])
@@ -348,7 +350,7 @@ class ExpertData:
         draft: Plan,
     ) -> list[dict[str, Any]]:
         """已经齐的、还没钉的：本人签一条追加的授权。"""
-        pins = await _new_pins(repo, task_id, draft.pins)
+        pins = await new_pins(repo, task_id, draft.pins)
         if not pins:
             return []
         grant_id = await self._grant_by_user(
@@ -466,13 +468,16 @@ async def request_data(
         raise DataChoiceInvalid("this task does not use listed data")
     if not isinstance(asked, list) or not 1 <= len(asked) <= MAX_REQUEST_NEEDS:
         raise DataChoiceInvalid(f"ask for 1 to {MAX_REQUEST_NEEDS} items")
-    subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
-    if subject is None:
-        raise DataChoiceInvalid("this account is not known to the data service")
     detail = dict(row.get("detail") or {})
     requests = list(detail.get("requests") or [])
     number = len(requests) + 1
     needs = [_asked_need(a, number, n) for n, a in enumerate(asked, start=1)]
+    if row.get("resolution_id") is None:
+        # 测试委托（SDD 0046 第三节）：不经运行方的账号解析，报给 knowlab 由作者确认
+        return await _ask_the_tester(repo, task_id, detail, requests, needs, now)
+    subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
+    if subject is None:
+        raise DataChoiceInvalid("this account is not known to the data service")
     try:
         fresh = await knowbase.add_needs(
             subject,
@@ -546,6 +551,36 @@ async def find_subject(directory: SubjectDirectory, name: object) -> dict[str, A
             for f in found
             if isinstance(f, dict)
         ]
+    }
+
+
+async def _ask_the_tester(
+    repo: WorkbenchStore,
+    task_id: str,
+    detail: dict[str, Any],
+    requests: list[dict[str, Any]],
+    needs: list[DataRequest],
+    now: datetime | None,
+) -> dict[str, Any]:
+    request = {
+        "id": f"r{len(requests) + 1}",
+        "needs": [n.model_dump(mode="json") for n in needs],
+        "labels": [n.name for n in needs],
+        "statuses": [],
+        "status": "pending",
+        "requested_at": (now or datetime.now(UTC)).isoformat(),
+    }
+    detail["requests"] = requests + [request]
+    async with repo.transaction():
+        await repo.update_task_resolution(task_id, detail=detail)
+    return {
+        "status": "listed",
+        "request": request["id"],
+        "items": [{"name": n.name, "status": "to_confirm"} for n in needs],
+        "message": (
+            "Listed for the author of this test to confirm; you cannot read it before "
+            "that. Finish this step with the data you have and say what is missing."
+        ),
     }
 
 
@@ -640,7 +675,7 @@ def _mark(detail: dict[str, Any], ids: set[str], status: str) -> list[dict[str, 
     ]
 
 
-async def _new_pins(
+async def new_pins(
     repo: WorkbenchStore, task_id: str, pins: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
     """追加的钉住去掉已经钉过的那几份（同一份同一版不钉两次）。"""
@@ -777,7 +812,7 @@ class DataWaiter:
             user_decides=True,
         )
         async with self.stores() as repo:
-            done.pins = await _new_pins(repo, task_id, done.pins)
+            done.pins = await new_pins(repo, task_id, done.pins)
         known = set((row.get("detail") or {}).get("incomplete") or [])
         detail = {
             **detail,

@@ -10,6 +10,12 @@ knowlab 交来一份草稿清单与验收用例。我们用真引擎跑：测试
 入超时，一个问题最多等 max_wait_seconds，过了这条用例记 needs_human。中途的审批与反问还受
 runner 的一小时等待上限约束（Codex 那一轮挂在沙箱里），超时按停下收尾，这条用例记 needs_human。
 
+清单 v2 的草稿（SDD 0046 第三节，decisions ⑭）：用例带了测试集（`data`：一张这条用例的测试
+运行授权与钉住的几份）就钉上、不跑第 0 步；没带的先跑第 0 步，专家提出的数据不经测试账号
+去 knowbase 解析，而报成种类 `data` 的待回答问题，作者在 knowlab 确认后带着测试集回答，钉上
+接着跑。运行方可以是平台的测试账号（缺省），也可以是用户本人：跑在他接入的电脑、他选的
+工作区根目录、他的沙箱与模型 key（`runner`），不占平台的测试名额与每月上限。
+
 结果只有运行正确与否：每步验收、没过的验收名、期望满足与否，不放分析内容。每条用例跑完时另取
 它的产出——成稿与各步交回物（SDD 0037）：这时取，是因为用例共用工作区、后一条会盖掉前一条的
 成稿，整次测完目录还要删。产出单独存、单独一个接口给 knowlab（运营验证这一稿、用户看自己的）。
@@ -33,6 +39,10 @@ from app.application.workbench.deliverable_check import (
     DeliverableReader,
     DeliverableTooLarge,
 )
+from app.application.workbench.expert_data import (
+    new_pins,
+    pending_requests,
+)
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.interactions import answer_interaction, cancel_task
 from app.application.workbench.ledger import Ledger
@@ -55,11 +65,12 @@ from app.domain.workbench.errors import (
     WorkbenchError,
 )
 from app.domain.workbench.models import HandoverRequest
-from app.domain.workbench.states import TASK_TERMINAL, TaskState
+from app.domain.workbench.states import TASK_TERMINAL, TaskState, WaitingReason
 from app.domain.workbench.test_runs import (
     CONTRACT,
     FINAL,
     Answers,
+    CaseData,
     RunCase,
     RunRequest,
     case_outputs,
@@ -98,6 +109,7 @@ class Account:
     actor_id: str
     environment_id: str
     project_id: str
+    root: str = ""  # 这次测试的工作区根目录
     online: bool = True  # 测试电脑在线
     # 测试账号下此刻在线的别的电脑（账 133）：一个账号同一时刻只有一台在线，有它测试电脑就上不来
     others_online: tuple[str, ...] = ()
@@ -124,6 +136,34 @@ def _month_start(now: datetime) -> datetime:
 
 def _request(run: dict[str, Any]) -> RunRequest:
     return RunRequest.model_validate(run["request"])
+
+
+def by_user(run: dict[str, Any]) -> bool:
+    """用户本人跑的测试（SDD 0046 第三节）：不占平台的测试名额与每月上限。"""
+    runner = (run.get("request") or {}).get("runner") or {}
+    return runner.get("kind") == "user"
+
+
+def data_question_id(task_id: str, request_id: str) -> str:
+    return f"data:{task_id}:{request_id}"
+
+
+def _test_planning(request: RunRequest, case: RunCase) -> dict[str, Any] | None:
+    """清单 v2 的草稿、用例没带测试集：委托先跑第 0 步，清单那一行记成「定数据」，
+    不建 knowbase 的清单（提出的报给 knowlab，作者在那边确认）。"""
+    if not knowbots.is_v2(request.manifest) or case.data is not None:
+        return None
+    return {
+        "resolution_id": None,
+        "revision": None,
+        "consumer": f"knowlab-test:{request.run_id}"[:160],
+        "params": {},
+        "grant_ref": f"{request.run_id}:{case.case_id}"[:255],
+        "picks": {},
+        "dropped": [],
+        "status": "planning",
+        "detail": {},
+    }
 
 
 def _questions_of(
@@ -202,7 +242,10 @@ class KnowbotTestService:
         self.now = now
 
     async def accept(self, request: RunRequest, *, caller: str) -> dict[str, Any]:
-        if not self.config.subject or not self.config.workspace_root:
+        mine = request.runner is not None and request.runner.kind == "user"
+        if mine:
+            await self._users_computer(request)
+        elif not self.config.subject or not self.config.workspace_root:
             raise KnowbotTestUnconfigured("the test account or computer is not set up")
         prior = await self.repo.get_test_run(request.run_id)
         if prior is not None:
@@ -222,8 +265,12 @@ class KnowbotTestService:
         pins_for_test(request)  # 授权里的编号不合格同样不受理
         limit = Decimal(request.budget.limit)
         async with self.repo.transaction():
-            committed = await self.repo.committed_test_spend(_month_start(self.now()))
-            if committed + limit > self.config.monthly_limit:
+            committed = (
+                Decimal("0")
+                if mine  # 用户自己出钱，上限是他这次设的（SDD 0046 第三节）
+                else await self.repo.committed_test_spend(_month_start(self.now()))
+            )
+            if not mine and committed + limit > self.config.monthly_limit:
                 raise KnowbotTestBudgetExhausted(
                     "the monthly test budget would be exceeded",
                     committed=str(committed),
@@ -246,6 +293,46 @@ class KnowbotTestService:
                 ],
             )
         return await self.status(request.run_id)
+
+    async def _users_computer(self, request: RunRequest) -> dict[str, Any]:
+        """用户本人跑：他登录过工作台，那台电脑是他接入的、那个根目录在它的白名单里。"""
+        runner = request.runner
+        assert runner is not None
+        actor = await self.repo.actor_for_subject(request.owner_subject)
+        if actor is None:
+            raise KnowbotTestUnconfigured(
+                "this user has never signed in to the workbench"
+            )
+        env = next(
+            (
+                e
+                for e in await self.repo.list_environments(owner_actor_id=actor)
+                if str(e["id"]) == runner.environment_id
+            ),
+            None,
+        )
+        if env is None or runner.workspace_root not in list(env.get("roots") or []):
+            raise KnowbotTestUnconfigured(
+                "that computer or workspace root is not the user's"
+            )
+        return env
+
+    async def computers(self, subject: str) -> list[dict[str, Any]]:
+        """用户接入过的电脑（SDD 0046 第三节「怎么选电脑」）：名字、系统、在线与否、白名单
+        里的根目录。没登录过工作台的是空的。"""
+        actor = await self.repo.actor_for_subject(subject)
+        if actor is None:
+            return []
+        return [
+            {
+                "environment_id": str(e["id"]),
+                "name": str(e.get("name") or ""),
+                "os": e.get("os"),
+                "online": e.get("status") == ONLINE,
+                "roots": list(e.get("roots") or []),
+            }
+            for e in await self.repo.list_environments(owner_actor_id=actor)
+        ]
 
     async def status(self, run_id: str) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
@@ -332,9 +419,12 @@ class KnowbotTestService:
             if case.get("result") or not case.get("task_id"):
                 continue
             task = await self.repo.get_task(str(case["task_id"]))
-            if task["state"] != TaskState.WAITING or not task.get(
-                "active_interaction_id"
-            ):
+            if task["state"] != TaskState.WAITING:
+                continue
+            if task.get("waiting_reason") == WaitingReason.DATA:
+                out += await self._data_questions(run["run_id"], case, task)
+                continue
+            if not task.get("active_interaction_id"):
                 continue
             interaction = await self.repo.get_interaction(
                 str(task["active_interaction_id"])
@@ -345,6 +435,36 @@ class KnowbotTestService:
                 if q["kind"] == "ask_before" and q["key"] in preset:
                     continue
                 out.append({**q, "case_id": case["case_id"]})
+        return out
+
+    async def _data_questions(
+        self, run_id: str, case: dict[str, Any], task: dict[str, Any]
+    ) -> list[dict[str, Any]]:
+        """专家提出的数据（第 0 步或运行中）：作者本人在 knowlab 确认，带测试集回答。"""
+        row = await self.repo.get_task_resolution(str(task["id"]))
+        out = []
+        for request in pending_requests(row):
+            if request.get("status") != "pending":
+                continue
+            qid = data_question_id(str(task["id"]), str(request["id"]))
+            if await self.repo.get_test_answer(run_id, qid):
+                continue
+            out.append(
+                {
+                    "question_id": qid,
+                    "case_id": case["case_id"],
+                    "step_id": None,
+                    "kind": "data",
+                    "key": None,
+                    "text": (
+                        "专家要这些数据：" + "、".join(request.get("labels") or [])
+                    )[:4000],
+                    "options": [],
+                    "allow_free_text": False,
+                    "asked_at": str(request.get("requested_at") or "")[:40],
+                    "requests": list(request.get("needs") or []),
+                }
+            )
         return out
 
     async def _answered_ids(self, run_id: str, interaction: dict[str, Any]) -> set[str]:
@@ -401,6 +521,33 @@ class KnowbotTestService:
                     run_id, given.question_id, body, given.answered_by
                 )
         return await self.status(run_id)
+
+
+def case_pins(data: CaseData) -> list[dict[str, Any]]:
+    """一条用例的测试集（清单 v2）钉进委托：凭这条用例的测试运行授权读；授权由 knowlab
+    撤，这里不交还（grant_kind = test）。"""
+    return [
+        {
+            "dataset_id": str(uuid.uuid4()),
+            "slot": None,
+            "source": "knowbase",
+            "item_id": item.material_id,
+            "version_no": item.version_no,
+            "sha256": item.sha256,
+            "rendition_kind": item.rendition_kind,
+            "rendition_no": item.rendition_no,
+            "rendition_sha256": item.rendition_sha256,
+            "basis": item.basis,
+            "basis_ref": item.basis_ref,
+            "name": item.name,
+            "media_type": item.media_type,
+            "size_bytes": item.size_bytes,
+            "path": None,
+            "grant_id": data.grant_id,
+            "grant_kind": "test",
+        }
+        for item in data.items
+    ]
 
 
 def pins_for_test(request: RunRequest) -> list[dict[str, Any]]:
@@ -470,10 +617,15 @@ class KnowbotTestConductor:
     async def tick(self) -> int:
         async with self.stores() as repo:
             runs = await repo.list_test_runs(statuses=ACTIVE)
-        # 已经开跑的接着推；空出来的位子按受理先后给排队的
-        started = [r for r in runs if r["started_at"] is not None]
+        # 平台的：已经开跑的接着推，空出来的位子按受理先后给排队的；用户本人跑的不占位子
+        platform = [r for r in runs if not by_user(r)]
+        started = [r for r in platform if r["started_at"] is not None]
         free = max(0, self.config.max_running - len(started))
-        runs = started + [r for r in runs if r["started_at"] is None][:free]
+        runs = (
+            started
+            + [r for r in platform if r["started_at"] is None][:free]
+            + [r for r in runs if by_user(r)]
+        )
         moved = 0
         for run in runs:
             try:
@@ -484,23 +636,46 @@ class KnowbotTestConductor:
         await self.cleanup()
         return moved
 
-    async def _account(self, repo: WorkbenchStore, folder: str) -> Account:
-        if not self.config.subject or not self.config.workspace_root:
-            raise KnowbotTestUnconfigured("the test account or computer is not set up")
-        actor = await repo.actor_for_subject(self.config.subject)
-        if actor is None:
-            raise KnowbotTestUnconfigured("the test account has never signed in")
-        root = self.config.workspace_root
-        env = next(
-            (
-                e
-                for e in await repo.list_environments(owner_actor_id=actor)
-                if root in list(e.get("roots") or [])
-            ),
-            None,
-        )
-        if env is None:
-            raise KnowbotTestUnconfigured("the test computer is not paired")
+    async def _account(
+        self, repo: WorkbenchStore, folder: str, request: RunRequest
+    ) -> Account:
+        runner = request.runner
+        if runner is not None and runner.kind == "user":
+            # 用户本人跑（SDD 0046 第三节）：他的账号、他选的电脑与根目录
+            actor = await repo.actor_for_subject(request.owner_subject)
+            if actor is None:
+                raise KnowbotTestUnconfigured("this user has never signed in")
+            root = str(runner.workspace_root)
+            env = next(
+                (
+                    e
+                    for e in await repo.list_environments(owner_actor_id=actor)
+                    if str(e["id"]) == runner.environment_id
+                    and root in list(e.get("roots") or [])
+                ),
+                None,
+            )
+            if env is None:
+                raise KnowbotTestUnconfigured("the chosen computer is not the user's")
+        else:
+            if not self.config.subject or not self.config.workspace_root:
+                raise KnowbotTestUnconfigured(
+                    "the test account or computer is not set up"
+                )
+            actor = await repo.actor_for_subject(self.config.subject)
+            if actor is None:
+                raise KnowbotTestUnconfigured("the test account has never signed in")
+            root = self.config.workspace_root
+            env = next(
+                (
+                    e
+                    for e in await repo.list_environments(owner_actor_id=actor)
+                    if root in list(e.get("roots") or [])
+                ),
+                None,
+            )
+            if env is None:
+                raise KnowbotTestUnconfigured("the test computer is not paired")
         # 每次测试一个项目，目录是工作区下这次测试自己的子目录（账 129）
         project = await repo.find_project(
             owner_actor_id=actor,
@@ -528,6 +703,7 @@ class KnowbotTestConductor:
             actor_id=actor,
             environment_id=str(env["id"]),
             project_id=project_id,
+            root=root,
             online=env.get("status") == ONLINE,
             others_online=others,
         )
@@ -567,7 +743,7 @@ class KnowbotTestConductor:
             # 工作区本身里跑，结果里写明没有隔离（账 129，所有者 2026-10-18 选甲）
             folder = run_folder(run) if self.folders is not None else ""
             try:
-                account = await self._account(repo, folder)
+                account = await self._account(repo, folder, _request(run))
             except KnowbotTestUnconfigured as exc:
                 await self._finish(repo, run, status="error", error=exc.message)
                 return
@@ -589,7 +765,7 @@ class KnowbotTestConductor:
                 try:
                     ready = self.folders is None or await self.folders.prepare(
                         owner=account.actor_id,
-                        root=str(self.config.workspace_root),
+                        root=account.root,
                         folder=folder,
                     )
                 except FolderRefused as exc:
@@ -686,7 +862,9 @@ class KnowbotTestConductor:
             snapshot=PinnedPack(
                 pack=pack, digest=knowbots.manifest_digest(manifest), source=SOURCE_TEST
             ),
-            pins=pins_for_test(request) or None,
+            pins=(case_pins(case.data) if case.data else pins_for_test(request))
+            or None,
+            resolution=_test_planning(request, case),
         )
         session = await repo.get_session(session_id)
         async with repo.transaction():
@@ -737,6 +915,16 @@ class KnowbotTestConductor:
                     error=f"queued too long behind task {behind}",
                 )
             return
+        if (
+            task["state"] == TaskState.WAITING
+            and task.get("waiting_reason") == WaitingReason.DATA
+        ):
+            # 专家提出的数据：等作者在 knowlab 确认，带测试集回答
+            if await self._apply_data(repo, run, task):
+                await self._stop_waiting(repo, run, row, now)
+                return
+            await self._wait_or_give_up(repo, run, case, row, task, account, now)
+            return
         if task["state"] != TaskState.WAITING or not task.get("active_interaction_id"):
             await self._stop_waiting(repo, run, row, now)
             return
@@ -782,6 +970,19 @@ class KnowbotTestConductor:
         if answered:
             await self._stop_waiting(repo, run, row, now)
             return
+        await self._wait_or_give_up(repo, run, case, row, task, account, now)
+
+    async def _wait_or_give_up(
+        self,
+        repo: WorkbenchStore,
+        run: dict[str, Any],
+        case: RunCase,
+        row: dict[str, Any],
+        task: dict[str, Any],
+        account: Account,
+        now: datetime,
+    ) -> None:
+        """等人回答：记下从什么时候开始等；等过 max_wait_seconds 这条用例记 needs_human。"""
         if row.get("waiting_since") is None:
             async with repo.transaction():
                 await repo.update_test_case(
@@ -800,6 +1001,44 @@ class KnowbotTestConductor:
                 account,
                 needs_human=True,
             )
+
+    async def _apply_data(
+        self, repo: WorkbenchStore, run: dict[str, Any], task: dict[str, Any]
+    ) -> bool:
+        """作者在 knowlab 确认了专家提出的数据：钉上测试集、这几张请求办完、委托接着跑。
+        有一张还没回答就不动。"""
+        from app.application.workbench.ledger import Ledger
+
+        task_id = str(task["id"])
+        row = await repo.get_task_resolution(task_id)
+        asked = [r for r in pending_requests(row) if r.get("status") == "pending"]
+        if row is None or not asked:
+            return False
+        given = []
+        for request in asked:
+            found = await repo.get_test_answer(
+                run["run_id"], data_question_id(task_id, str(request["id"]))
+            )
+            if found is None:
+                return False
+            given.append(CaseData.model_validate(found["answer"].get("data") or {}))
+        pins = await new_pins(repo, task_id, [p for d in given for p in case_pins(d)])
+        detail = dict(row.get("detail") or {})
+        ids = {str(r["id"]) for r in asked}
+        detail["requests"] = [
+            {**r, "status": "done"} if str(r.get("id")) in ids else r
+            for r in detail.get("requests") or []
+        ]
+        if not pins:
+            detail["incomplete"] = list(detail.get("incomplete") or []) + [
+                f"{label}：你没要" for r in asked for label in r.get("labels") or []
+            ]
+        async with repo.transaction():
+            if pins:
+                await repo.pin_task_data(task_id, pins)
+            await repo.update_task_resolution(task_id, detail=detail)
+            await Ledger(repo).resume_data(task_id)
+        return True
 
     async def _respond_if_ready(
         self,

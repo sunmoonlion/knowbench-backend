@@ -1334,3 +1334,208 @@ def test_a_request_without_a_grant_keeps_its_digest():
         plain.digest()
         == RunRequest.model_validate(plain.model_dump(mode="json")).digest()
     )
+
+
+# —— 清单 v2 的草稿与用户本人跑（SDD 0046 第三节，块 7）——
+
+USER = "7a1f0c2e-5b6d-4e8f-9a0b-1c2d3e4f5a6b"
+USER_ROOT = "/home/me/work"
+PIN = {
+    "material_id": "m-2025",
+    "version_no": 1,
+    "sha256": "a" * 64,
+    "rendition_kind": "pages",
+    "rendition_no": 1,
+    "rendition_sha256": "c" * 64,
+    "basis": "public",
+    "basis_ref": "public:disclosure",
+    "name": "贵州茅台2025年年度报告.pdf",
+    "media_type": "application/pdf",
+    "size_bytes": 100,
+}
+
+
+def v2_doc() -> dict:
+    return {**manifest(), "schema": "knowbot-manifest/v2", "bindings": []}
+
+
+async def users_computer(db, fake) -> str:
+    """用户本人登录过工作台、接入了自己的电脑（白名单里一个根目录）、有自己的沙箱。"""
+    async with db() as s:
+        await s.execute(
+            text(
+                """insert into auth_user (id, issuer, subject, roles, scopes)
+                   values (:i, 'https://casdoor.test', 'user-123', '[]', '[]')"""
+            ),
+            {"i": USER},
+        )
+        await s.commit()
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            env = await repo.register_environment(
+                owner_actor_id=USER,
+                name="我的电脑",
+                agent_version="0.5.3",
+                codex_version="0.155.1",
+                roots=[USER_ROOT],
+                ceiling={},
+            )
+            await repo.register_sandbox(
+                owner_actor_id=USER,
+                app_server_url=f"ws://127.0.0.1:{fake.port}",
+                token_ref="inline:t",
+                codex_version="0.155.1",
+            )
+        async with repo.transaction():
+            await s.execute(
+                text(
+                    "update workbench_environments set status = 'online' where id = :e"
+                ),
+                {"e": str(env)},
+            )
+    return str(env)
+
+
+async def one_task(db) -> dict:
+    async with db() as s:
+        return dict(
+            (await s.execute(text("select * from workbench_tasks"))).mappings().one()
+        )
+
+
+async def test_the_user_runs_his_own_test_on_his_own_computer(db):
+    """用户本人作运行方：不要平台的测试账号，跑在他选的电脑与根目录、他的账号下。"""
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        env = await users_computer(db, fake)
+        no_platform = KnowbotTestConfig(subject=None, workspace_root=None)
+        async with db() as s:
+            listed = await KnowbotTestService(
+                WorkbenchRepository(s), no_platform
+            ).computers("user-123")
+        assert [(c["environment_id"], c["roots"]) for c in listed] == [
+            (env, [USER_ROOT])
+        ]
+        body = request("knowlab-run-mine-01").model_dump(mode="json")
+        body["runner"] = {"kind": "user", "environment_id": env, "workspace_root": "/x"}
+        with pytest.raises(KnowbotTestUnconfigured):
+            await accept(db, RunRequest.model_validate(body), no_platform)
+        body["runner"]["workspace_root"] = USER_ROOT
+        made = await accept(db, RunRequest.model_validate(body), no_platform)
+        assert made["status"] == "accepted"
+        await KnowbotTestConductor(workbench_stores(db), no_platform).tick()
+        task = await one_task(db)
+        assert str(task["owner_actor_id"]) == USER
+        assert str(task["environment_id"]) == env
+        assert task["project_root"].startswith(USER_ROOT)
+    finally:
+        await fake.close()
+
+
+async def test_a_v2_case_with_its_test_set_is_pinned_and_skips_step_zero(db):
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        body = request("knowlab-run-v2-set1", doc=v2_doc()).model_dump(mode="json")
+        body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
+        await accept(db, RunRequest.model_validate(body))
+        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        task = await one_task(db)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            pins = await repo.list_task_data(str(task["id"]))
+            assert await repo.get_task_resolution(str(task["id"])) is None
+        assert [
+            (p["item_id"], p["grant_id"], p["grant_kind"], p["basis"]) for p in pins
+        ] == [("m-2025", "g-case-1", "test", "public")]
+    finally:
+        await fake.close()
+
+
+async def test_step_zero_in_a_test_asks_knowlab_and_the_answer_pins_the_test_set(db):
+    """没带测试集的用例：第 0 步提出的报成 data 问题；作者在 knowlab 确认后带测试集回答，
+    钉上、委托接着跑。"""
+    from app.application.workbench.expert_data import request_data
+
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        run_id = "knowlab-run-v2-zero1"
+        await accept(db, request(run_id, doc=v2_doc()))
+        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        task = await one_task(db)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            row = await repo.get_task_resolution(str(task["id"]))
+            assert (row["status"], row["resolution_id"]) == ("planning", None)
+            listed = await request_data(
+                repo,
+                None,  # type: ignore[arg-type] — 测试委托不经 knowbase
+                task,
+                [
+                    {
+                        "subject": "600519.SH",
+                        "doc_type": "annual_report",
+                        "period": {"kind": "latest", "count": 1},
+                        "reading": "pages",
+                        "reason": "最近一年的年报",
+                    }
+                ],
+            )
+            assert listed["status"] == "listed"
+            await s.execute(
+                text(
+                    "update workbench_tasks set state = 'WAITING', "
+                    "waiting_reason = 'DATA' where id = :t"
+                ),
+                {"t": task["id"]},
+            )
+            await s.commit()
+        seen = await status(db, run_id)
+        [question] = seen["questions"]
+        assert (question["kind"], question["case_id"]) == ("data", "c1")
+        assert question["requests"][0]["subject"] == "600519.SH"
+        assert seen["status"] == "waiting"
+        with pytest.raises(ValueError):  # 数据只能本人确认
+            await answer(
+                db,
+                run_id,
+                {
+                    "answers": [
+                        {
+                            "question_id": question["question_id"],
+                            "data": {"grant_id": "g-1", "items": [PIN]},
+                            "answered_by": "operator",
+                        }
+                    ]
+                },
+            )
+        await answer(
+            db,
+            run_id,
+            {
+                "answers": [
+                    {
+                        "question_id": question["question_id"],
+                        "data": {"grant_id": "g-zero-1", "items": [PIN]},
+                        "answered_by": "user",
+                    }
+                ]
+            },
+        )
+        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            pins = await repo.list_task_data(str(task["id"]))
+            row = await repo.get_task_resolution(str(task["id"]))
+        assert [(p["item_id"], p["grant_id"], p["grant_kind"]) for p in pins] == [
+            ("m-2025", "g-zero-1", "test")
+        ]
+        assert [r["status"] for r in row["detail"]["requests"]] == ["done"]
+        assert (await one_task(db))["state"] == "VALIDATING"
+        assert (await status(db, run_id))["questions"] == []
+    finally:
+        await fake.close()

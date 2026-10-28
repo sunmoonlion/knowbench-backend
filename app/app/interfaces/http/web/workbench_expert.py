@@ -265,6 +265,8 @@ async def task_data(
         "contract_version": CONTRACT_VERSION,
         "listed": True,
         "status": row["status"],
+        # 测试委托：提出的数据由作者在 knowlab 测试页确认（SDD 0046 第三节）
+        "confirm_in": "knowlab" if row.get("resolution_id") is None else "here",
         "waiting_for": detail.get("waiting_for") or [],
         "demand_status": detail.get("demand_status"),
         "reason": detail.get("reason"),

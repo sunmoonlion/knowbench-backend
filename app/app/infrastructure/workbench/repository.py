@@ -1561,7 +1561,8 @@ class WorkbenchRepository:
             {
                 "t": row["task_id"],
                 "rid": row["resolution_id"],
-                "rev": int(row["revision"]),
+                # 测试委托在第 0 步时没有 knowbase 的清单（SDD 0046 第三节）
+                "rev": None if row["revision"] is None else int(row["revision"]),
                 "c": row["consumer"],
                 "params": json.dumps(row["params"], ensure_ascii=False),
                 "ref": row["grant_ref"],
