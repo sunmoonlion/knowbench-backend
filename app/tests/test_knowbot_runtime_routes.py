@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 from httpx import ASGITransport, AsyncClient
 from knowbot_fixtures import manifest
+from sqlalchemy import text
+from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
 from app.bootstrap.api import create_app
@@ -13,10 +15,12 @@ from app.infrastructure.security.relation_auth import (
     require_testrun_service,
 )
 from app.infrastructure.storage.postgres import get_db_session
-from app.interfaces.endpoints import knowbot_runtime_routes
+from app.infrastructure.workbench.repository import WorkbenchRepository
 from core.config import Settings
 
 BASE = "/api/internal/v1/knowbot-runtime/test-runs"
+ENV = "7a1f0c2e-5b6d-4e8f-9a0b-1c2d3e4f5a6b"  # 作者接入的那台电脑
+ROOT = "/home/me/work"
 
 
 def body(run_id="knowlab-run-0100"):
@@ -28,7 +32,35 @@ def body(run_id="knowlab-run-0100"):
         "cases": [{"case_id": "c1", "input": {"question": "看看"}}],
         "budget": {"limit": "5"},
         "timeout_seconds": 600,
+        "runner": {"kind": "user", "environment_id": ENV, "workspace_root": ROOT},
     }
+
+
+async def authors_computer(db) -> None:  # noqa: F811
+    """作者登录过工作台、接入了一台电脑（白名单里一个根目录）。"""
+    async with db() as s:
+        await s.execute(
+            text(
+                """insert into auth_user (id, issuer, subject, roles, scopes)
+                   values (:i, 'https://casdoor.test', 'user-123', '[]', '[]')"""
+            ),
+            {"i": OWNER},
+        )
+        await s.commit()
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            made = await repo.register_environment(
+                owner_actor_id=OWNER,
+                name="我的电脑",
+                agent_version="0.5.3",
+                codex_version="0.155.1",
+                roots=[ROOT],
+                ceiling={},
+            )
+            await s.execute(
+                text("update workbench_environments set id = :n where id = :o"),
+                {"n": ENV, "o": made},
+            )
 
 
 @pytest.fixture
@@ -64,21 +96,21 @@ async def test_without_the_relation_configured_everything_is_refused(
         assert hidden.status_code == 404
 
 
-async def test_knowlab_submits_reads_and_answers(client, monkeypatch):
+async def test_knowlab_submits_reads_and_answers(client, db):  # noqa: F811
     client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
         caller="knowlab",
         principal=None,  # type: ignore[arg-type]
     )
-    monkeypatch.setattr(
-        knowbot_runtime_routes,
-        "get_settings",
-        lambda: Settings(
-            KNOWBOT_TEST_SUBJECT="knowbot-tester", KNOWBOT_TEST_WORKSPACE="/workspace"
-        ),
-    )
     async with AsyncClient(
         transport=ASGITransport(app=client), base_url="http://127.0.0.1"
     ) as h:
+        # 都在作者的电脑上跑（decisions ⑯）：没有运行方的不合契约；作者没接入那台电脑 409
+        no_runner = {k: v for k, v in body().items() if k != "runner"}
+        assert (await h.post(BASE, json=no_runner)).status_code == 422
+        not_his = await h.post(BASE, json=body())
+        assert not_his.status_code == 409
+        assert not_his.json()["code"] == "test_computer_unavailable"
+        await authors_computer(db)
         made = await h.post(BASE, json=body())
         assert made.status_code == 202, made.text
         assert made.json()["status"] == "accepted"

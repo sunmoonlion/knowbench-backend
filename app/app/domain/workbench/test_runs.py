@@ -4,6 +4,9 @@
 结果怎么从步骤轨算出来。契约的真源在 knowlab（`knowlab-app/contracts/knowbot-test-run/v1/`），
 本仓只持锁（`knowbench-app/contracts/knowlab-test-run-lock.json`），测试核样例合提供方 schema。
 
+都在作者（数据的所有者）的账号下、他接入的电脑上、用他的模型 key 跑（`runner`，decisions
+⑯：平台测试也一样，平台的测试账号与测试电脑不再用于测试）。
+
 有人值守：跑到要人决定的地方（工作台的「待人回答」交互）就报成待回答的问题，knowlab 那边
 运营答跑法、用户答投资判断，答完接着跑。结果只有运行正确与否，不含分析内容；成稿与各步交回物
 走单独的产出（SDD 0037，`case_outputs`）：运营看来验证这一稿，用户看自己的作验收依据。
@@ -45,30 +48,13 @@ class CaseInput(Strict):
 
 
 class Runner(Strict):
-    """谁跑这次测试（SDD 0046 第三节）：平台的测试账号（缺省），或用户本人——跑在他接入
-    的电脑、他选的工作区根目录、他的模型 key，他出钱。v1 冻结后加的可选字段。"""
+    """谁跑这次测试（SDD 0046 第三节，decisions ⑯）：只有用户本人——跑在他接入的电脑、
+    他选的工作区根目录、他的模型 key，他出钱。平台测试也在作者的账号下跑，平台的测试
+    账号与测试电脑不再用于测试（10-28 起必填）。"""
 
-    kind: Literal["platform", "user"]
-    environment_id: str | None = Field(
-        default=None,
-        pattern=r"^[0-9a-f-]{36}$",
-        exclude_if=lambda value: value is None,
-    )
-    workspace_root: str | None = Field(
-        default=None,
-        min_length=1,
-        max_length=1024,
-        exclude_if=lambda value: value is None,
-    )
-
-    @model_validator(mode="after")
-    def _where_for_the_user(self) -> Runner:
-        mine = self.environment_id is not None and self.workspace_root is not None
-        if (self.kind == "user") != mine:
-            raise ValueError("a user runner names the computer and workspace root")
-        if self.kind == "platform" and (self.environment_id or self.workspace_root):
-            raise ValueError("the platform runner uses its own test computer")
-        return self
+    kind: Literal["user"]
+    environment_id: str = Field(pattern=r"^[0-9a-f-]{36}$")
+    workspace_root: str = Field(min_length=1, max_length=1024)
 
 
 class PinnedInput(Strict):
@@ -138,8 +124,8 @@ class RunRequest(Strict):
     budget: Budget
     timeout_seconds: int = Field(ge=60, le=86400)
     max_wait_seconds: int = Field(default=259200, ge=60, le=604800)
-    # 谁跑：没有就是平台的测试账号（SDD 0046 第三节）；没有时不进摘要
-    runner: Runner | None = Field(default=None, exclude_if=lambda value: value is None)
+    # 谁跑：用户本人，在他的电脑上（SDD 0046 第三节，decisions ⑯）；没有的请求不合契约
+    runner: Runner
 
     @model_validator(mode="after")
     def _unique_cases(self) -> RunRequest:

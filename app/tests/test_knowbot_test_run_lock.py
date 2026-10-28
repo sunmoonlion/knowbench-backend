@@ -10,7 +10,12 @@ from pathlib import Path
 import pytest
 from knowbot_fixtures import manifest
 
-from app.domain.workbench.test_runs import RunCase, case_outputs, case_result
+from app.domain.workbench.test_runs import (
+    RunCase,
+    RunRequest,
+    case_outputs,
+    case_result,
+)
 
 PARENT = Path(__file__).resolve().parents[3]
 LOCK = PARENT / "contracts/knowlab-test-run-lock.json"
@@ -63,8 +68,24 @@ def test_requests_we_accept_and_results_we_return_fit_the_contract() -> None:
         "budget": {"limit": "20"},
         "timeout_seconds": 1800,
         "max_wait_seconds": 259200,
+        # 都在作者的电脑上跑（decisions ⑯）：运行方必填，只有用户本人一种
+        "runner": {
+            "kind": "user",
+            "environment_id": "7a1f0c2e-5b6d-4e8f-9a0b-1c2d3e4f5a6b",
+            "workspace_root": "/home/me/work",
+        },
     }
-    jsonschema.validate(request, _schema(lock, "test-run-request.schema.json"))
+    request_schema = _schema(lock, "test-run-request.schema.json")
+    jsonschema.validate(request, request_schema)
+    RunRequest.model_validate(request)
+    for wrong in (
+        {k: v for k, v in request.items() if k != "runner"},  # 没有运行方
+        request | {"runner": {"kind": "platform"}},  # 平台的测试账号删了
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(wrong, request_schema)
+        with pytest.raises(ValueError):
+            RunRequest.model_validate(wrong)
     passed = case_result(
         case=RunCase.model_validate(case),
         task={"state": "SUCCEEDED"},

@@ -25,7 +25,6 @@ from app.application.workbench.machines import MachineSync
 from app.application.workbench.runner import Runner
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
-    KnowbotTestConfig,
     KnowbotTestService,
 )
 from app.domain.workbench.pricing import PriceList
@@ -267,29 +266,17 @@ def build_agent_service(relay_url: str, issuer: TokenIssuer) -> AgentService:
     return WsAgentService(relay_url, issuer)
 
 
-def test_runtime_config(settings) -> KnowbotTestConfig:
-    return KnowbotTestConfig(
-        subject=settings.knowbot_test_subject,
-        workspace_root=settings.knowbot_test_workspace,
-        monthly_limit=settings.knowbot_test_monthly_limit,
-    )
-
-
-def test_run_service(session: AsyncSession, settings) -> KnowbotTestService:
-    """作为运行方跑分身测试的三个接口（SDD 0027 §3.4）。"""
-    return KnowbotTestService(workbench_store(session), test_runtime_config(settings))
+def test_run_service(session: AsyncSession) -> KnowbotTestService:
+    """作为运行方跑分身测试的三个接口（SDD 0027 §3.4）：都在作者的账号下跑（decisions ⑯）。"""
+    return KnowbotTestService(workbench_store(session))
 
 
 def build_test_conductor(
     session_factory: async_sessionmaker[AsyncSession], settings
-) -> KnowbotTestConductor | None:
-    """没配测试账号与测试电脑就不起这条线。"""
-    config = test_runtime_config(settings)
-    if not config.subject or not config.workspace_root:
-        return None
+) -> KnowbotTestConductor:
+    """推进在跑的测试（在作者的电脑上）；不再要平台的测试账号与测试电脑（decisions ⑯）。"""
     return KnowbotTestConductor(
         workbench_stores(session_factory),
-        config,
         folders=build_test_folders(session_factory, settings),
         reader=build_deliverable_reader(
             session_factory,
@@ -303,7 +290,7 @@ def build_test_conductor(
 def build_test_folders(
     session_factory: async_sessionmaker[AsyncSession], settings
 ) -> TestFolders | None:
-    """账 129：经会合点服务流请测试电脑建、删每次测试的目录；没打开隔离、没配会合点或签名私钥
+    """账 129：经会合点服务流请作者的电脑建、删每次测试的目录；没打开隔离、没配会合点或签名私钥
     就不建，测试在共用的工作区里跑。"""
     relay_url = settings.workbench_relay_admin_url
     signing_key = settings.workbench_token_signing_key

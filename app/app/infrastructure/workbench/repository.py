@@ -1710,17 +1710,6 @@ class WorkbenchRepository:
             {"r": run_id, "q": question_id, "a": _j(answer), "b": answered_by},
         )
 
-    async def committed_test_spend(self, since: Any) -> Decimal:
-        r = await self.session.execute(
-            text(
-                """select coalesce(sum(case when status in ('accepted','running','waiting')
-                                           then budget_limit else spent end), 0)
-                   from workbench_test_runs where created_at >= :since"""
-            ),
-            {"since": since},
-        )
-        return Decimal(str(r.scalar_one()))
-
     async def expired_test_runs(self, now: Any) -> list[dict[str, Any]]:
         r = await self.session.execute(
             text(
@@ -1780,7 +1769,7 @@ class WorkbenchRepository:
         ]
         for session_id in sessions:
             await self.delete_session_tree(session_id)
-        # 每次测试一个项目（账 129）：到期一起收起，测试账号的项目列表不越积越长
+        # 每次测试一个项目（账 129）：到期一起收起，作者的项目列表不越积越长
         await self.session.execute(
             text(
                 """update workbench_projects set archived_at = now()

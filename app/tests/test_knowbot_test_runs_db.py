@@ -1,7 +1,8 @@
 """作为运行方跑分身测试（SDD 0027 §3.4）：真数据库、真 runner、假 app-server 按脚本回复。
 
-受理 → 推进器在测试电脑的固定项目里开对话、用草稿快照建委托 → runner 驱动 → 收结果。
-有人值守：开步前的提问没有预给答案就报成待回答的问题，knowlab 交来答案后代测试账号回答，接着跑。
+受理 → 推进器在作者的电脑上、这次测试的项目里开对话、用草稿快照建委托 → runner 驱动 → 收结果。
+都在作者的账号下跑（decisions ⑯），平台的测试账号与测试电脑不再用于测试。
+有人值守：开步前的提问没有预给答案就报成待回答的问题，knowlab 交来答案后代作者回答，接着跑。
 """
 
 from __future__ import annotations
@@ -24,15 +25,13 @@ from app.application.workbench.deliverable_check import ReadFile
 from app.application.workbench.grant_release import GrantReleaser
 from app.application.workbench.test_runs import (
     KnowbotTestConductor,
-    KnowbotTestConfig,
     KnowbotTestService,
 )
 from app.bootstrap.workbench import build_runner, workbench_stores
 from app.domain.workbench.errors import (
     KnowbotInvalid,
-    KnowbotTestBudgetExhausted,
     KnowbotTestConflict,
-    KnowbotTestUnconfigured,
+    KnowbotTestNoComputer,
     NotFound,
     QuestionNotOpen,
 )
@@ -41,8 +40,8 @@ from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 WORKSPACE = "/workspace"
-TESTER = "knowbot-tester"
-CONFIG = KnowbotTestConfig(subject=TESTER, workspace_root=WORKSPACE)
+AUTHOR = "user-123"  # 作者（数据的所有者）：测试在他的账号下跑
+ENV = "5b0c1d2e-3f40-4a51-8b62-7c8d9e0f1a2b"  # 他接入的那台电脑
 ASK = [
     {
         "id": "period",
@@ -87,6 +86,11 @@ def request(run_id: str, *, doc=None, answers=None, expect="README", budget="10"
             "budget": {"limit": budget},
             "timeout_seconds": 3600,
             "max_wait_seconds": 600,
+            "runner": {
+                "kind": "user",
+                "environment_id": ENV,
+                "workspace_root": WORKSPACE,
+            },
         }
     )
 
@@ -98,25 +102,29 @@ def asking() -> dict:
 
 
 async def setup_test_computer(db, fake) -> None:
-    """测试账号登录过、测试电脑已配对（登记了工作区根目录）、有自己的沙箱。"""
+    """作者登录过工作台、接入了他的电脑（白名单里登记了工作区根目录）、有自己的沙箱。"""
     async with db() as s:
         await s.execute(
             text(
                 """insert into auth_user (id, issuer, subject, roles, scopes)
                    values (:i, 'https://casdoor.test', :s, '[]', '[]')"""
             ),
-            {"i": OWNER, "s": TESTER},
+            {"i": OWNER, "s": AUTHOR},
         )
         await s.commit()
         repo = WorkbenchRepository(s)
         async with repo.transaction():
-            await repo.register_environment(
+            made = await repo.register_environment(
                 owner_actor_id=OWNER,
                 name="knowbot-test",
                 agent_version="0.4.1",
                 codex_version="0.155.1",
                 roots=[WORKSPACE],
                 ceiling={},
+            )
+            await s.execute(
+                text("update workbench_environments set id = :n where id = :o"),
+                {"n": ENV, "o": made},
             )
             await repo.register_sandbox(
                 owner_actor_id=OWNER,
@@ -136,21 +144,21 @@ def runner_for(db, records=False):
     )
 
 
-async def accept(db, req, config=CONFIG):
+async def accept(db, req):
     async with db() as s:
-        return await KnowbotTestService(WorkbenchRepository(s), config).accept(
+        return await KnowbotTestService(WorkbenchRepository(s)).accept(
             req, caller="knowlab"
         )
 
 
 async def status(db, run_id):
     async with db() as s:
-        return await KnowbotTestService(WorkbenchRepository(s), CONFIG).status(run_id)
+        return await KnowbotTestService(WorkbenchRepository(s)).status(run_id)
 
 
 async def answer(db, run_id, body):
     async with db() as s:
-        return await KnowbotTestService(WorkbenchRepository(s), CONFIG).answer(
+        return await KnowbotTestService(WorkbenchRepository(s)).answer(
             run_id, Answers.model_validate({"contract": "knowbot-test-run/v1", **body})
         )
 
@@ -163,7 +171,7 @@ async def test_a_draft_runs_on_the_real_engine_and_passes(db):
         await setup_test_computer(db, fake)
         accepted = await accept(db, request("knowlab-run-0001"))
         assert accepted["status"] == "accepted" and accepted["cases"] == []
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()  # 开对话、建委托、排驾驶
         await drive(runner)
         await conductor.tick()  # 收这条用例的结果
@@ -227,9 +235,7 @@ async def mark_written(db) -> None:
 
 async def outputs(db, run_id, case_id="c1"):
     async with db() as s:
-        return await KnowbotTestService(WorkbenchRepository(s), CONFIG).outputs(
-            run_id, case_id
-        )
+        return await KnowbotTestService(WorkbenchRepository(s)).outputs(run_id, case_id)
 
 
 async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
@@ -241,7 +247,7 @@ async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-out1"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=reader)
+        conductor = KnowbotTestConductor(workbench_stores(db), reader=reader)
         await conductor.tick()
         await drive(runner)
         await mark_written(db)
@@ -283,7 +289,7 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
         await setup_test_computer(db, fake)
         reader = FakeReader()
         await accept(db, request("knowlab-run-out2"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=reader)
+        conductor = KnowbotTestConductor(workbench_stores(db), reader=reader)
         await conductor.tick()
         await drive(runner)
         await conductor.tick()
@@ -295,7 +301,7 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
 
         offline = FakeReader(error=AgentOffline("no agent online"))
         await accept(db, request("knowlab-run-out3"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=offline)
+        conductor = KnowbotTestConductor(workbench_stores(db), reader=offline)
         await conductor.tick()
         await drive(runner)
         async with db() as s:
@@ -318,7 +324,7 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
         # 文件的修改时间早于这条用例开始：不是这次写的，不认（审读 10-19 第 3 条）
         stale = FakeReader(mtime_ms=0)
         await accept(db, request("knowlab-run-out4"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, reader=stale)
+        conductor = KnowbotTestConductor(workbench_stores(db), reader=stale)
         await conductor.tick()
         await drive(runner)
         async with db() as s:
@@ -356,7 +362,7 @@ async def test_a_crash_while_judging_ends_the_case_as_an_error(db, monkeypatch):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-crash"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         await conductor.tick()
@@ -391,7 +397,7 @@ async def test_unmet_expectations_fail_the_case(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0002", expect="不存在的说法"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         await conductor.tick()
@@ -417,7 +423,7 @@ async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0009"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         await conductor.tick()
@@ -433,7 +439,8 @@ async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
 
 
 async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
-    """账 129：同时只跑一个测试；后受理的排队，不开对话、不计时，前一个结束才开始。"""
+    """账 129：同一台电脑、同一个根目录同时只跑一个测试；后受理的排队，不开对话、不计时，
+    前一个结束才开始。"""
     fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
@@ -441,7 +448,7 @@ async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0010"))
         await accept(db, request("knowlab-run-0011"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         async with db() as s:
             repo = WorkbenchRepository(s)
@@ -466,11 +473,52 @@ async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
         await fake.close()
 
 
-async def test_a_case_queued_behind_another_task_says_so_and_is_capped(db):
-    """用例的委托排在测试账号别的委托后面（同一项目一次一位）：进度里带挡路的委托编号；排队不算进超时，
-    但排到这次测试的时限还没轮到，按超时收、原因写清排在谁后面（0034 §三.3）。"""
-    from dataclasses import replace
+async def test_tests_elsewhere_do_not_wait(db):
+    """排队只在同一台电脑、同一个根目录上（账 129）：作者另一台电脑上的测试不用等，
+    同一处的后来者照样排队。"""
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                other = await repo.register_environment(
+                    owner_actor_id=OWNER,
+                    name="另一台",
+                    agent_version="0.5.3",
+                    codex_version="0.155.1",
+                    roots=["/elsewhere"],
+                    ceiling={},
+                )
+        await accept(db, request("knowlab-run-0016"))
+        body = request("knowlab-run-0017").model_dump(mode="json")
+        body["runner"] |= {"environment_id": other, "workspace_root": "/elsewhere"}
+        await accept(db, RunRequest.model_validate(body))
+        await accept(db, request("knowlab-run-0018"))  # 和第一次同一处
+        await KnowbotTestConductor(workbench_stores(db)).tick()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            started = {
+                run_id: (await repo.get_test_run(run_id))["started_at"] is not None
+                for run_id in (
+                    "knowlab-run-0016",
+                    "knowlab-run-0017",
+                    "knowlab-run-0018",
+                )
+            }
+        assert started == {
+            "knowlab-run-0016": True,
+            "knowlab-run-0017": True,
+            "knowlab-run-0018": False,
+        }
+    finally:
+        await fake.close()
 
+
+async def test_a_case_queued_behind_another_task_says_so_and_is_capped(db):
+    """用例的委托排在作者别的委托后面（同一项目一次一位）：进度里带挡路的委托编号；排队不算进
+    超时，但排到这次测试的时限还没轮到，按超时收、原因写清排在谁后面（0034 §三.3）。"""
     fake = ScriptedAppServer([])
     await fake.start()
     clock = Clock()
@@ -480,13 +528,20 @@ async def test_a_case_queued_behind_another_task_says_so_and_is_capped(db):
             update={"timeout_seconds": 86400}
         )
         await accept(db, ahead)
-        await accept(db, request("knowlab-run-0031"))
-        conductor = KnowbotTestConductor(
-            workbench_stores(db), replace(CONFIG, max_running=2), now=clock
-        )
-        await conductor.tick()  # 两次都开跑；第二次的用例委托排在第一次的后面
+        conductor = KnowbotTestConductor(workbench_stores(db), now=clock)
+        await conductor.tick()  # 前一次开跑，它的用例委托占着这个项目
         async with db() as s:
             [first] = await WorkbenchRepository(s).list_test_cases("knowlab-run-0030")
+            # 前一次撤下了，可它的委托还在跑：作者在这个项目里别的委托也是这样
+            await s.execute(
+                text(
+                    "update workbench_test_runs set status = 'cancelled', "
+                    "finished_at = now() where run_id = 'knowlab-run-0030'"
+                )
+            )
+            await s.commit()
+        await accept(db, request("knowlab-run-0031"))
+        await conductor.tick()  # 开跑；用例委托排在那件委托后面
         await conductor.tick()  # 开始记排队时间
         shown = await status(db, "knowlab-run-0031")
         assert shown["status"] == "running"
@@ -500,7 +555,6 @@ async def test_a_case_queued_behind_another_task_says_so_and_is_capped(db):
         assert done["status"] == "timeout"
         assert done["cases"][0]["status"] == "error"
         assert f"queued too long behind task {first['task_id']}" in json.dumps(done)
-        assert (await status(db, "knowlab-run-0030"))["status"] == "running"
     finally:
         await fake.close()
 
@@ -531,7 +585,7 @@ async def test_each_test_gets_its_own_folder_made_before_and_removed_after(db):
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0012"))
         await accept(db, request("knowlab-run-0013"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, folders=folders)
+        conductor = KnowbotTestConductor(workbench_stores(db), folders=folders)
         for _ in range(2):
             await conductor.tick()
             await drive(runner)
@@ -571,7 +625,7 @@ async def test_without_isolation_the_test_runs_in_the_workspace_and_says_so(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0015"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         await conductor.tick()
@@ -600,7 +654,7 @@ async def test_no_clean_folder_means_no_start_and_then_an_error(db):
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0014"))
         conductor = KnowbotTestConductor(
-            workbench_stores(db), CONFIG, folders=folders, now=clock
+            workbench_stores(db), folders=folders, now=clock
         )
         await conductor.tick()
         async with db() as s:
@@ -644,7 +698,7 @@ async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db, 
                     ceiling={},
                 )
         await accept(db, request("knowlab-run-0015"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, now=clock)
+        conductor = KnowbotTestConductor(workbench_stores(db), now=clock)
         with caplog.at_level(
             logging.INFO, logger="app.application.workbench.test_runs"
         ):
@@ -685,7 +739,7 @@ async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0003", doc=asking()))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         waiting = await status(db, "knowlab-run-0003")
@@ -764,7 +818,7 @@ async def test_preset_answers_are_used_without_asking(db):
         await accept(
             db, request("knowlab-run-0004", doc=asking(), answers={"period": "3y"})
         )
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         assert (await status(db, "knowlab-run-0004"))["questions"] == []
@@ -787,7 +841,7 @@ async def test_a_question_nobody_answers_ends_as_needs_human(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0005", doc=asking()))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, now=clock)
+        conductor = KnowbotTestConductor(workbench_stores(db), now=clock)
         await conductor.tick()
         await drive(runner)
         await conductor.tick()  # 开始计等待
@@ -807,8 +861,9 @@ async def test_acceptance_refusals_and_conflicts(db):
     fake = ScriptedAppServer([])
     await fake.start()
     try:
-        with pytest.raises(KnowbotTestUnconfigured):
-            await accept(db, request("knowlab-run-0010"), KnowbotTestConfig(None, None))
+        # 作者没登录过工作台、没接入那台电脑：没处跑（decisions ⑯，没有平台的测试账号兜底）
+        with pytest.raises(KnowbotTestNoComputer):
+            await accept(db, request("knowlab-run-0010"))
         await setup_test_computer(db, fake)
         bad = manifest()
         bad["pack"]["workflow"][0]["tools"] = ["run_sql"]  # 数据线工具（C-L2）
@@ -819,10 +874,9 @@ async def test_acceptance_refusals_and_conflicts(db):
         assert again["run_id"] == "knowlab-run-0012"
         with pytest.raises(KnowbotTestConflict):
             await accept(db, request("knowlab-run-0012", budget="11"))
-        # 每月上限 1000：在跑的按上限占用
+        # 作者自己出钱：上限是这次请求里的，没有平台的每月上限
         await accept(db, request("knowlab-run-0013", budget="980"))
-        with pytest.raises(KnowbotTestBudgetExhausted):
-            await accept(db, request("knowlab-run-0014", budget="20"))
+        await accept(db, request("knowlab-run-0014", budget="980"))
     finally:
         await fake.close()
 
@@ -835,7 +889,7 @@ async def test_timeouts_and_seven_day_cleanup(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, request("knowlab-run-0020"))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG, now=clock)
+        conductor = KnowbotTestConductor(workbench_stores(db), now=clock)
         await conductor.tick()
         clock.at += timedelta(seconds=3601)
         await conductor.tick()
@@ -894,7 +948,7 @@ async def test_a_mid_step_approval_is_answered_through_knowlab(db):
         body = req.model_dump(mode="json")
         body["cases"][0]["input"]["question"] = "NEED_APPROVAL 看看项目"
         await accept(db, RunRequest.model_validate(body))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
 
         async def asked():
             await conductor.tick()
@@ -963,7 +1017,7 @@ async def test_an_answer_that_cannot_go_in_is_noted_once_not_every_tick(db, capl
         body = req.model_dump(mode="json")
         body["cases"][0]["input"]["question"] = "NEED_APPROVAL 看看项目"
         await accept(db, RunRequest.model_validate(body))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
 
         async def asked():
             await conductor.tick()
@@ -1048,7 +1102,7 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
     try:
         await setup_test_computer(db, fake)
         await accept(db, RunRequest.model_validate(body))
-        conductor = KnowbotTestConductor(workbench_stores(db), CONFIG)
+        conductor = KnowbotTestConductor(workbench_stores(db))
         await conductor.tick()
         await drive(runner)
         async with db() as s:
@@ -1126,7 +1180,8 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
 
 def test_a_v1_test_grant_is_not_accepted():
     """v1 的测试运行授权（`data_grant`，经 knowlab 的数据编号读）删了（decisions ⑰）：
-    带着它的请求不合契约；没带的摘要照旧。"""
+    带着它的请求不合契约；没带的摘要照旧。没有运行方、或运行方是平台测试账号的也不合
+    （decisions ⑯）。"""
     from pydantic import ValidationError
 
     plain = request("knowlab-run-0061")
@@ -1138,6 +1193,14 @@ def test_a_v1_test_grant_is_not_accepted():
     body["data_grant"] = {"grant_id": "g", "items": []}
     with pytest.raises(ValidationError):
         RunRequest.model_validate(body)
+    body = plain.model_dump(mode="json")
+    for runner in (None, {"kind": "platform"}):
+        if runner is None:
+            body.pop("runner")
+        else:
+            body["runner"] = runner
+        with pytest.raises(ValidationError):
+            RunRequest.model_validate(body)
 
 
 # —— 清单 v2 的草稿与用户本人跑（SDD 0046 第三节，块 7）——
@@ -1208,27 +1271,26 @@ async def one_task(db) -> dict:
 
 
 async def test_the_user_runs_his_own_test_on_his_own_computer(db):
-    """用户本人作运行方：不要平台的测试账号，跑在他选的电脑与根目录、他的账号下。"""
+    """用户本人作运行方：跑在他选的电脑与根目录、他的账号下。"""
     fake = ScriptedAppServer([])
     await fake.start()
     try:
         env = await users_computer(db, fake)
-        no_platform = KnowbotTestConfig(subject=None, workspace_root=None)
         async with db() as s:
-            listed = await KnowbotTestService(
-                WorkbenchRepository(s), no_platform
-            ).computers("user-123")
+            listed = await KnowbotTestService(WorkbenchRepository(s)).computers(
+                "user-123"
+            )
         assert [(c["environment_id"], c["roots"]) for c in listed] == [
             (env, [USER_ROOT])
         ]
         body = request("knowlab-run-mine-01").model_dump(mode="json")
         body["runner"] = {"kind": "user", "environment_id": env, "workspace_root": "/x"}
-        with pytest.raises(KnowbotTestUnconfigured):
-            await accept(db, RunRequest.model_validate(body), no_platform)
+        with pytest.raises(KnowbotTestNoComputer):
+            await accept(db, RunRequest.model_validate(body))
         body["runner"]["workspace_root"] = USER_ROOT
-        made = await accept(db, RunRequest.model_validate(body), no_platform)
+        made = await accept(db, RunRequest.model_validate(body))
         assert made["status"] == "accepted"
-        await KnowbotTestConductor(workbench_stores(db), no_platform).tick()
+        await KnowbotTestConductor(workbench_stores(db)).tick()
         task = await one_task(db)
         assert str(task["owner_actor_id"]) == USER
         assert str(task["environment_id"]) == env
@@ -1245,7 +1307,7 @@ async def test_a_v2_case_with_its_test_set_is_pinned_and_skips_step_zero(db):
         body = request("knowlab-run-v2-set1", doc=v2_doc()).model_dump(mode="json")
         body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
         await accept(db, RunRequest.model_validate(body))
-        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        await KnowbotTestConductor(workbench_stores(db)).tick()
         task = await one_task(db)
         async with db() as s:
             repo = WorkbenchRepository(s)
@@ -1287,7 +1349,7 @@ async def test_step_zero_in_a_test_asks_knowlab_and_the_answer_pins_the_test_set
         await setup_test_computer(db, fake)
         run_id = "knowlab-run-v2-zero1"
         await accept(db, request(run_id, doc=v2_doc()))
-        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        await KnowbotTestConductor(workbench_stores(db)).tick()
         task = await one_task(db)
         async with db() as s:
             repo = WorkbenchRepository(s)
@@ -1348,7 +1410,7 @@ async def test_step_zero_in_a_test_asks_knowlab_and_the_answer_pins_the_test_set
                 ]
             },
         )
-        await KnowbotTestConductor(workbench_stores(db), CONFIG).tick()
+        await KnowbotTestConductor(workbench_stores(db)).tick()
         async with db() as s:
             repo = WorkbenchRepository(s)
             pins = await repo.list_task_data(str(task["id"]))

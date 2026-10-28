@@ -807,7 +807,7 @@ class WorkbenchStore(Protocol):
 
     # ---------- 作为运行方跑分身测试（SDD 0027 §3.4）----------
     async def actor_for_subject(self, subject: str) -> str | None:
-        """Casdoor 用户 id → 本地 actor id（测试账号用）；没登录过就是 None。"""
+        """Casdoor 用户 id → 本地 actor id（测试在作者的账号下跑时用）；没登录过就是 None。"""
         ...
 
     async def interaction_token(
@@ -845,10 +845,6 @@ class WorkbenchStore(Protocol):
     async def insert_test_answer(
         self, run_id: str, question_id: str, answer: dict[str, Any], answered_by: str
     ) -> None: ...
-
-    async def committed_test_spend(self, since: Any) -> Decimal:
-        """这个月测试已花的与在跑的测试的上限之和（每月测试费用上限用）。"""
-        ...
 
     async def expired_test_runs(self, now: Any) -> list[dict[str, Any]]:
         """测试产出保留期满、该删的。"""

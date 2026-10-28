@@ -1,25 +1,28 @@
 """作为运行方跑分身测试（SDD 0027 §3.4，契约 knowbot-test-run/v1，有人值守）。
 
-knowlab 交来一份草稿清单与验收用例。我们用真引擎跑：测试账号、集群里的测试电脑、测试账号
-自己的沙箱与模型 key。每条用例按顺序在测试电脑的固定项目里开一段新的专家对话，用草稿的
-专家包快照建委托（来源 knowlab-test，不进钉表、不进用户的专家清单），runner 照常驱动。
+knowlab 交来一份草稿清单与验收用例。我们用真引擎跑，都在作者（`owner_subject`）的账号下：
+他接入的电脑、他选的工作区根目录、他自己的沙箱与模型 key（`runner`，SDD 0046 第三节）。
+平台测试也一样，只是由运营发起、运营也看结果（decisions ⑯）；平台的测试账号与测试电脑
+不再用于测试，测试只有这一条运行路线。每条用例按顺序在这次测试的项目里开一段新的专家
+对话，用草稿的专家包快照建委托（来源 knowlab-test，不进钉表、不进用户的专家清单），
+runner 照常驱动。同一台电脑、同一个根目录一次只跑一个测试，其余按受理先后排队（账 129）。
 
 跑到要人决定的地方（工作台的「待人回答」交互）就报成待回答的问题：开步前的提问先用用例里
-预给的答案；审批与 Codex 反问报给 knowlab，那边运营答跑法、用户答投资判断，答完我们代测试
-账号回答，委托接着跑。验收不过、返工用完要交人的那种不问，这条用例记 failed。等人的时间不计
-入超时，一个问题最多等 max_wait_seconds，过了这条用例记 needs_human。中途的审批与反问还受
-runner 的一小时等待上限约束（Codex 那一轮挂在沙箱里），超时按停下收尾，这条用例记 needs_human。
+预给的答案；审批与 Codex 反问报给 knowlab，那边运营答跑法、用户答投资判断，答完我们代作者
+在他的工作台里回答，委托接着跑。验收不过、返工用完要交人的那种不问，这条用例记 failed。
+等人的时间不计入超时，一个问题最多等 max_wait_seconds，过了这条用例记 needs_human。中途的
+审批与反问还受 runner 的一小时等待上限约束（Codex 那一轮挂在沙箱里），超时按停下收尾，
+这条用例记 needs_human。
 
 清单 v2 的草稿（SDD 0046 第三节，decisions ⑭）：用例带了测试集（`data`：一张这条用例的测试
-运行授权与钉住的几份）就钉上、不跑第 0 步；没带的先跑第 0 步，专家提出的数据不经测试账号
+运行授权与钉住的几份）就钉上、不跑第 0 步；没带的先跑第 0 步，专家提出的数据不经工作台
 去 knowbase 解析，而报成种类 `data` 的待回答问题，作者在 knowlab 确认后带着测试集回答，钉上
-接着跑。运行方可以是平台的测试账号（缺省），也可以是用户本人：跑在他接入的电脑、他选的
-工作区根目录、他的沙箱与模型 key（`runner`），不占平台的测试名额与每月上限。
+接着跑。费用上限是这次请求里的（作者的钱），没有平台的每月上限。
 
 结果只有运行正确与否：每步验收、没过的验收名、期望满足与否，不放分析内容。每条用例跑完时另取
 它的产出——成稿与各步交回物（SDD 0037）：这时取，是因为用例共用工作区、后一条会盖掉前一条的
 成稿，整次测完目录还要删。产出单独存、单独一个接口给 knowlab（运营验证这一稿、用户看自己的）。
-测试产出 7 天后删除（委托、对话、交回物；测试电脑上的底稿由测试电脑自己清理）；取好的产出
+测试产出 7 天后删除（委托、对话、交回物；电脑上的底稿随这次测试的目录删掉）；取好的产出
 30 天后清空，测试结果留着。
 """
 
@@ -32,6 +35,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
+
+from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import SOURCE_TEST, PinnedPack
@@ -56,9 +61,8 @@ from app.application.workbench.test_folders import (
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
     InteractionRejected,
-    KnowbotTestBudgetExhausted,
     KnowbotTestConflict,
-    KnowbotTestUnconfigured,
+    KnowbotTestNoComputer,
     NotFound,
     QuestionNotOpen,
     WorkbenchError,
@@ -80,7 +84,7 @@ from app.domain.workbench.tool_policy import DECISION_ACCEPT, DECISION_DECLINE
 
 log = logging.getLogger(__name__)
 
-# 测试没开跑、在等测试电脑时（账 141）：原因变了马上记一行日志，同一原因每隔这么久记一行
+# 测试没开跑、在等用户的电脑时（账 141）：原因变了马上记一行日志，同一原因每隔这么久记一行
 BLOCKED_LOG_EVERY = timedelta(minutes=10)
 
 ACTIVE = ("accepted", "running", "waiting")
@@ -92,25 +96,15 @@ NO_KNOWBOT = "00000000-0000-0000-0000-000000000000"  # 草稿还没有分身 id
 
 
 @dataclass(frozen=True)
-class KnowbotTestConfig:
-    """测试账号（Casdoor 用户 id）、测试电脑上的工作区根目录、每月测试费用上限。"""
-
-    subject: str | None
-    workspace_root: str | None
-    monthly_limit: Decimal = Decimal("1000")
-    # 同时在跑的测试最多几个，其余按受理先后排队（账 129）：只有一台测试电脑、一个沙箱、一把 key，
-    # 一起跑会互相拖慢、超时，也会在同一个工作区里看到彼此的产出
-    max_running: int = 1
-
-
-@dataclass(frozen=True)
 class Account:
+    """这次测试跑在谁那里：作者的账号、他选的那台电脑、这次测试的项目。"""
+
     actor_id: str
     environment_id: str
     project_id: str
     root: str = ""  # 这次测试的工作区根目录
-    online: bool = True  # 测试电脑在线
-    # 测试账号下此刻在线的别的电脑（账 133）：一个账号同一时刻只有一台在线，有它测试电脑就上不来
+    online: bool = True  # 那台电脑在线
+    # 他名下此刻在线的别的电脑（账 133）：一个账号同一时刻只有一台在线，有它选的那台就上不来
     others_online: tuple[str, ...] = ()
 
 
@@ -129,18 +123,19 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if hasattr(value, "isoformat") else str(value)
 
 
-def _month_start(now: datetime) -> datetime:
-    return now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-
-
 def _request(run: dict[str, Any]) -> RunRequest:
     return RunRequest.model_validate(run["request"])
 
 
-def by_user(run: dict[str, Any]) -> bool:
-    """用户本人跑的测试（SDD 0046 第三节）：不占平台的测试名额与每月上限。"""
-    runner = (run.get("request") or {}).get("runner") or {}
-    return runner.get("kind") == "user"
+def place(run: dict[str, Any]) -> tuple[str, str, str]:
+    """这次测试在哪跑：谁、哪台电脑、哪个根目录。同一处一次只跑一个（账 129）。"""
+    request = run.get("request") or {}
+    runner = request.get("runner") or {}
+    return (
+        str(request.get("owner_subject") or ""),
+        str(runner.get("environment_id") or ""),
+        str(runner.get("workspace_root") or ""),
+    )
 
 
 def data_question_id(task_id: str, request_id: str) -> str:
@@ -232,20 +227,14 @@ class KnowbotTestService:
     def __init__(
         self,
         repo: WorkbenchStore,
-        config: KnowbotTestConfig,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.repo = repo
-        self.config = config
         self.now = now
 
     async def accept(self, request: RunRequest, *, caller: str) -> dict[str, Any]:
-        mine = request.runner is not None and request.runner.kind == "user"
-        if mine:
-            await self._users_computer(request)
-        elif not self.config.subject or not self.config.workspace_root:
-            raise KnowbotTestUnconfigured("the test account or computer is not set up")
+        await self._users_computer(request)
         prior = await self.repo.get_test_run(request.run_id)
         if prior is not None:
             if prior["digest"] != request.digest():
@@ -261,19 +250,9 @@ class KnowbotTestService:
             version=str(manifest.get("version")),
             profile=trial_profile_id(request.run_id),
         )
+        # 作者自己出钱，上限是这次请求里的（SDD 0046 第三节，decisions ⑯）
         limit = Decimal(request.budget.limit)
         async with self.repo.transaction():
-            committed = (
-                Decimal("0")
-                if mine  # 用户自己出钱，上限是他这次设的（SDD 0046 第三节）
-                else await self.repo.committed_test_spend(_month_start(self.now()))
-            )
-            if not mine and committed + limit > self.config.monthly_limit:
-                raise KnowbotTestBudgetExhausted(
-                    "the monthly test budget would be exceeded",
-                    committed=str(committed),
-                    limit=str(self.config.monthly_limit),
-                )
             await self.repo.insert_test_run(
                 {
                     "run_id": request.run_id,
@@ -293,12 +272,11 @@ class KnowbotTestService:
         return await self.status(request.run_id)
 
     async def _users_computer(self, request: RunRequest) -> dict[str, Any]:
-        """用户本人跑：他登录过工作台，那台电脑是他接入的、那个根目录在它的白名单里。"""
+        """在作者的账号下跑：他登录过工作台，那台电脑是他接入的、那个根目录在它的白名单里。"""
         runner = request.runner
-        assert runner is not None
         actor = await self.repo.actor_for_subject(request.owner_subject)
         if actor is None:
-            raise KnowbotTestUnconfigured(
+            raise KnowbotTestNoComputer(
                 "this user has never signed in to the workbench"
             )
         env = next(
@@ -310,7 +288,7 @@ class KnowbotTestService:
             None,
         )
         if env is None or runner.workspace_root not in list(env.get("roots") or []):
-            raise KnowbotTestUnconfigured(
+            raise KnowbotTestNoComputer(
                 "that computer or workspace root is not the user's"
             )
         return env
@@ -357,7 +335,7 @@ class KnowbotTestService:
             "finished_at": _iso(run.get("finished_at")),
             "questions": questions,
             "waited_seconds": int(run.get("waited_seconds") or 0),
-            # 还没开跑时在等什么（账 141）：测试电脑不在线，或给不出干净的目录
+            # 还没开跑时在等什么（账 141）：那台电脑不在线，或给不出干净的目录
             **(
                 {"blocked": run["blocked_reason"]}
                 if status == "accepted" and run.get("blocked_reason")
@@ -410,7 +388,10 @@ class KnowbotTestService:
         self, run: dict[str, Any], cases: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
         """正在跑的那条用例里等人回答的问题。预给了答案的开步前提问不算（推进器会代答）。"""
-        request = _request(run)
+        try:
+            request = _request(run)
+        except ValidationError:
+            return []  # 10-28 前的平台测试（没有 runner）：推进器会把它报错结束
         by_id = {c.case_id: c for c in request.cases}
         out: list[dict[str, Any]] = []
         for case in cases:
@@ -553,18 +534,16 @@ class KnowbotTestConductor:
     def __init__(
         self,
         stores: WorkbenchStores,
-        config: KnowbotTestConfig,
         *,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         folders: TestFolders | None = None,
         reader: DeliverableReader | None = None,
     ) -> None:
         self.stores = stores
-        self.config = config
         self.now = now
         # 每次测试自己的目录，开跑前建好、测完删掉（账 129）；没配会合点服务流时为 None，只分项目不建目录
         self.folders = folders
-        # 经会合点读测试电脑上的成稿（SDD 0037）；没配会合点时为 None，产出里写明没读
+        # 经会合点读那台电脑上的成稿（SDD 0037）；没配会合点时为 None，产出里写明没读
         self.reader = reader
         self._unanswerable: set[str] = set()  # 答不进去、已记过原因的交互
         self._outputs_cleared_at: datetime | None = None  # 上一次清过期产出
@@ -572,15 +551,15 @@ class KnowbotTestConductor:
     async def tick(self) -> int:
         async with self.stores() as repo:
             runs = await repo.list_test_runs(statuses=ACTIVE)
-        # 平台的：已经开跑的接着推，空出来的位子按受理先后给排队的；用户本人跑的不占位子
-        platform = [r for r in runs if not by_user(r)]
-        started = [r for r in platform if r["started_at"] is not None]
-        free = max(0, self.config.max_running - len(started))
-        runs = (
-            started
-            + [r for r in platform if r["started_at"] is None][:free]
-            + [r for r in runs if by_user(r)]
-        )
+        # 已经开跑的接着推；同一台电脑、同一个根目录一次只跑一个，其余按受理先后排队（账 129）：
+        # 开跑前会清掉 runs 下别的目录，一起跑也会在同一个工作区里看到彼此的产出、互相拖慢
+        busy = {place(r) for r in runs if r["started_at"] is not None}
+        chosen = [r for r in runs if r["started_at"] is not None]
+        for run in runs:
+            if run["started_at"] is None and place(run) not in busy:
+                busy.add(place(run))
+                chosen.append(run)
+        runs = chosen
         moved = 0
         for run in runs:
             try:
@@ -594,43 +573,23 @@ class KnowbotTestConductor:
     async def _account(
         self, repo: WorkbenchStore, folder: str, request: RunRequest
     ) -> Account:
+        # 作者的账号、他选的电脑与根目录（SDD 0046 第三节，decisions ⑯）
         runner = request.runner
-        if runner is not None and runner.kind == "user":
-            # 用户本人跑（SDD 0046 第三节）：他的账号、他选的电脑与根目录
-            actor = await repo.actor_for_subject(request.owner_subject)
-            if actor is None:
-                raise KnowbotTestUnconfigured("this user has never signed in")
-            root = str(runner.workspace_root)
-            env = next(
-                (
-                    e
-                    for e in await repo.list_environments(owner_actor_id=actor)
-                    if str(e["id"]) == runner.environment_id
-                    and root in list(e.get("roots") or [])
-                ),
-                None,
-            )
-            if env is None:
-                raise KnowbotTestUnconfigured("the chosen computer is not the user's")
-        else:
-            if not self.config.subject or not self.config.workspace_root:
-                raise KnowbotTestUnconfigured(
-                    "the test account or computer is not set up"
-                )
-            actor = await repo.actor_for_subject(self.config.subject)
-            if actor is None:
-                raise KnowbotTestUnconfigured("the test account has never signed in")
-            root = self.config.workspace_root
-            env = next(
-                (
-                    e
-                    for e in await repo.list_environments(owner_actor_id=actor)
-                    if root in list(e.get("roots") or [])
-                ),
-                None,
-            )
-            if env is None:
-                raise KnowbotTestUnconfigured("the test computer is not paired")
+        actor = await repo.actor_for_subject(request.owner_subject)
+        if actor is None:
+            raise KnowbotTestNoComputer("this user has never signed in")
+        root = runner.workspace_root
+        env = next(
+            (
+                e
+                for e in await repo.list_environments(owner_actor_id=actor)
+                if str(e["id"]) == runner.environment_id
+                and root in list(e.get("roots") or [])
+            ),
+            None,
+        )
+        if env is None:
+            raise KnowbotTestNoComputer("the chosen computer is not the user's")
         # 每次测试一个项目，目录是工作区下这次测试自己的子目录（账 129）
         project = await repo.find_project(
             owner_actor_id=actor,
@@ -666,7 +625,7 @@ class KnowbotTestConductor:
     async def _note_blocked(
         self, repo: Any, run: dict[str, Any], reason: str, now: datetime
     ) -> None:
-        """测试还没开跑、在等测试电脑（账 141）：记下原因随结果给 knowlab；日志只在原因变了时、或同一原因
+        """测试还没开跑、在等那台电脑（账 141）：记下原因随结果给 knowlab；日志只在原因变了时、或同一原因
         每 10 分钟记一行，不刷屏。原来这两处静默返回，测试停在「已受理」只能从零日志猜。"""
         last = run.get("blocked_logged_at")
         if (
@@ -694,25 +653,35 @@ class KnowbotTestConductor:
             if run is None or run["status"] not in ACTIVE:
                 return
             now = self.now()
-            # 隔离打开时每次测试用自己的目录；没打开（测试电脑的代理还不支持建目录）就在
+            # 隔离打开时每次测试用自己的目录；没打开（电脑上的代理还不支持建目录）就在
             # 工作区本身里跑，结果里写明没有隔离（账 129，所有者 2026-10-18 选甲）
             folder = run_folder(run) if self.folders is not None else ""
             try:
                 account = await self._account(repo, folder, _request(run))
-            except KnowbotTestUnconfigured as exc:
+            except ValidationError:
+                # 10-28 前受理、跑在平台测试账号上的（没有 runner）：那条路删了（decisions ⑯）
+                await self._finish(
+                    repo,
+                    run,
+                    status="error",
+                    error="platform test runs are retired; "
+                    "test again on the author's computer",
+                )
+                return
+            except KnowbotTestNoComputer as exc:
                 await self._finish(repo, run, status="error", error=exc.message)
                 return
             if run["started_at"] is None:
                 if not account.online:
                     await self._note_blocked(repo, run, "computer_offline", now)
-                    # 测试电脑不在线不开跑，免得委托落到测试账号下别的电脑上（账 133）；过了时限报错
+                    # 那台电脑不在线不开跑，免得委托落到他名下别的电脑上（账 133）；过了时限报错
                     if (now - run["created_at"]).total_seconds() > run[
                         "timeout_seconds"
                     ]:
-                        error = "the test computer is offline"
+                        error = "the chosen computer is offline"
                         if account.others_online:
                             error += (
-                                "; online on the test account instead: "
+                                "; online on the user's account instead: "
                                 + ", ".join(account.others_online)
                             )
                         await self._finish(repo, run, status="error", error=error)
@@ -728,13 +697,13 @@ class KnowbotTestConductor:
                         repo,
                         run,
                         status="error",
-                        error="the test computer refused to prepare a clean folder: "
+                        error="the computer refused to prepare a clean folder: "
                         + exc.message,
                     )
                     return
                 if not ready:
                     await self._note_blocked(repo, run, "folder_not_ready", now)
-                    # 测试电脑没法给出一个干净的目录（离线、删不掉别人的）：不开跑，下一轮再试；
+                    # 那台电脑没法给出一个干净的目录（离线、删不掉别人的）：不开跑，下一轮再试；
                     # 等过了这次测试的时限还不行，就报错结束，不一直挂着
                     waited = (now - run["created_at"]).total_seconds()
                     if waited > run["timeout_seconds"]:
@@ -742,7 +711,7 @@ class KnowbotTestConductor:
                             repo,
                             run,
                             status="error",
-                            error="the test computer could not prepare a clean folder",
+                            error="the computer could not prepare a clean folder",
                         )
                     return
                 async with repo.transaction():
@@ -851,7 +820,7 @@ class KnowbotTestConductor:
             await self._record(repo, run, case, row, task, account)
             return
         if behind := queued_behind(task):
-            # 排在测试账号别的委托后面（同一项目一次一位）：排队不算进超时，但排到这次测试的时限
+            # 排在作者别的委托后面（同一项目一次一位）：排队不算进超时，但排到这次测试的时限
             # 还没轮到就按超时收，原因写清排在谁后面（0034 §三.3）
             if row.get("waiting_since") is None:
                 async with repo.transaction():
@@ -1002,7 +971,7 @@ class KnowbotTestConductor:
         interaction: dict[str, Any],
         account: Account,
     ) -> bool:
-        """这个交互的问题都有答案了（预给的或 knowlab 交来的）：代测试账号回答。"""
+        """这个交互的问题都有答案了（预给的或 knowlab 交来的）：代作者在他的工作台里回答。"""
         iid = str(interaction["id"])
         subject = (interaction.get("prompt") or {}).get("subject") or {}
         if interaction["kind"] == "tool_approval":
@@ -1103,7 +1072,7 @@ class KnowbotTestConductor:
         if note and result["status"] != "passed":
             result["note"] = note[:1000]
         if self.folders is None:
-            shared = "本次测试没有隔离：测试电脑的本地代理还不支持建、删目录，在共用的工作区里跑"
+            shared = "本次测试没有隔离：电脑上的本地代理还不支持建、删目录，在共用的工作区里跑"
             result["note"] = (
                 f"{result['note']}；{shared}" if result.get("note") else shared
             )[:1000]
@@ -1198,7 +1167,7 @@ class KnowbotTestConductor:
             None,
         )
         if self.reader is None:
-            return None, "没有读测试电脑文件的通道（会合点没配），成稿没取"
+            return None, "没有读电脑上文件的通道（会合点没配），成稿没取"
         session = await repo.get_session(str(task["session_id"]))
         try:
             found = await self.reader.read(
@@ -1211,7 +1180,7 @@ class KnowbotTestConductor:
         except WorkbenchError as exc:
             return None, f"成稿没读到：{exc.code}"
         if found is None:
-            return None, "成稿没读到：问不到测试电脑"
+            return None, "成稿没读到：问不到那台电脑"
         started = task.get("created_at")
         if (
             found.mtime_ms is not None
@@ -1313,14 +1282,13 @@ class KnowbotTestConductor:
             status,
             error or "",
         )
-        # 测完就删这次的目录（账 129）；删不掉的，下一个测试开跑前还会再删
-        if self.folders is not None and self.config.workspace_root:
-            actor = await repo.actor_for_subject(str(self.config.subject))
+        # 测完就删这次的目录（账 129），在作者那台电脑上；删不掉的，那里下一个测试开跑前还会再删
+        owner, _, root = place(run)
+        if self.folders is not None and root:
+            actor = await repo.actor_for_subject(owner)
             if actor is not None:
                 await self.folders.remove(
-                    owner=actor,
-                    root=self.config.workspace_root,
-                    folder=run_folder(run),
+                    owner=actor, root=root, folder=run_folder(run)
                 )
 
     async def run_forever(self, stop: Any, interval_seconds: float) -> None:

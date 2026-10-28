@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from decimal import Decimal
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -271,23 +270,14 @@ class Settings(BaseSettings):
     workbench_machine_sync_seconds: float = Field(
         default=10.0, ge=0, le=300, validation_alias="WORKBENCH_MACHINE_SYNC_SECONDS"
     )
-    # 作为运行方跑分身测试（SDD 0027 §3.4）：测试账号的 Casdoor 用户 id、测试电脑上的
-    # 工作区根目录、每月测试费用上限（所有者定 1000 元）。前两项没配，测试接口回 503
-    knowbot_test_subject: str | None = Field(
-        default=None, validation_alias="KNOWBOT_TEST_SUBJECT"
-    )
-    knowbot_test_workspace: str | None = Field(
-        default=None, validation_alias="KNOWBOT_TEST_WORKSPACE"
-    )
-    knowbot_test_monthly_limit: Decimal = Field(
-        default=Decimal("1000"), gt=0, validation_alias="KNOWBOT_TEST_MONTHLY_LIMIT"
-    )
+    # 作为运行方跑分身测试（SDD 0027 §3.4）：都在作者的账号下、他的电脑上跑（decisions ⑯），
+    # 不再有平台的测试账号、测试电脑与每月上限。推进器隔这么多秒推一次在跑的测试
     knowbot_test_poll_seconds: float = Field(
         default=5.0, ge=1, le=300, validation_alias="KNOWBOT_TEST_POLL_SECONDS"
     )
-    # 每次测试用自己的目录（账 129）：要测试电脑的本地代理能经服务流建、删 runs/ 下的目录。
+    # 每次测试用自己的目录（账 129）：要用户电脑上的本地代理能经服务流建、删 runs/ 下的目录。
     # 0.5.0 的服务流只读（service.ts 只认读的三个方法），所以默认关、在共用的工作区里跑；
-    # 测试电脑换上支持的代理（0.5.1）再打开（所有者 2026-10-18 选甲）
+    # 代理换上支持的版本（0.5.1）再打开（所有者 2026-10-18 选甲）
     knowbot_test_isolate: bool = Field(
         default=False, validation_alias="KNOWBOT_TEST_ISOLATE"
     )

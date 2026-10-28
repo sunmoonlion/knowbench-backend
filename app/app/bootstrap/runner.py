@@ -75,12 +75,8 @@ async def main() -> None:
         logger.warning("machine sync is off: relay admin channel not configured")
     # 作为运行方跑分身测试（SDD 0027 §3.4）：同一个进程里再起一条线推进在跑的测试
     tests = build_test_conductor(get_postgres().session_factory, settings)
-    testing = (
-        asyncio.create_task(
-            tests.run_forever(stopping, settings.knowbot_test_poll_seconds)
-        )
-        if tests
-        else None
+    testing = asyncio.create_task(
+        tests.run_forever(stopping, settings.knowbot_test_poll_seconds)
     )
     # 请专家用自己的数据（SDD 0042）：委托结束后交还它的运行授权
     releasing = asyncio.create_task(
@@ -98,8 +94,7 @@ async def main() -> None:
         await waiting
         if syncing is not None:
             await syncing
-        if testing is not None:
-            await testing
+        await testing
         await get_postgres().shutdown()
         await get_redis().shutdown()
 

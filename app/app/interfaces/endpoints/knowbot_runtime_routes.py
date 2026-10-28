@@ -24,7 +24,6 @@ from app.infrastructure.security.relation_auth import (
 )
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.http.internal.host_guard import internal_host_only
-from core.config import get_settings
 
 NO_STORE = {"Cache-Control": "no-store"}
 
@@ -41,7 +40,7 @@ CaseId = Annotated[str, Path(pattern=CASE_ID)]
 def service(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> KnowbotTestService:
-    return test_run_service(session, get_settings())
+    return test_run_service(session)
 
 
 Service = Annotated[KnowbotTestService, Depends(service)]
