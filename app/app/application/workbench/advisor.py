@@ -33,7 +33,13 @@ from app.domain.workbench.deliverables import (
 from app.domain.workbench.errors import BudgetExhausted
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.models import InteractionPrompt
-from app.domain.workbench.packs import ExpertPack, Scope, StepContract, find_pack
+from app.domain.workbench.packs import (
+    SEALED_INPUT,
+    ExpertPack,
+    Scope,
+    StepContract,
+    find_pack,
+)
 from app.domain.workbench.projects import NO_DETOUR
 from app.domain.workbench.records import one_line
 from app.domain.workbench.states import (
@@ -358,6 +364,9 @@ class Advisor:
                 if reworks
                 else []
             )
+            # 孵化方法（专家孵化方案第八节）：模型只看契约列死的材料（0029 第 6.4 节），
+            # 不加用户的记忆、不给读项目记录的说明
+            sealed = pack.profile_id in SEALED_INPUT
             text = self.compose(
                 step,
                 question,
@@ -365,7 +374,7 @@ class Advisor:
                 reworks,
                 rework_failures=rejected[-1].get("failures") if rejected else None,
                 folder=folder,
-                records_task=task_id if self.records else None,
+                records_task=task_id if self.records and not sealed else None,
                 listed_data_task=(
                     task_id
                     if self.records
@@ -375,7 +384,9 @@ class Advisor:
                 ),
                 ask_before_answers=answered["ask_before"],
                 change_request=answered["change_request"],
-                user_facts=memory_note(
+                user_facts=None
+                if sealed
+                else memory_note(
                     await repo.list_memories(
                         str(task["owner_actor_id"]), enabled_only=True
                     )

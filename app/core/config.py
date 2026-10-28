@@ -275,6 +275,11 @@ class Settings(BaseSettings):
     knowbot_test_poll_seconds: float = Field(
         default=5.0, ge=1, le=300, validation_alias="KNOWBOT_TEST_POLL_SECONDS"
     )
+    # 作为运行方跑孵化的一轮（专家孵化方案第八节）：在作者的账号下、他的电脑上跑（decisions ⑯）。
+    # 推进器隔这么多秒推一次在跑的孵化
+    knowbot_incubation_poll_seconds: float = Field(
+        default=5.0, ge=1, le=300, validation_alias="KNOWBOT_INCUBATION_POLL_SECONDS"
+    )
     # 每次测试用自己的目录（账 129）：要用户电脑上的本地代理能经服务流建、删 runs/ 下的目录。
     # 0.5.0 的服务流只读（service.ts 只认读的三个方法），所以默认关、在共用的工作区里跑；
     # 代理换上支持的版本（0.5.1）再打开（所有者 2026-10-18 选甲）

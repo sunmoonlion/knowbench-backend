@@ -1,8 +1,9 @@
 """专家包与步骤契约（methods.md「专家包」、task-contract.md「步骤交回物」）。
 
 专家包是数据：workflow[] 的每一步说清输入引用、方法文本、输出 schema、验收条目、不合格的去向。顾问按它逐步发 turn；
-它不是 skill（做成 skill 等于整包交出去），也不写判断规则（F-POS-02）。内置只剩 SMOKE（跑机制，不给用户看）：
-「问数」「财报体检」「财务分析与预测」三份读平台的旧数据工具，10-28 撤了（0027、decisions ⑰）；专家都是用户的分身。
+它不是 skill（做成 skill 等于整包交出去），也不写判断规则（F-POS-02）。内置只剩 SMOKE（跑机制，不给用户看）
+与孵化方法 INCUBATE（只供孵化用，专家孵化方案第八节）：「问数」「财报体检」「财务分析与预测」三份读平台的旧数据工具，
+10-28 撤了（0027、decisions ⑰）；专家都是用户的分身。
 """
 
 from __future__ import annotations
@@ -159,7 +160,9 @@ class StepContract(Strict):
         """成稿路径只许项目内的相对路径（审读 10-19 第 4 条）：它会拼进读测试电脑文件的请求，
         代理的白名单是最后一道，不是唯一一道。"""
         if self.output_file is not None and not safe_relative_path(self.output_file):
-            raise ValueError("output_file must be a plain relative path inside the project")
+            raise ValueError(
+                "output_file must be a plain relative path inside the project"
+            )
         return self
 
 
@@ -344,7 +347,195 @@ SMOKE = ExpertPack(
     },
 )
 
-BUILTIN_PACKS: dict[str, ExpertPack] = {p.profile_id: p for p in (SMOKE,)}
+# 孵化方法（专家孵化方案第八节，decisions ⑮）：作者点「AI 起草」「让 AI 改…」时，工作台在作者的
+# 「孵化」项目里开一件委托跑它（app/application/workbench/incubations.py）。方法归我们：怎么读
+# 材料、什么能写成建议、什么只能问作者；投资判断一律写成缺口附提议（第四节）。只供孵化用，
+# 不在请专家的列表里，用户也请不了（internal）
+INCUBATE_METHOD = (
+    "You help an author write the method of an expert on a workdraft. The user's "
+    "question above is not a question to answer: its `incubation` field is the "
+    "material of this round, and it is all you may use. It holds:\n"
+    '- action: "draft" (write a skeleton from the seed) or "revise" (change the '
+    "workdraft as the author's instruction says); instruction: the author's sentence "
+    "(revise only); step_id: the step the author named, if any.\n"
+    "- seed: the author's idea, verbatim (kind question, six_questions or skill).\n"
+    "- workdraft.body: the current workdraft. Whole-expert cells: name, tagline, "
+    "scope (does, does_not, elsewhere). Steps: id, title, does, why, uses, rules "
+    "[{id, text}], ask_before [{id, question, options}], outputs [{name, type, "
+    "items}], checks [{template, params}], on_fail, advanced. workdraft.sources: the "
+    "source of each filled cell by path; user_text means the author wrote it, "
+    "user_confirmed means the author accepted or answered it.\n"
+    "- answers: gaps the author has answered: id, question, proposal, answer.\n"
+    "- data_formats: names, table names, column labels and row labels of the data "
+    "the author picked. There are no figures in it; never invent any.\n"
+    "Read no files, run no commands, call no tools.\n"
+    "\n"
+    "What you may suggest is the skeleton: how many steps; for each step its title, "
+    "what it does in plain words (including what data such a step usually needs), "
+    "why, which earlier steps it uses, what it hands back (outputs: a name and a "
+    "type number, table, text or list, with items for a list or a table), and "
+    "structural check templates (required, non_empty, list_min of 1, each_has with "
+    "keys only, covers). The name, tagline and scope may be suggested only from "
+    "what the seed says.\n"
+    "\n"
+    "Investment judgments belong to the author and are never suggested: definitions "
+    "and scopes of figures, thresholds, conversions, adjustments, forecasting "
+    "methods and assumptions, how to treat special cases, when to stop and ask the "
+    "user (questions before a step), what counts as correct (tolerances, expected "
+    "values, allowed values, expressions), and any rule that decides an investment "
+    "matter. For each judgment the method needs, add a gap: "
+    "one question to the author, your proposal, and a few options. Never put a "
+    "proposal for a judgment into a suggestion, and never put it into a step's "
+    "does, why or a check either. A rule may be suggested only when its text is a "
+    "sentence copied character for character from the seed, or the author's answer "
+    "to an answered gap. Never write method_text, never suggest anything under "
+    "advanced, never change the picked data, and never give buy or sell advice, "
+    "ratings or target prices.\n"
+    "\n"
+    "Cells listed in workdraft.sources are the author's: you may suggest a change "
+    "to one of them only with a reason, and only when the action asks for it. Leave "
+    "every cell the action does not ask about as it is.\n"
+    "draft: suggest the whole skeleton from the seed, and list the gaps. revise: do "
+    "what the instruction says and nothing else, on the named step when step_id is "
+    "given; where the instruction touches a judgment, add a gap instead of a "
+    "suggestion. An answered gap may become a suggestion whose source is that "
+    "answer.\n"
+    "\n"
+    "Hand back:\n"
+    "- suggestions: each {id, path, op, value, reason}. path is one of name, "
+    "tagline, scope, scope/does, scope/does_not, scope/elsewhere, steps/<step>, "
+    "steps/<step>/<title|does|why|uses|rules|ask_before|outputs|checks|on_fail>, "
+    "steps/<step>/rules/<rule>, steps/<step>/ask_before/<question>, "
+    "steps/<step>/outputs/<output name>, steps/<step>/checks/<n>. op: set replaces "
+    "the cell or block with value; add adds a new step, rule, question, output or "
+    "check, value being the new item; remove takes no value; move takes the new "
+    "position, from 0, as value. value has the shape the cell has in "
+    "workdraft.body. Step, rule and question ids use letters, digits, - and _, a "
+    "step id starting with a letter. reason is one sentence.\n"
+    "- sources: one entry {path, kind, quote, ref} for every cell a suggestion "
+    "fills (the cell itself, or each cell inside a step it adds): kind idea with "
+    "quote, the sentence copied character for character from seed.text; kind "
+    "answer with ref, the id of the answered gap; otherwise kind proposal, with "
+    "neither. Mark a proposal as a proposal; never present it as the author's.\n"
+    "- gaps: each {id, question, proposal, options}; options are short choices and "
+    "may be empty.\n"
+    "- self_check: before handing back, check every suggestion. If it carries a "
+    "judgment, or its source is an idea quote or an answer that does not match, "
+    "remove it from suggestions, add a gap for it, and record {suggestion_id, "
+    "turned_into_gap} with the removed suggestion's id and the gap's id.\n"
+    "Write every title, sentence, question, proposal, option and reason in the "
+    "language of the seed. "
+)
+
+INCUBATE = ExpertPack(
+    pack_id="INCUBATE",
+    version="1",
+    profile_id="INCUBATE",
+    title="孵化：起草或按指令改",
+    name="孵化",
+    tagline="按作者的种子起草专家的方法骨架，或按作者的一句话改工作稿",
+    internal=True,
+    workflow=(
+        StepContract(
+            step_id="incubate",
+            title="起草或按指令改",
+            summary="读你的创意、现稿与答复，交回对工作稿的建议与要你定的问题",
+            why="建议要你接受才进稿；判断只问你，不替你定",
+            method_text=INCUBATE_METHOD + JSON_ONLY,
+            output_artifact="incubation",
+            output_schema={
+                "sources": [
+                    {
+                        "path": "string",
+                        "kind": "idea | answer | proposal",
+                        "quote": "string, idea only",
+                        "ref": "string, answer only",
+                    }
+                ],
+                "gaps": [
+                    {
+                        "id": "string",
+                        "question": "string",
+                        "proposal": "string",
+                        "options": ["string"],
+                    }
+                ],
+                "suggestions": [
+                    {
+                        "id": "string",
+                        "path": "string",
+                        "op": "set | add | remove | move",
+                        "value": "the cell's shape; none for remove; position for move",
+                        "reason": "string",
+                    }
+                ],
+                "self_check": [
+                    {"suggestion_id": "string", "turned_into_gap": "string"}
+                ],
+            },
+            acceptance=(
+                AcceptanceRule(
+                    kind="json_object",
+                    message="交回物不是 JSON 对象",
+                    label="交回的格式对",
+                ),
+                AcceptanceRule(
+                    kind="required_keys",
+                    keys=("sources", "gaps", "suggestions", "self_check"),
+                    message="缺出处表、缺口表、建议或自查",
+                    label="四样都有",
+                ),
+                AcceptanceRule(
+                    kind="each_has",
+                    path="sources",
+                    keys=("path", "kind"),
+                    field="kind",
+                    values=("idea", "answer", "proposal"),
+                    message="出处缺格子或种类，或种类不是创意、答复、提议",
+                    label="每条出处有格子与种类",
+                ),
+                AcceptanceRule(
+                    kind="each_has",
+                    path="gaps",
+                    keys=("id", "question", "proposal", "options"),
+                    message="缺口缺问题、提议或选项",
+                    label="每个缺口有问题、提议与选项",
+                ),
+                AcceptanceRule(
+                    kind="each_has",
+                    path="suggestions",
+                    keys=("id", "path", "op", "reason"),
+                    field="op",
+                    values=("set", "add", "remove", "move"),
+                    message="建议缺格子、改法或理由，或改法不认得",
+                    label="每条建议有格子、改法与理由",
+                ),
+                AcceptanceRule(
+                    kind="each_has",
+                    path="self_check",
+                    keys=("suggestion_id", "turned_into_gap"),
+                    message="自查缺建议或缺口",
+                    label="自查写明哪条建议改成了哪个缺口",
+                ),
+            ),
+            on_reject="rework",
+            max_reworks=1,
+        ),
+    ),
+    # 只产出文字：不改文件、不跑命令、不联网、不反问（要问作者的写成缺口）
+    tool_policy=ToolPolicy(
+        file_change_in_project="deny",
+        file_change_outside="deny",
+        command="deny",
+        network="deny",
+        questions="deny",
+        max_questions=0,
+    ),
+)
+
+BUILTIN_PACKS: dict[str, ExpertPack] = {p.profile_id: p for p in (SMOKE, INCUBATE)}
+# 模型只看契约列死的材料（0029 第 6.4 节）：不加用户的记忆、不给读项目记录的说明
+SEALED_INPUT = frozenset({INCUBATE.profile_id})
 
 
 def listed_packs() -> list[ExpertPack]:

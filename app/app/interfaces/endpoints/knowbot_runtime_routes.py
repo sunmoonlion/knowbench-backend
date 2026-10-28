@@ -1,7 +1,9 @@
-"""作为运行方跑分身测试的内部接口（SDD 0027 §3.4，契约 knowbot-test-run/v1）。
+"""作为运行方的内部接口：跑分身测试（SDD 0027 §3.4，契约 knowbot-test-run/v1）与跑孵化的
+一轮（专家孵化方案第八节，契约 knowbot-incubation/v1）。
 
-只接受 knowlab 的服务身份（关系 testrun，`knowbench:testrun`），身份先于数据库会话核。
-入口统一在 `/api/internal/v1/knowbot-runtime`（traefik service-access 的内部入口）。
+只接受 knowlab 的服务身份：测试是关系 testrun（`knowbench:testrun`），孵化是关系 incubate
+（`knowbench:incubate`），两种身份各管各的接口，身份先于数据库会话核。入口统一在
+`/api/internal/v1/knowbot-runtime`（traefik service-access 的内部入口）。
 """
 
 from __future__ import annotations
@@ -14,12 +16,15 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.errors.exceptions import AppException
+from app.application.workbench.incubations import IncubationService
 from app.application.workbench.test_runs import KnowbotTestService
-from app.bootstrap.workbench import test_run_service
+from app.bootstrap.workbench import incubation_service, test_run_service
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
 from app.domain.workbench.test_runs import CASE_ID, RUN_ID, Answers, RunRequest
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
+    require_incubate_service,
     require_testrun_service,
 )
 from app.infrastructure.storage.postgres import get_db_session
@@ -44,6 +49,17 @@ def service(
 
 
 Service = Annotated[KnowbotTestService, Depends(service)]
+IncubationCaller = Annotated[ServiceCaller, Depends(require_incubate_service)]
+IncubationId = Annotated[str, Path(pattern=INCUBATION_ID)]
+
+
+def incubations(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> IncubationService:
+    return incubation_service(session)
+
+
+Incubations = Annotated[IncubationService, Depends(incubations)]
 
 
 def _http(exc: WorkbenchError) -> AppException:
@@ -114,3 +130,44 @@ async def computers(
 ) -> JSONResponse:
     """用户接入过的电脑（SDD 0046 第三节「怎么选电脑」）：knowlab 列给他选，在哪台跑自己的测试。"""
     return _out({"computers": await svc.computers(subject)})
+
+
+@router.post("/incubations")
+async def submit_incubation(
+    caller: IncubationCaller, body: dict[str, Any], svc: Incubations
+) -> JSONResponse:
+    """受理孵化的一轮：同一个 incubation_id 内容相同回原状态，不同则 409。"""
+    try:
+        request = IncubationRequest.model_validate(body)
+    except ValidationError as exc:
+        raise AppException(
+            code="incubation_invalid",
+            status_code=422,
+            msg="not knowbot-incubation/v1",
+        ) from exc
+    try:
+        result = await svc.accept(request, caller=caller.caller)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return _out(result, status_code=202)
+
+
+@router.get("/incubations/{incubation_id}")
+async def incubation_status(
+    _: IncubationCaller, svc: Incubations, incubation_id: IncubationId
+) -> JSONResponse:
+    try:
+        return _out(await svc.status(incubation_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/incubations/{incubation_id}/cancel")
+async def cancel_incubation(
+    _: IncubationCaller, svc: Incubations, incubation_id: IncubationId
+) -> JSONResponse:
+    """取消：在跑的委托停下；已经结束的回原状态。"""
+    try:
+        return _out(await svc.cancel(incubation_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc

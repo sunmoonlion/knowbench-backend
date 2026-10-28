@@ -21,6 +21,11 @@ from app.application.ports.workbench import (
 )
 from app.application.workbench.agent_download import ReleaseStore
 from app.application.workbench.grant_release import GrantReleaser
+from app.application.workbench.incubations import (
+    IncubationConductor,
+    IncubationFolders,
+    IncubationService,
+)
 from app.application.workbench.machines import MachineSync
 from app.application.workbench.runner import Runner
 from app.application.workbench.test_runs import (
@@ -300,6 +305,41 @@ def build_test_folders(
     from app.application.workbench.tokens import TokenIssuer
 
     return AgentTestFolders(
+        build_agent_service(
+            relay_url,
+            TokenIssuer(signing_key, issuer=settings.workbench_token_issuer),
+        ),
+        workbench_stores(session_factory),
+    )
+
+
+def incubation_service(session: AsyncSession) -> IncubationService:
+    """作为运行方跑孵化的一轮的三个接口（专家孵化方案第八节）：在作者的账号下跑（decisions ⑯）。"""
+    return IncubationService(workbench_store(session))
+
+
+def build_incubation_conductor(
+    session_factory: async_sessionmaker[AsyncSession], settings
+) -> IncubationConductor:
+    """推进在跑的孵化（在作者的电脑上、他的「孵化」项目里）。"""
+    return IncubationConductor(
+        workbench_stores(session_factory),
+        folders=build_incubation_folders(session_factory, settings),
+    )
+
+
+def build_incubation_folders(
+    session_factory: async_sessionmaker[AsyncSession], settings
+) -> IncubationFolders | None:
+    """经会合点服务流请作者的本地 link 建「孵化」目录；没配会合点或签名私钥就不建。"""
+    relay_url = settings.workbench_relay_admin_url
+    signing_key = settings.workbench_token_signing_key
+    if not (relay_url and signing_key):
+        return None
+    from app.application.workbench.incubations import AgentIncubationFolders
+    from app.application.workbench.tokens import TokenIssuer
+
+    return AgentIncubationFolders(
         build_agent_service(
             relay_url,
             TokenIssuer(signing_key, issuer=settings.workbench_token_issuer),

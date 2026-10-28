@@ -47,6 +47,10 @@ def atomic(method):
     return wrapped
 
 
+# 孵化一轮的两列 JSON：knowlab 交来的请求、合契约的交回物
+INCUBATION_JSON = frozenset({"request", "handback"})
+
+
 def _j(v: Any) -> str:
     return json.dumps(v, ensure_ascii=False, default=str)
 
@@ -1445,6 +1449,78 @@ class WorkbenchRepository:
             {"s": session_id},
         )
         return r.first() is not None
+
+    # ---------- 作为运行方跑孵化的一轮（专家孵化方案第八节）----------
+    async def insert_incubation(self, row: dict[str, Any]) -> None:
+        cols = list(row)
+        await self.session.execute(
+            text(
+                f"insert into workbench_incubations ({', '.join(cols)}) values ("
+                + ", ".join(
+                    f"cast(:{c} as jsonb)" if c in INCUBATION_JSON else f":{c}"
+                    for c in cols
+                )
+                + ")"
+            ),
+            {c: (_j(row[c]) if c in INCUBATION_JSON else row[c]) for c in cols},
+        )
+
+    async def get_incubation(
+        self, incubation_id: str, *, for_update: bool = False
+    ) -> dict[str, Any] | None:
+        r = await self.session.execute(
+            text(
+                "select * from workbench_incubations where incubation_id = :i"
+                + (" for update" if for_update else "")
+            ),
+            {"i": incubation_id},
+        )
+        row = r.mappings().first()
+        return dict(row) if row else None
+
+    async def list_incubations(
+        self, *, statuses: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """select * from workbench_incubations where status = any(:s)
+                   order by created_at"""
+            ),
+            {"s": list(statuses)},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def update_incubation(self, incubation_id: str, **changes: Any) -> None:
+        allowed = {
+            "status",
+            "spent",
+            "error",
+            "waiting_for",
+            "started_at",
+            "finished_at",
+            "project_id",
+            "session_id",
+            "task_id",
+            "handback",
+        }
+        assert set(changes) <= allowed, sorted(set(changes) - allowed)
+        sets = ", ".join(
+            f"{k} = cast(:{k} as jsonb)" if k in INCUBATION_JSON else f"{k} = :{k}"
+            for k in changes
+        )
+        await self.session.execute(
+            text(
+                f"update workbench_incubations set {sets}"
+                " where incubation_id = :incubation_id"
+            ),
+            {
+                **{
+                    k: (_j(v) if k in INCUBATION_JSON and v is not None else v)
+                    for k, v in changes.items()
+                },
+                "incubation_id": incubation_id,
+            },
+        )
 
     # ---------- 委托钉住的数据（SDD 0042 第五节）----------
     async def pin_task_data(

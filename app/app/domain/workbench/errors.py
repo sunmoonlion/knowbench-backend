@@ -233,6 +233,21 @@ class KnowbotTestConflict(WorkbenchError):
     http_status = 409
 
 
+class IncubationNoComputer(WorkbenchError):
+    """孵化的一轮要跑在作者本人的电脑上（专家孵化方案第 8.5 节），可他没登录过工作台，
+    或那台电脑、那个根目录不是他的（同测试的 test_computer_unavailable）。"""
+
+    code = "incubation_computer_unavailable"
+    http_status = 409
+
+
+class IncubationConflict(WorkbenchError):
+    """同一个 incubation_id 不同内容。"""
+
+    code = "incubation_conflict"
+    http_status = 409
+
+
 class QuestionNotOpen(WorkbenchError):
     """这个问题不在等人回答（没有、已经答过、或那条用例已经结束）。"""
 

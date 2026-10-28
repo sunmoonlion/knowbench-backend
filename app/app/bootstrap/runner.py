@@ -14,6 +14,7 @@ from app.bootstrap.workbench import (
     build_data_waiter,
     build_deliverable_check,
     build_grant_releaser,
+    build_incubation_conductor,
     build_machine_sync,
     build_runner,
     build_test_conductor,
@@ -78,6 +79,11 @@ async def main() -> None:
     testing = asyncio.create_task(
         tests.run_forever(stopping, settings.knowbot_test_poll_seconds)
     )
+    # 作为运行方跑孵化的一轮（专家孵化方案第八节）：再起一条线推进在跑的孵化
+    incubations = build_incubation_conductor(get_postgres().session_factory, settings)
+    incubating = asyncio.create_task(
+        incubations.run_forever(stopping, settings.knowbot_incubation_poll_seconds)
+    )
     # 请专家用自己的数据（SDD 0042）：委托结束后交还它的运行授权
     releasing = asyncio.create_task(
         build_grant_releaser(get_postgres().session_factory).run_forever(stopping)
@@ -95,6 +101,7 @@ async def main() -> None:
         if syncing is not None:
             await syncing
         await testing
+        await incubating
         await get_postgres().shutdown()
         await get_redis().shutdown()
 

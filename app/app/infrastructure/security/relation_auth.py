@@ -1,11 +1,12 @@
 """按关系校验其他应用的服务令牌（SDD 0027 §3.4；机制同 knowmart 的 relation_auth）。
 
-knowbench 作为运行方接受一种关系：knowlab 来跑分身测试（testrun）。一种关系可以有多个
-调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，每个调用方一组
+knowbench 作为运行方接受两种关系：knowlab 来跑分身测试（testrun）、来跑孵化的一轮
+（incubate，专家孵化方案第八节）。一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，每个调用方一组
 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id）、`_SUBJECT_ALLOWLIST`
 （`admin/<调用方服务应用>`）、`_REQUIRED_SCOPE`（`knowbench:<关系>`），都由部署从调用方
 配置推出来（`common/backend/service-client`）。一组都没配就是这种关系没开，一律拒绝。
-签名、签发方、有效期用模板的 OIDC 客户端核。
+签名、签发方、有效期用模板的 OIDC 客户端核。孵化只许 knowlab 调（`RELATION_CALLERS`）：
+部署里多配了别的调用方也不认。
 """
 
 from __future__ import annotations
@@ -28,7 +29,9 @@ from app.domain.security import Principal
 from app.infrastructure.security.oidc import OidcProviderClient
 from core.config import Settings, get_settings
 
-Relation = Literal["testrun"]
+Relation = Literal["testrun", "incubate"]
+# 只许这些调用方的关系；没列的照部署配的调用方
+RELATION_CALLERS: dict[str, frozenset[str]] = {"incubate": frozenset({"knowlab"})}
 
 
 CALLER = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -59,9 +62,12 @@ def relation_bindings(
         c.strip()
         for c in env.get(f"SERVICE_AUTH_{relation.upper()}_CALLERS", "").split(",")
     ]
+    allowed = RELATION_CALLERS.get(relation)
     bindings: list[RelationBinding] = []
     for caller in callers:
         if not CALLER.fullmatch(caller):
+            continue
+        if allowed is not None and caller not in allowed:
             continue
         prefix = f"SERVICE_AUTH_{relation.upper()}_{caller.upper().replace('-', '_')}_"
         audience = env.get(prefix + "AUDIENCE", "").strip()
@@ -202,3 +208,9 @@ async def require_testrun_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:
     return await relation_verifier("testrun").verify(_bearer(authorization))
+
+
+async def require_incubate_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    return await relation_verifier("incubate").verify(_bearer(authorization))

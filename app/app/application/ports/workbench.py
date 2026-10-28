@@ -868,6 +868,21 @@ class WorkbenchStore(Protocol):
         """收尾早于这个时刻的测试：清空每条用例取好的产出（SDD 0037）；测试结果留着。"""
         ...
 
+    # ---------- 作为运行方跑孵化的一轮（专家孵化方案第八节）----------
+    async def insert_incubation(self, row: dict[str, Any]) -> None: ...
+
+    async def get_incubation(
+        self, incubation_id: str, *, for_update: bool = False
+    ) -> dict[str, Any] | None: ...
+
+    async def list_incubations(
+        self, *, statuses: tuple[str, ...]
+    ) -> list[dict[str, Any]]:
+        """按受理先后。"""
+        ...
+
+    async def update_incubation(self, incubation_id: str, **changes: Any) -> None: ...
+
 
 class KnowmartSummoner(Protocol):
     """向 knowmart 取这个所有者的这一版分身清单（服务身份 knowmart:summon，SDD 0027 P4）。
