@@ -1,7 +1,7 @@
 """分身的确定性计算（SDD 0030 §3.2）：安全的算式求值、十进制。
 
-算式只许四则运算、括号、正负号、数字常数，和 sum、avg、median、min、max、abs 六个函数；
-名字只能是这次计算的输入（一个数，或一串数）。用 Python 的语法树按白名单走一遍，不 eval，
+算式只许四则运算、整数次乘方（`**`，折现系数这类要用，10-28）、括号、正负号、数字常数，
+和 sum、avg、median、min、max、abs 六个函数；名字只能是这次计算的输入（一个数，或一串数）。用 Python 的语法树按白名单走一遍，不 eval，
 不取属性、不下标、不调别的函数。全程十进制，不经浮点。
 """
 
@@ -20,6 +20,7 @@ MAX_NODES = 200
 MAX_DEPTH = 20
 MAX_INPUTS = 500  # 一次计算最多这么多个输入
 MAX_ROUND = 10
+MAX_POWER = 100  # 乘方的指数只许整数，绝对值不超过它
 PRECISION = 34
 NAME = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
 COMPUTE_ID = re.compile(r"^c[1-9][0-9]{0,9}$")
@@ -120,6 +121,8 @@ def evaluate(expression: str, values: dict[str, Value]) -> Decimal:
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub | ast.UAdd):
             operand = _scalar(ev(node.operand))
             return -operand if isinstance(node.op, ast.USub) else operand
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Pow):
+            return _power(_scalar(ev(node.left)), _scalar(ev(node.right)))
         if isinstance(node, ast.BinOp) and isinstance(
             node.op, ast.Add | ast.Sub | ast.Mult | ast.Div
         ):
@@ -148,7 +151,7 @@ def evaluate(expression: str, values: dict[str, Value]) -> Decimal:
                 return abs(_scalar(args[0]))
             return FUNCTIONS[name](_flat(args))
         raise ComputeError(
-            "only + - * / ( ), numbers, inputs and sum avg median min max abs are allowed"
+            "only + - * / ** ( ), numbers, inputs and sum avg median min max abs are allowed"
         )
 
     with localcontext() as ctx:
@@ -157,6 +160,17 @@ def evaluate(expression: str, values: dict[str, Value]) -> Decimal:
             return _scalar(ev(tree))
         except (InvalidOperation, ArithmeticError) as exc:
             raise ComputeError("the expression cannot be computed") from exc
+
+
+def _power(base: Decimal, exponent: Decimal) -> Decimal:
+    """整数次乘方：开方这类非整数指数不收（结果要能逐位确定）；0 的负数次方同除以零。"""
+    if exponent != exponent.to_integral_value():
+        raise ComputeError("a power takes a whole-number exponent")
+    if abs(exponent) > MAX_POWER:
+        raise ComputeError(f"a power's exponent is at most {MAX_POWER}")
+    if base == 0 and exponent < 0:
+        raise ComputeError(ZERO_DIVISOR)
+    return base ** int(exponent)
 
 
 def _scalar(value: Value) -> Decimal:

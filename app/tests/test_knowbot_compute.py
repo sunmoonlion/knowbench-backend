@@ -132,6 +132,12 @@ def world(reader: Reader | None = None):  # type: ignore[no-untyped-def]
         ),
         ("avg(xs)", {"xs": [Decimal(1), Decimal(2)]}, "1.5"),
         ("abs(min(xs))", {"xs": [Decimal(-4), Decimal(2)]}, "4"),
+        # 折现：100 / (1 + 10%) 的 2 次方
+        ("cf / (1 + r) ** 2", {"cf": Decimal(121), "r": Decimal("0.1")}, "100"),
+        ("2 ** -2", {}, "0.25"),
+        ("x ** n", {"x": Decimal("1.5"), "n": Decimal(2)}, "2.25"),
+        ("-2 ** 2", {}, "-4"),
+        ("x ** 0", {"x": Decimal(3)}, "1"),
     ],
 )
 def test_expressions_compute_exactly_in_decimal(expression, values, expected) -> None:
@@ -144,7 +150,13 @@ def test_expressions_compute_exactly_in_decimal(expression, values, expected) ->
         ("a / b", {"a": Decimal(1), "b": Decimal(0)}, calc.ZERO_DIVISOR),
         ("__import__('os')", {}, "not allowed"),
         ("a.real", {"a": Decimal(1)}, "only"),
-        ("a ** 2", {"a": Decimal(1)}, "only"),
+        ("a ** 0.5", {"a": Decimal(4)}, "whole-number exponent"),
+        ("a ** n", {"a": Decimal(2), "n": Decimal("1.5")}, "whole-number exponent"),
+        ("a ** 101", {"a": Decimal(2)}, "at most 100"),
+        ("0 ** -1", {}, calc.ZERO_DIVISOR),
+        ("0 ** 0", {}, "cannot be computed"),
+        ("xs ** 2", {"xs": [Decimal(1)]}, "needs sum"),
+        ("a // 2", {"a": Decimal(1)}, "only"),
         ("a[0]", {"a": [Decimal(1)]}, "only"),
         ("'1' + 1", {}, "only numbers"),
         ("True + 1", {}, "only numbers"),
