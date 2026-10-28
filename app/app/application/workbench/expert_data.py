@@ -1,12 +1,15 @@
-"""清单 v2 的专家请来用数据（SDD 0043 第三节、块 6；0048 第五节）。
+"""清单 v2 的专家请来用数据（SDD 0043 第三节、块 6a；0048 第五节；decisions ⑭）。
 
-请专家：填任务参数（主体，必要时覆盖期间）→ knowbase 按声明解析 → 开跑前列出（可换、
-有歧义的必须选、可选的可去掉）→ 待确认的用户点一次确认 → 能开跑的本人签运行授权、
-钉住、开跑；要补采的交 knowfeed，委托进「等数据」。
+请专家（本人在场）：在 knowbase 先建一张空清单；作者挑选的数据（冻结的绑定）当场本人签
+运行授权、钉住；委托进「定数据」。
+第 0 步（advisor）：模型读专家逻辑和用户问题，用 `request_data` 提出要哪些数据，清单出新
+修订，委托在步骤之间停下等用户确认。用户确认时能换一份、改主体或期间、去掉、自己加一样；
+齐的本人签授权、钉住、接着跑；要补采的交 knowfeed，委托进「等数据」。运行中再要也一样。
 
 等数据（`DataWaiter`，runner 里一条线）：按单号查 knowfeed 的需求单，办完了就请 knowbase
 重解析清单、凭本人那次确认续签（所有者 10-27 定「等数据后自动接着跑」）、钉住、委托
-接着跑；必填的没取到、确认过了 7 天，委托失败并说明缺什么。委托取消了就撤需求单。
+接着跑；有没取到的（或确认过了 7 天），停下问用户：照现有的接着做（记「数据不全」），
+还是取消。委托取消了就撤需求单。
 
 运行授权的 ref 是 `knowbench:<幂等钥匙>`：模型经工作台读数据时，工作台按委托找到它。
 """
@@ -17,15 +20,15 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import PinnedPack
-from app.domain.workbench.data_needs_v2 import DataNeed
 from app.domain.workbench.data_plan import Plan, item_ref, plan
+from app.domain.workbench.data_request import DataRequest
 from app.domain.workbench.errors import DataChoiceInvalid, WorkbenchError
 from app.domain.workbench.states import TASK_TERMINAL
 
@@ -53,6 +56,9 @@ class KnowbaseData(Protocol):
     async def confirm(self, user_token: str, **kw: Any) -> dict[str, Any]: ...
     async def run_grant(self, user_token: str, **kw: Any) -> dict[str, Any]: ...
     async def register_session(self, user_token: str) -> dict[str, Any]: ...
+    async def revise_needs(
+        self, user_token: str, resolution_id: str, needs: list[dict[str, Any]]
+    ) -> dict[str, Any]: ...
     async def refresh(self, subject: str, resolution_id: str) -> dict[str, Any]: ...
     async def service_resolution(
         self, subject: str, resolution_id: str, revision: int | None = None
@@ -80,13 +86,9 @@ class Prepared:
     resolution_row: dict[str, Any] | None = None
 
 
-def params_of(subjects: list[str], period: tuple[date | None, date | None]):
-    return {
-        "subjects": subjects,
-        "task_date": datetime.now(UTC).date().isoformat(),
-        "period_start": period[0].isoformat() if period[0] else None,
-        "period_end": period[1].isoformat() if period[1] else None,
-    }
+def params_of() -> dict[str, Any]:
+    """解析用的任务参数只有任务日期（主体写在每一样上，decisions ⑭）。"""
+    return {"task_date": datetime.now(UTC).date().isoformat()}
 
 
 class ExpertData:
@@ -106,99 +108,33 @@ class ExpertData:
         )
         self.now = now
 
-    async def listing(
-        self,
-        pinned: PinnedPack,
-        *,
-        subjects: list[str],
-        period: tuple[date | None, date | None],
-        user_token: UserToken,
-    ) -> dict[str, Any]:
-        """开跑前列出：按声明解析，回清单与每一项的去向（照 knowbase 的结果）。"""
-        resolution = await self.knowbase.resolve(
-            await user_token(),
-            consumer=pinned.consumer,
-            needs=[n.model_dump(mode="json") for n in pinned.needs_v2],
-            params=params_of(subjects, period),
-        )
-        draft = plan(
-            resolution,
-            list(pinned.needs_v2),
-            pinned.bindings,
-            supply_enabled=self.supply_enabled,
-        )
-        # 每个条目带上编号：页面换选、去掉时按它回传（编号由这里算，页面不照算）
-        for entry in resolution.get("items") or []:
-            entry["ref"] = item_ref(entry)
-        return {
-            "resolution": resolution,
-            "supply_enabled": self.supply_enabled,
-            "bound": sum(1 for p in draft.pins if p["basis"] == "frozen_binding"),
-            "to_confirm": len(draft.confirm),
-            "problems": draft.problems,
-            "incomplete": draft.incomplete,
-        }
-
     async def prepare(
-        self,
-        pinned: PinnedPack,
-        *,
-        choice: dict[str, Any],
-        owner_subject: str,
-        ref: str,
-        idempotency_key: str,
-        user_token: UserToken,
+        self, pinned: PinnedPack, *, ref: str, user_token: UserToken
     ) -> Prepared:
-        """建委托之前：按用户在清单上的选择定计划。都齐了本人签授权；要补采的确认、
-        提需求单，委托建好后进「等数据」。没写声明、只带作者绑定的，签绑定那几份。"""
-        if not pinned.needs_v2:
-            bound = plan({"items": []}, [], pinned.bindings)
-            prepared = Prepared()
-            if bound.pins:
-                prepared.grant_id = await self._grant_by_user(
-                    await user_token(), ref, bound
-                )
-                prepared.pins = _with_grant(bound.pins, prepared.grant_id)
-            return prepared
-        resolution_id = str(choice.get("resolution_id") or "")
-        revision = int(choice.get("revision") or 0)
-        if not resolution_id or revision < 1:
-            raise DataChoiceInvalid("list the data first, then ask the expert")
-        picks = dict(choice.get("picks") or {})
-        dropped = list(choice.get("dropped") or [])
+        """建委托之前（本人在场）：先建一张空清单，第 0 步提出的数据在上面出新修订；
+        作者挑选的数据（冻结的绑定）这时就本人签授权、钉住。"""
         token = await user_token()
-        resolution = await self.knowbase.resolution(token, resolution_id, revision)
-        if resolution.get("consumer") != pinned.consumer:
-            raise DataChoiceInvalid("this list was made for another expert")
-        draft = plan(
-            resolution,
-            list(pinned.needs_v2),
-            pinned.bindings,
-            picks=picks,
-            dropped=dropped,
-            supply_enabled=self.supply_enabled,
+        params = params_of()
+        resolution = await self.knowbase.resolve(
+            token, consumer=pinned.consumer, needs=[], params=params, task_ref=ref
         )
-        if draft.problems:
-            raise DataChoiceInvalid("; ".join(draft.problems))
-        row: dict[str, Any] = {
-            "resolution_id": resolution_id,
-            "revision": revision,
-            "consumer": pinned.consumer,
-            "params": resolution.get("params") or {},
-            "grant_ref": ref,
-            "picks": picks,
-            "dropped": dropped,
-            "status": "ready",
-            "detail": {"incomplete": draft.incomplete},
-        }
-        if draft.confirm:
-            return await self._confirm_and_supply(
-                draft, row, token, owner_subject, idempotency_key, pinned
-            )
-        prepared = Prepared(resolution_row=row)
-        if draft.pins:
-            prepared.grant_id = await self._grant_by_user(token, ref, draft)
-            prepared.pins = _with_grant(draft.pins, prepared.grant_id)
+        prepared = Prepared(
+            resolution_row={
+                "resolution_id": str(resolution["resolution_id"]),
+                "revision": int(resolution["revision"]),
+                "consumer": pinned.consumer,
+                "params": params,
+                "grant_ref": ref,
+                "picks": {},
+                "dropped": [],
+                "status": "planning",
+                "detail": {},
+            }
+        )
+        bound = plan({"items": []}, [], pinned.bindings)
+        if bound.pins:
+            prepared.grant_id = await self._grant_by_user(token, ref, bound)
+            prepared.pins = _with_grant(bound.pins, prepared.grant_id)
         return prepared
 
     async def release(self, prepared: Prepared) -> None:
@@ -219,9 +155,14 @@ class ExpertData:
         *,
         owner_subject: str,
         user_token: UserToken,
+        picks: dict[str, dict[str, Any]] | None = None,
+        dropped: list[str] | None = None,
+        needs: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
-        """用户在页面上确认专家运行中新要的数据：这几项单独确认（本人点的就是这一下），
-        齐的本人签一条追加的授权、追加钉住，缺的交 knowfeed（委托接着等）。"""
+        """用户确认专家提出的数据（第 0 步或运行中，本人点的就是这一下）：可以先改
+        （`needs` 是改过的整份：换主体、改期间、去掉、自己加一样），可以换一份
+        （`picks`）、去掉几样（`dropped`）。齐的本人签一条授权、钉住，缺的交 knowfeed
+        （委托接着等）；去掉的、补采不了的记「数据不全」，照做。"""
         task_id = str(task["id"])
         row = await repo.get_task_resolution(task_id)
         pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
@@ -230,12 +171,41 @@ class ExpertData:
         if row["status"] == "waiting":
             raise DataChoiceInvalid("data for this task is still being fetched")
         token = await user_token()
-        latest = await self.knowbase.resolution(token, str(row["resolution_id"]))
-        needs = [n for r in pending for n in request_needs(r)]
-        scoped = _scoped(latest, needs)
-        draft = plan(scoped, needs, supply_enabled=self.supply_enabled)
         detail = dict(row.get("detail") or {})
         ids = {r["id"] for r in pending}
+        asked = [n for r in pending for n in request_needs(r)]
+        if needs is not None:
+            asked = _revised(needs, pending[0]["id"])
+            earlier = [
+                n
+                for r in detail.get("requests") or []
+                if r.get("id") not in ids
+                for n in request_needs(r)
+            ]
+            latest = await self.knowbase.revise_needs(
+                token,
+                str(row["resolution_id"]),
+                [n.model_dump(mode="json") for n in earlier + asked],
+            )
+            detail["requests"] = _replace_needs(detail, pending, asked)
+        else:
+            latest = await self.knowbase.resolution(token, str(row["resolution_id"]))
+        draft = plan(
+            _scoped(latest, asked),
+            asked,
+            picks=picks or {},
+            dropped=dropped or [],
+            supply_enabled=self.supply_enabled,
+            user_decides=True,
+        )
+        if draft.problems:
+            raise DataChoiceInvalid("; ".join(draft.problems))
+        detail["requests"] = [
+            {**r, "picks": picks or {}, "dropped": dropped or []}
+            if r.get("id") in ids
+            else r
+            for r in detail.get("requests") or []
+        ]
         if draft.confirm:
             confirmed = await self.knowbase.confirm(
                 token,
@@ -270,12 +240,20 @@ class ExpertData:
                         for i in supply
                     ],
                 )
+                # 齐的先签、先钉：等数据的时候已经能读的照样能读
+                pins = await self._sign_ready(repo, task_id, token, row, draft)
                 detail["requests"] = _mark(detail, ids, "supplying")
                 detail["phase"] = {"requests": sorted(ids)}
                 detail["waiting_for"] = [c["label"] for c in draft.confirm]
+                detail["incomplete"] = (
+                    list(detail.get("incomplete") or []) + draft.incomplete
+                )
                 async with repo.transaction():
+                    if pins:
+                        await repo.pin_task_data(task_id, pins)
                     await repo.update_task_resolution(
                         task_id,
+                        revision=int(latest["revision"]),
                         confirmation_id=str(confirmed["confirmation_id"]),
                         demand_id=str(demand["demand_id"]),
                         deadline=_parse_time(confirmed.get("expires_at")),
@@ -288,13 +266,15 @@ class ExpertData:
             latest = await self.knowbase.refresh(
                 owner_subject, str(row["resolution_id"])
             )
-            draft = plan(_scoped(latest, needs), needs, after_supply=True)
-        pins = await _new_pins(repo, task_id, draft.pins)
-        if pins:
-            grant_id = await self._grant_by_user(
-                token, str(row["grant_ref"]), Plan(pins=pins)
+            draft = plan(
+                _scoped(latest, asked),
+                asked,
+                picks=picks or {},
+                dropped=dropped or [],
+                after_supply=True,
+                user_decides=True,
             )
-            pins = _with_grant(pins, grant_id)
+        pins = await self._sign_ready(repo, task_id, token, row, draft)
         from app.application.workbench.ledger import Ledger
 
         detail["requests"] = _mark(detail, ids, "done")
@@ -302,104 +282,79 @@ class ExpertData:
         async with repo.transaction():
             if pins:
                 await repo.pin_task_data(task_id, pins)
-            await repo.update_task_resolution(task_id, detail=detail)
+            await repo.update_task_resolution(
+                task_id, revision=int(latest["revision"]), detail=detail
+            )
             await Ledger(repo).resume_data(task_id)
         return {"status": "ready", "added": len(pins)}
 
     async def decline_requests(
         self, repo: WorkbenchStore, task: dict[str, Any]
     ) -> dict[str, Any]:
-        """用户不要专家新要的数据：委托照现有的接着做。"""
+        """用户不要专家提出的数据，或者没取到的照现有的接着做：委托接着做，缺的记
+        「数据不全」。"""
         from app.application.workbench.ledger import Ledger
 
         task_id = str(task["id"])
         row = await repo.get_task_resolution(task_id)
-        pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
-        if row is None or not pending:
+        open_ = [
+            r
+            for r in pending_requests(row)
+            if r.get("status") in ("pending", "missing")
+        ]
+        if row is None or not open_:
             raise DataChoiceInvalid("nothing is waiting for your confirmation")
         detail = dict(row.get("detail") or {})
-        detail["requests"] = _mark(detail, {r["id"] for r in pending}, "declined")
+        detail["requests"] = _mark(detail, {r["id"] for r in open_}, "declined")
+        detail["incomplete"] = list(detail.get("incomplete") or []) + [
+            item
+            for r in open_
+            for item in (
+                r.get("missing")
+                or [f"{label}：你没要" for label in r.get("labels") or []]
+            )
+        ]
         async with repo.transaction():
             await repo.update_task_resolution(task_id, detail=detail)
             if row["status"] != "waiting":
                 await Ledger(repo).resume_data(task_id)
         return {"status": "declined"}
 
-    async def _confirm_and_supply(
+    async def pending_items(
+        self, row: dict[str, Any] | None, user_token: UserToken
+    ) -> dict[str, list[dict[str, Any]]]:
+        """等用户确认的几张请求，每一样解析到哪、候选有哪些（页面上换、改、去掉用）；
+        条目带编号（由这里算，页面不照算）。"""
+        pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
+        if row is None or not pending:
+            return {}
+        latest = await self.knowbase.resolution(
+            await user_token(), str(row["resolution_id"])
+        )
+        out: dict[str, list[dict[str, Any]]] = {}
+        for r in pending:
+            scoped = _scoped(latest, request_needs(r))
+            out[str(r["id"])] = [
+                {**entry, "ref": item_ref(entry)} for entry in scoped.get("items") or []
+            ]
+        return out
+
+    async def _sign_ready(
         self,
-        draft: Plan,
-        row: dict[str, Any],
+        repo: WorkbenchStore,
+        task_id: str,
         token: str,
-        owner_subject: str,
-        idempotency_key: str,
-        pinned: PinnedPack,
-    ) -> Prepared:
-        assert self.supply is not None
-        confirmed = await self.knowbase.confirm(
-            token,
-            items=[{"key": c["key"], "need_key": c["need_key"]} for c in draft.confirm],
-            task_ref=row["grant_ref"],
-            resolution_id=row["resolution_id"],
-            revision=row["revision"],
+        row: dict[str, Any],
+        draft: Plan,
+    ) -> list[dict[str, Any]]:
+        """已经齐的、还没钉的：本人签一条追加的授权。"""
+        pins = await _new_pins(repo, task_id, draft.pins)
+        if not pins:
+            return []
+        grant_id = await self._grant_by_user(
+            token, str(row["grant_ref"]), Plan(pins=pins)
         )
-        confirmation_id = str(confirmed["confirmation_id"])
-        row["confirmation_id"] = confirmation_id
-        row["deadline"] = _parse_time(confirmed.get("expires_at"))
-        supply = [
-            b["item_id"]
-            for b in confirmed.get("branches") or []
-            if b.get("branch") == "supply"
-        ]
-        items_by_id = {str(i.get("item_id")): i for i in confirmed.get("items") or []}
-        if not supply:
-            # 都已立即就绪（公开原件层里已有、当场记了引用）：重解析后本人签
-            fresh = await self.knowbase.refresh(owner_subject, row["resolution_id"])
-            again = plan(
-                fresh,
-                list(pinned.needs_v2),
-                pinned.bindings,
-                picks=row["picks"],
-                dropped=row["dropped"],
-                after_supply=True,
-            )
-            if again.problems:
-                raise DataChoiceInvalid("; ".join(again.problems))
-            row["revision"] = int(fresh["revision"])
-            row["detail"] = {"incomplete": again.incomplete}
-            prepared = Prepared(resolution_row=row)
-            if again.pins:
-                prepared.grant_id = await self._grant_by_user(
-                    token, row["grant_ref"], again
-                )
-                prepared.pins = _with_grant(again.pins, prepared.grant_id)
-            return prepared
-        demand = await self.supply.submit(
-            owner=owner_subject,
-            confirmation_id=confirmation_id,
-            idempotency_key=f"kb-{idempotency_key}"[:128],
-            task_ref=row["grant_ref"],
-            proposer="user",
-            chain=[pinned.consumer],
-            items=[
-                {
-                    "confirmation_item": item_id,
-                    "key": items_by_id[item_id]["key"],
-                    "readings": [
-                        str(items_by_id[item_id].get("reading") or "original")
-                    ],
-                }
-                for item_id in supply
-            ],
-        )
-        row["demand_id"] = str(demand["demand_id"])
-        row["status"] = "waiting"
-        row["next_check_at"] = self.now() + CHECK_BACKOFF[0]
-        row["detail"] = {
-            "incomplete": draft.incomplete,
-            "waiting_for": [c["label"] for c in draft.confirm],
-            "demand_status": demand.get("status"),
-        }
-        return Prepared(resolution_row=row)
+        return _with_grant(pins, grant_id)
 
     async def _grant_by_user(self, token: str, ref: str, draft: Plan) -> str:
         grant = await self.knowbase.run_grant(
@@ -468,16 +423,19 @@ def data_session_note(session: dict[str, Any], now: datetime) -> str | None:
     )
 
 
-# —— 运行中专家要新数据（0048 第五节 request_data）——
+# —— 专家提出要哪些数据：第 0 步与运行中（0048 第五节 request_data，decisions ⑭）——
 
 ALL_FORMATS = ["pdf", "excel", "csv", "text", "markdown", "html"]
-MAX_REQUEST_NEEDS = 5
+# 一次最多提这么多样（knowbase 一张清单最多 20 样、展开后 200 条）
+MAX_REQUEST_NEEDS = 20
 
 
 def pending_requests(row: dict[str, Any] | None) -> list[dict[str, Any]]:
-    """还没办完的请求：等用户确认的、在补采的。"""
+    """还没办完的请求：等用户确认的、在补采的、没取到等用户定的。"""
     requests = ((row or {}).get("detail") or {}).get("requests") or []
-    return [r for r in requests if r.get("status") in ("pending", "supplying")]
+    return [
+        r for r in requests if r.get("status") in ("pending", "supplying", "missing")
+    ]
 
 
 def holds_task(row: dict[str, Any] | None) -> bool:
@@ -487,8 +445,8 @@ def holds_task(row: dict[str, Any] | None) -> bool:
     )
 
 
-def request_needs(request: dict[str, Any]) -> list[DataNeed]:
-    return [DataNeed.model_validate(n) for n in request.get("needs") or []]
+def request_needs(request: dict[str, Any]) -> list[DataRequest]:
+    return [DataRequest.model_validate(n) for n in request.get("needs") or []]
 
 
 async def request_data(
@@ -499,8 +457,9 @@ async def request_data(
     *,
     now: datetime | None = None,
 ) -> dict[str, Any]:
-    """专家运行中发现还要一份没钉的：清单出新修订、列进用户的确认清单，任务在步骤边界
-    停下等用户确认。模型不能替用户确认（0043 第 3.3 节第 6 条）。"""
+    """专家提出要哪些数据（第 0 步，或运行中发现还要一份没钉的）：清单出新修订、列进
+    用户的确认清单，任务在步骤边界停下等用户确认。模型不能替用户确认（0043 第 3.3 节
+    第 6 条）。主体每样自己写（可以是别家公司，也可以不限主体）。"""
     task_id = str(task["id"])
     row = await repo.get_task_resolution(task_id)
     if row is None:
@@ -556,20 +515,55 @@ async def request_data(
     }
 
 
-def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataNeed:
+class SubjectDirectory(Protocol):
+    def configured(self) -> bool: ...
+    async def securities(self, query: str, limit: int = 10) -> list[dict[str, Any]]: ...
+
+
+async def find_subject(directory: SubjectDirectory, name: object) -> dict[str, Any]:
+    """第 0 步「查主体」：按名字查证券代码（knowfeed 的证券名录），免得模型自己编。"""
+    query = str(name or "").strip()
+    if not 1 <= len(query) <= 40:
+        raise DataChoiceInvalid("give a name or code of 1 to 40 characters")
+    if not directory.configured():
+        return {
+            "found": [],
+            "message": "The directory is not available here; ask the user for the code.",
+        }
+    try:
+        found = await directory.securities(query, 10)
+    except Exception as exc:  # noqa: BLE001 — 查不到不挡，照实说
+        log.warning(
+            "subject lookup failed code=%s", getattr(exc, "code", type(exc).__name__)
+        )
+        return {
+            "found": [],
+            "message": "The directory did not answer; try again or ask the user.",
+        }
+    return {
+        "found": [
+            {"subject": str(f.get("subject")), "name": str(f.get("name"))}
+            for f in found
+            if isinstance(f, dict)
+        ]
+    }
+
+
+def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataRequest:
     if not isinstance(asked, dict):
         raise DataChoiceInvalid("each item is an object")
     period = asked.get("period") or {"kind": "none"}
     reason = str(asked.get("reason") or "").strip()
     try:
-        return DataNeed.model_validate(
+        return DataRequest.model_validate(
             {
                 "key": f"req{number}_{n}",
                 "name": (reason or str(asked.get("doc_type")))[:80],
+                **({"subject": asked["subject"]} if asked.get("subject") else {}),
                 "doc_type": asked.get("doc_type"),
                 "period": period,
                 "formats": ALL_FORMATS,
-                "required": False,
+                "required": asked.get("essential") is True,
                 "min_count": 1,
                 "max_count": int(asked.get("max_count") or 1),
                 "reading": asked.get("reading") or "original",
@@ -585,7 +579,51 @@ def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataNeed:
         ) from None
 
 
-def _scoped(resolution: dict[str, Any], needs: list[DataNeed]) -> dict[str, Any]:
+def _revised(given: list[dict[str, Any]], request_id: str) -> list[DataRequest]:
+    """用户改过的整份（换主体、改期间、去掉、自己加一样）：自己加的没有 key，这里按
+    请求编号补上；一样一个 key。"""
+    if not isinstance(given, list) or not 1 <= len(given) <= MAX_REQUEST_NEEDS:
+        raise DataChoiceInvalid(f"keep 1 to {MAX_REQUEST_NEEDS} items")
+    out: list[DataRequest] = []
+    for n, raw in enumerate(given, start=1):
+        if not isinstance(raw, dict):
+            raise DataChoiceInvalid("each item is an object")
+        body = {"formats": ALL_FORMATS, **raw}
+        body.setdefault("key", f"{request_id}_u{n}")
+        body.setdefault("name", str(body.get("doc_type") or "")[:80])
+        try:
+            out.append(DataRequest.model_validate(body))
+        except ValidationError as exc:
+            where = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
+            raise DataChoiceInvalid(
+                "this item is not in the vocabulary: " + ", ".join(where[:5])
+            ) from None
+    if len({d.key for d in out}) != len(out):
+        raise DataChoiceInvalid("each item needs its own key")
+    return out
+
+
+def _replace_needs(
+    detail: dict[str, Any], pending: list[dict[str, Any]], needs: list[DataRequest]
+) -> list[dict[str, Any]]:
+    """改过的整份记到第一张待确认的请求上；同时待确认的别的几张并进来。"""
+    first, rest = pending[0]["id"], {r["id"] for r in pending[1:]}
+    out = []
+    for r in detail.get("requests") or []:
+        if r.get("id") == first:
+            r = {
+                **r,
+                "needs": [n.model_dump(mode="json") for n in needs],
+                "labels": [n.name for n in needs],
+                "revised": True,
+            }
+        elif r.get("id") in rest:
+            r = {**r, "status": "merged"}
+        out.append(r)
+    return out
+
+
+def _scoped(resolution: dict[str, Any], needs: list[DataRequest]) -> dict[str, Any]:
     keys = {n.key for n in needs}
     return {
         **resolution,
@@ -633,14 +671,12 @@ class DataWaiter:
         knowbase: KnowbaseData,
         supply: SupplyDemands,
         *,
-        pinned_of: Callable[[WorkbenchStore, dict[str, Any]], Awaitable[PinnedPack]],
         interval_seconds: float = 15.0,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.stores = stores
         self.knowbase = knowbase
         self.supply = supply
-        self.pinned_of = pinned_of
         self.interval_seconds = interval_seconds
         self.now = now
 
@@ -713,48 +749,49 @@ class DataWaiter:
         await self._resume(row, detail)
 
     async def _resume(self, row: dict[str, Any], detail: dict[str, Any]) -> None:
+        """补采办完了：重解析，凭本人那次确认续签、钉住已到的；都到了接着跑，有没到的
+        停下问用户（照现有的接着做，还是取消）。"""
         task_id = str(row["task_id"])
         async with self.stores() as repo:
             task = await repo.get_task(task_id)
             subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
-            pinned = await self.pinned_of(repo, task)
         if subject is None:
             await self._fail(row, "找不到委托人的账号", detail)
             return
         fresh = await self.knowbase.refresh(subject, str(row["resolution_id"]))
-        phase = (row.get("detail") or {}).get("phase") or {}
-        if phase.get("requests"):
-            # 补的是专家运行中新要的：只看那几项，缺的照做（记不完整），已钉的不重钉
-            ids = set(phase["requests"])
-            needs = [
-                n
+        ids = set(((row.get("detail") or {}).get("phase") or {}).get("requests") or [])
+        asked = [
+            r
+            for r in (row.get("detail") or {}).get("requests") or []
+            if r.get("id") in ids
+        ]
+        needs = [n for r in asked for n in request_needs(r)]
+        picks = {k: v for r in asked for k, v in (r.get("picks") or {}).items()}
+        dropped = [d for r in asked for d in r.get("dropped") or []]
+        done = plan(
+            _scoped(fresh, needs),
+            needs,
+            picks=picks,
+            dropped=dropped,
+            after_supply=True,
+            user_decides=True,
+        )
+        async with self.stores() as repo:
+            done.pins = await _new_pins(repo, task_id, done.pins)
+        known = set((row.get("detail") or {}).get("incomplete") or [])
+        detail = {
+            **detail,
+            "requests": [
+                {**r, "status": "missing", "missing": done.missing}
+                if r.get("id") in ids and done.missing
+                else ({**r, "status": "done"} if r.get("id") in ids else r)
                 for r in (row.get("detail") or {}).get("requests") or []
-                if r.get("id") in ids
-                for n in request_needs(r)
-            ]
-            done = plan(_scoped(fresh, needs), needs, after_supply=True)
-            async with self.stores() as repo:
-                done.pins = await _new_pins(repo, task_id, done.pins)
-            detail = {
-                **detail,
-                "requests": _mark(row.get("detail") or {}, ids, "done"),
-                "phase": {},
-                "incomplete": list((row.get("detail") or {}).get("incomplete") or [])
-                + done.incomplete,
-            }
-        else:
-            done = plan(
-                fresh,
-                list(pinned.needs_v2),
-                pinned.bindings,
-                picks=dict(row.get("picks") or {}),
-                dropped=list(row.get("dropped") or []),
-                after_supply=True,
-            )
-            if done.problems:
-                await self._fail(row, "；".join(done.problems), detail)
-                return
-            detail = {**detail, "incomplete": done.incomplete}
+            ],
+            "phase": {},
+            "waiting_for": [],
+            "incomplete": list((row.get("detail") or {}).get("incomplete") or [])
+            + [i for i in done.incomplete if i not in done.missing and i not in known],
+        }
         revision = int(fresh["revision"])
         pins: list[dict[str, Any]] = []
         if done.pins:
@@ -784,43 +821,43 @@ class DataWaiter:
                     detail=detail,
                     next_check_at=None,
                 )
-                await Ledger(repo).resume_data(task_id)
+                if not done.missing:
+                    await Ledger(repo).resume_data(task_id)
 
     async def _fail(self, row: dict[str, Any], reason: str, detail: dict[str, Any]):
-        from app.application.workbench.ledger import Ledger
-
+        """取不来了（确认过了 7 天、数据服务明说不行）：停下问用户，照现有的接着做
+        （记「数据不全」）还是取消。"""
         task_id = str(row["task_id"])
-        phase = (row.get("detail") or {}).get("phase") or {}
+        ids = set(((row.get("detail") or {}).get("phase") or {}).get("requests") or [])
         async with self.stores() as repo:
             async with repo.transaction():
                 current = await repo.get_task_resolution(task_id, for_update=True)
                 if current is None or current["status"] != "waiting":
                     return
-                if phase.get("requests"):
-                    # 专家运行中新要的没取到：委托照现有的接着做，缺的记下
-                    ids = set(phase["requests"])
-                    await repo.update_task_resolution(
-                        task_id,
-                        status="ready",
-                        detail={
-                            **detail,
-                            "requests": _mark(
-                                current.get("detail") or {}, ids, "failed"
-                            ),
-                            "phase": {},
-                            "reason": reason,
-                        },
-                        next_check_at=None,
-                    )
-                    await Ledger(repo).resume_data(task_id)
-                    return
                 await repo.update_task_resolution(
                     task_id,
-                    status="failed",
-                    detail={**detail, "reason": reason},
+                    status="ready",
+                    detail={
+                        **detail,
+                        "requests": [
+                            {
+                                **r,
+                                "status": "missing",
+                                "missing": [
+                                    f"{label}：{reason}"
+                                    for label in r.get("labels") or []
+                                ],
+                            }
+                            if r.get("id") in ids
+                            else r
+                            for r in (current.get("detail") or {}).get("requests") or []
+                        ],
+                        "phase": {},
+                        "waiting_for": [],
+                        "reason": reason,
+                    },
                     next_check_at=None,
                 )
-                await Ledger(repo).fail_waiting_data(task_id, reason)
 
     async def _settle(
         self, task_id: str, status: str, row: dict[str, Any], extra: dict[str, Any]

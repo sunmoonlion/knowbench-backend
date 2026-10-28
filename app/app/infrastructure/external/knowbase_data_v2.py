@@ -36,7 +36,7 @@ class KnowbaseDataV2(KnowbaseUserData):
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "consumer": consumer,
-            "contract_version": "knowbot-manifest/v2",
+            "contract_version": "data-request/v1",
             "needs": needs,
             "params": params,
         }
@@ -53,6 +53,18 @@ class KnowbaseDataV2(KnowbaseUserData):
             f"/resolutions/{_segment(resolution_id)}",
             user_token,
             params={"revision": str(revision)} if revision else None,
+        )
+        return body
+
+    async def revise_needs(
+        self, user_token: str, resolution_id: str, needs: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """用户确认前改了清单（换主体、改期间、去掉、加一样）：整份换掉，出新修订。"""
+        _, body, _ = await self._send(
+            "PUT",
+            f"/resolutions/{_segment(resolution_id)}/needs",
+            user_token,
+            json={"needs": needs},
         )
         return body
 

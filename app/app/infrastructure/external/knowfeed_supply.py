@@ -5,6 +5,9 @@
 `KNOWFEED_SUPPLY_DEMAND_SERVICE_*`，见 service_client.py）；knowfeed 按部署配的
 `SUPPLY_SERVICE_APPS_JSON` 认这是 knowbench。需求状态的推送 knowfeed 还没做，现在按单号查。
 没配就抛 ServiceUnavailableError（code `knowfeed_unconfigured`），调用方据此说「暂不能补采」。
+
+证券名录（`securities`）：委托第 0 步模型「查主体」，按名字查证券代码（decisions ⑭）；
+同一个服务身份，不看补采开关。
 """
 
 from __future__ import annotations
@@ -78,9 +81,21 @@ class KnowfeedSupply:
     async def cancel(self, demand_id: str) -> dict[str, Any]:
         return await self._send("POST", f"/demands/{quote(demand_id, safe='')}/cancel")
 
+    async def securities(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        """按名字或代码查证券：[{subject, name}]，对得上的在前。"""
+        found = await self._send(
+            "GET", "/securities", params={"q": query, "limit": str(limit)}
+        )
+        return found if isinstance(found, list) else []
+
     async def _send(
-        self, method: str, path: str, *, json: Any = None
-    ) -> dict[str, Any]:
+        self,
+        method: str,
+        path: str,
+        *,
+        json: Any = None,
+        params: dict[str, str] | None = None,
+    ) -> Any:
         relation = service_relation("knowfeed", "supply-demand", self._environ)
         if relation is None:
             raise ServiceUnavailableError(
@@ -99,6 +114,7 @@ class KnowfeedSupply:
                     method,
                     relation.internal_url.rstrip("/") + BASE + path,
                     json=json,
+                    params=params,
                     headers={
                         "Authorization": f"Bearer {token}",
                         "Accept": "application/json",

@@ -1,16 +1,19 @@
 """清单 v2 的专家：按 knowbase 的解析清单定这件委托用哪几份（SDD 0043 第 3.2–3.6 节）。
 
-纯函数，不碰网络。输入是解析清单（knowbase 回的字典）、专家的声明、作者冻结的绑定、
-用户开跑前换过的（条目 → 资料与版本）与去掉的可选条目；输出：
+纯函数，不碰网络。输入是解析清单（knowbase 回的字典）、这件委托提出的几样（第 0 步或
+运行中 `request_data` 提的，用户可能改过，decisions ⑭）、作者冻结的绑定、用户确认时
+换过的（条目 → 资料与版本）与去掉的条目；输出：
 
 - pins：要钉进委托、签进运行授权的那几份（每份带依据）；
 - confirm：要用户确认、交 knowfeed 补采的条目（待确认的）；
-- problems：开不了跑的原因（必填缺了、有歧义没选、没放开、采不来、不能用……），白话；
-- incomplete：缺了的可选条目（照做、记「不完整」）。
+- problems：确认不了的原因（有歧义没选、换选的不在候选里……），白话；
+- incomplete：缺了的、用户去掉的（照做、记「数据不全」）。
 
 规矩：已定的默认用 knowbase 挑的那份，用户可以换成候选里的另一份；有歧义的必须选；
-必填的不能去掉；待确认的在补采开着时进确认，关着时必填的开不了跑（0043 第 4.1 节
-「knowfeed 切合上线之前，待确认一律回暂不能补采」）。
+待确认的在补采开着时进确认（0043 第 4.1 节「knowfeed 切合上线之前，待确认一律回暂不能
+补采」）。数据是用户的，由用户定（`user_decides`，第 0 步与运行中提的都这样）：哪一样
+都能去掉，标了必需的缺了也照做，记「数据不全」；不由用户定的（旧的开跑前列出），必填的
+不能去掉、缺了开不了跑。
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.workbench.data_needs_v2 import DataNeed
+from app.domain.workbench.data_request import DataRequest
 from app.domain.workbench.knowbots import FrozenBinding
 
 APP_BASIS_REF = "app:knowbench"
@@ -52,6 +55,8 @@ class Plan:
     confirm: list[dict[str, Any]] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
     incomplete: list[str] = field(default_factory=list)
+    # 补采结束后还没取到的（也在 incomplete 里）：等数据那条线据此停下问用户
+    missing: list[str] = field(default_factory=list)
 
     @property
     def grant_items(self) -> list[dict[str, Any]]:
@@ -75,15 +80,17 @@ class Plan:
 
 def plan(
     resolution: dict[str, Any],
-    needs: list[DataNeed],
+    needs: list[DataRequest],
     bindings: tuple[FrozenBinding, ...] = (),
     *,
     picks: dict[str, dict[str, Any]] | None = None,
     dropped: list[str] | None = None,
     supply_enabled: bool = False,
     after_supply: bool = False,
+    user_decides: bool = False,
 ) -> Plan:
-    """after_supply：补采已经结束后的重解析（还没定的就是没取到，不再进确认）。"""
+    """after_supply：补采已经结束后的重解析（还没定的就是没取到，不再进确认）。
+    user_decides：数据由用户定，缺了、去掉了都只记「数据不全」。"""
     picks = picks or {}
     gone = set(dropped or ())
     by_key = {n.key: n for n in needs}
@@ -103,10 +110,10 @@ def plan(
             continue
         label = _label(need, item)
         if ref in gone:
-            if need.required:
+            if need.required and not user_decides:
                 out.problems.append(f"{label}：必填的不能去掉")
             else:
-                out.incomplete.append(label)
+                out.incomplete.append(f"{label}：你没要")
             continue
         status = str(item.get("status"))
         chosen = _chosen(item, picks.get(ref))
@@ -137,14 +144,19 @@ def plan(
         reason = (
             "没取到" if after_supply and status in ("to_confirm", "waiting") else None
         )
+        if reason:
+            out.missing.append(f"{label}：{reason}")
+        if status == "not_collectable" and item.get("reason") == "no_subject":
+            reason = reason or "不限主体的没找到，也补采不了"
         reason = reason or _REASONS.get(status) or str(item.get("reason") or status)
-        if need.required:
+        if status == "ambiguous" or (need.required and not user_decides):
             out.problems.append(f"{label}：{reason}")
         else:
             out.incomplete.append(f"{label}：{reason}")
     for key, need in by_key.items():
         if (
             need.required
+            and not user_decides
             and usable_by_need[key] == 0
             and not any(p.startswith(f"{_name(need)}") for p in out.problems)
         ):
@@ -160,11 +172,11 @@ def plan(
     return out
 
 
-def _name(need: DataNeed) -> str:
+def _name(need: DataRequest) -> str:
     return need.name
 
 
-def _label(need: DataNeed, item: dict[str, Any]) -> str:
+def _label(need: DataRequest, item: dict[str, Any]) -> str:
     key = item.get("key") or {}
     parts = [need.name, str(key.get("subject") or "")]
     if key.get("period_end"):
@@ -221,7 +233,7 @@ def _pin(need_key: str, c: dict[str, Any]) -> dict[str, Any]:
 def _binding_pin(b: FrozenBinding) -> dict[str, Any]:
     return {
         "dataset_id": str(uuid.uuid4()),
-        "slot": b.need,
+        "slot": None,
         "source": "knowbase",
         "item_id": b.material_id,
         "version_no": b.version_no,

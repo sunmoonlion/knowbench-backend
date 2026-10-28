@@ -11,12 +11,13 @@ from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.catalog import pack_for_task
+from app.application.workbench.expert_data import pending_requests
 from app.domain.workbench.dossier_view import dossier_markdown, dossier_view
 from app.domain.workbench.errors import NotFound
 from app.domain.workbench.now_view import now_view
 from app.domain.workbench.packs import ExpertPack
 from app.domain.workbench.review_view import review_view
-from app.domain.workbench.states import TASK_TERMINAL, TaskState
+from app.domain.workbench.states import TASK_TERMINAL, TaskState, WaitingReason
 from app.domain.workbench.step_view import (
     TERMINAL_WORDS,
     amount,
@@ -374,3 +375,74 @@ class ExpertDesk:
                 # 等机器回来的没有待办，留在这里，页面标「暂停」
                 running.append(line)
         return {"waiting": waiting, "running": running, "returned": returned}
+
+    # ---------------- 项目的看板 ----------------
+    async def board(self, project_id: str, *, owner_actor_id: str) -> dict[str, Any]:
+        """项目的看板（请专家方案设计第 4.8 节）：这个项目的委托按列排，卡片写清等谁、
+        等什么。别人的项目和没有的一样答。"""
+        await self.repo.get_project(project_id, owner_actor_id=owner_actor_id)
+        columns: dict[str, list[dict[str, Any]]] = {c: [] for c in BOARD_COLUMNS}
+        for task in await self.repo.list_tasks(
+            owner_actor_id=owner_actor_id, project_id=project_id
+        ):
+            pack = pack_for_task(task)
+            row = (
+                await self.repo.get_task_resolution(str(task["id"]))
+                if task["state"] == TaskState.WAITING
+                else None
+            )
+            column, waiting = board_place(task, row)
+            ended = task["state"] in TASK_TERMINAL
+            columns[column].append(
+                {
+                    "task_id": str(task["id"]),
+                    "session_id": str(task["session_id"]),
+                    "question": question_of(task),
+                    "expert": (pack.name or pack.title) if pack else "",
+                    "state": task["state"],
+                    "state_word": TERMINAL_WORDS.get(task["state"]),
+                    "waiting": waiting,
+                    "position": position(pack, task) if pack else None,
+                    "budget": budget_view(task["budget"]),
+                    "started_at": task.get("created_at"),
+                    "ended_at": task.get("updated_at") if ended else None,
+                }
+            )
+        return {
+            "project_id": project_id,
+            "columns": [{"key": c, "cards": columns[c]} for c in BOARD_COLUMNS],
+        }
+
+
+# 看板的列：排队、在跑、等你、等别人、完成、没成（失败、打回、取消）
+BOARD_COLUMNS = ("queued", "running", "waiting_you", "waiting_others", "done", "ended")
+
+
+def board_place(
+    task: dict[str, Any], row: dict[str, Any] | None
+) -> tuple[str, dict[str, str] | None]:
+    """一件委托在看板的哪一列、等谁（you 用户、data_service 数据服务）、等什么。"""
+    state = task["state"]
+    if state == TaskState.SUCCEEDED:
+        return "done", None
+    if state in TASK_TERMINAL:
+        return "ended", None
+    if state == TaskState.RUNNING:
+        return "running", None
+    if state != TaskState.WAITING:
+        return "queued", None
+    reason = task.get("waiting_reason")
+    if reason == WaitingReason.DATA:
+        statuses = {str(r.get("status")) for r in pending_requests(row)}
+        if "pending" in statuses:
+            return "waiting_you", {"who": "you", "what": "confirm_data"}
+        if "missing" in statuses:
+            return "waiting_you", {"who": "you", "what": "decide_missing"}
+        return "waiting_others", {"who": "data_service", "what": "fetch_data"}
+    what = {
+        WaitingReason.INPUT: "answer",
+        WaitingReason.APPROVAL: "approve",
+        WaitingReason.RESOURCE: "budget",
+        WaitingReason.ENVIRONMENT: "machine",
+    }.get(reason, "answer")
+    return "waiting_you", {"who": "you", "what": what}

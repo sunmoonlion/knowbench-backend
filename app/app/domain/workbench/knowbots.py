@@ -9,9 +9,9 @@
 
 - 清单 v1：读用户数据用 `list_my_data`、`read_my_data`、`read_my_table`，读请的人选的
   （或旧格式里作者绑的）那几份（0027 §3.5、0042）。
-- 清单 v2（SDD 0043）：数据需求声明换成 knowbase 的 `knowbot-data-needs/v2`，作者绑的
-  数据只带冻结的引用（`bindings`）；读数据用 knowbase 数据 MCP 的工具（经工作台中继，
-  0048），缺数据用 `request_data` 提出要什么，算数仍用 `compute`。
+- 清单 v2（SDD 0043，decisions ⑭）= 逻辑 + 作者挑选的数据（`bindings`，只带冻结的
+  引用）；没有数据需求声明：委托第 0 步模型用 `request_data` 按问题提出要哪些数据、
+  用户确认；读数据用 knowbase 数据 MCP 的工具（经工作台中继，0048），算数仍用 `compute`。
 """
 
 from __future__ import annotations
@@ -54,17 +54,16 @@ DATA_MCP_TOOLS: frozenset[str] = frozenset(
         "lookup",
     }
 )
-V2_TOOLS: frozenset[str] = DATA_MCP_TOOLS | {"compute", "request_data"}
+V2_TOOLS: frozenset[str] = DATA_MCP_TOOLS | {"compute", "request_data", "find_subject"}
 _PLATFORM = ToolPolicy()
 _FROZEN = r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$"
 
 
 class FrozenBinding(BaseModel):
-    """清单 v2 里作者绑给这位专家、交付时冻结的一份（契约 knowbot-manifest/v2）。"""
+    """清单 v2 里作者挑选、交付时冻结的一份（契约 knowbot-manifest/v2）。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    need: str | None = Field(default=None, pattern=r"^[a-z][a-z0-9_]{0,39}$")
     material_id: str = Field(min_length=1, max_length=64)
     version_no: int = Field(ge=1)
     sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -100,6 +99,12 @@ def is_v2(manifest: object) -> bool:
 def consumer_of(knowbot_id: str, version: str) -> str:
     """在 knowbase 那边这位专家这一版叫什么：解析的使用者、冻结绑定的依据都是它。"""
     return f"expert:{knowbot_id}@{version}"
+
+
+def no_declarations(manifest: object, *, knowbot_id: str) -> None:
+    """清单 v2 不带数据需求声明（decisions ⑭）；带了就是不认得的清单。"""
+    if isinstance(manifest, dict) and "data_needs" in manifest:
+        raise KnowbotInvalid("a v2 manifest declares no data needs", knowbot=knowbot_id)
 
 
 def frozen_bindings(manifest: object, *, knowbot_id: str) -> tuple[FrozenBinding, ...]:

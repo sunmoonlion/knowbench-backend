@@ -58,6 +58,13 @@ STEP_TIMEOUT_SECONDS = 900
 # 重做时列出上一次没过的几条，每条最多这么多字
 REWORK_FAILURES_SHOWN = 10
 REWORK_FAILURE_CHARS = 400
+# 第 0 步「定数据」（decisions ⑭）：不在专家的步骤里，不验收、不进游标
+DATA_STEP_ID = "data-plan"
+DATA_STEP_TITLE = "定数据"
+DATA_STEP_RESERVE = Decimal("0.05")
+# 给模型看的专家做法：每一步的说明最多这么多字，合起来最多这么多字
+DATA_STEP_METHOD_CHARS = 1200
+DATA_STEP_TOTAL_CHARS = 12000
 
 
 @dataclass
@@ -179,7 +186,9 @@ class Advisor:
         没取到就打回并说清缺什么。锁住清单那一行，和 DataWaiter 不会两边都错过。"""
         async with repo.transaction():
             row = await repo.get_task_resolution(task_id, for_update=True)
-            if row is None or (row["status"] == "ready" and not holds_task(row)):
+            if row is None or row["status"] == "planning":
+                return None  # 定数据在第 0 步（_plan_data）
+            if row["status"] == "ready" and not holds_task(row):
                 return None
             if holds_task(row):
                 await led.transition(
@@ -215,6 +224,15 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
+            pack = pack_for_task(task)
+            assert pack is not None
+            row = await repo.get_task_resolution(task_id)
+            planning = row is not None and row["status"] == "planning"
+        if planning:
+            return await self._plan_data(task_id)
+        async with self.stores() as repo:
+            led = Ledger(repo)
+            task = await repo.get_task(task_id)
             pack = pack_for_task(task)
             assert pack is not None
             step = pack.step(int(task["current_step"]))
@@ -738,6 +756,178 @@ class Advisor:
             )
             return TaskState.WAITING
 
+    async def _plan_data(self, task_id: str) -> str:
+        """第 0 步「定数据」（decisions ⑭）：模型读专家的做法和用户的问题，用「查主体」
+        「提出数据」两个工具提这件委托要哪些数据。不验收、不进游标；提了就停在步骤之间
+        等用户确认（确认时能换、改、去掉、加），没提就接着第 1 步。"""
+        async with self.stores() as repo:
+            led = Ledger(repo)
+            task = await repo.get_task(task_id)
+            pack = pack_for_task(task)
+            assert pack is not None
+            if not self.records:
+                # 沙箱里没配工作台的工具：提不了，照现有的做
+                async with repo.transaction():
+                    await repo.update_task_resolution(task_id, status="ready")
+                await repo.commit()
+                return TaskState.QUEUED
+            try:
+                opened = await led.open_attempt(
+                    task_id,
+                    step_id=DATA_STEP_ID,
+                    step_version="1",
+                    input_artifact_versions=[],
+                    reserve=DATA_STEP_RESERVE,
+                    meta={"data_step": True},
+                )
+            except BudgetExhausted as exc:
+                log.info("budget exhausted before the data step: %s", exc)
+                return await self._hard_stop(led, repo, task_id)
+            attempt_id = opened["attempt_id"]
+            await repo.append_event(
+                session_id=str(task["session_id"]),
+                kind="task",
+                event_type="step/started",
+                payload={
+                    "step_id": DATA_STEP_ID,
+                    "title": DATA_STEP_TITLE,
+                    "attempt_id": attempt_id,
+                    "rework": 0,
+                },
+                task_id=task_id,
+                attempt_id=attempt_id,
+            )
+            await repo.commit()
+            bound = sum(
+                1
+                for p in await repo.list_task_data(task_id)
+                if p.get("basis") == "frozen_binding"
+            )
+            text = compose_data_plan(
+                pack, task["original_input"].get("input", {}), task_id, bound
+            )
+            thread_id = task["thread_id"]
+
+        result = await self.driver.run_turn(
+            thread_id, text, timeout=STEP_TIMEOUT_SECONDS
+        )
+
+        async with self.stores() as repo:
+            led = Ledger(repo)
+            consumed = result.cost or Decimal("0")
+            await led.end_turn_waits(task_id)
+            settled = (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL
+            if not settled:
+                try:
+                    await led.attempt_transition(
+                        attempt_id, AttemptState.RUNNING, turn_id=result.turn_id
+                    )
+                except InvalidTransition:
+                    settled = (await repo.get_attempt(attempt_id))[
+                        "status"
+                    ] in ATTEMPT_TERMINAL
+                    if not settled:
+                        raise
+            if settled:
+                await led.record_late_cost(
+                    task_id,
+                    attempt_id=attempt_id,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                )
+                await led.release_turn(task_id)
+                return (await repo.get_task(task_id))["state"]
+            task = await repo.get_task(task_id)
+            if task["cancel_requested_at"] is not None:
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.CANCELLED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    failure_code="cancelled",
+                )
+                if task["state"] in TASK_TERMINAL:
+                    return task["state"]
+                return (
+                    await led.transition(
+                        task_id, TaskState.CANCELLED, reason={"by": "user"}
+                    )
+                )["state"]
+            if result.environment_lost or (
+                result.error and not result.final_text and not result.timed_out
+            ):
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.FAILED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    failure_code="environment"
+                    if result.environment_lost
+                    else "turn_error",
+                    retryable=True,
+                )
+                if result.environment_lost:
+                    return (
+                        await led.transition(
+                            task_id,
+                            TaskState.WAITING,
+                            waiting_reason=WaitingReason.ENVIRONMENT,
+                            reason={"error": result.error},
+                        )
+                    )["state"]
+                return (
+                    await led.transition(
+                        task_id, TaskState.FAILED, reason={"error": result.error}
+                    )
+                )["state"]
+            limit = task["budget"].get("limit")
+            if limit is not None and consumed > Decimal(str(limit)) - Decimal(
+                str(task["budget"]["used"])
+            ):
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.BUDGET_EXCEEDED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                )
+                return TaskState.WAITING
+            # 用户在审批面停下也算定完了：提了几样就确认几样，没提就照现有的做
+            await led.attempt_transition(
+                attempt_id,
+                AttemptState.COMPLETED,
+                consumed=consumed,
+                tokens=result.tokens,
+                output_artifacts=[],
+            )
+            row = await repo.get_task_resolution(task_id)
+            asked = len(pending_requests(row))
+            await repo.append_event(
+                session_id=str(task["session_id"]),
+                kind="task",
+                event_type="step/accepted",
+                payload={
+                    "step_id": DATA_STEP_ID,
+                    "requests": asked,
+                    "consumed": str(consumed),
+                },
+                task_id=task_id,
+                attempt_id=attempt_id,
+            )
+            async with repo.transaction():
+                await repo.update_task_resolution(task_id, status="ready")
+                row = await repo.get_task_resolution(task_id, for_update=True)
+                if holds_task(row):
+                    await led.transition(
+                        task_id,
+                        TaskState.WAITING,
+                        waiting_reason=WaitingReason.DATA,
+                        reason=_waiting_reason(row),
+                    )
+                    return TaskState.WAITING
+            await self._requeue(led, task_id)
+            return TaskState.QUEUED
+
     async def _answers_for_step(
         self, repo: WorkbenchStore, task: dict[str, Any], step: StepContract
     ) -> dict[str, Any]:
@@ -1112,7 +1302,7 @@ class Advisor:
             parts += [
                 "",
                 "## The data of this task",
-                "The data for this task was listed and pinned before it started. List it "
+                "The data for this task was confirmed by the user before step 1. List it "
                 f'with list_inputs and read it with read_input; pass task="{listed_data_task}" '
                 "on every data call. Take figures with query_facts (each row has a ref and "
                 "cites material, version and page) or query_metric; find passages with "
@@ -1173,4 +1363,59 @@ def _waiting_reason(row: dict[str, Any]) -> dict[str, Any]:
             "requests": [r["id"] for r in pending],
             "waiting_for": [label for r in pending for label in r.get("labels") or []],
         }
+    missing = [r for r in pending_requests(row) if r.get("status") == "missing"]
+    if missing:
+        return {
+            "data": "missing",
+            "missing": [item for r in missing for item in r.get("missing") or []],
+        }
     return {"data": "waiting", "waiting_for": detail.get("waiting_for")}
+
+
+def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int) -> str:
+    """第 0 步「定数据」给模型的说明（decisions ⑭）：专家的做法、用户的问题、专家自带
+    几份；用查主体、提出数据两个工具提要哪些，不开始做第 1 步。"""
+    method: list[str] = []
+    room = DATA_STEP_TOTAL_CHARS
+    for n, step in enumerate(pack.workflow, start=1):
+        body = step.method_text.strip()[:DATA_STEP_METHOD_CHARS]
+        chunk = f"{n}. {step.title}\n{body}"
+        if len(chunk) > room:
+            method.append(f"{n}. {step.title}")
+            continue
+        room -= len(chunk)
+        method.append(chunk)
+    asked = question.get("text") if isinstance(question, dict) else str(question or "")
+    parts = [
+        f"# Step 0 of {pack.name or pack.title}: decide what data this task needs",
+        "Before step 1 starts, decide which data the steps below need for this "
+        "user's question, and propose it. Do not start step 1 in this turn.",
+        "",
+        "## The user's question",
+        str(asked or "").strip()[:4000],
+        "",
+        "## How this expert works (its steps)",
+        *method,
+        "",
+        "## What to do",
+        "- Work out which companies or institutions the question is about. Look up "
+        f'each code with find_subject(task="{task_id}", name=…); never write a code '
+        "from memory. Ask for data on other companies too when the steps compare "
+        "with them.",
+        f'- Propose the data with request_data(task="{task_id}", needs=[…]): for each '
+        "item give subject (the code; leave it out for data about no particular "
+        "company, such as rules or statistics), doc_type, period, reading, "
+        "essential (true if the steps cannot be done without it) and reason (why "
+        "the steps need it). At most 20 items.",
+        "- The user confirms, changes or drops these items before anything is "
+        "fetched or read; you cannot read them in this turn.",
+        "- If the question needs no data, propose nothing.",
+        "- End the turn with one sentence on what you proposed and why.",
+    ]
+    if bound:
+        parts += [
+            "",
+            f"The expert also brings {bound} item(s) of its own, chosen by its author; "
+            "they are already there for the steps. Do not ask for them.",
+        ]
+    return "\n".join(parts)

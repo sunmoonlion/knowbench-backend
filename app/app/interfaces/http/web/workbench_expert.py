@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -18,7 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.workbench.catalog import (
     my_knowbots,
     pin_knowbot,
-    pinned_pack,
     viewable_expert,
 )
 from app.application.workbench.delegation import DelegationService
@@ -32,13 +30,13 @@ from app.bootstrap.workbench import (
 )
 from app.domain.security import Principal
 from app.domain.workbench.data_needs import DataChoice
-from app.domain.workbench.errors import DataChoiceInvalid, WorkbenchError
+from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     CONTRACT_VERSION,
-    DataChoiceV2,
+    Pick,
     _actor,
     _http,
     _publish_commands_wakeup,
@@ -71,16 +69,16 @@ class Delegate(Strict):
     budget_currency: str = Field(default="CNY", pattern=r"^CNY$")
     # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
     data: list[DataChoice] = Field(default_factory=list, max_length=64)
-    # 清单 v2 的专家（SDD 0043）：在解析清单上的选择
-    data_v2: DataChoiceV2 | None = None
 
 
-class DataPlanIn(Strict):
-    """开跑前列出：请专家的人给的任务参数。"""
+class ConfirmData(Strict):
+    """用户确认专家提出的数据（第 0 步或运行中，decisions ⑭）：可以先改（`needs` 是
+    改过的整份：换主体、改期间、去掉、自己加一样），换一份（条目编号 → 资料与版本）、
+    去掉几样（条目编号）。都不给就是照提出的确认。"""
 
-    subjects: list[str] = Field(min_length=1, max_length=10)
-    period_start: date | None = None
-    period_end: date | None = None
+    picks: dict[str, Pick] = Field(default_factory=dict, max_length=200)
+    dropped: list[str] = Field(default_factory=list, max_length=200)
+    needs: list[dict[str, Any]] | None = Field(default=None, max_length=20)
 
 
 class PinKnowbot(Strict):
@@ -145,43 +143,6 @@ async def data_needs(
         found = await DelegationService(workbench_store(session)).data_needs(
             owner_actor_id=_actor(principal), profile_id=pack_id, project_id=project_id
         )
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-    return {"contract_version": CONTRACT_VERSION, **found}
-
-
-@router.post("/packs/{pack_id}/data-plan")
-async def data_plan(
-    pack_id: str,
-    body: DataPlanIn,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
-) -> dict[str, Any]:
-    """清单 v2 的专家开跑前列出（SDD 0043 第 3.5 节）：knowbase 按声明与任务参数解析，
-    回每一样用哪份、哪一版、为什么；待确认的、有歧义的、缺的都在里面。"""
-    try:
-        pinned = await pinned_pack(
-            workbench_store(session),
-            owner_actor_id=_actor(principal),
-            profile_id=pack_id,
-        )
-        if not pinned.v2:
-            raise DataChoiceInvalid("this expert lists data the old way")
-        try:
-            found = await expert_data().listing(
-                pinned,
-                subjects=[s.strip() for s in body.subjects],
-                period=(body.period_start, body.period_end),
-                user_token=user_token,
-            )
-        except WorkbenchError:
-            raise
-        except Exception as exc:
-            translated = refusal(exc)
-            if translated is None:
-                raise
-            raise translated from None
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **found}
@@ -267,7 +228,6 @@ async def delegate(
             data=[c.model_dump(exclude_none=True) for c in body.data],
             chooser=data_chooser(),
             user_token=user_token,
-            data_v2=body.data_v2.model_dump(mode="json") if body.data_v2 else None,
             expert_data=expert_data(),
         )
     except WorkbenchError as exc:
@@ -282,9 +242,11 @@ async def task_data(
     task_id: str,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ) -> dict[str, Any]:
-    """这件委托用的数据（清单 v2 的专家）：钉了哪几份、在等哪几项、专家新要了什么、
-    缺了的可选项。不是清单 v2 的委托回 `listed: false`。"""
+    """这件委托用的数据（清单 v2 的专家）：在定数据、钉了哪几份、在等哪几项、专家提出
+    了什么（每一样解析到哪、候选有哪些）、没取到的、数据不全的。不是清单 v2 的委托回
+    `listed: false`。"""
     repo = workbench_store(session)
     try:
         await repo.get_task(task_id, owner_actor_id=_actor(principal))
@@ -295,6 +257,10 @@ async def task_data(
     if row is None:
         return {"contract_version": CONTRACT_VERSION, "listed": False}
     detail = row.get("detail") or {}
+    try:
+        items = await expert_data().pending_items(row, user_token)
+    except Exception:  # noqa: BLE001 — 看不到候选也照样列出要了什么
+        items = {}
     return {
         "contract_version": CONTRACT_VERSION,
         "listed": True,
@@ -309,8 +275,12 @@ async def task_data(
                 "labels": r.get("labels") or [],
                 "status": r.get("status"),
                 "requested_at": r.get("requested_at"),
+                "needs": r.get("needs") or [],
+                "items": items.get(str(r.get("id"))) or [],
+                "missing": r.get("missing") or [],
             }
             for r in detail.get("requests") or []
+            if r.get("status") != "merged"
         ],
         "pinned": [
             {
@@ -328,17 +298,26 @@ async def task_data(
 @router.post("/tasks/{task_id}/data-requests/confirm")
 async def confirm_data_requests(
     task_id: str,
+    body: ConfirmData | None = None,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ) -> dict[str, Any]:
-    """用户确认专家运行中新要的数据（0048 第五节）：齐的签上、钉上，缺的去取。"""
+    """用户确认专家提出的数据（第 0 步或运行中，0048 第五节）：可以先改、换、去掉；
+    齐的签上、钉上，缺的去取。"""
     repo = workbench_store(session)
+    choice = body or ConfirmData()
     try:
         task = await repo.get_task(task_id, owner_actor_id=_actor(principal))
         try:
             done = await expert_data().confirm_requests(
-                repo, task, owner_subject=principal.subject, user_token=user_token
+                repo,
+                task,
+                owner_subject=principal.subject,
+                user_token=user_token,
+                picks={k: v.model_dump() for k, v in choice.picks.items()},
+                dropped=list(choice.dropped),
+                needs=choice.needs,
             )
         except WorkbenchError:
             raise
@@ -359,7 +338,7 @@ async def decline_data_requests(
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
-    """用户不要专家新要的数据：委托照现有的接着做。"""
+    """用户不要专家提出的数据，或者没取到的照现有的接着做：委托接着做，记「数据不全」。"""
     repo = workbench_store(session)
     try:
         task = await repo.get_task(task_id, owner_actor_id=_actor(principal))
@@ -368,6 +347,23 @@ async def decline_data_requests(
         raise _http(exc) from exc
     await _publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **done}
+
+
+@router.get("/projects/{project_id}/board")
+async def project_board(
+    project_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """项目的看板：委托按列（排队、在跑、等你、等别人、完成、没成），卡片写清等谁、
+    等什么（请专家方案设计第 4.8 节）。"""
+    try:
+        view = await ExpertDesk(workbench_store(session)).board(
+            project_id, owner_actor_id=_actor(principal)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **view}
 
 
 @router.get("/expert/overview")

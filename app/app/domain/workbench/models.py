@@ -56,8 +56,6 @@ class HandoverRequest(Strict):
     client_context: dict[str, Any] = Field(default_factory=dict)
     # 请专家时按声明选的数据（SDD 0042）：每份 need、source，云端 item_id、本地 path
     data: list[dict[str, Any]] = Field(default_factory=list, max_length=64)
-    # 清单 v2 的专家（SDD 0043）：knowbase 的清单编号与修订、用户换过的、去掉的
-    data_v2: dict[str, Any] | None = None
 
     def digest(self) -> str:
         body = {
@@ -71,8 +69,6 @@ class HandoverRequest(Strict):
         }
         if self.data:  # 没选数据的请求，摘要与加这一栏之前一样
             body["data"] = self.data
-        if self.data_v2 is not None:
-            body["data_v2"] = self.data_v2
         return hashlib.sha256(
             json.dumps(body, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()

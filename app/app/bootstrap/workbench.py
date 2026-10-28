@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -168,16 +168,6 @@ def expert_data():
     )
 
 
-async def _pinned_of_task(repo: WorkbenchStore, task: dict[str, Any]):
-    from app.application.workbench.catalog import pinned_pack
-
-    return await pinned_pack(
-        repo,
-        owner_actor_id=str(task["owner_actor_id"]),
-        profile_id=str(task["profile_id"]),
-    )
-
-
 def _run_reader():
     """工作台凭委托的运行授权读 knowbase（数值验收回查）；没配签名密钥就没有。"""
     from app.application.workbench.run_reader import RunReader
@@ -203,7 +193,6 @@ def build_data_waiter(session_factory: async_sessionmaker[AsyncSession]):
         workbench_stores(session_factory),
         knowbase_v2(),
         knowfeed_supply(),
-        pinned_of=_pinned_of_task,
     )
 
 

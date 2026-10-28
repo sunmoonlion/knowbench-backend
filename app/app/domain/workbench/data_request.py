@@ -1,10 +1,11 @@
-"""数据需求声明 v2：照 knowbase 的契约 `knowbot-data-needs/v2` 写的同一份模型。
+"""一样数据的描述：照 knowbase 的契约 `data-request/v1` 写的同一份模型。
 
-真源在 `knowbase-app/contracts/knowbot-data-needs/v2/`，本仓 `contracts/` 的锁钉住它的
-摘要；并列检出 knowbase-app 时，测试核这里生成的 schema 与真源一致（不计说明文字）。
+真源在 `knowbase-app/contracts/data-request/v1/`，本仓 `contracts/` 的锁钉住它的摘要；
+并列检出 knowbase-app 时，测试核这里生成的 schema 与真源一致（不计说明文字）。
 
-清单 v2 的专家：请的人给任务参数（主体等），knowbase 按声明解析，工作台列给他确认、
-等数据、开跑前列出（SDD 0043 第三节）；声明本身由 knowmart 交付时核过，这里再读一遍。
+清单 v2 的专家没有数据需求声明（decisions ⑭）：委托第 0 步模型读专家逻辑和用户问题，
+用 `request_data` 按这个形状提出要哪些数据，knowbase 解析，用户确认、可改（SDD 0043
+第三节）；运行中再要数据也是这样。
 """
 
 from __future__ import annotations
@@ -12,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
 DocType = Literal[
     "disclosure",
@@ -142,13 +143,15 @@ class PeriodRule(_Strict):
     months: int | None = Field(default=None, ge=1, le=60)
 
 
-class DataNeed(_Strict):
-    """声明模板里的一样：类型（细类，或只写大类）、期间规则、版本形态、格式、份数、
-    必填、要的读法、来源限制、多候选时的优先策略、表格类的表与列；事项与行业写了就是
-    缩小范围；口径与说明只展示。"""
+class DataRequest(_Strict):
+    """一样数据：主体（证券代码、机构编号；空是不限主体）、类型（细类，或只写大类）、
+    期间规则、版本形态、格式、份数、是不是必需、要的读法、来源限制、多候选时的优先
+    策略、表格类的表与列；事项与行业写了就是缩小范围；名字、说明（为什么要）、口径
+    只展示。"""
 
     key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
     name: str = Field(min_length=1, max_length=80)
+    subject: str | None = Field(default=None, min_length=1, max_length=64)
     doc_type: DocType
     period: PeriodRule
     formats: tuple[DataFormat, ...] = Field(min_length=1, max_length=6)
@@ -166,32 +169,3 @@ class DataNeed(_Strict):
     edition: Edition = "full"
     topics: tuple[Topic, ...] = Field(default=(), max_length=12)
     industry: Industry | None = None
-
-
-MAX_NEEDS = 20
-TABULAR: frozenset[str] = frozenset({"excel", "csv"})
-
-
-class BadNeedsV2(ValueError):
-    """清单 v2 里的声明不合规矩。"""
-
-
-def needs_v2_of(manifest: object) -> list[DataNeed]:
-    """清单 v2 的数据需求声明；没写是空的。不合规矩抛 BadNeedsV2。"""
-    raw = manifest.get("data_needs") if isinstance(manifest, dict) else None
-    if raw is None:
-        return []
-    if not isinstance(raw, list) or len(raw) > MAX_NEEDS:
-        raise BadNeedsV2("data_needs must be a list of at most 20")
-    try:
-        needs = [DataNeed.model_validate(item) for item in raw]
-    except ValidationError:
-        raise BadNeedsV2("a data need is invalid") from None
-    if len({n.key for n in needs}) != len(needs):
-        raise BadNeedsV2("each data need needs its own key")
-    for need in needs:
-        if need.max_count < need.min_count:
-            raise BadNeedsV2("max_count must not be below min_count")
-        if need.tables and not set(need.formats) <= TABULAR:
-            raise BadNeedsV2("tables can be required only of Excel or CSV data")
-    return needs

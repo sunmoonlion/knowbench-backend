@@ -155,8 +155,9 @@ class Ledger:
             )
             # 测试的委托（snapshot）钉的是测试运行授权里那几份，不按声明核（knowlab 核过）
             if snapshot is None and pinned is not None and pinned.v2:
-                if pinned.needs_v2 and resolution is None:
-                    raise DataRequired("list the data this expert needs first")
+                # 清单 v2：请专家时建好了空清单，要什么数据由第 0 步提（decisions ⑭）
+                if resolution is None:
+                    raise DataRequired("ask this expert from the page again")
             elif snapshot is None:
                 needs = pinned.needs if pinned is not None else ()
                 if needs and not pins:

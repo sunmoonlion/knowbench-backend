@@ -1,9 +1,11 @@
-"""清单 v2 的专家请来用数据（SDD 0043 块 6）：真数据库、经网页接口，knowbase 与 knowfeed
-用替身。
+"""清单 v2 的专家请来用数据（SDD 0043 块 6a，decisions ⑭）：真数据库、经网页接口，
+knowbase、knowfeed 与模型的那一轮用替身。
 
-填主体 → 列清单；不带清单不建委托；待确认的随请专家确认、交 knowfeed，委托核验时进
-「等数据」；需求单办完了重解析、凭本人那次确认续签、钉住、送回核验（所有者 10-27 定
-「等数据后自动接着跑」）；都齐了的当场本人签；委托取消了撤需求单。
+请专家只建一张空清单（作者挑选的数据当场本人签、钉）；委托第 0 步模型用 request_data
+提出要哪些数据，委托停在步骤之间；用户在委托页确认（能换、改、去掉、加），齐的本人签，
+缺的交 knowfeed、委托「等数据」；需求单办完了重解析、凭本人那次确认续签、钉住、接着跑
+（所有者 10-27 定）；有没取到的停下问用户，照现有的接着做（记「数据不全」）或取消；
+委托取消了撤需求单。
 """
 
 from __future__ import annotations
@@ -21,31 +23,48 @@ from test_workbench_routes import A
 from test_workbench_routes import make_client as make_client  # noqa: F401
 
 import app.interfaces.http.web.workbench_expert as expert_routes
-from app.application.workbench.advisor import Advisor
+from app.application.workbench.advisor import DATA_STEP_ID, Advisor, TurnResult
 from app.application.workbench.expert_data import (
     DataWaiter,
     ExpertData,
+    find_subject,
     request_data,
 )
-from app.bootstrap.workbench import _pinned_of_task, workbench_store, workbench_stores
+from app.bootstrap.workbench import workbench_store, workbench_stores
 from app.domain.workbench.data_plan import item_ref
 from app.interfaces.http.middleware.auth import get_web_knowbase_token_provider
 
 PROFILE = f"knowbot:{KNOWBOT}@1"
 SHA = {"2025": "a" * 64, "2024": "b" * 64, "2023": "d" * 64}
-ANNUAL = {
-    "key": "annual",
-    "name": "年报",
-    "doc_type": "annual_report",
-    "period": {"kind": "latest", "count": 2},
-    "formats": ["pdf"],
-    "reading": "pages",
+BOUND = {
+    "material_id": "m-bound",
+    "version_no": 3,
+    "sha256": "e" * 64,
+    "basis_ref": f"expert:{KNOWBOT}@1",
 }
-
-
-def key(year: str) -> dict[str, Any]:
-    return {
+# 第 0 步模型提的：2025 年报（已有）、2024 年报（要去取）
+PROPOSED = [
+    {
         "subject": "600519.SH",
+        "doc_type": "annual_report",
+        "period": {"kind": "fixed", "start": "2025-01-01", "end": "2025-12-31"},
+        "reading": "pages",
+        "essential": True,
+        "reason": "最近一年的年报",
+    },
+    {
+        "subject": "600519.SH",
+        "doc_type": "annual_report",
+        "period": {"kind": "fixed", "start": "2024-01-01", "end": "2024-12-31"},
+        "reading": "pages",
+        "reason": "上一年比较",
+    },
+]
+
+
+def key(year: str, subject: str = "600519.SH") -> dict[str, Any]:
+    return {
+        "subject": subject,
         "doc_type": "annual_report",
         "period_start": f"{year}-01-01",
         "period_end": f"{year}-12-31",
@@ -70,41 +89,63 @@ def candidate(year: str, basis: str = "public") -> dict[str, Any]:
     }
 
 
-def item(year: str, status: str) -> dict[str, Any]:
-    resolved = status == "resolved"
-    return {
-        "need_key": "annual",
-        "key": key(year),
-        "status": status,
-        "chosen": [candidate(year)] if resolved else [],
-        "candidates": [],
-        "reason": None,
-    }
-
-
 class FakeKnowbase:
-    def __init__(self, items: list[dict[str, Any]]) -> None:
-        self.revisions = [
-            {
-                "resolution_id": "res-1",
-                "revision": 1,
-                "consumer": f"expert:{KNOWBOT}@1",
-                "contract_version": "knowbot-manifest/v2",
-                "vocab_version": 2,
-                "task_ref": None,
-                "items": items,
-                "created_at": "2026-10-27T00:00:00Z",
-            }
-        ]
+    """knowbase 的替身：2025 年报已有，2024 年报要去取（`arrives` 决定补采后到没到）。"""
+
+    def __init__(self) -> None:
+        self.revisions: list[dict[str, Any]] = []
+        self.needs: list[dict[str, Any]] = []
         self.calls: list[tuple[str, Any]] = []
+        self.arrives = True
+
+    def _items(self, fetched: bool) -> list[dict[str, Any]]:
+        out = []
+        for need in self.needs:
+            year = str(need["period"].get("start", "2025-01-01"))[:4]
+            here = year == "2025" or (fetched and self.arrives)
+            out.append(
+                {
+                    "need_key": need["key"],
+                    "key": key(year, need.get("subject") or "600519.SH"),
+                    "status": "resolved" if here else "to_confirm",
+                    "chosen": [candidate(year)] if here and year in SHA else [],
+                    "candidates": [],
+                    "reason": None,
+                }
+            )
+        return out
+
+    def _revise(self, fetched: bool = False) -> dict[str, Any]:
+        latest = {
+            "resolution_id": "res-1",
+            "revision": len(self.revisions) + 1,
+            "consumer": f"expert:{KNOWBOT}@1",
+            "contract_version": "data-request/v1",
+            "vocab_version": 2,
+            "task_ref": None,
+            "items": self._items(fetched),
+            "created_at": "2026-10-28T00:00:00Z",
+        }
+        self.revisions.append(latest)
+        return copy.deepcopy(latest)
 
     async def resolve(self, user_token: str, **kw: Any) -> dict[str, Any]:
         self.calls.append(("resolve", kw))
-        assert kw["needs"][0]["doc_type"] == "annual_report"
-        return copy.deepcopy(self.revisions[0])
+        assert kw["needs"] == []
+        return self._revise()
 
     async def resolution(self, user_token, resolution_id, revision=None):
         return copy.deepcopy(self.revisions[(revision or len(self.revisions)) - 1])
+
+    async def add_needs(self, subject, resolution_id, needs):
+        self.calls.append(("add_needs", needs))
+        self.needs += needs
+        return self._revise()
+
+    async def revise_needs(self, user_token, resolution_id, needs):
+        self.calls.append(("revise_needs", needs))
+        self.needs = list(needs)
+        return self._revise()
 
     async def confirm(self, user_token: str, **kw: Any) -> dict[str, Any]:
         self.calls.append(("confirm", kw))
@@ -124,37 +165,15 @@ class FakeKnowbase:
 
     async def run_grant(self, user_token: str, **kw: Any) -> dict[str, Any]:
         self.calls.append(("run_grant", kw))
-        return {"grant_id": "g-user"}
+        return {"grant_id": f"g-user-{len(self.calls)}"}
 
     async def refresh(self, subject: str, resolution_id: str) -> dict[str, Any]:
         self.calls.append(("refresh", subject))
-        latest = copy.deepcopy(self.revisions[-1])
-        latest["items"] = [item("2025", "resolved"), item("2024", "resolved")]
-        latest["revision"] = len(self.revisions) + 1
-        self.revisions.append(latest)
-        return copy.deepcopy(latest)
+        return self._revise(fetched=True)
 
     async def grant_by_confirmation(self, **kw: Any) -> dict[str, Any]:
         self.calls.append(("grant_by_confirmation", kw))
         return {"grant_id": "g-confirmed"}
-
-    async def add_needs(self, subject, resolution_id, needs):
-        self.calls.append(("add_needs", needs))
-        latest = copy.deepcopy(self.revisions[-1])
-        for need in needs:
-            latest["items"].append(
-                {
-                    "need_key": need["key"],
-                    "key": key("2023"),
-                    "status": "resolved",
-                    "chosen": [candidate("2023")],
-                    "candidates": [],
-                    "reason": None,
-                }
-            )
-        latest["revision"] = len(self.revisions) + 1
-        self.revisions.append(latest)
-        return copy.deepcopy(latest)
 
     async def release_run_grant(self, grant_id: str) -> None:
         self.calls.append(("release", grant_id))
@@ -168,6 +187,7 @@ class FakeSupply:
         self.status = "fetching"
         self.submitted: list[dict[str, Any]] = []
         self.cancelled: list[str] = []
+        self.looked_up: list[str] = []
 
     def configured(self) -> bool:
         return True
@@ -183,14 +203,32 @@ class FakeSupply:
         self.cancelled.append(demand_id)
         return {"demand_id": demand_id, "status": "cancelled"}
 
+    async def securities(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
+        self.looked_up.append(query)
+        return [{"subject": "600519.SH", "name": "贵州茅台"}]
+
+
+class StepZero:
+    """模型的那一轮（第 0 步）：照说明查主体、提数据；`propose` 为空就是不要数据。"""
+
+    def __init__(self, db, kb, propose) -> None:  # noqa: F811
+        self.db, self.kb, self.propose = db, kb, propose
+        self.texts: list[str] = []
+
+    async def run_turn(self, thread_id: str, text_: str, *, timeout: float = 0):  # noqa: ASYNC109
+        self.texts.append(text_)
+        if self.propose:
+            async with self.db() as s:
+                repo = workbench_store(s)
+                task_id = text_.split('task="', 1)[1].split('"', 1)[0]
+                await request_data(
+                    repo, self.kb, await repo.get_task(task_id), self.propose
+                )
+        return TurnResult(turn_id="turn-0", final_text="提了两样", tokens={}, cost=None)
+
 
 def v2_manifest() -> dict[str, Any]:
-    return {
-        **manifest(),
-        "schema": "knowbot-manifest/v2",
-        "data_needs": [ANNUAL],
-        "bindings": [],
-    }
+    return {**manifest(), "schema": "knowbot-manifest/v2", "bindings": [BOUND]}
 
 
 @pytest.fixture
@@ -198,10 +236,7 @@ def world(make_client, monkeypatch):  # noqa: F811
     summoner = FakeSummoner()
     summoner.give(f"sub-{A}", v2_manifest())
     monkeypatch.setattr(expert_routes, "knowmart_summoner", lambda: summoner)
-    state: dict[str, Any] = {
-        "kb": FakeKnowbase([item("2025", "resolved"), item("2024", "to_confirm")]),
-        "supply": FakeSupply(),
-    }
+    state: dict[str, Any] = {"kb": FakeKnowbase(), "supply": FakeSupply()}
     monkeypatch.setattr(
         expert_routes,
         "expert_data",
@@ -217,15 +252,8 @@ def world(make_client, monkeypatch):  # noqa: F811
     return state
 
 
-def ask(key_: str, data_v2: dict | None = None) -> dict[str, Any]:
-    body: dict[str, Any] = {
-        "idempotency_key": key_,
-        "expert": PROFILE,
-        "question": "分析茅台",
-    }
-    if data_v2 is not None:
-        body["data_v2"] = data_v2
-    return body
+def ask(key_: str) -> dict[str, Any]:
+    return {"idempotency_key": key_, "expert": PROFILE, "question": "分析茅台"}
 
 
 async def known(db) -> None:  # noqa: F811
@@ -247,7 +275,28 @@ async def rows(db, sql: str, **params: Any) -> list[dict[str, Any]]:  # noqa: F8
         return [dict(r) for r in (await s.execute(text(sql), params)).mappings().all()]
 
 
-async def test_missing_data_is_confirmed_fetched_and_the_task_resumes(
+async def asked(http, db, world, key_: str, propose=PROPOSED):  # noqa: F811
+    """请专家、起线、跑第 0 步；回委托编号与那一轮的替身。"""
+    env = await machine(http)
+    pid = (await project(http, env)).json()["id"]
+    pinned = await http.post(
+        "/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"}
+    )
+    assert pinned.status_code == 200, pinned.text
+    made = await http.post(f"/api/workbench/projects/{pid}/delegations", json=ask(key_))
+    assert made.status_code == 201, made.text
+    task_id = made.json()["task_id"]
+    async with db() as s, s.begin():
+        await s.execute(
+            text("update workbench_tasks set thread_id = 'th-1' where id = :t"),
+            {"t": task_id},
+        )
+    turn = StepZero(db, world["kb"], propose)
+    state = await Advisor(workbench_stores(db), turn, records=True).drive(task_id)
+    return task_id, turn, state
+
+
+async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
     make_client,
     db,  # noqa: F811
     world,
@@ -255,164 +304,238 @@ async def test_missing_data_is_confirmed_fetched_and_the_task_resumes(
     kb, supply = world["kb"], world["supply"]
     await known(db)
     async with make_client(A) as http:
-        env = await machine(http)
-        pid = (await project(http, env)).json()["id"]
-        pinned = await http.post(
-            "/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"}
-        )
-        assert pinned.status_code == 200, pinned.text
+        await http.post("/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"})
         needs = await http.get(f"/api/workbench/packs/{PROFILE}/data-needs")
-        assert needs.json()["contract"] == "knowbot-manifest/v2"
-
-        listed = await http.post(
-            f"/api/workbench/packs/{PROFILE}/data-plan",
-            json={"subjects": ["600519.SH"]},
-        )
-        assert listed.status_code == 200, listed.text
-        body = listed.json()
-        assert (body["to_confirm"], body["supply_enabled"], body["problems"]) == (
+        assert (needs.json()["contract"], needs.json()["bound"]) == (
+            "knowbot-manifest/v2",
             1,
-            True,
-            [],
         )
-        assert kb.calls[0][1]["consumer"] == f"expert:{KNOWBOT}@1"
-        assert [i["ref"] for i in body["resolution"]["items"]] == [
-            item_ref(item("2025", "resolved")),
-            item_ref(item("2024", "to_confirm")),
+        assert needs.json()["needs"] == []
+        task_id, turn, state = await asked(http, db, world, "k-v2-0001")
+        # 请专家：空清单、作者挑选的那一份本人签、钉住
+        [(_, resolved)] = [c for c in kb.calls if c[0] == "resolve"]
+        assert resolved["task_ref"] == "knowbench:k-v2-0001"
+        [bound] = [c for c in kb.calls if c[0] == "run_grant"]
+        assert [i["material_id"] for i in bound[1]["items"]] == ["m-bound"]
+        # 第 0 步：说明里有专家的做法、问题、两个工具；提了就停在步骤之间等确认
+        assert "find_subject" in turn.texts[0] and "分析茅台" in turn.texts[0]
+        assert "1 item(s) of its own" in turn.texts[0]
+        assert state == "WAITING"
+        [task] = await rows(
+            db, "select * from workbench_tasks where id = :t", t=task_id
+        )
+        assert (task["waiting_reason"], task["current_step"]) == ("DATA", 0)
+        [attempt] = await rows(
+            db,
+            "select step_id, status from workbench_attempts where task_id = :t",
+            t=task_id,
+        )
+        assert (attempt["step_id"], attempt["status"]) == (DATA_STEP_ID, "COMPLETED")
+        [(_, proposed)] = [c for c in kb.calls if c[0] == "add_needs"]
+        assert [(n["subject"], n["required"]) for n in proposed] == [
+            ("600519.SH", True),
+            ("600519.SH", False),
         ]
+        # 看板：这件委托在「等你」，等的是确认数据
+        [task] = await rows(
+            db, "select project_id from workbench_tasks where id = :t", t=task_id
+        )
+        board = (
+            await http.get(f"/api/workbench/projects/{task['project_id']}/board")
+        ).json()
+        column = {c["key"]: c["cards"] for c in board["columns"]}
+        assert [c["task_id"] for c in column["waiting_you"]] == [task_id]
+        assert column["waiting_you"][0]["waiting"] == {
+            "who": "you",
+            "what": "confirm_data",
+        }
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        [request] = shown["requests"]
+        assert (request["id"], request["status"]) == ("r1", "pending")
+        assert [i["status"] for i in request["items"]] == ["resolved", "to_confirm"]
+        assert request["items"][0]["ref"] == item_ref(request["items"][0])
+        assert [p["basis"] for p in shown["pinned"]] == ["frozen_binding"]
 
-        missing = await http.post(
-            f"/api/workbench/projects/{pid}/delegations", json=ask("k-v2-missing")
+        # 确认：齐的本人签、钉，缺的交 knowfeed，委托接着等
+        confirmed = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
-        assert (missing.status_code, missing.json()["code"]) == (422, "data_required")
-
-        choice = {"resolution_id": "res-1", "revision": 1}
-        made = await http.post(
-            f"/api/workbench/projects/{pid}/delegations", json=ask("k-v2-0001", choice)
-        )
-        assert made.status_code == 201, made.text
-        task_id = made.json()["task_id"]
-        again = await http.post(
-            f"/api/workbench/projects/{pid}/delegations", json=ask("k-v2-0001", choice)
-        )
-        assert again.json()["created"] is False
-    # 确认了待确认的那一期、交 knowfeed；还没签授权、没钉
-    confirmed = [c for c in kb.calls if c[0] == "confirm"]
-    assert len(confirmed) == 1
-    assert confirmed[0][1]["task_ref"] == "knowbench:k-v2-0001"
-    assert confirmed[0][1]["items"] == [{"key": key("2024"), "need_key": "annual"}]
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["status"] == "supplying"
+    [(_, asked_for)] = [c for c in kb.calls if c[0] == "confirm"]
+    assert asked_for["items"] == [{"key": key("2024"), "need_key": "req1_2"}]
+    assert asked_for["task_ref"] == "knowbench:k-v2-0001"
     assert [s["confirmation_id"] for s in supply.submitted] == ["conf-1"]
-    assert supply.submitted[0]["items"][0]["readings"] == ["pages"]
-    assert not [c for c in kb.calls if c[0] == "run_grant"]
-    [row] = await rows(db, "select * from workbench_task_resolution")
-    assert (row["status"], row["demand_id"], row["grant_ref"]) == (
-        "waiting",
-        "d-1",
-        "knowbench:k-v2-0001",
+    pins = await rows(
+        db, "select item_id, basis from workbench_task_data order by position"
     )
-    assert await rows(db, "select * from workbench_task_data") == []
+    assert [p["item_id"] for p in pins] == ["m-bound", "m-2025"]
+    [row] = await rows(db, "select * from workbench_task_resolution")
+    assert (row["status"], row["demand_id"]) == ("waiting", "d-1")
 
-    # 核验：线已经起好（这里直接写上），清单还在等 → 进「等数据」
-    async with db() as s, s.begin():
-        await s.execute(
-            text("update workbench_tasks set thread_id = 'th-1' where id = :t"),
-            {"t": task_id},
-        )
     stores = workbench_stores(db)
-    assert await Advisor(stores, object()).drive(task_id) == "WAITING"  # type: ignore[arg-type]
-    [task] = await rows(db, "select * from workbench_tasks where id = :t", t=task_id)
-    assert task["waiting_reason"] == "DATA"
-
     later = datetime.now(UTC) + timedelta(minutes=10)
-    waiter = DataWaiter(
-        stores, kb, supply, pinned_of=_pinned_of_task, now=lambda: later
-    )
-    # 还在取：不动，过一会儿再查
-    assert await waiter.sweep() == 1
-    [row] = await rows(db, "select * from workbench_task_resolution")
-    assert row["status"] == "waiting" and row["checks"] == 1
-    assert row["detail"]["demand_status"] == "fetching"
-
-    # 办完了：重解析、凭确认续签、钉住、送回核验并排上驾驶
+    waiter = DataWaiter(stores, kb, supply, now=lambda: later)
+    assert await waiter.sweep() == 1  # 还在取：不动
     supply.status = "ready"
     waiter.now = lambda: later + timedelta(hours=1)
     assert await waiter.sweep() == 1
     [granted] = [c for c in kb.calls if c[0] == "grant_by_confirmation"]
-    assert granted[1]["confirmation_id"] == "conf-1"
+    assert [i["material_id"] for i in granted[1]["items"]] == ["m-2024"]
     assert granted[1]["ref"] == "knowbench:k-v2-0001"
-    assert granted[1]["revision"] == 2
-    assert {i["material_id"] for i in granted[1]["items"]} == {"m-2025", "m-2024"}
-    assert all(i["basis"] == "public" for i in granted[1]["items"])
-    pins = await rows(db, "select * from workbench_task_data order by position")
-    assert [(p["source"], p["item_id"], p["grant_id"], p["basis"]) for p in pins] == [
-        ("knowbase", "m-2025", "g-confirmed", "public"),
-        ("knowbase", "m-2024", "g-confirmed", "public"),
-    ]
-    assert pins[0]["name"] == "贵州茅台2025年年度报告.pdf"
-    [row] = await rows(db, "select * from workbench_task_resolution")
-    assert (row["status"], row["revision"]) == ("ready", 2)
-    [task] = await rows(db, "select * from workbench_tasks where id = :t", t=task_id)
-    assert task["state"] == "VALIDATING"
-    drives = await rows(
-        db,
-        "select payload from workbench_commands where kind = 'task.drive' "
-        "and payload->>'task_id' = :t",
-        t=task_id,
+    pins = await rows(db, "select item_id from workbench_task_data order by position")
+    assert [p["item_id"] for p in pins] == ["m-bound", "m-2025", "m-2024"]
+    [task] = await rows(
+        db, "select state from workbench_tasks where id = :t", t=task_id
     )
-    assert any(d["payload"].get("resumed") for d in drives)
-    # 再扫一遍不重复开跑
-    assert await waiter.sweep() == 0
+    assert task["state"] == "VALIDATING"
+    assert await waiter.sweep() == 0  # 再扫一遍不重复开跑
 
 
-async def test_everything_ready_is_signed_by_the_user_at_once(
+async def test_what_did_not_arrive_waits_for_the_user_to_decide(
     make_client,
     db,  # noqa: F811
     world,
 ) -> None:
-    kb = FakeKnowbase([item("2025", "resolved"), item("2024", "resolved")])
-    world["kb"] = kb
+    kb, supply = world["kb"], world["supply"]
+    kb.arrives = False
     await known(db)
     async with make_client(A) as http:
-        env = await machine(http)
-        pid = (await project(http, env)).json()["id"]
-        await http.post("/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"})
-        # 换选的条目必须在候选里；必填的不能去掉
-        ref_2024 = item_ref(item("2024", "resolved"))
-        bad_pick = await http.post(
-            f"/api/workbench/projects/{pid}/delegations",
-            json=ask(
-                "k-v2-bad-01",
-                {
-                    "resolution_id": "res-1",
-                    "revision": 1,
-                    "picks": {ref_2024: {"material_id": "m-x", "version_no": 1}},
-                },
-            ),
+        task_id, _, _ = await asked(http, db, world, "k-v2-missing")
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
-        assert bad_pick.json()["code"] == "data_choice_invalid"
+        # 在取：看板上是「等别人」，等数据服务
+        [task] = await rows(
+            db, "select project_id from workbench_tasks where id = :t", t=task_id
+        )
+        board = (
+            await http.get(f"/api/workbench/projects/{task['project_id']}/board")
+        ).json()
+        column = {c["key"]: c["cards"] for c in board["columns"]}
+        assert column["waiting_others"][0]["waiting"] == {
+            "who": "data_service",
+            "what": "fetch_data",
+        }
+        supply.status = "ready"
+        waiter = DataWaiter(
+            workbench_stores(db),
+            kb,
+            supply,
+            now=lambda: datetime.now(UTC) + timedelta(hours=1),
+        )
+        assert await waiter.sweep() == 1
+        [task] = await rows(
+            db,
+            "select state, waiting_reason from workbench_tasks where id = :t",
+            t=task_id,
+        )
+        assert (task["state"], task["waiting_reason"]) == ("WAITING", "DATA")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        [request] = shown["requests"]
+        assert request["status"] == "missing"
+        assert request["missing"] == [
+            "上一年比较 600519.SH 2024-01-01–2024-12-31：没取到"
+        ]
+        # 照现有的接着做：记「数据不全」，委托接着跑
+        going = await http.post(f"/api/workbench/tasks/{task_id}/data-requests/decline")
+        assert going.json()["status"] == "declined"
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert shown["incomplete"] == request["missing"]
+        [task] = await rows(
+            db, "select state from workbench_tasks where id = :t", t=task_id
+        )
+        assert task["state"] == "VALIDATING"
+
+
+async def test_the_user_changes_the_list_before_confirming(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """确认前改：换一家、去掉一样、自己加一样；整份交 knowbase 重解析再确认。"""
+    kb = world["kb"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-change")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        [first, _second] = shown["requests"][0]["needs"]
+        added = {
+            "doc_type": "annual_report",
+            "subject": "000858.SZ",
+            "period": {"kind": "fixed", "start": "2025-01-01", "end": "2025-12-31"},
+            "reading": "pages",
+        }
+        changed = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={"needs": [first, added]},
+        )
+        assert changed.status_code == 200, changed.text
+        assert changed.json()["status"] == "ready"
+        [(_, revised)] = [c for c in kb.calls if c[0] == "revise_needs"]
+        assert [(n["key"], n["subject"]) for n in revised] == [
+            ("req1_1", "600519.SH"),
+            ("r1_u2", "000858.SZ"),
+        ]
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert [r["status"] for r in shown["requests"]] == ["done"]
+        assert shown["requests"][0]["labels"] == ["最近一年的年报", "annual_report"]
+
+
+async def test_no_data_needed_goes_straight_to_step_one_and_a_drop_is_recorded(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, state = await asked(http, db, world, "k-v2-none", propose=[])
+        assert (
+            state != "WAITING"
+            or (
+                await rows(
+                    db,
+                    "select waiting_reason from workbench_tasks where id = :t",
+                    t=task_id,
+                )
+            )[0]["waiting_reason"]
+            != "DATA"
+        )
+        [row] = await rows(db, "select status from workbench_task_resolution")
+        assert row["status"] == "ready"
+        attempts = await rows(
+            db,
+            "select step_id from workbench_attempts where task_id = :t order by started_at",
+            t=task_id,
+        )
+        assert attempts[0]["step_id"] == DATA_STEP_ID
+
+
+async def test_dropping_an_item_records_it_and_bad_picks_are_refused(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-drop")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        [have, want] = shown["requests"][0]["items"]
+        bad = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={"picks": {have["ref"]: {"material_id": "m-x", "version_no": 1}}},
+        )
+        assert bad.json()["code"] == "data_choice_invalid"
         dropped = await http.post(
-            f"/api/workbench/projects/{pid}/delegations",
-            json=ask(
-                "k-v2-bad-02",
-                {"resolution_id": "res-1", "revision": 1, "dropped": [ref_2024]},
-            ),
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={"dropped": [want["ref"]]},
         )
-        assert "必填" in dropped.json()["detail"]
-        made = await http.post(
-            f"/api/workbench/projects/{pid}/delegations",
-            json=ask("k-v2-ready", {"resolution_id": "res-1", "revision": 1}),
-        )
-        assert made.status_code == 201, made.text
-    [signed] = [c for c in kb.calls if c[0] == "run_grant"]
-    assert (signed[1]["process"], signed[1]["ref"]) == (
-        "delegation",
-        "knowbench:k-v2-ready",
-    )
-    assert world["supply"].submitted == []
-    [row] = await rows(db, "select * from workbench_task_resolution")
-    assert row["status"] == "ready"
-    pins = await rows(db, "select * from workbench_task_data")
-    assert {p["grant_id"] for p in pins} == {"g-user"} and len(pins) == 2
+        assert dropped.json()["status"] == "ready", dropped.text
+        assert world["supply"].submitted == []
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert shown["incomplete"] == [
+            "上一年比较 600519.SH 2024-01-01–2024-12-31：你没要"
+        ]
 
 
 async def test_a_cancelled_task_withdraws_its_demand(
@@ -423,118 +546,27 @@ async def test_a_cancelled_task_withdraws_its_demand(
     supply = world["supply"]
     await known(db)
     async with make_client(A) as http:
-        env = await machine(http)
-        pid = (await project(http, env)).json()["id"]
-        await http.post("/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"})
-        made = await http.post(
-            f"/api/workbench/projects/{pid}/delegations",
-            json=ask("k-v2-cancel", {"resolution_id": "res-1", "revision": 1}),
+        task_id, _, _ = await asked(http, db, world, "k-v2-cancel")
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
-        task_id = made.json()["task_id"]
         cancelled = await http.post(f"/api/workbench/tasks/{task_id}/cancel")
         assert cancelled.status_code in (200, 202), cancelled.text
     waiter = DataWaiter(
         workbench_stores(db),
         world["kb"],
         supply,
-        pinned_of=_pinned_of_task,
         now=lambda: datetime.now(UTC) + timedelta(minutes=5),
     )
     assert await waiter.sweep() == 1
     assert supply.cancelled == ["d-1"]
-    [row] = await rows(db, "select * from workbench_task_resolution")
+    [row] = await rows(db, "select status from workbench_task_resolution")
     assert row["status"] == "cancelled"
 
 
-async def test_the_expert_asks_for_more_and_the_user_confirms_or_declines(
-    make_client,
-    db,  # noqa: F811
-    world,
-) -> None:
-    """0048 第五节：专家运行中 request_data → 列进用户的确认清单，委托在边界停下；用户
-    确认了追加签一条授权、追加钉住，委托接着跑；不要的照现有的接着做。"""
-    kb = FakeKnowbase([item("2025", "resolved"), item("2024", "resolved")])
-    world["kb"] = kb
-    await known(db)
-    async with make_client(A) as http:
-        env = await machine(http)
-        pid = (await project(http, env)).json()["id"]
-        await http.post("/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"})
-        made = await http.post(
-            f"/api/workbench/projects/{pid}/delegations",
-            json=ask("k-v2-asks", {"resolution_id": "res-1", "revision": 1}),
-        )
-        task_id = made.json()["task_id"]
-        async with db() as s:
-            repo = workbench_store(s)
-            task = await repo.get_task(task_id)
-            listed = await request_data(
-                repo,
-                kb,
-                task,
-                [
-                    {
-                        "doc_type": "annual_report",
-                        "period": {
-                            "kind": "fixed",
-                            "start": "2023-01-01",
-                            "end": "2023-12-31",
-                        },
-                        "reading": "pages",
-                        "reason": "再要 2023 年报比较",
-                    }
-                ],
-            )
-        assert listed["status"] == "listed" and listed["request"] == "r1"
-        [(_, asked)] = [c for c in kb.calls if c[0] == "add_needs"]
-        assert asked[0]["key"] == "req1_1" and asked[0]["required"] is False
-        async with db() as s, s.begin():
-            await s.execute(
-                text("update workbench_tasks set thread_id = 'th-1' where id = :t"),
-                {"t": task_id},
-            )
-        assert (
-            await Advisor(workbench_stores(db), object()).drive(task_id)  # type: ignore[arg-type]
-            == "WAITING"
-        )
-        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
-        assert shown["listed"] is True
-        assert [(r["id"], r["status"]) for r in shown["requests"]] == [
-            ("r1", "pending")
-        ]
-        assert len(shown["pinned"]) == 2
-
-        confirmed = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm"
-        )
-        assert confirmed.status_code == 200, confirmed.text
-        assert confirmed.json()["status"] == "ready" and confirmed.json()["added"] == 1
-        grants = [c for c in kb.calls if c[0] == "run_grant"]
-        assert [i["material_id"] for i in grants[-1][1]["items"]] == ["m-2023"]
-        assert grants[-1][1]["ref"] == "knowbench:k-v2-asks"
-        pins = await rows(
-            db, "select item_id from workbench_task_data order by position"
-        )
-        assert [p["item_id"] for p in pins] == ["m-2025", "m-2024", "m-2023"]
-        [task] = await rows(
-            db, "select state from workbench_tasks where id = :t", t=task_id
-        )
-        assert task["state"] == "VALIDATING"
-        again = await http.post(f"/api/workbench/tasks/{task_id}/data-requests/confirm")
-        assert again.json()["code"] == "data_choice_invalid"
-
-        # 再要一次、这回不要：委托照现有的接着做
-        async with db() as s:
-            repo = workbench_store(s)
-            await request_data(
-                repo,
-                kb,
-                await repo.get_task(task_id),
-                [{"doc_type": "interim_announcement", "reason": "近一年回购"}],
-            )
-        declined = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/decline"
-        )
-        assert declined.json()["status"] == "declined"
-        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
-        assert [r["status"] for r in shown["requests"]] == ["done", "declined"]
+async def test_find_subject_looks_up_the_directory() -> None:
+    supply = FakeSupply()
+    assert await find_subject(supply, "茅台") == {
+        "found": [{"subject": "600519.SH", "name": "贵州茅台"}]
+    }
+    assert supply.looked_up == ["茅台"]

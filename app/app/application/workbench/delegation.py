@@ -38,7 +38,6 @@ from app.application.workbench.session_service import SessionService
 from app.domain.workbench.data_needs import DataNeed
 from app.domain.workbench.errors import (
     DataChoiceInvalid,
-    DataRequired,
     IdempotencyConflict,
     WorkbenchError,
 )
@@ -69,7 +68,6 @@ class DelegationService:
         data: list[dict[str, Any]] | None = None,
         chooser: DataChooser | None = None,
         user_token: UserToken | None = None,
-        data_v2: dict[str, Any] | None = None,
         expert_data: ExpertData | None = None,
     ) -> dict[str, Any]:
         # 内置专家，或这个人请来并钉住的分身（SDD 0027 P4）
@@ -88,7 +86,6 @@ class DelegationService:
                 budget_currency=budget_currency,
                 client_context={"entry": "expert"},
                 data=choices,
-                data_v2=data_v2,
             )
 
         v2 = await self._prepare_v2(
@@ -96,7 +93,6 @@ class DelegationService:
             profile_id=pack.profile_id,
             idempotency_key=idempotency_key,
             tenant=tenant,
-            choice=data_v2,
             expert_data=expert_data,
             user_token=user_token,
         )
@@ -152,7 +148,6 @@ class DelegationService:
             profile_id=req.profile_id,
             idempotency_key=req.idempotency_key,
             tenant=tenant,
-            choice=req.data_v2,
             expert_data=expert_data,
             user_token=user_token,
         )
@@ -190,7 +185,8 @@ class DelegationService:
     ) -> dict[str, Any]:
         """选数据的弹框要的：声明，与同一项目上次请这位专家时选的那几份（默认选上）。
 
-        清单 v2 的专家回 `contract`、声明 v2 与绑定份数：页面改走「填主体 → 列清单」。
+        清单 v2 的专家回 `contract` 与作者挑选的数据的份数：没有声明，要什么数据由委托
+        第 0 步按问题提出、用户确认（decisions ⑭），请专家页上不用选。
         """
         if is_knowbot(profile_id):
             pinned = await pinned_pack(
@@ -199,7 +195,7 @@ class DelegationService:
             if pinned.v2:
                 return {
                     "contract": pinned.contract,
-                    "needs": [n.model_dump(mode="json") for n in pinned.needs_v2],
+                    "needs": [],
                     "bound": len(pinned.bindings),
                     "last": [],
                 }
@@ -272,22 +268,17 @@ class DelegationService:
         profile_id: str,
         idempotency_key: str,
         tenant: str,
-        choice: dict[str, Any] | None,
         expert_data: ExpertData | None,
         user_token: UserToken | None,
     ) -> PreparedV2 | None:
-        """清单 v2 的专家定计划；不是 v2 的回 None（走旧路）。同一把钥匙已经建过委托
-        就不再做（交给后面回原来那份）。"""
+        """清单 v2 的专家：建空清单、签作者挑选的数据（本人在场）；不是 v2 的回 None
+        （走旧路）。同一把钥匙已经建过委托就不再做（交给后面回原来那份）。"""
         if not is_knowbot(profile_id):
-            if choice is not None:
-                raise DataChoiceInvalid("this expert takes no data")
             return None
         pinned = await pinned_pack(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
         if not pinned.v2:
-            if choice is not None:
-                raise DataChoiceInvalid("this expert lists data the old way")
             return None
         prior = await self.repo.find_task_by_idempotency(
             tenant=tenant,
@@ -297,20 +288,14 @@ class DelegationService:
         )
         if prior is not None:
             return PreparedV2()
-        if choice is None and pinned.needs_v2:
-            raise DataRequired("list the data this expert needs first")
         if expert_data is None or user_token is None:
             raise DataChoiceInvalid("data cannot be chosen here")
-        subject = await self.repo.subject_of_actor(owner_actor_id)
-        if subject is None:
+        if await self.repo.subject_of_actor(owner_actor_id) is None:
             raise DataChoiceInvalid("this account is not known to the data service")
         try:
             return await expert_data.prepare(
                 pinned,
-                choice=choice or {},
-                owner_subject=subject,
                 ref=f"knowbench:{idempotency_key}"[:255],
-                idempotency_key=idempotency_key,
                 user_token=user_token,
             )
         except WorkbenchError:

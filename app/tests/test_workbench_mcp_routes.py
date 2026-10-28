@@ -91,15 +91,17 @@ async def test_the_handshake_and_the_list_of_tools(served):
             "list_my_data",
             "read_my_data",
             "read_my_table",
+            "find_subject",
             "request_data",
             "compute",
         ]
         # 只读：除了 compute（只记计算记录）与 request_data（只列进用户的确认清单）没有
-        # 写的工具；都要带委托编号
+        # 写的工具（find_subject 只查证券名录）；都要带委托编号
         for spec in listed["result"]["tools"]:
             assert spec["name"].startswith(("list_", "read_")) or spec["name"] in (
                 "compute",
                 "request_data",
+                "find_subject",
             )
             assert "task" in spec["inputSchema"]["required"]
         assert (await http.get(URL, headers=bearer())).status_code == 405

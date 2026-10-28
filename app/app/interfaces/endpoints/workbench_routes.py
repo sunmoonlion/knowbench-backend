@@ -139,16 +139,6 @@ class Pick(Strict):
     version_no: int = Field(ge=1)
 
 
-class DataChoiceV2(Strict):
-    """在 knowbase 解析清单上的选择：清单编号与修订、换过的（条目编号 → 资料与版本）、
-    去掉的可选条目。待确认的条目随请专家一并确认（用户点的就是这一下）。"""
-
-    resolution_id: str = Field(min_length=1, max_length=64)
-    revision: int = Field(ge=1)
-    picks: dict[str, Pick] = Field(default_factory=dict, max_length=200)
-    dropped: list[str] = Field(default_factory=list, max_length=200)
-
-
 class Handover(Strict):
     idempotency_key: str = Field(min_length=8, max_length=128)
     profile_id: str = Field(min_length=1, max_length=128)
@@ -162,8 +152,6 @@ class Handover(Strict):
     client_context: dict[str, Any] = Field(default_factory=dict)
     # 写了数据需求声明的专家：按声明选的数据（SDD 0042）
     data: list[DataChoice] = Field(default_factory=list, max_length=64)
-    # 清单 v2 的专家（SDD 0043）：在解析清单上的选择
-    data_v2: DataChoiceV2 | None = None
 
 
 class RespondInteraction(Strict):
@@ -946,14 +934,9 @@ async def handover(
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ):
     repo = workbench_store(session)
-    fields = body.model_dump(exclude={"data", "data_v2"})
+    fields = body.model_dump(exclude={"data"})
     data = [c.model_dump(exclude_none=True) for c in body.data]
-    req = HandoverRequest(
-        session_id=session_id,
-        data=data,
-        data_v2=body.data_v2.model_dump(mode="json") if body.data_v2 else None,
-        **fields,
-    )
+    req = HandoverRequest(session_id=session_id, data=data, **fields)
     try:
         result = await DelegationService(repo).handover(
             req,

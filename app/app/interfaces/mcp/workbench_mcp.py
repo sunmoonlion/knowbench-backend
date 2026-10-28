@@ -9,8 +9,9 @@ Streamable HTTP，只用 JSON 响应，不开流。和知识服务的工具并�
   现在能不能读，每次调用按这个委托重新核对；对话里读数据带对话编号（这一轮的说明里给）；
 - 只读：没有改用户东西的工具。`compute` 只把算过的记进委托的计算记录（数值验收按它回查）。
 - 清单 v2 的专家（SDD 0048）：knowbase 数据 MCP 的读工具照它的定义挂在这里（工具层中继，
-  `data_relay.py`），带 `task` 或 `conversation`；缺数据用 `request_data` 提出要什么，
-  列进用户的确认清单，任务在步骤边界停下等确认。
+  `data_relay.py`），带 `task` 或 `conversation`；第 0 步与运行中用 `request_data` 提出要
+  什么（decisions ⑭），列进用户的确认清单，任务在步骤边界停下等确认；`find_subject`
+  按名字查证券代码。
 """
 
 from __future__ import annotations
@@ -27,13 +28,18 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workbench.data_relay import RELAYED, DataRelay
-from app.application.workbench.expert_data import request_data
+from app.application.workbench.expert_data import find_subject, request_data
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.knowbot_data import KnowbotData
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader
 from app.application.workbench.tokens import TokenIssuer
-from app.bootstrap.workbench import knowbase_v2, knowbot_data_source, workbench_store
+from app.bootstrap.workbench import (
+    knowbase_v2,
+    knowbot_data_source,
+    knowfeed_supply,
+    workbench_store,
+)
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
@@ -145,17 +151,36 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "find_subject": {
+        "description": (
+            "Look up the code of a listed company by its name, short name, pinyin "
+            "initials or code (A shares on the Shanghai, Shenzhen and Beijing "
+            "exchanges). Returns [{subject, name}], best match first. Use the "
+            "subject as the code in request_data; never write a code from memory."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": _TASK,
+                "name": {"type": "string", "minLength": 1, "maxLength": 40},
+            },
+            "required": ["task", "name"],
+            "additionalProperties": False,
+        },
+    },
     "request_data": {
         "description": (
-            "Ask for data that is not pinned to this task (for example one more "
-            "year's annual report). It is listed for the user to confirm; you cannot "
-            "read it before that and the task pauses after this step. Each item: "
-            "doc_type (a type or class from describe_items, e.g. annual_report or "
-            "interim_announcement), period ({kind: latest, count} for periodic "
-            "reports; {kind: recent, months} or {kind: fixed, start, end} for "
-            "others), reading (original, text, pages or table), optional topics and "
-            "edition, and reason (why this step needs it). The subjects are the "
-            "task's."
+            "Propose the data this task needs (in step 0), or ask for data that is "
+            "not pinned to it yet (for example one more year's annual report). It "
+            "is listed for the user to confirm, change or drop; you cannot read it "
+            "before that and the task pauses after this step. Each item: subject "
+            "(a code from find_subject; leave it out for data about no particular "
+            "company), doc_type (a type or class from describe_items, e.g. "
+            "annual_report or interim_announcement), period ({kind: latest, count} "
+            "for periodic reports; {kind: recent, months} or {kind: fixed, start, "
+            "end} for others), reading (original, text, pages or table), optional "
+            "topics and edition, essential (true if the steps cannot be done "
+            "without it) and reason (why it is needed). At most 20 items."
         ),
         "inputSchema": {
             "type": "object",
@@ -164,16 +189,18 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "needs": {
                     "type": "array",
                     "minItems": 1,
-                    "maxItems": 5,
+                    "maxItems": 20,
                     "items": {
                         "type": "object",
                         "properties": {
+                            "subject": {"type": "string", "maxLength": 64},
                             "doc_type": {"type": "string"},
                             "period": {"type": "object"},
                             "reading": {"enum": ["original", "text", "pages", "table"]},
                             "topics": {"type": "array", "items": {"type": "string"}},
                             "edition": {"enum": ["full", "summary", "english"]},
                             "max_count": {"type": "integer", "minimum": 1},
+                            "essential": {"type": "boolean"},
                             "reason": {"type": "string", "maxLength": 500},
                         },
                         "required": ["doc_type", "reason"],
@@ -269,6 +296,9 @@ async def call(
         return await request_data(
             records.repo, knowbase_v2(), working, args.get("needs") or []
         )
+    if name == "find_subject":
+        await records._working(args.get("task"))
+        return await find_subject(knowfeed_supply(), args.get("name"))
     if name == "list_my_data":
         return await KnowbotData(records, knowbot_data_source()).list(args.get("task"))
     if name == "read_my_data":
