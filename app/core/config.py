@@ -271,7 +271,7 @@ class Settings(BaseSettings):
         default=10.0, ge=0, le=300, validation_alias="WORKBENCH_MACHINE_SYNC_SECONDS"
     )
     # 作为运行方跑分身测试（SDD 0027 §3.4）：都在作者的账号下、他的电脑上跑（decisions ⑯），
-    # 不再有平台的测试账号、测试电脑与每月上限。推进器隔这么多秒推一次在跑的测试
+    # 不再用平台的账号与平台电脑跑，也没有每月上限。推进器隔这么多秒推一次在跑的测试
     knowbot_test_poll_seconds: float = Field(
         default=5.0, ge=1, le=300, validation_alias="KNOWBOT_TEST_POLL_SECONDS"
     )

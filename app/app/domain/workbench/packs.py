@@ -157,7 +157,7 @@ class StepContract(Strict):
 
     @model_validator(mode="after")
     def _output_file_stays_inside(self) -> StepContract:
-        """成稿路径只许项目内的相对路径（审读 10-19 第 4 条）：它会拼进读测试电脑文件的请求，
+        """成稿路径只许项目内的相对路径（审读 10-19 第 4 条）：它会拼进读跑测试那台电脑上文件的请求，
         代理的白名单是最后一道，不是唯一一道。"""
         if self.output_file is not None and not safe_relative_path(self.output_file):
             raise ValueError(
