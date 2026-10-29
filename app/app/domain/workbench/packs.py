@@ -102,14 +102,6 @@ def safe_relative_path(path: str) -> bool:
 NUMERIC_RULES = frozenset({"computed", "identity", "sourced", "quoted", "covers"})
 
 
-class MissingData(Strict):
-    """这一步的交回物里，哪几项说的是「这家公司没有入库」。"""
-
-    flag: str = "not_ingested"  # 为真就是没有入库
-    dataset: str = "dataset"  # 空的也算没有入库
-    code: str = "security_code"  # 证券代码写在哪
-
-
 class AskBefore(Strict):
     id: str
     question: str
@@ -145,8 +137,6 @@ class StepContract(Strict):
     )
     reserve: str = "0.05"  # 这一步预留的预算（币种随 Task）
     input_max_chars: int = 8000  # 每个上游交回物放进 turn 输入的字符上限；超出会注明
-    # 这一步会发现「没有数据」的，写明怎么认。认出来就不重做（重做也不会有数据），直接问用户
-    missing_data: MissingData | None = None
     # 工具级审批的步骤级覆盖：只能比专家包更严或更具体（approval.md「工具级：策略」）
     tool_policy: ToolPolicyOverride | None = None
     # 开步前工作台先问用户的问题（approval.md「Task 级：澄清·工作台发起」）；答案进 compose

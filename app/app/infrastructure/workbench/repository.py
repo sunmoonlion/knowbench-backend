@@ -791,32 +791,6 @@ class WorkbenchRepository:
         )
         return [_event(m) for m in r.mappings().all()]
 
-    async def summarize_missing_data(self, *, limit: int) -> list[dict[str, Any]]:
-        """各用户查不到数据的公司，按代码汇总：几次、几个人、最近一次、被查的数据集。
-
-        管理端「缺数据的需求」用（账 56）。只汇总，不列出是谁查的。
-        """
-        r = await self.session.execute(
-            text("""select e.payload->>'security_code' as security_code,
-                           max(e.payload->>'market') as market,
-                           count(*)::int as times,
-                           count(distinct s.owner_actor_id)::int as users,
-                           max(e.created_at) as last_at,
-                           array_remove(array_agg(distinct e.payload->>'dataset'), null) as datasets
-                    from workbench_session_events e
-                    join workbench_sessions s on s.id = e.session_id
-                    where e.event_type = 'data.missing'
-                      and e.payload->>'security_code' is not null
-                    group by e.payload->>'security_code'
-                    order by max(e.created_at) desc, e.payload->>'security_code'
-                    limit :limit"""),
-            {"limit": limit},
-        )
-        return [
-            {**dict(m), "datasets": sorted(m["datasets"] or [])}
-            for m in r.mappings().all()
-        ]
-
     async def list_turn_items(
         self, *, session_id: str, turn_ids: list[str]
     ) -> list[dict[str, Any]]:

@@ -15,7 +15,6 @@ from app.domain.workbench.packs import (
     AcceptanceRule,
     DossierBlock,
     ExpertPack,
-    MissingData,
     StepContract,
 )
 
@@ -577,7 +576,6 @@ FIN_REVIEW = ExpertPack(
                     label="范围内至少有一期数据",
                 ),
             ),
-            missing_data=MissingData(),
             on_reject="human",
             max_reworks=1,
         ),

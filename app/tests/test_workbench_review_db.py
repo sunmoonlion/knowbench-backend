@@ -45,11 +45,9 @@ async def test_the_five_parts_of_a_review(db):
             "where",
             "why",
             "failed",
-            "missing_data",
             "expires_at",
             "created_at",
         }
-        assert waiting["missing_data"] is None
         assert waiting["where"]["task"]["expert"] == "财报体检"
         assert waiting["where"]["task"]["id"] == task_id
         assert waiting["where"]["step"] == {"index": 3, "title": "勾稽"}
@@ -248,42 +246,6 @@ async def test_a_command_waiting_for_approval_in_a_conversation(db):
         assert all(o["consequence"] for o in full["pending"]["options"])
         assert "白名单" in full["pending"]["options"][0]["consequence"]
         assert full["opened_event"]["cursor"] is None  # 这一条是直接插的，没有事件
-    finally:
-        await close(runner)
-        await fake.close()
-
-
-async def test_stopped_because_the_company_has_no_data(db):
-    """AT-INV-24"""
-    missing = PROFILE | {
-        "dataset": None,
-        "not_ingested": True,
-        "data_version": "",
-        "periods": [],
-    }
-    fake, runner, sid, _, task_id = await run(db, [SCOPE, missing])
-    try:
-        (waiting,) = await desk(db, "waiting_for_me", owner_actor_id=OWNER)
-        assert waiting["where"]["step"] == {"index": 2, "title": "数据摸底"}
-        assert waiting["why"] == "这家公司还没有入库。没有数据，专家不往下做，也不重做"
-        assert waiting["missing_data"]["security_code"] == SCOPE["security_code"]
-        assert {
-            "label": "有对应的数据集",
-            "message": "这家公司未入库：没有对应的数据集",
-        } in (waiting["failed"])
-        full = await desk(
-            db, "review", interaction_id=waiting["interaction_id"], owner_actor_id=OWNER
-        )
-        assert full["pending"]["title"] == "这家公司还没有数据"
-        assert [(o["id"], o["label"]) for o in full["pending"]["options"]] == [
-            ("rework", "数据已经入库了，接着做"),
-            ("stop", "停止"),
-        ]
-        async with db() as s:
-            paper = await ExpertDesk(WorkbenchRepository(s)).dossier(
-                task_id, owner_actor_id=OWNER
-            )
-        assert paper["head"] == {"kind": "no_data", "text": "这家公司没有数据"}
     finally:
         await close(runner)
         await fake.close()

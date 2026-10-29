@@ -59,8 +59,6 @@ def consequence(
         return "专家重做这一步。重做要再花钱，花了多少顶部实时显示"
     if option == "stop":
         return f"专家停下，把{finished}交回给你。已花的不退"
-    if option == "wait":
-        return "专家停在这里，不再花钱。数据入库之后重新请专家"
     return ""
 
 
@@ -69,7 +67,6 @@ def why(
     step: dict[str, Any] | None,
     rejected: int,
     *,
-    missing: bool = False,
     backs: int = 0,
     out_of_scope: bool = False,
 ) -> str:
@@ -81,8 +78,6 @@ def why(
         return "这个动作超出了当前允许的范围，要你点头才做"
     if kind == "question":
         return "模型缺一点信息，问你一下再继续；不答它会按自己的假设做"
-    if missing:
-        return "这家公司还没有入库。没有数据，专家不往下做，也不重做"
     if step is None:
         return "这一步没有通过验收"
     if backs:
@@ -156,13 +151,10 @@ def review_view(
             kind,
             step,
             len([a for a in last if a["outcome"] == "rejected"]),
-            missing=bool(subject.get("missing_data")),
             backs=int(subject.get("backs") or 0),
             out_of_scope=declined,
         ),
         "failed": failed,
-        # 停在「没有数据」：页面在这里放「没有数据」卡片
-        "missing_data": subject.get("missing_data"),
         "expires_at": expires,
         "created_at": interaction.get("created_at"),
     }

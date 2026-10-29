@@ -30,7 +30,6 @@ from preview_samples import (
     HENGRUI,
     MERCHANTS,
     NINGDE,
-    PIENTZEHUANG,
     WULIANGYE_QUESTION,
     Company,
     data_query_steps,
@@ -586,18 +585,6 @@ async def build_full(world: World) -> None:
         tools=fin_review_tools(NINGDE),
         until="WAITING",
     )
-    # 没有数据
-    await world.delegate(
-        "no-data",
-        project="片仔癀",
-        expert="FIN_REVIEW",
-        question=PIENTZEHUANG.question(),
-        replies=fin_review(
-            PIENTZEHUANG, profile=PIENTZEHUANG.not_ingested(), stop_after="profile"
-        ),
-        tools={"profile": fin_review_tools(PIENTZEHUANG)["profile"][:1]},
-        until="WAITING",
-    )
     # 做到一半被用户停下：第 4 步正在做，已经调用过一次模型
     await world.delegate(
         "stopped",
@@ -725,7 +712,6 @@ async def build_full(world: World) -> None:
     for title, project, name in (
         ("专家处理中：问数做到第 3 步", "五粮液", "running"),
         ("专家停下来了：勾稽不平", "宁德时代", "waiting"),
-        ("专家停下来了：没有数据", "片仔癀", "no-data"),
         ("专家做到一半被我停下", "上海机场", "stopped"),
     ):
         rec.page(title, f"/zh-CN/workbench/projects/{p[project]}/c/{s[name]}")
@@ -745,8 +731,6 @@ async def build_full(world: World) -> None:
         about = where["about"]
         if step:
             about += f"（第 {step['index']} 步 {step['title']}）"
-        if waiting["missing_data"]:
-            about = "没有数据"
         rec.page(
             f"审查面：{about}", f"/zh-CN/workbench/review/{waiting['interaction_id']}"
         )
@@ -835,7 +819,7 @@ SCENARIOS = {
     "full": (
         USER,
         "什么都有",
-        "一个用了一阵子的人：十个项目，各种状态的委托都有——进行中、等我决定、没有数据、"
+        "一个用了一阵子的人：十个项目，各种状态的委托都有——进行中、等我决定、"
         "做到一半被停下、已完成、失败、已取消、打回；三段对话，其中一段有命令等着批准。",
     ),
     "empty": (
@@ -926,7 +910,7 @@ async def test_the_full_world(make_client, db, tmp_path):  # noqa: F811
         return json.loads((directory / found["file"]).read_text())
 
     home = answer("/api/workbench/expert/overview")
-    assert len(home["waiting"]) == 2  # 勾稽不平、没有数据
+    assert len(home["waiting"]) == 1  # 勾稽不平
     # 五粮液那位在跑；排在它后面的第二位也算进行中，显示为排队（0017）
     assert [r["state"] for r in home["running"]] == ["RECEIVED", "RUNNING"]
     assert [bool(r["queued_behind"]) for r in home["running"]] == [True, False]
@@ -939,8 +923,8 @@ async def test_the_full_world(make_client, db, tmp_path):  # noqa: F811
     }
     # 对话里等着批准的命令也在待办里，但不在专家首页
     todo = answer("/api/workbench/interactions")["interactions"]
-    assert sorted(w["kind"] for w in todo) == ["input", "input", "tool_approval"]
-    # 聊天里问到没有数据的公司：工具调用认得出来，记了一条「没有数据」，这一轮也有花费
+    assert sorted(w["kind"] for w in todo) == ["input", "tool_approval"]
+    # 聊天里问到没有数据的公司：工具答没有这个数据集，模型照实说；这一轮也有花费
     free = next(
         s
         for s in answer("/api/workbench/sessions")["sessions"]
@@ -953,8 +937,6 @@ async def test_the_full_world(make_client, db, tmp_path):  # noqa: F811
         if e["type"] == "item/completed"
     ]
     assert kinds.count("mcpToolCall") == 1
-    missing = [e for e in said["events"] if e["type"] == "data.missing"]
-    assert [e["payload"]["security_code"] for e in missing] == ["600436"]
     spent = answer(f"/api/workbench/sessions/{free['id']}/usage")
     assert spent["calls"] == 3
     # 拼出来的这一轮：按累计的差算出来的，正好是它自己写的「这一次」

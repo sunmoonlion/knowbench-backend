@@ -166,16 +166,12 @@ def block_view(
     return view
 
 
-def head_of(
-    task: dict[str, Any], position: dict[str, Any] | None, no_data: bool
-) -> dict[str, Any]:
+def head_of(task: dict[str, Any], position: dict[str, Any] | None) -> dict[str, Any]:
     state = task["state"]
     if state == TaskState.SUCCEEDED:
         return {"kind": "done", "text": "专家做完了"}
     if state == TaskState.REJECTED:
         return {"kind": "refused", "text": "专家没有接"}
-    if no_data:
-        return {"kind": "no_data", "text": "这家公司没有数据"}
     where = f"第 {position['step']} 步" if position else "中途"
     if state in (TaskState.FAILED, TaskState.CANCELLED):
         return {"kind": "stopped", "text": f"做到{where}停下了"}
@@ -190,8 +186,6 @@ def dossier_view(
     position: dict[str, Any] | None,
     artifacts: dict[str, dict[str, Any]],
     conclusion: dict[str, Any] | None,
-    *,
-    no_data: bool,
 ) -> dict[str, Any]:
     """artifacts：每个交回物名字对应它通过验收的最新一版（带内容）。"""
     data = sheet.get("data")
@@ -215,7 +209,7 @@ def dossier_view(
         text = str(conclusion["content"].get("text") or "")
     return {
         "task": sheet,
-        "head": head_of(task, position, no_data),
+        "head": head_of(task, position),
         "sections": sections,
         "how": [
             {

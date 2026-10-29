@@ -321,33 +321,6 @@ async def test_stopped_to_ask_the_user(db):
         await fake.close()
 
 
-async def test_a_company_without_data(db):
-    """AT-INV-24 的后端一半：第 2 步的验收里写明未入库，没有往下做。"""
-    missing = PROFILE | {
-        "dataset": None,
-        "not_ingested": True,
-        "data_version": "",
-        "periods": [],
-    }
-    fake, runner, *_, task_id = await run(db, [SCOPE, missing, missing])
-    try:
-        shown = await view(db, task_id)
-        assert [s["status"] for s in shown["steps"]][:3] == [
-            "accepted",
-            "waiting",
-            "pending",
-        ]
-        assert shown["steps"][1]["times"] == 1  # 没有数据不重做
-        assert shown["task"]["data"] is None  # 还不知道
-        last = (await view(db, task_id, 2))["attempts"][-1]
-        assert ("有对应的数据集", False, "这家公司未入库：没有对应的数据集") in [
-            (c["label"], c["pass"], c["message"]) for c in last["checks"]
-        ]
-    finally:
-        await close(runner)
-        await fake.close()
-
-
 async def test_nothing_of_the_method_is_in_the_view(db):
     """AT-INV-19"""
     fake, runner, *_, task_id = await run(db, ALL)

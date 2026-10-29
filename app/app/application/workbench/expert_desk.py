@@ -246,7 +246,6 @@ class ExpertDesk:
             row["name"]: row
             for row in await self.repo.list_artifacts_with_content(task_id)
         }
-        missing = await self.repo.list_task_events(task_id, types=("data.missing",))
         return dossier_view(
             pack,
             await self._sheet(task, pack, steps),
@@ -255,7 +254,6 @@ class ExpertDesk:
             None if task["state"] == TaskState.REJECTED else position(pack, task),
             {n: r for n, r in latest.items() if r["kind"] == "step"},
             latest.get("conclusion"),
-            no_data=bool(missing),
         )
 
     async def dossier_export(self, task_id: str, *, owner_actor_id: str) -> str:

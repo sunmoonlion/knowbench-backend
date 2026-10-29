@@ -126,18 +126,6 @@ class Company:
             ],
         }
 
-    def not_ingested(self) -> dict[str, Any]:
-        return {
-            "dataset": None,
-            "not_ingested": True,
-            "security_code": self.code,
-            "data_version": "",
-            "as_of": "",
-            "notes": [],
-            "periods": [],
-            "basis_breaks": [],
-        }
-
     def reconcile(self, *, unbalanced: bool = False) -> dict[str, Any]:
         checks = [
             {
@@ -419,16 +407,6 @@ MERCHANTS = Company(
     gross=(0.5, 0.5, 0.5),
     net=(0.436, 0.441, 0.446),
     leverage=0.9,
-)
-PIENTZEHUANG = Company(
-    "片仔癀",
-    "600436",
-    "sh",
-    revenue=10_060_000_000,
-    growth=(0.072, 0.064),
-    gross=(0.468, 0.441, 0.452),
-    net=(0.283, 0.279, 0.281),
-    leverage=0.16,
 )
 
 
