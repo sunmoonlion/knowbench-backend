@@ -270,6 +270,7 @@ class WorkbenchStore(Protocol):
         kind: str = "work",
         project_id: str | None = None,
         title: str | None = None,
+        origin: str | None = None,
     ) -> str: ...
 
     async def attach_session_project(

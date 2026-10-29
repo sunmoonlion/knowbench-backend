@@ -496,13 +496,15 @@ class WorkbenchRepository:
         kind: str = "work",
         project_id: str | None = None,
         title: str | None = None,
+        origin: str | None = None,
     ) -> str:
         sid = str(uuid.uuid4())
         await self.session.execute(
             text("""insert into workbench_sessions
                         (id, owner_actor_id, environment_id, sandbox_id, project_root, thread_settings,
-                         kind, project_id, title)
-                    values (:id, :owner, :env, :sb, :root, cast(:ts as jsonb), :kind, :project, :title)"""),
+                         kind, project_id, title, origin)
+                    values (:id, :owner, :env, :sb, :root, cast(:ts as jsonb), :kind, :project, :title,
+                            :origin)"""),
             {
                 "id": sid,
                 "owner": owner_actor_id,
@@ -513,6 +515,7 @@ class WorkbenchRepository:
                 "kind": kind,
                 "project": project_id,
                 "title": title,
+                "origin": origin,
             },
         )
         return sid

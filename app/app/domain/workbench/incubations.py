@@ -103,6 +103,11 @@ class IncubationRequest(Strict):
         default=None, pattern=STEP_ID, exclude_if=lambda v: v is None
     )
     seed: Seed
+    # 用户先让自己的模型直接答过的回答（从 knowbench 转去的问题申请才有，请专家方案设计
+    # 第 4.9 节第 6 条）：模型写的，只算提议
+    reference: str | None = Field(
+        default=None, min_length=1, max_length=20000, exclude_if=lambda v: v is None
+    )
     workdraft: Workdraft = Workdraft()
     answers: tuple[AnsweredGap, ...] = Field(default=(), max_length=200)
     data_formats: tuple[DataFormat, ...] = Field(default=(), max_length=200)
@@ -134,7 +139,8 @@ class IncubationRequest(Strict):
 
 def material(request: IncubationRequest) -> dict[str, Any]:
     """交给模型的只有契约列死的这几样（0029 第 6.4 节）：动作与指令、创意原文、当前工作稿、
-    答过的缺口、数据的格式。作者是谁、孵化号、钱、电脑都不给模型。"""
+    答过的缺口、数据的格式，还有作者的模型先前直接答过的回答（只算提议）。作者是谁、孵化号、
+    钱、电脑都不给模型。"""
     body = request.model_dump(
         mode="json",
         include={
@@ -142,6 +148,7 @@ def material(request: IncubationRequest) -> dict[str, Any]:
             "instruction",
             "step_id",
             "seed",
+            "reference",
             "workdraft",
             "answers",
             "data_formats",

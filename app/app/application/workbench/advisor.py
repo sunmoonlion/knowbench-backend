@@ -375,6 +375,7 @@ class Advisor:
                 rework_failures=rejected[-1].get("failures") if rejected else None,
                 folder=folder,
                 records_task=task_id if self.records and not sealed else None,
+                tool_task=task_id if self.records else None,
                 listed_data_task=(
                     task_id
                     if self.records
@@ -1190,6 +1191,7 @@ class Advisor:
         *,
         rework_failures: list[str] | None = None,
         records_task: str | None = None,
+        tool_task: str | None = None,
         listed_data_task: str | None = None,
         ask_before_answers: dict[str, Any] | None = None,
         change_request: str | None = None,
@@ -1260,6 +1262,14 @@ class Advisor:
                         f"first {step.input_max_chars} are shown. Say so in your "
                         "output and do not assume what the missing part contains.]"
                     )
+        if tool_task and "find_expert" in step.tools:
+            # 找专家（请专家方案设计第 4.9 节）：目录经工作台查 knowmart，凭这件委托
+            parts += [
+                "",
+                "## The expert directory",
+                f'Call find_expert(task="{tool_task}") to list the experts this user can '
+                "ask. It returns only what each expert published about itself.",
+            ]
         if records_task:
             parts += [
                 "",

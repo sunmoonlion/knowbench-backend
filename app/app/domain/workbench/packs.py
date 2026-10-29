@@ -366,6 +366,10 @@ INCUBATE_METHOD = (
     "source of each filled cell by path; user_text means the author wrote it, "
     "user_confirmed means the author accepted or answered it.\n"
     "- answers: gaps the author has answered: id, question, proposal, answer.\n"
+    "- reference (only sometimes): an answer the author's own model once gave "
+    "directly to the seed question. It is not the author's words: you may draw on "
+    "it, but anything taken from it is a proposal (source kind proposal), never "
+    "idea or answer.\n"
     "- data_formats: names, table names, column labels and row labels of the data "
     "the author picked. There are no figures in it; never invent any.\n"
     "Read no files, run no commands, call no tools.\n"
@@ -533,9 +537,102 @@ INCUBATE = ExpertPack(
     ),
 )
 
-BUILTIN_PACKS: dict[str, ExpertPack] = {p.profile_id: p for p in (SMOKE, INCUBATE)}
+# 找专家（请专家方案设计第 4.9 节；decisions 10-29「AI 请专家」）：用户自己的模型读他的问题与
+# knowmart 上专家的公开信息，只按专家自己写的范围匹配；平台不排序、不加权
+FIND_EXPERT_METHOD = (
+    "The user's question is the input text. Find out whether an expert on knowmart "
+    "fits it.\n"
+    "1. Call find_expert once. It lists the experts this user can ask: knowbot_id, "
+    "name, tagline, version, scope {does, does_not, elsewhere} as each expert wrote "
+    "it, price and free (true when asking it costs the user nothing extra).\n"
+    "2. Match ONLY by the experts' own scope against the question: an expert fits "
+    "when the question falls inside its `does` and not inside its `does_not`. Do not "
+    "use price, name fame or anything else to rank; the platform never ranks.\n"
+    "3. Decide the outcome:\n"
+    "   - summon: at least one FREE expert fits. Pick the one whose scope covers the "
+    "question best; picks has exactly that one.\n"
+    "   - candidates: experts fit but none is free. picks has up to 3 of them; the "
+    "user decides and pays.\n"
+    "   - none: no expert fits (or the list is empty). picks is empty.\n"
+    "   Every pick has a reason: which part of the question falls in its `does`.\n"
+    "4. Only for none: recommend one of two things the user may do, with one "
+    "sentence of reason. direct: a one-off question, a fact or a quick look (e.g. "
+    "\"What was CATL's revenue in 2025?\"), so the user's own model answers it "
+    "directly. incubate: a method the user will reuse, with fixed definitions and "
+    'checks or meant for others (e.g. "Every quarter compare the gross margin of '
+    'several battery makers on fixed definitions and forecast next quarter"), so '
+    "an expert should be incubated. Also draft a demand the user may publish on "
+    "knowmart for other authors: a short title and the problem in plain words, "
+    "without anything private beyond the question itself.\n"
+    "Never answer the question yourself in this step. Write reasons, the title and "
+    "the problem in the language of the question. "
+)
+
+FIND_EXPERT = ExpertPack(
+    pack_id="FIND_EXPERT",
+    version="1",
+    profile_id="FIND_EXPERT",
+    title="找专家",
+    name="找专家",
+    tagline="用你自己的模型读你的问题与专家的公开信息，看有没有合适的专家",
+    internal=True,
+    workflow=(
+        StepContract(
+            step_id="find",
+            title="找专家",
+            summary="按专家自己写的范围看有没有合适的；平台不排序",
+            why="不用另付钱的直接请；要付钱的你来定；都不合适给你两个选择",
+            method_text=FIND_EXPERT_METHOD + JSON_ONLY,
+            tools=("find_expert",),
+            output_artifact="find_expert",
+            output_schema={
+                "outcome": "summon | candidates | none",
+                "picks": [
+                    {"knowbot_id": "string", "version": "string", "reason": "string"}
+                ],
+                "recommend": {"action": "direct | incubate", "reason": "string"},
+                "demand": {"title": "string", "problem": "string"},
+            },
+            acceptance=(
+                AcceptanceRule(
+                    kind="json_object",
+                    message="交回物不是 JSON 对象",
+                    label="交回的格式对",
+                ),
+                AcceptanceRule(
+                    kind="required_keys",
+                    keys=("outcome", "picks"),
+                    message="缺结果或候选",
+                    label="结果与候选都有",
+                ),
+                AcceptanceRule(
+                    kind="each_has",
+                    path="picks",
+                    keys=("knowbot_id", "version", "reason"),
+                    message="候选缺专家、版本或理由",
+                    label="每位候选有专家、版本与理由",
+                ),
+            ),
+            on_reject="rework",
+            max_reworks=1,
+        ),
+    ),
+    # 只读目录、只交文字：不改文件、不跑命令、不联网、不反问
+    tool_policy=ToolPolicy(
+        file_change_in_project="deny",
+        file_change_outside="deny",
+        command="deny",
+        network="deny",
+        questions="deny",
+        max_questions=0,
+    ),
+)
+
+BUILTIN_PACKS: dict[str, ExpertPack] = {
+    p.profile_id: p for p in (SMOKE, INCUBATE, FIND_EXPERT)
+}
 # 模型只看契约列死的材料（0029 第 6.4 节）：不加用户的记忆、不给读项目记录的说明
-SEALED_INPUT = frozenset({INCUBATE.profile_id})
+SEALED_INPUT = frozenset({INCUBATE.profile_id, FIND_EXPERT.profile_id})
 
 
 def listed_packs() -> list[ExpertPack]:

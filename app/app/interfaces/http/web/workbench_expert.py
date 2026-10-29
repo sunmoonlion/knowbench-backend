@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from datetime import date
 from decimal import Decimal
 from typing import Any
 
@@ -24,6 +25,7 @@ from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
 from app.bootstrap.workbench import (
     expert_data,
+    find_expert_service,
     knowmart_summoner,
     workbench_store,
 )
@@ -398,3 +400,103 @@ async def interaction(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, "interaction": view}
+
+
+# ---------- AI 请专家（请专家方案设计第 4.9 节；decisions 10-29「AI 请专家」） ----------
+class FindExpertIn(BaseModel):
+    """「让 AI 找」：写好的问题；费用上限是这一轮的（用户的模型、用户的钱）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    idempotency_key: str = Field(min_length=8, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    budget_limit: Decimal = Field(default=Decimal("2"), gt=0, le=Decimal("100"))
+
+
+class DemandIn(BaseModel):
+    """挂需求：AI 写的描述用户看过、可以改，点了「发布」才发；截止不给就是 30 天后。"""
+
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=120)
+    problem: str = Field(min_length=1, max_length=4000)
+    deadline: date | None = None
+
+
+class IncubationAskIn(BaseModel):
+    """「孵化一个专家」：先让自己的模型直接答过的，带上那段对话（回答附去作参考，只算提议）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
+
+
+@router.post("/projects/{project_id}/find-expert", status_code=201)
+async def start_find_expert(
+    project_id: str,
+    body: FindExpertIn,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """开「找专家」那一轮：用户的项目里、用户自己的模型读问题与专家的公开信息。"""
+    try:
+        made = await find_expert_service(session).start(
+            owner_actor_id=_actor(principal),
+            project_id=project_id,
+            question=body.question,
+            idempotency_key=body.idempotency_key,
+            budget_limit=body.budget_limit,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    await _publish_commands_wakeup()
+    return {"contract_version": CONTRACT_VERSION, **made}
+
+
+@router.get("/find-expert/{task_id}")
+async def find_expert_result(
+    task_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """这一轮怎样了：直接请谁（不用另付钱的）/ 要付钱的候选 / 都不合适（推荐与理由、需求草稿）。"""
+    try:
+        found = await find_expert_service(session).result(_actor(principal), task_id)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **found}
+
+
+@router.post("/find-expert/{task_id}/demand", status_code=201)
+async def publish_find_expert_demand(
+    task_id: str,
+    body: DemandIn,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """用户看过描述、点了「发布」：替他在 knowmart 挂需求（公开展示）。"""
+    try:
+        found = await find_expert_service(session).publish_demand(
+            _actor(principal),
+            task_id,
+            title=body.title,
+            problem=body.problem,
+            deadline=body.deadline,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, "demand": found}
+
+
+@router.post("/find-expert/{task_id}/incubation", status_code=201)
+async def ask_find_expert_incubation(
+    task_id: str,
+    body: IncubationAskIn,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """「孵化一个专家」：knowlab 以用户的名义建「问题」申请（只有他看得到、不花钱）。"""
+    try:
+        found = await find_expert_service(session).ask_incubation(
+            _actor(principal), task_id, conversation_id=body.conversation_id
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION, **found}

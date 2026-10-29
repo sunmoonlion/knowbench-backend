@@ -27,11 +27,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workbench.data_relay import RELAYED, DataRelay
 from app.application.workbench.expert_data import find_subject, request_data
+from app.application.workbench.find_expert import find_expert
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader
 from app.application.workbench.tokens import TokenIssuer
-from app.bootstrap.workbench import knowbase_v2, knowfeed_supply, workbench_store
+from app.bootstrap.workbench import (
+    knowbase_v2,
+    knowfeed_supply,
+    knowmart_catalog,
+    workbench_store,
+)
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
@@ -144,6 +150,21 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "find_expert": {
+        "description": (
+            "List the experts this user can ask on knowmart: knowbot_id, name, "
+            "tagline, version, scope {does, does_not, elsewhere} exactly as each "
+            "expert wrote it, price, and free (true when asking costs the user "
+            "nothing extra). Only public information; never ranked. Match only by "
+            "the experts' own scope against the user's question."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"task": _TASK},
+            "required": ["task"],
+            "additionalProperties": False,
+        },
+    },
     "compute": {
         "description": (
             "Compute one number exactly (decimal) and record it. `inputs` maps short "
@@ -234,6 +255,10 @@ async def call(
     if name == "find_subject":
         await records._working(args.get("task"))
         return await find_subject(knowfeed_supply(), args.get("name"))
+    if name == "find_expert":
+        # 找专家（请专家方案设计第 4.9 节）：凭这件「找专家」委托，查这个用户的 knowmart 目录
+        working = await records._working(args.get("task"))
+        return await find_expert(records.repo, knowmart_catalog(), working)
     if name == "compute":
         return await KnowbotCompute(records, reader).compute(
             args.get("task"),

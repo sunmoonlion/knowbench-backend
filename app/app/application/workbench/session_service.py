@@ -77,8 +77,10 @@ class SessionService:
         kind: str,
         project_id: str | None = None,
         title: str | None = None,
+        origin: str | None = None,
     ) -> dict[str, Any]:
-        """开一段对话。聊天可以不属于项目；工作必须属于（F-PROJ-02）。沙箱由后端取。"""
+        """开一段对话。聊天可以不属于项目；工作必须属于（F-PROJ-02）。沙箱由后端取。
+        origin：怎么来的（direct_answer：找专家没找到、用户让自己的模型直接答）。"""
         chosen = ConversationKind(kind)
         async with self.repo.transaction():
             sandbox = await self.repo.current_sandbox(owner_actor_id)
@@ -104,6 +106,7 @@ class SessionService:
                 kind=chosen.value,
                 project_id=str(project["id"]) if project else None,
                 title=clean_title(title),
+                origin=origin,
             )
             await self.repo.append_event(
                 session_id=sid,

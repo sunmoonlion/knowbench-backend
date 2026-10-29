@@ -85,6 +85,42 @@ def knowbase_v2():
 
 
 @lru_cache(maxsize=1)
+def knowmart_catalog():
+    """knowmart 目录（替用户「找专家」，关系 catalog；进程内共用）。"""
+    from app.infrastructure.external.ai_summon_clients import KnowmartCatalog
+
+    return KnowmartCatalog()
+
+
+@lru_cache(maxsize=1)
+def knowmart_demands():
+    """knowmart 需求（用户点「发布」后代发，关系 demand；进程内共用）。"""
+    from app.infrastructure.external.ai_summon_clients import KnowmartDemands
+
+    return KnowmartDemands()
+
+
+@lru_cache(maxsize=1)
+def knowlab_incubation_requests():
+    """knowlab 孵化请求（「孵化一个专家」，关系 incubation-request；进程内共用）。"""
+    from app.infrastructure.external.ai_summon_clients import KnowlabIncubationRequests
+
+    return KnowlabIncubationRequests()
+
+
+def find_expert_service(session: AsyncSession):
+    """AI 请专家（请专家方案设计第 4.9 节）：找专家那一轮、取结果、挂需求、孵化请求。"""
+    from app.application.workbench.find_expert import FindExpertService
+
+    return FindExpertService(
+        workbench_store(session),
+        directory=knowmart_catalog(),
+        demands=knowmart_demands(),
+        incubations=knowlab_incubation_requests(),
+    )
+
+
+@lru_cache(maxsize=1)
 def knowfeed_supply():
     """knowfeed 的需求单（请专家要补采的；进程内共用）。"""
     from app.infrastructure.external.knowfeed_supply import KnowfeedSupply
