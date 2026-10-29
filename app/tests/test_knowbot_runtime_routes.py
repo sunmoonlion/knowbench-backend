@@ -139,3 +139,42 @@ async def test_knowlab_submits_reads_and_answers(client, db):  # noqa: F811
         assert (
             await h.get(f"{BASE}/knowlab-run-0100/cases/c%201/outputs")
         ).status_code == 422
+
+
+async def test_knowlab_asks_whether_the_user_has_a_model_key(client, db):  # noqa: F811
+    """SDD 0046 第三节「没填不能发起」：没登录过、没填、填了各回什么；撤了的不算。"""
+    client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
+        caller="knowlab",
+        principal=None,  # type: ignore[arg-type]
+    )
+    url = "/api/internal/v1/knowbot-runtime/users/user-123/readiness"
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
+    ) as h:
+        assert (await h.get(url)).json() == {"model_key": False}  # 没登录过工作台
+        await authors_computer(db)
+        got = await h.get(url)
+        assert got.json() == {"model_key": False}
+        assert got.headers["cache-control"] == "no-store"
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                made = await repo.add_credential(
+                    owner_actor_id=OWNER,
+                    sandbox_id=None,
+                    provider="openai",
+                    ciphertext="sealed",
+                    hint="sk-…abcd",
+                )
+        assert (await h.get(url)).json() == {"model_key": True}
+        async with db() as s:
+            await s.execute(
+                text(
+                    "update workbench_credentials set status = 'revoked' where id = :i"
+                ),
+                {"i": made["id"]},
+            )
+            await s.commit()
+        assert (await h.get(url)).json() == {"model_key": False}
+        bad = "/api/internal/v1/knowbot-runtime/users/a%20b/readiness"
+        assert (await h.get(bad)).status_code == 422

@@ -22,6 +22,37 @@ from app.domain.workbench.incubations import Handback, IncubationRequest, materi
 PARENT = Path(__file__).resolve().parents[3]
 LOCK = PARENT / "contracts/knowlab-incubation-lock.json"
 TASK = "03e447a0-0000-4000-8000-000000000000"
+FORMAT = {
+    "name": "2024 年年报.pdf",
+    "media_type": "application/pdf",
+    "description": {
+        "subject": "600519",
+        "doc_type": "annual_report",
+        "period_start": "2024-01-01",
+        "period_end": "2024-12-31",
+        "data_format": "pdf",
+        "language": "zh",
+    },
+    "readings": ["original", "text", "pages"],
+    "tables": [],
+}
+CASE = {
+    "case_id": "c1",
+    "question": "茅台明年收入多少？",
+    "status": "failed",
+    "steps": [
+        {
+            "step_id": "scan",
+            "accepted": False,
+            "failed_checks": ["covers"],
+            "details": ["少了 2023 年"],
+        }
+    ],
+    "expectations": [
+        {"artifact": "scan", "path": "revenue", "kind": "approx", "passed": False}
+    ],
+}
+REPORT = {"number": 2, "draft_version": "3", "status": "failed", "cases": [CASE]}
 
 
 def _lock() -> dict:
@@ -87,15 +118,39 @@ async def test_requests_we_accept_and_results_we_return_fit_the_contract() -> No
     sample = request(action="revise").model_dump(mode="json")
     for wrong in (
         {k: v for k, v in sample.items() if k != "runner"},  # 都在作者的电脑上跑
-        {k: v for k, v in sample.items() if k != "instruction"},  # 按指令改要有那句话
         sample | {"data": [{"营业收入": 1}]},  # 只有列死的字段，不带数据内容
     ):
         with pytest.raises(jsonschema.ValidationError):
             jsonschema.validate(wrong, request_schema)
         with pytest.raises(ValidationError):
             IncubationRequest.model_validate(wrong)
+    # 按指令改要有那句话：schema 表达不了这种跨项规矩，两边的模型拒
+    with pytest.raises(ValidationError):
+        IncubationRequest.model_validate(
+            {k: v for k, v in sample.items() if k != "instruction"}
+        )
     with pytest.raises(ValidationError):  # 零不是「不设上限」
         IncubationRequest.model_validate(sample | {"budget": {"limit": "0"}})
+    # 数据格式带文件类型、描述的几维与读法；「让 AI 改…」可带最近一次测试报告
+    richer = sample | {"data_formats": [FORMAT], "test_report": REPORT}
+    jsonschema.validate(richer, request_schema)
+    IncubationRequest.model_validate(richer)
+    for wrong in (
+        richer | {"data_formats": [FORMAT | {"media_type": "x" * 129}]},
+        richer | {"test_report": REPORT | {"status": "running"}},
+        richer | {"test_report": REPORT | {"cases": [CASE | {"expected": 1}]}},
+    ):
+        with pytest.raises(jsonschema.ValidationError):
+            jsonschema.validate(wrong, request_schema)
+        with pytest.raises(ValidationError):
+            IncubationRequest.model_validate(wrong)
+    # schema 表达不了的，两边的模型拒：只有「让 AI 改…」带测试报告；读法是短的小写名
+    draft = request(action="draft").model_dump(mode="json") | {"test_report": REPORT}
+    upper = richer | {"data_formats": [FORMAT | {"readings": ["Text"]}]}
+    for wrong in (draft, upper):
+        jsonschema.validate(wrong, request_schema)
+        with pytest.raises(ValidationError):
+            IncubationRequest.model_validate(wrong)
     result_schema = _schema(lock, "incubation-result.schema.json")
     now = datetime(2026, 10, 28, tzinfo=UTC)
     running = {"state": "RUNNING", "budget": {"used": "0.12"}, "original_input": {}}
@@ -197,3 +252,8 @@ def test_the_model_sees_only_the_fields_the_contract_lists() -> None:
         "data_formats",
     }
     assert "step_id" not in given  # 没指定哪一步就不带
+    body = request(action="revise").model_dump(mode="json")
+    body |= {"data_formats": [FORMAT], "test_report": REPORT}
+    given = material(IncubationRequest.model_validate(body))
+    assert given["test_report"]["cases"][0]["steps"] == CASE["steps"]  # 报告原样给模型
+    assert given["data_formats"] == [FORMAT]

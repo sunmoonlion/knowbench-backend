@@ -85,12 +85,10 @@ def claims_of(token: str) -> dict[str, Any]:
 
 
 async def test_client_signs_a_workbench_token_and_returns_the_result():
-    async with FakeRelay(
-        answer={"result": {"roots": ["C:\\r"], "libraryDir": None}}
-    ) as relay:
+    async with FakeRelay(answer={"result": {"roots": ["C:\\r"]}}) as relay:
         service = WsAgentService(relay.url, issuer())
         result = await service.call("u-abc", "service/hello")
-    assert result == {"roots": ["C:\\r"], "libraryDir": None}
+    assert result == {"roots": ["C:\\r"]}
     hello = relay.hellos[0]
     assert (
         hello["role"] == "workbench"

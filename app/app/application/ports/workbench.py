@@ -774,6 +774,25 @@ class WorkbenchStore(Protocol):
 
     async def mark_grant_released(self, grant_id: str) -> None: ...
 
+    # ---------- 成稿写进 knowbase 产出区（SDD 0043 第 2.6 节）----------
+    async def add_task_outputs(
+        self, task_id: str, *, run_ref: str, paths: list[str]
+    ) -> None:
+        """委托交付了：每份成稿记一行待写（同一次交付同一个路径只记一次）。"""
+        ...
+
+    async def due_task_outputs(
+        self, now: datetime, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        """到了该写的待写成稿（带委托的 owner_actor_id、session_id、profile_id、
+        profile_version、pack_source）。"""
+        ...
+
+    async def update_task_output(self, output_id: str, **fields: Any) -> None:
+        """改 status、attempts、next_try_at、last_error、material_id、version_no、
+        sha256、written_at。"""
+        ...
+
     # ---------- 第四版：解析清单、等数据（SDD 0043 第三节）----------
     async def insert_task_resolution(self, row: dict[str, Any]) -> None:
         """清单 v2 的委托：记解析清单、授权 ref、确认与需求单、等数据状态。"""
@@ -792,6 +811,13 @@ class WorkbenchStore(Protocol):
         self, now: datetime, *, limit: int = 20
     ) -> list[dict[str, Any]]:
         """等数据、该查了的（带 task_state、owner_actor_id）。"""
+        ...
+
+    async def claim_demand_resolutions(
+        self, demand_id: str, *, owner_subject: str, until: datetime
+    ) -> list[dict[str, Any]]:
+        """knowfeed 推来这张需求单办完了：把等它的、归这个用户的几件领下来（下次到点查
+        挪到 until），回领到的（带 task_state、owner_actor_id）。"""
         ...
 
     async def subject_of_actor(self, actor_id: str) -> str | None:

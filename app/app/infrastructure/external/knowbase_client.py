@@ -5,7 +5,8 @@
   在 Casdoor 里的客户端编号，配置 `KNOWBASE_USER_AUDIENCE`）；
   knowbase 按令牌的 `azp` 认是本应用。
 - 服务：按跨应用约定的「目标:关系」服务身份，环境变量 `KNOWBASE_INTERNAL_URL`、
-  `KNOWBASE_USER_DATA_<关系>_SERVICE_*`（关系：user-data-read），见 service_client.py。
+  `KNOWBASE_USER_DATA_<关系>_SERVICE_*`（关系：user-data-read、user-data-output），见
+  service_client.py。
 knowbase 回 4xx 抛 KnowbaseRefused（带它的 code，调用方转成自己的话）；不可达、5xx 抛
 ServiceUnavailableError。令牌只在内存里，不进日志。具体接口在子类（knowbase_data_v2）。
 """
@@ -82,9 +83,12 @@ class KnowbaseClient:
         *,
         json: Any = None,
         params: dict[str, str] | None = None,
+        content: bytes | None = None,
     ) -> tuple[int, Any, httpx.Headers]:
         url = self._base() + path
         headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        if content is not None:  # 请求体就是文件（产出区）
+            headers["Content-Type"] = "application/octet-stream"
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,
@@ -92,7 +96,12 @@ class KnowbaseClient:
                 transport=self._transport,
             ) as client:
                 response = await client.request(
-                    method, url, json=json, params=params, headers=headers
+                    method,
+                    url,
+                    json=json,
+                    params=params,
+                    content=content,
+                    headers=headers,
                 )
         except httpx.HTTPError as exc:
             raise ServiceUnavailableError(

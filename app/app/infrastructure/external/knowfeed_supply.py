@@ -4,7 +4,9 @@
 服务身份走关系 `knowfeed:supply-demand`（环境变量 `KNOWFEED_INTERNAL_URL`、
 `KNOWFEED_SUPPLY_DEMAND_SERVICE_*`，见 service_client.py）；knowfeed 按关系校验认出这是
 knowbench。`KNOWFEED_INTERNAL_URL` 已经带着内部前缀
-（`…/api/internal/v1/supply`，部署机制的约定），后面直接接 `/demands`、`/securities`。需求状态的推送 knowfeed 还没做，现在按单号查。
+（`…/api/internal/v1/supply`，部署机制的约定），后面直接接 `/demands`、`/securities`。需求状态 knowfeed 会推过来（契约
+knowfeed-supply-status/v1，接收端 `interfaces/endpoints/knowfeed_status_routes.py`），按单号
+查留着兜底。
 没配就抛 ServiceUnavailableError（code `knowfeed_unconfigured`），调用方据此说「暂不能补采」。
 
 证券名录（`securities`）：委托第 0 步模型「查主体」，按名字查证券代码（decisions ⑭）；

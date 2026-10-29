@@ -167,6 +167,22 @@ def build_data_waiter(session_factory: async_sessionmaker[AsyncSession]):
     )
 
 
+def build_output_writer(session_factory: async_sessionmaker[AsyncSession], settings):
+    """委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节，runner 里一条线）：
+    要经会合点读用户电脑上的成稿，没配会合点或签名私钥就没有这条线（返回 None，待写的留着）。"""
+    reader = build_deliverable_reader(
+        session_factory,
+        relay_url=settings.workbench_relay_admin_url,
+        signing_key=settings.workbench_token_signing_key,
+        issuer_name=settings.workbench_token_issuer,
+    )
+    if reader is None:
+        return None
+    from app.application.workbench.outputs import OutputWriter
+
+    return OutputWriter(workbench_stores(session_factory), reader, knowbase_v2())
+
+
 def workbench_store(session: AsyncSession) -> WorkbenchStore:
     """用调用方已有的数据库会话开一本账（网页接口的每个请求一个会话）。"""
     return WorkbenchRepository(session)

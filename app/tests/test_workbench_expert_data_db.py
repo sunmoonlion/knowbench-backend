@@ -15,6 +15,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 from knowbot_fixtures import KNOWBOT, FakeSummoner, manifest
 from sqlalchemy import text
 from test_workbench_ledger_db import db as db  # noqa: F401
@@ -22,9 +23,11 @@ from test_workbench_project_routes import machine, project
 from test_workbench_routes import A
 from test_workbench_routes import make_client as make_client  # noqa: F401
 
+import app.interfaces.endpoints.knowfeed_status_routes as status_routes
 import app.interfaces.http.web.workbench_expert as expert_routes
 from app.application.workbench.advisor import DATA_STEP_ID, Advisor, TurnResult
 from app.application.workbench.expert_data import (
+    CLAIM_LEASE,
     DataWaiter,
     ExpertData,
     find_subject,
@@ -32,6 +35,10 @@ from app.application.workbench.expert_data import (
 )
 from app.bootstrap.workbench import workbench_store, workbench_stores
 from app.domain.workbench.data_plan import item_ref
+from app.infrastructure.security.relation_auth import (
+    ServiceCaller,
+    require_supply_status_service,
+)
 from app.interfaces.http.middleware.auth import get_web_knowbase_token_provider
 
 PROFILE = f"knowbot:{KNOWBOT}@1"
@@ -562,6 +569,104 @@ async def test_a_cancelled_task_withdraws_its_demand(
     assert supply.cancelled == ["d-1"]
     [row] = await rows(db, "select status from workbench_task_resolution")
     assert row["status"] == "cancelled"
+
+
+def status_event(demand_id: str, status: str, owner: str = f"sub-{A}") -> dict:
+    """knowfeed 推来的一条需求状态（契约 knowfeed-supply-status/v1）。"""
+    now = datetime.now(UTC).isoformat()
+    return {
+        "contract": "knowfeed-supply-status/v1",
+        "event_id": f"ev-{demand_id}-{status}",
+        "demand_id": demand_id,
+        "app": "knowbench",
+        "owner": owner,
+        "task_ref": "knowbench:k",
+        "status": status,
+        "items": [
+            {
+                "item_id": "i1",
+                "confirmation_item": "c1",
+                "status": status,
+                "updated_at": now,
+            }
+        ],
+        "occurred_at": now,
+    }
+
+
+async def test_knowfeed_pushing_a_finished_demand_resumes_the_task_at_once(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """SDD 0045 第 2.5 节：需求单办完了 knowfeed 推过来，等数据的委托不等到点、马上重解析
+    接着跑；还在办的、别人的、不是我们提的都不动；推送重发不重复开跑。"""
+    kb, supply = world["kb"], world["supply"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-pushed")
+        confirmed = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert confirmed.json()["status"] == "supplying"
+    app = make_client.app
+    app.dependency_overrides[require_supply_status_service] = lambda: ServiceCaller(
+        caller="knowfeed",
+        principal=None,  # type: ignore[arg-type]
+    )
+    waiter = DataWaiter(workbench_stores(db), kb, supply)
+    app.dependency_overrides[status_routes.data_waiter] = lambda: waiter
+    url = "/api/internal/v1/knowfeed/demand-status"
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://127.0.0.1"
+    ) as h:
+        still = await h.post(url, json=status_event("d-1", "fetching"))
+        assert still.status_code == 202, still.text
+        assert still.json()["claimed"] == 0  # 还在办：照旧等
+        supply.status = "ready"
+        theirs = await h.post(url, json=status_event("d-1", "ready", owner="sub-x"))
+        assert theirs.json()["claimed"] == 0  # 单号对得上、人对不上：不碰
+        knowlabs = status_event("d-1", "ready") | {"app": "knowlab"}
+        assert (await h.post(url, json=knowlabs)).status_code == 422
+        bad = status_event("d-1", "ready") | {"extra": 1}
+        assert (await h.post(url, json=bad)).status_code == 422
+        done = await h.post(url, json=status_event("d-1", "ready"))
+        assert done.status_code == 202, done.text
+        assert done.json() == {"event_id": "ev-d-1-ready", "claimed": 1}
+        [task] = await rows(
+            db, "select state from workbench_tasks where id = :t", t=task_id
+        )
+        assert task["state"] == "VALIDATING"  # 没等到点，已经接着跑
+        [row] = await rows(db, "select status from workbench_task_resolution")
+        assert row["status"] == "ready"
+        again = await h.post(url, json=status_event("d-1", "ready"))
+        assert again.json()["claimed"] == 0  # 重发：不重复开跑
+    assert len([c for c in kb.calls if c[0] == "grant_by_confirmation"]) == 1
+
+
+async def test_a_claimed_task_left_unchecked_is_picked_up_by_the_sweep_later(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """推送领下了、马上查没办成（进程停了）：领的那段时间过了，到点查的线照旧接着办。"""
+    kb, supply = world["kb"], world["supply"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-lease")
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+    now = datetime.now(UTC) + timedelta(minutes=1)
+    waiter = DataWaiter(workbench_stores(db), kb, supply, now=lambda: now)
+    claimed = await waiter.claim("d-1", owner_subject=f"sub-{A}")
+    assert len(claimed) == 1
+    assert await waiter.sweep() == 0  # 领着的时候到点查的线不碰
+    supply.status = "ready"
+    waiter.now = lambda: now + CLAIM_LEASE + timedelta(seconds=1)
+    assert await waiter.sweep() == 1
+    [row] = await rows(db, "select status from workbench_task_resolution")
+    assert row["status"] == "ready"
 
 
 async def test_find_subject_looks_up_the_directory() -> None:

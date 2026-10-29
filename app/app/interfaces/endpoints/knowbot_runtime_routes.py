@@ -132,6 +132,17 @@ async def computers(
     return _out({"computers": await svc.computers(subject)})
 
 
+@router.get("/users/{subject}/readiness")
+async def readiness(
+    _: Caller,
+    svc: Service,
+    subject: Annotated[str, Path(pattern=r"^[A-Za-z0-9._:@-]{1,512}$")],
+) -> JSONResponse:
+    """用户填了能用的模型 key 没有（SDD 0046 第三节「没填不能发起」）：knowlab 发起测试、
+    孵化前先问，没填就在页面上拦，不等跑起来才停在「没有沙箱」。"""
+    return _out(await svc.readiness(subject))
+
+
 @router.post("/incubations")
 async def submit_incubation(
     caller: IncubationCaller, body: dict[str, Any], svc: Incubations

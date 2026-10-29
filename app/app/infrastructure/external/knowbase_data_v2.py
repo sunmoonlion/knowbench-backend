@@ -2,7 +2,8 @@
 运行授权，会话登记，等数据时的服务路，数据 MCP 的中继。
 
 两种身份、拒绝与不可达见公共底子 `knowbase_client.py`：本人令牌（换来的用户令牌，`azp`
-是本应用），服务身份走关系 `user-data-read`。
+是本应用），服务身份走关系 `user-data-read`；委托交付的成稿替用户写进产出区走关系
+`user-data-output`（SDD 0043 第 2.6 节）。
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from app.infrastructure.external.knowbase_client import KnowbaseClient, _segment
 BASE_V2 = "/api/internal/v2/user-data"
 DATA_MCP_PATH = "/api/mcp/data"
 READ = "user-data-read"
+OUTPUT = "user-data-output"
 
 
 class KnowbaseDataV2(KnowbaseClient):
@@ -192,6 +194,51 @@ class KnowbaseDataV2(KnowbaseClient):
         await self._send(
             "POST", f"/runs/{_segment(ref)}/release", await self._service_token(READ)
         )
+
+    async def grant_input_set(self, grant_id: str) -> str | None:
+        """这条运行授权钉的那组输入的编号（产出记出处用：转为数据时上游受限的不得升档）。"""
+        _, body, _ = await self._send(
+            "GET", f"/run-grants/{_segment(grant_id)}", await self._service_token(READ)
+        )
+        found = body.get("input_set_id") if isinstance(body, dict) else None
+        return str(found) if found else None
+
+    # —— 服务：替用户写产出区（SDD 0043 第 2.6 节）——
+
+    async def write_output(
+        self,
+        *,
+        beneficiary: str,
+        task_ref: str,
+        run_ref: str,
+        name: str,
+        content: bytes,
+        expert_id: str | None = None,
+        expert_version: str | None = None,
+        input_set_id: str | None = None,
+    ) -> dict[str, Any]:
+        """只能写进受益用户的产出区；同一次运行同名的重放回原来那份，内容不同 409。
+        回 {material_id, version_no, sha256}。"""
+        params = {
+            "beneficiary": beneficiary,
+            "task_ref": task_ref,
+            "run_ref": run_ref,
+            "name": name,
+        }
+        provenance = {
+            "expert_id": expert_id,
+            "expert_version": expert_version,
+            "input_set_id": input_set_id,
+        }
+        params |= {k: v for k, v in provenance.items() if v}
+        _, body, _ = await self._send(
+            "POST",
+            "/outputs",
+            await self._service_token(OUTPUT),
+            params=params,
+            content=content,
+        )
+        return body
 
     # —— 数据 MCP 中继（0048）——
 

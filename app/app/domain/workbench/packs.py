@@ -362,6 +362,8 @@ INCUBATE_METHOD = (
     "idea or answer.\n"
     "- data_formats: names, table names, column labels and row labels of the data "
     "the author picked. There are no figures in it; never invent any.\n"
+    "- test_report (revise only, sometimes): the author's latest test, with each "
+    "case's question, which steps passed, and why the others failed.\n"
     "Read no files, run no commands, call no tools.\n"
     "\n"
     "What you may suggest is the skeleton: how many steps; for each step its title, "

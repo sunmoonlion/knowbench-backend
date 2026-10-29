@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -26,6 +27,7 @@ ITEM_ID = r"^[A-Za-z0-9_-]{1,32}$"
 STEP_ID = r"^[A-Za-z][A-Za-z0-9_-]{0,47}$"
 FINAL = frozenset({"succeeded", "failed", "over_budget", "cancelled"})
 MAX_REQUEST_BYTES = 1_000_000
+_READING = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
 
 # 方法层的格子（同 knowlab workdraft 的路径）：「高级」、挑的数据、整份步骤列表不在里面
 _STEP = STEP_ID[1:-1]
@@ -72,11 +74,76 @@ class TableFormat(Strict):
     rows: tuple[str, ...] = Field(default=(), max_length=500)
 
 
+class DataDescription(Strict):
+    """一份数据在 knowbase 里的描述（0049 的几维），是描述不是内容；knowlab 照 knowbase 给的转来。"""
+
+    subject: str | None = Field(default=None, max_length=64)
+    doc_type: str | None = Field(default=None, max_length=64)
+    period_start: str | None = Field(default=None, max_length=10)
+    period_end: str | None = Field(default=None, max_length=10)
+    data_format: str | None = Field(default=None, max_length=64)
+    language: str | None = Field(default=None, max_length=16)
+
+
 class DataFormat(Strict):
-    """作者挑的一份数据的格式：名字、表名、列标签、行标签，没有内容（0029 第 6.4 节）。"""
+    """作者挑的一份数据的格式（0029 第 6.4 节、专家孵化方案第 8.2 节）：名字、文件类型、描述的
+    几维、已就绪的读法、各表的表名与行列标签，没有内容。"""
 
     name: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(default="", max_length=128)
+    description: DataDescription = DataDescription()
+    readings: tuple[str, ...] = Field(default=(), max_length=10)
     tables: tuple[TableFormat, ...] = Field(default=(), max_length=50)
+
+    @model_validator(mode="after")
+    def _reading_names(self) -> DataFormat:
+        # 同提供方：读法是短的小写名（original、text、pages、tables……）
+        if any(not _READING.fullmatch(r) for r in self.readings):
+            raise ValueError("a reading is a short lowercase name")
+        return self
+
+
+class LatestTestStep(Strict):
+    """报告里一步的结果：过没过、没过的验收名、一条一句为什么没过。"""
+
+    step_id: str = Field(min_length=1, max_length=128)
+    accepted: bool
+    failed_checks: tuple[str, ...] = Field(default=(), max_length=64)
+    details: tuple[str, ...] = Field(default=(), max_length=64)
+
+    @model_validator(mode="after")
+    def _short(self) -> LatestTestStep:
+        if any(len(x) > 200 for x in (*self.failed_checks, *self.details)):
+            raise ValueError("each check name and detail is at most 200 characters")
+        return self
+
+
+class LatestTestExpectation(Strict):
+    """一条期望核没核上；期望值本身不给（照着期望值改方法等于把答案写进规则）。"""
+
+    artifact: str = Field(min_length=1, max_length=128)
+    path: str = Field(min_length=1, max_length=256)
+    kind: Literal["equals", "approx", "contains"]
+    passed: bool
+
+
+class LatestTestCase(Strict):
+    case_id: str = Field(pattern=r"^[A-Za-z0-9._-]{1,64}$")
+    question: str = Field(min_length=1, max_length=4000)
+    status: Literal["passed", "failed", "needs_human", "error"]
+    steps: tuple[LatestTestStep, ...] = Field(default=(), max_length=200)
+    expectations: tuple[LatestTestExpectation, ...] = Field(default=(), max_length=64)
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class LatestTest(Strict):
+    """最近一次有结论的测试的报告（专家孵化方案第 8.4 节「带上测试报告让 AI 改」）：只有报告，
+    成稿、各步交回物、测试数据都不在里面（0029 第 6.4 节）。"""
+
+    number: int = Field(ge=1)
+    draft_version: str = Field(min_length=1, max_length=32)
+    status: Literal["passed", "failed"]
+    cases: tuple[LatestTestCase, ...] = Field(default=(), max_length=50)
 
 
 class Budget(Strict):
@@ -111,6 +178,8 @@ class IncubationRequest(Strict):
     workdraft: Workdraft = Workdraft()
     answers: tuple[AnsweredGap, ...] = Field(default=(), max_length=200)
     data_formats: tuple[DataFormat, ...] = Field(default=(), max_length=200)
+    # 作者点「让 AI 改…」时勾了「带上测试报告」才有（专家孵化方案第 8.4 节）
+    test_report: LatestTest | None = Field(default=None, exclude_if=lambda v: v is None)
     budget: Budget
     timeout_seconds: int = Field(ge=60, le=86400)
     # 谁跑：作者本人，在他的电脑上（decisions ⑯，形状同测试）
@@ -122,6 +191,8 @@ class IncubationRequest(Strict):
             raise ValueError("revise needs the author's instruction, draft has none")
         if self.step_id is not None and self.action != "revise":
             raise ValueError("only revise names a step")
+        if self.test_report is not None and self.action != "revise":
+            raise ValueError("only revise carries a test report")
         if _bytes(self.model_dump(mode="json")) > MAX_REQUEST_BYTES:
             raise ValueError("the request is larger than the limit")
         return self
@@ -139,8 +210,8 @@ class IncubationRequest(Strict):
 
 def material(request: IncubationRequest) -> dict[str, Any]:
     """交给模型的只有契约列死的这几样（0029 第 6.4 节）：动作与指令、创意原文、当前工作稿、
-    答过的缺口、数据的格式，还有作者的模型先前直接答过的回答（只算提议）。作者是谁、孵化号、
-    钱、电脑都不给模型。"""
+    答过的缺口、数据的格式，还有作者的模型先前直接答过的回答（只算提议）与「让 AI 改」时带上的
+    测试报告。作者是谁、孵化号、钱、电脑都不给模型。"""
     body = request.model_dump(
         mode="json",
         include={
@@ -152,6 +223,7 @@ def material(request: IncubationRequest) -> dict[str, Any]:
             "workdraft",
             "answers",
             "data_formats",
+            "test_report",
         },
     )
     return body

@@ -9,7 +9,8 @@
 等数据（`DataWaiter`，runner 里一条线）：按单号查 knowfeed 的需求单，办完了就请 knowbase
 重解析清单、凭本人那次确认续签（所有者 10-27 定「等数据后自动接着跑」）、钉住、委托
 接着跑；有没取到的（或确认过了 7 天），停下问用户：照现有的接着做（记「数据不全」），
-还是取消。委托取消了就撤需求单。
+还是取消。委托取消了就撤需求单。knowfeed 推来需求单办完了（契约 knowfeed-supply-status/v1，
+SDD 0045 第 2.5 节）就马上查这一张，不等到点；按单号轮询留着兜底。
 
 运行授权的 ref 是 `knowbench:<幂等钥匙>`：模型经工作台读数据时，工作台按委托找到它。
 """
@@ -46,6 +47,8 @@ CHECK_BACKOFF = (
     timedelta(minutes=5),
 )
 OPEN_DEMAND = ("accepted", "fetching")
+# 推送领下等数据的委托后，到点查的线让开这么久（马上查没办成就由它兜底）
+CLAIM_LEASE = timedelta(minutes=2)
 
 
 class KnowbaseData(Protocol):
@@ -716,8 +719,25 @@ class DataWaiter:
     async def sweep(self) -> int:
         async with self.stores() as repo:
             due = await repo.due_task_resolutions(self.now())
+        return await self.check_now(due)
+
+    async def claim(
+        self, demand_id: str, *, owner_subject: str
+    ) -> list[dict[str, Any]]:
+        """knowfeed 推来这张需求单办完了（契约 knowfeed-supply-status/v1）：把等它的几件
+        领下来。领下的这段时间到点查的线不碰；马上查没办成，过了这段时间照旧由它兜底。"""
+        async with self.stores() as repo:
+            async with repo.transaction():
+                return await repo.claim_demand_resolutions(
+                    demand_id,
+                    owner_subject=owner_subject,
+                    until=self.now() + CLAIM_LEASE,
+                )
+
+    async def check_now(self, rows: list[dict[str, Any]]) -> int:
+        """查这几件：到点的、或推送领下的。照旧以按单号查到的为准（推送可能重发、晚到）。"""
         handled = 0
-        for row in due:
+        for row in rows:
             try:
                 await self._check(row)
                 handled += 1

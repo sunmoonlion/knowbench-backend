@@ -310,6 +310,14 @@ class KnowbotTestService:
             for e in await self.repo.list_environments(owner_actor_id=actor)
         ]
 
+    async def readiness(self, subject: str) -> dict[str, bool]:
+        """用户能不能发起（SDD 0046 第三节「没填不能发起」）：有没有一把在用的模型 key。
+        没登录过工作台的当没有。"""
+        actor = await self.repo.actor_for_subject(subject)
+        if actor is None:
+            return {"model_key": False}
+        return {"model_key": await self.repo.active_credential(actor) is not None}
+
     async def status(self, run_id: str) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
         if run is None:

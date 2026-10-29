@@ -16,6 +16,7 @@ from app.bootstrap.workbench import (
     build_grant_releaser,
     build_incubation_conductor,
     build_machine_sync,
+    build_output_writer,
     build_runner,
     build_test_conductor,
     event_publisher,
@@ -92,12 +93,19 @@ async def main() -> None:
     waiting = asyncio.create_task(
         build_data_waiter(get_postgres().session_factory).run_forever(stopping)
     )
+    # 委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）
+    outputs = build_output_writer(get_postgres().session_factory, settings)
+    writing = asyncio.create_task(outputs.run_forever(stopping)) if outputs else None
+    if writing is None:
+        logger.warning("output writer is off: relay or signing key not configured")
     try:
         await runner.run_forever()
     finally:
         stopping.set()
         await releasing
         await waiting
+        if writing is not None:
+            await writing
         if syncing is not None:
             await syncing
         await testing

@@ -1121,6 +1121,11 @@ class Advisor:
             kind="handback",
             content=handback,
         )
+        if files and task.get("pack_source") != "knowlab-test":
+            # 成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）：runner 里另一条线写，
+            # 写不进去不挡交付；测试的证据由 knowlab 写
+            # （委托成功是终态，一件委托只交付一次，运行编号就用委托编号：续跑重进这里也不重记）
+            await repo.add_task_outputs(task_id, run_ref=task_id, paths=files)
         await repo.commit()
         task = await repo.get_task(task_id)
         if task["state"] == TaskState.QUEUED:  # 重启后从游标续到末尾的情形

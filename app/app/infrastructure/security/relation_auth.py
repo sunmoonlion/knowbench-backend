@@ -1,12 +1,14 @@
 """按关系校验其他应用的服务令牌（SDD 0027 §3.4；机制同 knowmart 的 relation_auth）。
 
 knowbench 作为运行方接受两种关系：knowlab 来跑分身测试（testrun）、来跑孵化的一轮
-（incubate，专家孵化方案第八节）。一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，每个调用方一组
+（incubate，专家孵化方案第八节）；还收 knowfeed 推来的需求状态（supply-status，契约
+knowfeed-supply-status/v1，SDD 0045 第 2.5 节）。一种关系可以有多个调用方：`SERVICE_AUTH_<关系>_CALLERS` 列出调用方，每个调用方一组
 `SERVICE_AUTH_<关系>_<调用方>_AUDIENCE`（调用方的 client_id）、`_SUBJECT_ALLOWLIST`
 （`admin/<调用方服务应用>`）、`_REQUIRED_SCOPE`（`knowbench:<关系>`），都由部署从调用方
-配置推出来（`common/backend/service-client`）。一组都没配就是这种关系没开，一律拒绝。
-签名、签发方、有效期用模板的 OIDC 客户端核。孵化只许 knowlab 调（`RELATION_CALLERS`）：
-部署里多配了别的调用方也不认。
+配置推出来（`common/backend/service-client`）。关系名里的 `-` 在变量名里写成 `_`
+（`SERVICE_AUTH_SUPPLY_STATUS_…`）。一组都没配就是这种关系没开，一律拒绝。
+签名、签发方、有效期用模板的 OIDC 客户端核。孵化只许 knowlab 调、需求状态只许 knowfeed
+调（`RELATION_CALLERS`）：部署里多配了别的调用方也不认。
 """
 
 from __future__ import annotations
@@ -29,9 +31,12 @@ from app.domain.security import Principal
 from app.infrastructure.security.oidc import OidcProviderClient
 from core.config import Settings, get_settings
 
-Relation = Literal["testrun", "incubate"]
+Relation = Literal["testrun", "incubate", "supply-status"]
 # 只许这些调用方的关系；没列的照部署配的调用方
-RELATION_CALLERS: dict[str, frozenset[str]] = {"incubate": frozenset({"knowlab"})}
+RELATION_CALLERS: dict[str, frozenset[str]] = {
+    "incubate": frozenset({"knowlab"}),
+    "supply-status": frozenset({"knowfeed"}),
+}
 
 
 CALLER = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
@@ -54,13 +59,17 @@ class ServiceCaller:
     principal: Principal
 
 
+def _env_name(name: str) -> str:
+    return name.upper().replace("-", "_")
+
+
 def relation_bindings(
     relation: str, environ: Mapping[str, str] | None = None
 ) -> list[RelationBinding]:
     env = os.environ if environ is None else environ
+    name = _env_name(relation)
     callers = [
-        c.strip()
-        for c in env.get(f"SERVICE_AUTH_{relation.upper()}_CALLERS", "").split(",")
+        c.strip() for c in env.get(f"SERVICE_AUTH_{name}_CALLERS", "").split(",")
     ]
     allowed = RELATION_CALLERS.get(relation)
     bindings: list[RelationBinding] = []
@@ -69,7 +78,7 @@ def relation_bindings(
             continue
         if allowed is not None and caller not in allowed:
             continue
-        prefix = f"SERVICE_AUTH_{relation.upper()}_{caller.upper().replace('-', '_')}_"
+        prefix = f"SERVICE_AUTH_{name}_{_env_name(caller)}_"
         audience = env.get(prefix + "AUDIENCE", "").strip()
         subjects = frozenset(
             s.strip()
@@ -214,3 +223,9 @@ async def require_incubate_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:
     return await relation_verifier("incubate").verify(_bearer(authorization))
+
+
+async def require_supply_status_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    return await relation_verifier("supply-status").verify(_bearer(authorization))

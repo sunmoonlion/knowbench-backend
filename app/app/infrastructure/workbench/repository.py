@@ -1571,6 +1571,52 @@ class WorkbenchRepository:
         )
         return [str(row[0]) for row in r.all()]
 
+    async def add_task_outputs(
+        self, task_id: str, *, run_ref: str, paths: list[str]
+    ) -> None:
+        for path in paths:
+            await self.session.execute(
+                text(
+                    """insert into workbench_task_outputs (task_id, run_ref, path)
+                       values (:t, :r, :p) on conflict do nothing"""
+                ),
+                {"t": task_id, "r": run_ref, "p": path},
+            )
+
+    async def due_task_outputs(
+        self, now: datetime, *, limit: int = 20
+    ) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """select o.*, t.owner_actor_id, t.session_id, t.profile_id,
+                          t.profile_version, t.pack_source
+                   from workbench_task_outputs o
+                   join workbench_tasks t on t.id = o.task_id
+                   where o.status = 'pending' and o.next_try_at <= :now
+                   order by o.next_try_at limit :n"""
+            ),
+            {"now": now, "n": limit},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def update_task_output(self, output_id: str, **fields: Any) -> None:
+        allowed = {
+            "status",
+            "attempts",
+            "next_try_at",
+            "last_error",
+            "material_id",
+            "version_no",
+            "sha256",
+            "written_at",
+        }
+        assert set(fields) <= allowed, set(fields) - allowed
+        sets = ", ".join(f"{name} = :{name}" for name in fields)
+        await self.session.execute(
+            text(f"update workbench_task_outputs set {sets} where id = :id"),
+            {**fields, "id": output_id},
+        )
+
     async def mark_grant_released(self, grant_id: str) -> None:
         await self.session.execute(
             text(
@@ -1665,6 +1711,23 @@ class WorkbenchRepository:
                    order by r.next_check_at limit :n"""
             ),
             {"now": now, "n": limit},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def claim_demand_resolutions(
+        self, demand_id: str, *, owner_subject: str, until: datetime
+    ) -> list[dict[str, Any]]:
+        r = await self.session.execute(
+            text(
+                """update workbench_task_resolution r
+                   set next_check_at = :until, updated_at = now()
+                   from workbench_tasks t, auth_user u
+                   where t.id = r.task_id and u.id = t.owner_actor_id
+                     and r.demand_id = :d and r.status = 'waiting'
+                     and u.subject = :owner
+                   returning r.*, t.state as task_state, t.owner_actor_id"""
+            ),
+            {"d": demand_id, "owner": owner_subject, "until": until},
         )
         return [dict(m) for m in r.mappings().all()]
 
