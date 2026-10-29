@@ -198,7 +198,6 @@ class ExpertData:
             picks=picks or {},
             dropped=dropped or [],
             supply_enabled=self.supply_enabled,
-            user_decides=True,
         )
         if draft.problems:
             raise DataChoiceInvalid("; ".join(draft.problems))
@@ -274,7 +273,6 @@ class ExpertData:
                 picks=picks or {},
                 dropped=dropped or [],
                 after_supply=True,
-                user_decides=True,
             )
         pins = await self._sign_ready(repo, task_id, token, row, draft)
         from app.application.workbench.ledger import Ledger
@@ -809,7 +807,6 @@ class DataWaiter:
             picks=picks,
             dropped=dropped,
             after_supply=True,
-            user_decides=True,
         )
         async with self.stores() as repo:
             done.pins = await new_pins(repo, task_id, done.pins)

@@ -138,7 +138,10 @@ def test_the_plan_pins_what_is_settled_and_confirms_what_is_missing():
         ]
     }
     off = plan(resolution, NEEDS)
-    assert off.problems == ["年报 600519.SH 2024-01-01–2024-12-31：暂不能补采"]
+    assert off.problems == [] and off.incomplete == [
+        "年报 600519.SH 2024-01-01–2024-12-31：暂不能补采",
+        "公告 600519.SH 2025-01-01–2025-12-31：采不来，要本人到 knowbase 上传",
+    ]
     on = plan(resolution, NEEDS, supply_enabled=True)
     assert on.problems == [] and [c["need_key"] for c in on.confirm] == ["annual"]
     assert [(p["item_id"], p["basis"], p["basis_ref"]) for p in on.pins] == [
@@ -150,7 +153,7 @@ def test_the_plan_pins_what_is_settled_and_confirms_what_is_missing():
     assert on.grant_items[0]["material_id"] == "m1"
 
 
-def test_ambiguous_items_need_a_pick_and_required_ones_cannot_be_dropped():
+def test_ambiguous_items_need_a_pick_and_anything_may_be_dropped():
     both = [candidate("m1"), candidate("m2")]
     resolution = {"items": [entry("ambiguous", candidates=both)]}
     ref = item_ref(resolution["items"][0])
@@ -165,11 +168,12 @@ def test_ambiguous_items_need_a_pick_and_required_ones_cannot_be_dropped():
             resolution, NEEDS[:1], picks={ref: {"material_id": "mx", "version_no": 1}}
         ).problems[0]
     )
-    assert "必填的不能去掉" in plan(resolution, NEEDS[:1], dropped=[ref]).problems[0]
+    gone = plan(resolution, NEEDS[:1], dropped=[ref])
+    assert gone.problems == [] and "你没要" in gone.incomplete[0]
     hidden = plan(
         {"items": [entry("not_shown", candidates=[candidate("m3")])]}, NEEDS[:1]
     )
-    assert "放开给 knowbench" in hidden.problems[0]
+    assert hidden.problems == [] and "放开给 knowbench" in hidden.incomplete[0]
 
 
 def test_bindings_ride_along_and_after_supply_missing_is_missing():
@@ -177,14 +181,15 @@ def test_bindings_ride_along_and_after_supply_missing_is_missing():
     done = plan(
         {"items": [entry("waiting", "2024")]}, NEEDS[:1], (bound,), after_supply=True
     )
-    assert done.problems == ["年报 600519.SH 2024-01-01–2024-12-31：没取到"]
+    assert done.problems == []
     assert done.missing == ["年报 600519.SH 2024-01-01–2024-12-31：没取到"]
+    assert done.incomplete == ["年报 600519.SH 2024-01-01–2024-12-31：没取到"]
     assert [(p["item_id"], p["basis"], p["slot"]) for p in done.pins] == [
         ("m-bound", "frozen_binding", None)
     ]
 
 
-def test_when_the_user_decides_anything_may_go_and_gaps_are_only_recorded():
+def test_anything_may_go_and_gaps_are_only_recorded():
     """第 0 步与运行中提的数据由用户定（decisions ⑭）：哪一样都能去掉，标了必需的缺了
     也照做，记「数据不全」；有歧义的仍要选一份或去掉。"""
     resolution = {
@@ -194,7 +199,7 @@ def test_when_the_user_decides_anything_may_go_and_gaps_are_only_recorded():
         ]
     }
     ref = item_ref(resolution["items"][0])
-    done = plan(resolution, NEEDS[:1], dropped=[ref], user_decides=True)
+    done = plan(resolution, NEEDS[:1], dropped=[ref])
     assert done.problems == [] and done.pins == []
     assert done.incomplete == [
         "年报 600519.SH 2025-01-01–2025-12-31：你没要",
@@ -202,7 +207,7 @@ def test_when_the_user_decides_anything_may_go_and_gaps_are_only_recorded():
     ]
     both = [candidate("m1"), candidate("m2")]
     unclear = {"items": [entry("ambiguous", candidates=both)]}
-    assert "要选一份" in plan(unclear, NEEDS[:1], user_decides=True).problems[0]
+    assert "要选一份" in plan(unclear, NEEDS[:1]).problems[0]
     anyone = {
         "items": [
             {
@@ -212,6 +217,4 @@ def test_when_the_user_decides_anything_may_go_and_gaps_are_only_recorded():
             }
         ]
     }
-    assert plan(anyone, NEEDS[:1], user_decides=True).incomplete == [
-        "年报：不限主体的没找到，也补采不了"
-    ]
+    assert plan(anyone, NEEDS[:1]).incomplete == ["年报：不限主体的没找到，也补采不了"]

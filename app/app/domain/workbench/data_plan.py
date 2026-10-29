@@ -11,9 +11,8 @@
 
 规矩：已定的默认用 knowbase 挑的那份，用户可以换成候选里的另一份；有歧义的必须选；
 待确认的在补采开着时进确认（0043 第 4.1 节「knowfeed 切合上线之前，待确认一律回暂不能
-补采」）。数据是用户的，由用户定（`user_decides`，第 0 步与运行中提的都这样）：哪一样
-都能去掉，标了必需的缺了也照做，记「数据不全」；不由用户定的（旧的开跑前列出），必填的
-不能去掉、缺了开不了跑。
+补采」）。数据是用户的，由用户定（第 0 步与运行中提的都这样，decisions ⑭）：哪一样
+都能去掉，标了必需的缺了也照做，记「数据不全」；有歧义的仍要选一份或去掉。
 """
 
 from __future__ import annotations
@@ -87,16 +86,13 @@ def plan(
     dropped: list[str] | None = None,
     supply_enabled: bool = False,
     after_supply: bool = False,
-    user_decides: bool = False,
 ) -> Plan:
-    """after_supply：补采已经结束后的重解析（还没定的就是没取到，不再进确认）。
-    user_decides：数据由用户定，缺了、去掉了都只记「数据不全」。"""
+    """after_supply：补采已经结束后的重解析（还没定的就是没取到，不再进确认）。"""
     picks = picks or {}
     gone = set(dropped or ())
     by_key = {n.key: n for n in needs}
     out = Plan()
     seen: set[tuple[str, int]] = set()
-    usable_by_need: dict[str, int] = {n.key: 0 for n in needs}
     known_refs = {item_ref(i) for i in resolution.get("items") or []}
     for ref in list(picks) + list(gone):
         if ref not in known_refs:
@@ -110,10 +106,7 @@ def plan(
             continue
         label = _label(need, item)
         if ref in gone:
-            if need.required and not user_decides:
-                out.problems.append(f"{label}：必填的不能去掉")
-            else:
-                out.incomplete.append(f"{label}：你没要")
+            out.incomplete.append(f"{label}：你没要")
             continue
         status = str(item.get("status"))
         chosen = _chosen(item, picks.get(ref))
@@ -127,7 +120,6 @@ def plan(
                 if key not in seen:
                     seen.add(key)
                     out.pins.append(pin)
-            usable_by_need[need.key] += 1
             continue
         if status == "to_confirm" and supply_enabled and not after_supply:
             out.confirm.append(
@@ -139,7 +131,6 @@ def plan(
                     "label": label,
                 }
             )
-            usable_by_need[need.key] += 1
             continue
         reason = (
             "没取到" if after_supply and status in ("to_confirm", "waiting") else None
@@ -149,18 +140,10 @@ def plan(
         if status == "not_collectable" and item.get("reason") == "no_subject":
             reason = reason or "不限主体的没找到，也补采不了"
         reason = reason or _REASONS.get(status) or str(item.get("reason") or status)
-        if status == "ambiguous" or (need.required and not user_decides):
+        if status == "ambiguous":
             out.problems.append(f"{label}：{reason}")
         else:
             out.incomplete.append(f"{label}：{reason}")
-    for key, need in by_key.items():
-        if (
-            need.required
-            and not user_decides
-            and usable_by_need[key] == 0
-            and not any(p.startswith(f"{_name(need)}") for p in out.problems)
-        ):
-            out.problems.append(f"{_name(need)}：清单里没有对得上的条目")
     for binding in bindings:
         key = (binding.material_id, binding.version_no)
         if key in seen:
