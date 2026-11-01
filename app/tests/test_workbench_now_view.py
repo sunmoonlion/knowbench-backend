@@ -104,6 +104,19 @@ def test_now_while_waiting_and_after_the_end():
         assert now_view(task(ended), STEPS, events=[], since="t0", held=False) is None
 
 
+def test_waiting_for_data_does_not_claim_the_next_analysis_step_is_running():
+    current = task("WAITING", step=0, waiting_reason="DATA")
+    now = now_view(current, STEPS, events=[], since="t0", held=False)
+    assert now is not None
+    assert now["step"]["title"] == "数据准备"
+    assert "确认" in now["step"]["why"]
+    assert now["step"]["why"] != STEPS[0]["why"]
+    assert now["doing"]["code"] == "waiting"
+    resumed = now_view(task("RUNNING", step=0), STEPS, events=[], since="t1", held=True)
+    assert resumed is not None
+    assert resumed["step"]["why"] == STEPS[0]["why"]
+
+
 def test_every_field_an_expert_hands_back_has_a_word_for_the_user():
     """交回物的字段名是英文。专家包里约定的每一个字段都要有给用户看的叫法。"""
     from app.domain.workbench.field_words import FIELD_WORDS, labels_of

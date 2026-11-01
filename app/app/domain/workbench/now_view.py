@@ -72,6 +72,9 @@ def now_view(
         code, detail = ("offline" if offline else "waiting"), None
     else:
         code, detail = doing_of(events)
+    data_wait = (
+        state == TaskState.WAITING and task.get("waiting_reason") == WaitingReason.DATA
+    )
     text = DOING[code] + (f"：{detail}" if detail else "")
     times = int(step.get("times") or 0)
     rejected = int(step.get("rejected") or 0)
@@ -84,9 +87,15 @@ def now_view(
         "step": {
             "index": step["index"],
             "of": len(steps),
-            "title": step["title"],
-            "summary": step.get("summary") or "",
-            "why": step.get("why") or "",
+            "title": "数据准备" if data_wait else step["title"],
+            "summary": "等待数据确认或补采完成"
+            if data_wait
+            else step.get("summary") or "",
+            "why": (
+                "需要先核对并确认本次的数据范围；获准的数据准备好后，专家才继续分析"
+                if data_wait
+                else step.get("why") or ""
+            ),
         },
         "doing": {"code": code, "text": text},
         "redo": redo,

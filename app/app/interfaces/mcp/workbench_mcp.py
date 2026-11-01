@@ -14,6 +14,7 @@ Streamable HTTP，只用 JSON 响应，不开流。和知识服务的工具并�
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import time
@@ -38,6 +39,7 @@ from app.bootstrap.workbench import (
     knowmart_catalog,
     workbench_store,
 )
+from app.domain.workbench.data_request import DataRequest
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
@@ -56,6 +58,12 @@ _TASK = {
     "type": "string",
     "description": "The task id given in the step instructions.",
 }
+# Reuse the locked data-request/v1 contract instead of hiding its vocabulary and
+# period fields behind unconstrained strings/objects in the model-facing tool.
+_DATA_REQUEST_SCHEMA = DataRequest.model_json_schema()
+_DATA_FIELDS = _DATA_REQUEST_SCHEMA["properties"]
+
+
 TOOLS: dict[str, dict[str, Any]] = {
     "list_project_conversations": {
         "description": (
@@ -115,14 +123,22 @@ TOOLS: dict[str, dict[str, Any]] = {
             "before that and the task pauses after this step. Each item: subject "
             "(a code from find_subject; leave it out for data about no particular "
             "company), doc_type (a type or class from describe_items, e.g. "
-            "annual_report or interim_announcement), period ({kind: latest, count} "
-            "for periodic reports; {kind: recent, months} or {kind: fixed, start, "
-            "end} for others), reading (original, text, pages or table), optional "
+            "annual_report, semiannual_report, q1_report, q3_report; "
+            "interim_announcement is NOT a periodic report). For explicit dates "
+            "use period {kind: fixed, start, end}, including periodic reports; "
+            "preserve the user's requested dates instead of replacing them with "
+            "latest. Use {kind: latest, count} only for the latest periodic reports, "
+            "or {kind: recent, months} for recent non-periodic material. "
+            "reading (original, text, pages or table), optional "
             "topics and edition, essential (true if the steps cannot be done "
-            "without it) and reason (why it is needed). At most 20 items."
+            "without it) and reason (why it is needed). At most 20 items. "
+            "If a value is rejected, consult describe_items and correct that value; "
+            "do not drop required data or substitute a different document type "
+            "just to pass validation. State any additional baseline period separately."
         ),
         "inputSchema": {
             "type": "object",
+            "$defs": copy.deepcopy(_DATA_REQUEST_SCHEMA["$defs"]),
             "properties": {
                 "task": _TASK,
                 "needs": {
@@ -133,12 +149,12 @@ TOOLS: dict[str, dict[str, Any]] = {
                         "type": "object",
                         "properties": {
                             "subject": {"type": "string", "maxLength": 64},
-                            "doc_type": {"type": "string"},
-                            "period": {"type": "object"},
+                            "doc_type": copy.deepcopy(_DATA_FIELDS["doc_type"]),
+                            "period": copy.deepcopy(_DATA_FIELDS["period"]),
                             "reading": {"enum": ["original", "text", "pages", "table"]},
-                            "topics": {"type": "array", "items": {"type": "string"}},
+                            "topics": copy.deepcopy(_DATA_FIELDS["topics"]),
                             "edition": {"enum": ["full", "summary", "english"]},
-                            "max_count": {"type": "integer", "minimum": 1},
+                            "max_count": copy.deepcopy(_DATA_FIELDS["max_count"]),
                             "essential": {"type": "boolean"},
                             "reason": {"type": "string", "maxLength": 500},
                         },

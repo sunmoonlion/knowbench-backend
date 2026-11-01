@@ -52,3 +52,17 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 已运行 ruff format、ruff check 和 git diff --check。两组回归在原基线和 Jenkins #43 基线上均为 39 passed；沙箱兼容检查 14 passed；确切 Codex 0.155.1 的 config/read 已验证启动覆盖生效且 PVC 配置不变。
 
 剩余：按用户要求通过现有 Jenkins release 发布；当前线上 OCI 为 sha256:1557b13795d88fb041e52475ff98516581229ed23018a6d629f66c479a1d2fa0，修复基于其来源 1104dcd/c00e6766，不把旧工作区声明直接发布。发布前确认部署版本与回退入口；发布后通过实际工作台验证失败不误推进与 find_subject → request_data → 用户确认的闭环；若再次出现 400，保留脱敏的同一次失败请求/响应配对并与模型供应商核对。没有未经确认地派发真实采集任务。
+
+## 2026-11-02 luna：发布 #44 后真实提采验证与契约修复
+
+#44 已发布。用户更新沙箱后的真实任务 b26d4452-8aaa-4671-9c27-dcb77e813791 成功完成 find_subject 与 request_data，定数据轮次 completed，停在 WAITING/DATA；确认与 demand 均为空。八个专家步骤仍完整。原工具回传 400 在该轮未复现；不能因此宣称采集、分析和报告均验收通过。
+
+新发现：工具向模型仅声明任意 doc_type 字符串和 period 对象，实际契约有枚举与范围；描述还把 fixed 错误地限定为非定期材料。真实模型连续猜错季报类型，并以 interim_announcement 替代，年报用 latest 导致范围从用户的 2021–2024 扩大到 2020–2025。等待时 now_view 又显示下一步专家作者的 why，误导为不允许补采。
+
+修复：request_data 的文档类型、时间、主题和数量字段复用现有锁定 DataRequest 契约生成 JSON Schema（含自包含 $defs）；说明明确季度类型、显式日期可用于定期报告、额外基期分开说明、拒绝后查 describe_items，不能随意改材料类型。WAITING/DATA 的 now.step 显示数据准备与核对范围的说明，恢复运行后保留原步骤说明。未修改专家方法、bindings、用户采单或确认状态。
+
+验证：后端全量 1196 passed、92 skipped（独立测试库），ruff 通过。pyright 有 16 条错误，与 #44 基线逐条一致，无新增；不能记为类型检查通过。新增 schema 回归覆盖四种定期报告、fixed 日期保留、错误词汇与边界拒绝、非财务材料兼容；新增等待/恢复说明回归。jsonschema 仅为开发测试依赖。
+
+真实用户沙箱的无副作用动态工具探针 thread 01a19835-b043-7173-98f8-9cc1e2e166ee 使用候选 schema，Kimi 接受 $defs，并提交 annual_report / q1_report / semiannual_report / q3_report，均保留 2021-01-01 至 2024-12-31；轮次 completed，工具往返一次。此探针未调用业务 MCP、未提采，不替代真实专家验收。
+
+待办：与前端长采单布局修复经现有 Jenkins 发布，保留人批阶段。旧任务不自动确认；新任务重验数据范围，再由用户确认是否采集。

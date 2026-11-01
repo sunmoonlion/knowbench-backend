@@ -29,6 +29,7 @@ dev = [
     # 只有测试用同步连接建库；产品代码用 asyncpg
     "psycopg[binary]>=3.3.4",
     "import-linter>=2.3",
+    "jsonschema>=4,<5",
 ]
 
 [tool.pytest.ini_options]
