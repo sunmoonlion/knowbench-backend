@@ -84,9 +84,9 @@ class ProjectService:
         row = plain(project)
         row["directory"] = project_dir(project["workspace_root"], project["path"])
         row["archived"] = project.get("archived_at") is not None
-        if env is not None:
-            row["environment_name"] = env["name"]
-            row["online"] = env.get("status") == ONLINE
+        # 机器被移除（账 179）后项目还挂着它：字段不能缺，缺了前端整份清单校验不过
+        row["environment_name"] = env["name"] if env is not None else "已移除的机器"
+        row["online"] = env is not None and env.get("status") == ONLINE
         return row
 
     async def create(
@@ -174,15 +174,22 @@ class ProjectService:
     async def listing(
         self, *, owner_actor_id: str, include_archived: bool = False
     ) -> list[dict[str, Any]]:
+        projects = await self.repo.list_projects(
+            owner_actor_id=owner_actor_id, include_archived=include_archived
+        )
         envs = {
             str(env["id"]): env
             for env in await self.repo.list_environments(owner_actor_id=owner_actor_id)
         }
+        # 清单不含已移除的机器（账 179）：项目还引用它，补查回来，名字照显示、状态算离线
+        for env_id in {str(p["environment_id"]) for p in projects} - set(envs):
+            try:
+                envs[env_id] = await self.repo.get_environment(env_id)
+            except WorkbenchError:
+                pass
         return [
             self._describe(project, envs.get(str(project["environment_id"])))
-            for project in await self.repo.list_projects(
-                owner_actor_id=owner_actor_id, include_archived=include_archived
-            )
+            for project in projects
         ]
 
     async def view(self, project_id: str, *, owner_actor_id: str) -> dict[str, Any]:
