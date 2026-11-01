@@ -16,10 +16,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from decimal import Decimal
 from functools import wraps
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import text
 from sqlalchemy import text as sa_text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
@@ -2111,7 +2112,8 @@ class WorkbenchRepository:
         text: str | None = None,
         enabled: bool | None = None,
     ) -> dict[str, Any] | None:
-        sets, params = ["updated_at = now()"], {"i": memory_id, "o": owner_actor_id}
+        sets = ["updated_at = now()"]
+        params: dict[str, Any] = {"i": memory_id, "o": owner_actor_id}
         if text is not None:
             sets.append("text = :t")
             params["t"] = text
@@ -2135,14 +2137,14 @@ class WorkbenchRepository:
             ),
             {"i": memory_id, "o": owner_actor_id},
         )
-        return (r.rowcount or 0) > 0
+        return (cast(CursorResult[Any], r).rowcount or 0) > 0
 
     async def clear_memories(self, owner_actor_id: str) -> int:
         r = await self.session.execute(
             sa_text("delete from workbench_memories where owner_actor_id = :o"),
             {"o": owner_actor_id},
         )
-        return int(r.rowcount or 0)
+        return int(cast(CursorResult[Any], r).rowcount or 0)
 
     async def put_prefs(
         self,

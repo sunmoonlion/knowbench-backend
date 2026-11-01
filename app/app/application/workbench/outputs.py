@@ -72,8 +72,24 @@ MAX_NAME = 200
 
 
 class OutputArea(Protocol):
-    async def write_output(self, **kw: Any) -> dict[str, Any]: ...
-    async def find_output(self, **kw: Any) -> dict[str, Any]: ...
+    async def write_output(
+        self,
+        *,
+        beneficiary: str,
+        task_ref: str,
+        run_ref: str,
+        name: str,
+        content: bytes,
+        expert_id: str | None = None,
+        expert_version: str | None = None,
+        grant_ref: str | None = None,
+        task_started_at: str | None = None,
+        task_finished_at: str | None = None,
+        incomplete: bool = False,
+    ) -> dict[str, Any]: ...
+    async def find_output(
+        self, *, beneficiary: str, task_ref: str, run_ref: str, name: str
+    ) -> dict[str, Any]: ...
 
 
 class Retry(Exception):

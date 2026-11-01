@@ -108,7 +108,9 @@ async def find_expert(
 
 
 def _public(entry: dict[str, Any]) -> dict[str, Any]:
-    scope = entry.get("scope") if isinstance(entry.get("scope"), dict) else {}
+    scope = entry.get("scope")
+    if not isinstance(scope, dict):
+        scope = {}
     return {
         "knowbot_id": str(entry["knowbot_id"]),
         "name": str(entry.get("name") or ""),

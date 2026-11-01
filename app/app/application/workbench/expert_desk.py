@@ -437,10 +437,10 @@ def board_place(
         if "missing" in statuses:
             return "waiting_you", {"who": "you", "what": "decide_missing"}
         return "waiting_others", {"who": "data_service", "what": "fetch_data"}
-    what = {
+    what_by_reason: dict[str | None, str] = {
         WaitingReason.INPUT: "answer",
         WaitingReason.APPROVAL: "approve",
         WaitingReason.RESOURCE: "budget",
         WaitingReason.ENVIRONMENT: "machine",
-    }.get(reason, "answer")
-    return "waiting_you", {"who": "you", "what": what}
+    }
+    return "waiting_you", {"who": "you", "what": what_by_reason.get(reason, "answer")}

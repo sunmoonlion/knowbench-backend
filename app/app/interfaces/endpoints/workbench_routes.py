@@ -1073,7 +1073,7 @@ def agent_package(
 ):
     settings = get_settings()
     release = settings.workbench_agent_download
-    if not release or release.mode != "object-storage":
+    if not release or release.mode != "object-storage" or not release.object_key:
         raise HTTPException(404, "agent_download_unavailable")
     if request.query_params:
         raise HTTPException(400, "agent_download_parameters_not_supported")

@@ -30,7 +30,7 @@ import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard
 
 from pydantic import ValidationError
 
@@ -85,12 +85,37 @@ def new_run_ref() -> str:
 
 
 class KnowbaseData(Protocol):
-    async def resolve(self, user_token: str, **kw: Any) -> dict[str, Any]: ...
+    async def resolve(
+        self,
+        user_token: str,
+        *,
+        consumer: str,
+        needs: list[dict[str, Any]],
+        params: dict[str, Any],
+        task_ref: str | None = None,
+    ) -> dict[str, Any]: ...
     async def resolution(
         self, user_token: str, resolution_id: str, revision: int | None = None
     ) -> dict[str, Any]: ...
-    async def confirm(self, user_token: str, **kw: Any) -> dict[str, Any]: ...
-    async def run_grant(self, user_token: str, **kw: Any) -> dict[str, Any]: ...
+    async def confirm(
+        self,
+        user_token: str,
+        *,
+        items: list[dict[str, Any]],
+        task_ref: str,
+        resolution_id: str,
+        revision: int,
+        supply: dict[str, Any] | None = None,
+    ) -> dict[str, Any]: ...
+    async def run_grant(
+        self,
+        user_token: str,
+        *,
+        process: str,
+        ref: str,
+        items: list[dict[str, Any]],
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]: ...
     async def register_session(self, user_token: str) -> dict[str, Any]: ...
     async def revise_needs(
         self, user_token: str, resolution_id: str, needs: list[dict[str, Any]]
@@ -105,7 +130,17 @@ class KnowbaseData(Protocol):
     async def add_needs(
         self, subject: str, resolution_id: str, needs: list[dict[str, Any]]
     ) -> dict[str, Any]: ...
-    async def grant_by_confirmation(self, **kw: Any) -> dict[str, Any]: ...
+    async def grant_by_confirmation(
+        self,
+        *,
+        subject: str,
+        confirmation_id: str,
+        resolution_id: str,
+        revision: int,
+        ref: str,
+        items: list[dict[str, Any]],
+        ttl_seconds: int | None = None,
+    ) -> dict[str, Any]: ...
     async def release_run_grant(self, grant_id: str) -> None: ...
     async def save_preference(
         self,
@@ -119,7 +154,17 @@ class KnowbaseData(Protocol):
 
 class SupplyDemands(Protocol):
     def configured(self) -> bool: ...
-    async def submit(self, **kw: Any) -> dict[str, Any]: ...
+    async def submit(
+        self,
+        *,
+        owner: str,
+        confirmation_id: str,
+        idempotency_key: str,
+        items: list[dict[str, Any]],
+        task_ref: str | None,
+        proposer: str = "user",
+        chain: list[str] | None = None,
+    ) -> dict[str, Any]: ...
     async def get(self, demand_id: str) -> dict[str, Any]: ...
     async def cancel(self, demand_id: str) -> dict[str, Any]: ...
     async def prematch(
@@ -574,7 +619,7 @@ def pending_requests(row: dict[str, Any] | None) -> list[dict[str, Any]]:
     ]
 
 
-def holds_task(row: dict[str, Any] | None) -> bool:
+def holds_task(row: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
     """委托要不要停在「等数据」：在补采，或专家要的新数据还没确认。"""
     return row is not None and (
         row["status"] == "waiting" or bool(pending_requests(row))

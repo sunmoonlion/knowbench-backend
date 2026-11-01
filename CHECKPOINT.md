@@ -66,3 +66,9 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 真实用户沙箱的无副作用动态工具探针 thread 01a19835-b043-7173-98f8-9cc1e2e166ee 使用候选 schema，Kimi 接受 $defs，并提交 annual_report / q1_report / semiannual_report / q3_report，均保留 2021-01-01 至 2024-12-31；轮次 completed，工具往返一次。此探针未调用业务 MCP、未提采，不替代真实专家验收。
 
 待办：与前端长采单布局修复经现有 Jenkins 发布，保留人批阶段。旧任务不自动确认；新任务重验数据范围，再由用户确认是否采集。
+
+## 2026-11-02 第二轨准备：类型检查基线清理
+
+#45 已发布为 release-20261102-2；五工位 130 个检出已对齐并干净后，按所有者要求在 luna 开发。发现并消除原基线 16 条 pyright 错误：应用端口签名明确为已存在的参数（不改 HTTP 契约）；holds_task 标为 TypeGuard；可空 scope/等待原因按类型收窄；仓储 SQL 参数和 CursorResult 明确类型；安装包 object_key 缺失按既有不可用出口处理。不通过 Any 强转整个客户端或忽略错误掩盖端口不一致。
+
+验证：ruff 通过，pyright 0 errors/0 warnings；连同随后 WP-2 分数次幂工作区运行后端全量 1204 passed、92 skipped。独立测试库；原始输出 /tmp/luna-wp2-pyright.txt 与 /tmp/luna-wp2-pytest.txt。本批尚未发布，线上仍 #45。
