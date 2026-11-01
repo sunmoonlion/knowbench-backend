@@ -138,6 +138,9 @@ def world(reader: Reader | None = None):  # type: ignore[no-untyped-def]
         ("x ** n", {"x": Decimal("1.5"), "n": Decimal(2)}, "2.25"),
         ("-2 ** 2", {}, "-4"),
         ("x ** 0", {"x": Decimal(3)}, "1"),
+        # 分数次乘方（正底）
+        ("1.21 ** 0.5", {}, "1.1"),
+        ("x ** 0.5", {"x": Decimal(4)}, "2"),
     ],
 )
 def test_expressions_compute_exactly_in_decimal(expression, values, expected) -> None:
@@ -150,8 +153,9 @@ def test_expressions_compute_exactly_in_decimal(expression, values, expected) ->
         ("a / b", {"a": Decimal(1), "b": Decimal(0)}, calc.ZERO_DIVISOR),
         ("__import__('os')", {}, "not allowed"),
         ("a.real", {"a": Decimal(1)}, "only"),
-        ("a ** 0.5", {"a": Decimal(4)}, "whole-number exponent"),
-        ("a ** n", {"a": Decimal(2), "n": Decimal("1.5")}, "whole-number exponent"),
+        ("(-2) ** 0.5", {}, "a fractional power needs a positive base"),
+        ("0 ** 0.5", {}, "a fractional power needs a positive base"),
+        ("a ** n", {"a": Decimal(-2), "n": Decimal("1.5")}, "a fractional power needs a positive base"),
         ("a ** 101", {"a": Decimal(2)}, "at most 100"),
         ("0 ** -1", {}, calc.ZERO_DIVISOR),
         ("0 ** 0", {}, "cannot be computed"),
@@ -183,6 +187,37 @@ def test_rounding_is_half_up_and_expressions_compare_by_tree() -> None:
     assert calc.same_expression("(rev - cost) / rev", "(rev-cost)/rev")
     assert not calc.same_expression("(rev - cost) / rev", "rev - cost / rev")
     assert not calc.same_expression("x", "1 +")
+
+
+def test_fractional_power_and_cagr() -> None:
+    # 1. 1.21 ** 0.5 == 1.1 精确
+    assert calc.text_of(calc.evaluate("1.21 ** 0.5", {})) == "1.1"
+    # 2. 8 ** (1/3) 舍入到 10 位 == 2.0000000000
+    assert calc.rounded(calc.evaluate("8 ** (1 / 3)", {}), 10) == Decimal("2.0000000000")
+    # 3. 茅台式 CAGR 用金标准数算到 4 位小数与手算一致：2021->2024 年营收
+    start = Decimal("106190158814.28")
+    end = Decimal("170899152276.34")
+    cagr_expr = "(end / start) ** (1 / 3) - 1"
+    cagr_val = calc.evaluate(cagr_expr, {"start": start, "end": end})
+    assert calc.text_of(calc.rounded(cagr_val, 4)) == "0.1719"
+    # 4. 负底分数次拒绝
+    with pytest.raises(ComputeRefused, match="a fractional power needs a positive base"):
+        calc.evaluate("(-2) ** 0.5", {})
+    # 5. 0 ** 0.5 拒绝
+    with pytest.raises(ComputeRefused, match="a fractional power needs a positive base"):
+        calc.evaluate("0 ** 0.5", {})
+    # 6. 0 ** -1 仍是除零
+    with pytest.raises(ComputeRefused, match=calc.ZERO_DIVISOR):
+        calc.evaluate("0 ** -1", {})
+    # 7. 同一表达式算两次逐位相同
+    r1 = calc.evaluate("2 ** 0.5", {})
+    r2 = calc.evaluate("2 ** 0.5", {})
+    assert r1 == r2
+    # 8. 指数超上限拒绝
+    with pytest.raises(ComputeRefused, match="at most 100"):
+        calc.evaluate("2 ** 101", {})
+    with pytest.raises(ComputeRefused, match="at most 100"):
+        calc.evaluate("2 ** -101", {})
 
 
 def test_a_knowbot_may_compute() -> None:
@@ -298,6 +333,24 @@ async def test_computed_numbers_must_be_in_the_record_and_match() -> None:
     strict = (rule("computed", "figures", expression="(h1 - q1) / q1"),)
     v = await verdict_of(good, strict, records)
     assert not v.ok and "used 'h1 - q1'" in v.checks[-1]["detail"]
+
+
+async def test_computed_cagr_matches_acceptance_rule() -> None:
+    records, tool = world()
+    cagr = await tool.compute(
+        "t",
+        "营收CAGR",
+        "(end / start) ** (1 / 3) - 1",
+        {"start": fact(1), "end": fact(2)},
+        places=4,
+    )
+    rules = (rule("computed", "cagr_stat", tolerance=0.001, expression="(end / start) ** (1 / 3) - 1"),)
+    good = f'{{"cagr_stat": [{{"compute_id": "{cagr["id"]}", "value": "{cagr["value"]}"}}]}}'
+    assert (await verdict_of(good, rules, records)).ok
+    # 虚假数字被拒
+    bad = f'{{"cagr_stat": [{{"compute_id": "{cagr["id"]}", "value": "0.9999"}}]}}'
+    v = await verdict_of(bad, rules, records)
+    assert not v.ok and "computed" in v.checks[-1]["detail"]
 
 
 async def test_a_computed_zero_is_a_number() -> None:

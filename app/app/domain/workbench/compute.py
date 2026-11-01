@@ -1,6 +1,6 @@
 """分身的确定性计算（SDD 0030 §3.2）：安全的算式求值、十进制。
 
-算式只许四则运算、整数次乘方（`**`，折现系数这类要用，10-28）、括号、正负号、数字常数，
+算式只许四则运算、乘方（整数次任意底；分数次只许正底，十进制 ln/exp 求值）、括号、正负号、数字常数，
 和 sum、avg、median、min、max、abs 六个函数；名字只能是这次计算的输入（一个数，或一串数）。用 Python 的语法树按白名单走一遍，不 eval，
 不取属性、不下标、不调别的函数。全程十进制，不经浮点。
 """
@@ -163,14 +163,21 @@ def evaluate(expression: str, values: dict[str, Value]) -> Decimal:
 
 
 def _power(base: Decimal, exponent: Decimal) -> Decimal:
-    """整数次乘方：开方这类非整数指数不收（结果要能逐位确定）；0 的负数次方同除以零。"""
-    if exponent != exponent.to_integral_value():
-        raise ComputeError("a power takes a whole-number exponent")
+    """乘方：整数次任意底；分数次只许正底（十进制 ln/exp 求值）；0 的负数次方同除以零。"""
     if abs(exponent) > MAX_POWER:
         raise ComputeError(f"a power's exponent is at most {MAX_POWER}")
     if base == 0 and exponent < 0:
         raise ComputeError(ZERO_DIVISOR)
-    return base ** int(exponent)
+    if exponent == exponent.to_integral_value():
+        return base ** int(exponent)
+    if base <= 0:
+        raise ComputeError("a fractional power needs a positive base")
+    with localcontext() as ctx:
+        ctx.prec = PRECISION + 10
+        val = (base.ln() * exponent).exp()
+    with localcontext() as ctx:
+        ctx.prec = PRECISION
+        return +val
 
 
 def _scalar(value: Value) -> Decimal:
