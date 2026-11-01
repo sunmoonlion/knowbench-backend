@@ -71,9 +71,7 @@ def build_grant_releaser(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> GrantReleaser:
     """委托结束后交还运行授权（runner 里一条线）：走 knowbase user-data/v2 的交还接口。"""
-    return GrantReleaser(
-        workbench_stores(session_factory), knowbase_v2().release_run_grant
-    )
+    return GrantReleaser(workbench_stores(session_factory), knowbase_v2().release_run)
 
 
 @lru_cache(maxsize=1)
@@ -169,7 +167,10 @@ def build_data_waiter(session_factory: async_sessionmaker[AsyncSession]):
 
 def build_output_writer(session_factory: async_sessionmaker[AsyncSession], settings):
     """委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节，runner 里一条线）：
-    要经会合点读用户电脑上的成稿，没配会合点或签名私钥就没有这条线（返回 None，待写的留着）。"""
+    要经会合点读用户电脑上的成稿，没配会合点或签名私钥就没有这条线（返回 None，待写的留着）；
+    开关 WORKBENCH_OUTPUT_WRITE_ENABLED 关着也没有（knowbase 认出处依据的那一版上线后再开）。"""
+    if not settings.workbench_output_write_enabled:
+        return None
     reader = build_deliverable_reader(
         session_factory,
         relay_url=settings.workbench_relay_admin_url,
@@ -276,7 +277,7 @@ def build_deliverable_reader(
     relay_url: str | None,
     signing_key: str | None,
     issuer_name: str,
-) -> DeliverableReader | None:
+) -> AgentDeliverableCheck | None:
     """SDD 0037：测试的每条用例跑完时经会合点服务流读回成稿；没配会合点或签名私钥就不读（返回 None）。"""
     if not (relay_url and signing_key):
         return None
@@ -309,8 +310,8 @@ def build_machine_sync(
 if TYPE_CHECKING:
     from app.application.workbench.agent_service import AgentService
     from app.application.workbench.deliverable_check import (
+        AgentDeliverableCheck,
         DeliverableCheck,
-        DeliverableReader,
     )
     from app.application.workbench.test_folders import TestFolders
     from app.application.workbench.tokens import TokenIssuer
@@ -323,9 +324,25 @@ def build_agent_service(relay_url: str, issuer: TokenIssuer) -> AgentService:
     return WsAgentService(relay_url, issuer)
 
 
+def _postgres_sessions() -> async_sessionmaker[AsyncSession]:
+    from app.infrastructure.storage.postgres import get_postgres
+
+    return get_postgres().session_factory
+
+
 def test_run_service(session: AsyncSession) -> KnowbotTestService:
     """作为运行方跑分身测试的三个接口（SDD 0027 §3.4）：都在作者的账号下跑（decisions ⑯）。"""
-    return KnowbotTestService(workbench_store(session))
+    settings = get_settings()
+    return KnowbotTestService(
+        workbench_store(session),
+        release_grant=knowbase_v2().release_run_grant,
+        # 取消时删这次测试的目录（同推进器收尾）；没打开隔离就没有目录
+        folders=(
+            build_test_folders(_postgres_sessions(), settings)
+            if settings.knowbot_test_isolate
+            else None
+        ),
+    )
 
 
 def build_test_conductor(
@@ -341,6 +358,7 @@ def build_test_conductor(
             signing_key=settings.workbench_token_signing_key,
             issuer_name=settings.workbench_token_issuer,
         ),
+        release_grant=knowbase_v2().release_run_grant,
     )
 
 

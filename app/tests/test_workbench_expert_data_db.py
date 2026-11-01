@@ -11,6 +11,8 @@ knowbase、knowfeed 与模型的那一轮用替身。
 from __future__ import annotations
 
 import copy
+import re
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -25,6 +27,7 @@ from test_workbench_routes import make_client as make_client  # noqa: F401
 
 import app.interfaces.endpoints.knowfeed_status_routes as status_routes
 import app.interfaces.http.web.workbench_expert as expert_routes
+from app.application.errors.exceptions import ServiceUnavailableError
 from app.application.workbench.advisor import DATA_STEP_ID, Advisor, TurnResult
 from app.application.workbench.expert_data import (
     CLAIM_LEASE,
@@ -104,6 +107,12 @@ class FakeKnowbase:
         self.needs: list[dict[str, Any]] = []
         self.calls: list[tuple[str, Any]] = []
         self.arrives = True
+        # 已有的那一样另有几份候选（用户能换）
+        self.alternatives: list[dict[str, Any]] = []
+        self.preference_fails = False
+        # 续签时：抛这个（knowbase 拒签），或者先做这件事（模拟委托在续签时结束）
+        self.grant_error: Exception | None = None
+        self.on_grant: Any = None
 
     def _items(self, fetched: bool) -> list[dict[str, Any]]:
         out = []
@@ -116,7 +125,7 @@ class FakeKnowbase:
                     "key": key(year, need.get("subject") or "600519.SH"),
                     "status": "resolved" if here else "to_confirm",
                     "chosen": [candidate(year)] if here and year in SHA else [],
-                    "candidates": [],
+                    "candidates": list(self.alternatives) if year == "2025" else [],
                     "reason": None,
                 }
             )
@@ -180,6 +189,10 @@ class FakeKnowbase:
 
     async def grant_by_confirmation(self, **kw: Any) -> dict[str, Any]:
         self.calls.append(("grant_by_confirmation", kw))
+        if self.grant_error is not None:
+            raise self.grant_error
+        if self.on_grant is not None:
+            await self.on_grant()
         return {"grant_id": "g-confirmed"}
 
     async def release_run_grant(self, grant_id: str) -> None:
@@ -188,6 +201,16 @@ class FakeKnowbase:
     async def register_session(self, user_token: str) -> dict[str, Any]:
         return {"session_id": "kb-s-1", "expires_at": None}
 
+    async def refresh_mine(self, user_token: str, resolution_id: str) -> dict:
+        self.calls.append(("refresh_mine", resolution_id))
+        return self._revise(fetched=True)
+
+    async def save_preference(self, user_token: str, **kw: Any) -> dict[str, Any]:
+        self.calls.append(("save_preference", kw))
+        if self.preference_fails:
+            raise RuntimeError("knowbase has no preference writes yet")
+        return {"key_id": "k", "material_ids": kw["material_ids"]}
+
 
 class FakeSupply:
     def __init__(self) -> None:
@@ -195,9 +218,30 @@ class FakeSupply:
         self.submitted: list[dict[str, Any]] = []
         self.cancelled: list[str] = []
         self.looked_up: list[str] = []
+        self.asked: list[dict[str, Any]] = []
+        # 预切合：None 是调不通
+        self.answer: dict[str, Any] | None = {
+            "status": "available",
+            "reason": None,
+            "license": "self",
+            "eta_seconds": 300,
+            "readings_missing": [],
+            "candidates": [],
+        }
 
     def configured(self) -> bool:
         return True
+
+    async def prematch(
+        self, items: list[dict[str, Any]], conditions: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.asked.append({"items": items, "conditions": conditions})
+        if self.answer is None:
+            raise ServiceUnavailableError("down", code="knowfeed_unavailable")
+        return {
+            "contract": "knowfeed-supply-prematch/v1",
+            "items": [{"ref": i["ref"], **self.answer} for i in items],
+        }
 
     async def submit(self, **kw: Any) -> dict[str, Any]:
         self.submitted.append(kw)
@@ -321,9 +365,13 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         task_id, turn, state = await asked(http, db, world, "k-v2-0001")
         # 请专家：空清单、作者挑选的那一份本人签、钉住
         [(_, resolved)] = [c for c in kb.calls if c[0] == "resolve"]
-        assert resolved["task_ref"] == "knowbench:k-v2-0001"
+        # 运行授权的 ref 服务端生成（独立审 10-30 第二轮）：不用客户端的幂等钥匙拼
+        ref = resolved["task_ref"]
+        assert re.fullmatch(r"knowbench:run:[0-9a-f-]{36}", ref)
+        assert "k-v2-0001" not in ref
         [bound] = [c for c in kb.calls if c[0] == "run_grant"]
         assert [i["material_id"] for i in bound[1]["items"]] == ["m-bound"]
+        assert bound[1]["ref"] == ref
         # 第 0 步：说明里有专家的做法、问题、两个工具；提了就停在步骤之间等确认
         assert "find_subject" in turn.texts[0] and "分析茅台" in turn.texts[0]
         assert "1 item(s) of its own" in turn.texts[0]
@@ -371,7 +419,7 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         assert confirmed.json()["status"] == "supplying"
     [(_, asked_for)] = [c for c in kb.calls if c[0] == "confirm"]
     assert asked_for["items"] == [{"key": key("2024"), "need_key": "req1_2"}]
-    assert asked_for["task_ref"] == "knowbench:k-v2-0001"
+    assert asked_for["task_ref"] == ref
     assert [s["confirmation_id"] for s in supply.submitted] == ["conf-1"]
     pins = await rows(
         db, "select item_id, basis from workbench_task_data order by position"
@@ -389,7 +437,9 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
     assert await waiter.sweep() == 1
     [granted] = [c for c in kb.calls if c[0] == "grant_by_confirmation"]
     assert [i["material_id"] for i in granted[1]["items"]] == ["m-2024"]
-    assert granted[1]["ref"] == "knowbench:k-v2-0001"
+    assert granted[1]["ref"] == ref
+    [row] = await rows(db, "select grant_ref from workbench_task_resolution")
+    assert row["grant_ref"] == ref
     pins = await rows(db, "select item_id from workbench_task_data order by position")
     assert [p["item_id"] for p in pins] == ["m-bound", "m-2025", "m-2024"]
     [task] = await rows(
@@ -675,3 +725,436 @@ async def test_find_subject_looks_up_the_directory() -> None:
         "found": [{"subject": "600519.SH", "name": "贵州茅台"}]
     }
     assert supply.looked_up == ["茅台"]
+
+
+async def test_the_list_shows_the_prematch_and_the_confirmation_keeps_it(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """0043 第 3.3 节：待确认的几项先问 knowfeed（能不能取、许可档、预计多久），面板上显示；
+    确认时回包连同可接受的条件存进 knowbase 确认的供给条件快照。"""
+    kb, supply = world["kb"], world["supply"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-prematch")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        [request] = shown["requests"]
+        have, want = request["items"]
+        assert "prematch" not in have  # 已有的不问
+        assert want["prematch"]["status"] == "available"
+        assert (want["prematch"]["license"], want["prematch"]["eta_seconds"]) == (
+            "self",
+            300,
+        )
+        assert request["eta_seconds"] == 300
+        [question] = supply.asked
+        assert question["conditions"] == {"min_license": "self", "channels": []}
+        assert question["items"] == [
+            {
+                "ref": want["ref"],
+                "key": key("2024") | {"edition": "full", "topics": []},
+                "readings": ["pages"],
+            }
+        ]
+        confirmed = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert confirmed.json()["status"] == "supplying", confirmed.text
+    # 确认时不再同步问，快照用面板那次问到的；每项带上问的描述键
+    assert len(supply.asked) == 1
+    [(_, asked_for)] = [c for c in kb.calls if c[0] == "confirm"]
+    assert asked_for["supply"] == {
+        "conditions": {"min_license": "self", "channels": []},
+        "prematch": {
+            "contract": "knowfeed-supply-prematch/v1",
+            "items": [
+                {
+                    "ref": want["ref"],
+                    **supply.answer,
+                    "key": key("2024") | {"edition": "full", "topics": []},
+                }
+            ],
+        },
+    }
+
+
+async def test_without_knowfeed_the_list_is_shown_without_estimates(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """knowfeed 调不通：清单照常列、照常能确认，只是没有预计；快照里只有条件。"""
+    kb, supply = world["kb"], world["supply"]
+    supply.answer = None
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-no-prematch")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        [request] = shown["requests"]
+        assert [i["status"] for i in request["items"]] == ["resolved", "to_confirm"]
+        assert all("prematch" not in i for i in request["items"])
+        assert request["eta_seconds"] is None
+        confirmed = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert confirmed.json()["status"] == "supplying", confirmed.text
+    [(_, asked_for)] = [c for c in kb.calls if c[0] == "confirm"]
+    assert asked_for["supply"] == {
+        "conditions": {"min_license": "self", "channels": []}
+    }
+
+
+async def test_with_supply_off_knowfeed_is_not_asked(
+    make_client,
+    db,  # noqa: F811
+    world,
+    monkeypatch,
+) -> None:
+    """补采开关关着：待确认的一律「暂不能补采」，不问预切合（显示预计反倒误导）。"""
+    supply = world["supply"]
+    monkeypatch.setattr(
+        expert_routes,
+        "expert_data",
+        lambda: ExpertData(world["kb"], supply, supply_enabled=False),
+    )
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-supply-off")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert shown["requests"][0]["eta_seconds"] is None
+    assert supply.asked == []
+
+
+async def test_switching_to_another_copy_is_written_back_as_a_preference(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """0043 第 3.5 节：已定的换成候选里的另一份，确认后凭本人令牌记成偏好（用户 × 使用者 ×
+    描述 → 资料）；照列出的确认不写；写不成不挡确认。"""
+    kb = world["kb"]
+    kb.alternatives = [
+        candidate("2025") | {"material_id": "m-2025-mine", "basis": "display"}
+    ]
+    kb.preference_fails = True
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-prefer")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        have, want = shown["requests"][0]["items"]
+        done = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={
+                "picks": {have["ref"]: {"material_id": "m-2025-mine", "version_no": 1}},
+                "dropped": [want["ref"]],
+            },
+        )
+        assert done.json()["status"] == "ready", done.text
+    [(_, saved)] = [c for c in kb.calls if c[0] == "save_preference"]
+    assert saved == {
+        # 偏好按专家记、不带版本（第三轮第 8 条）
+        "consumer": f"expert:{KNOWBOT}",
+        "key": key("2025"),
+        "material_ids": ["m-2025-mine"],
+    }
+    pins = await rows(db, "select item_id from workbench_task_data order by position")
+    assert [p["item_id"] for p in pins] == ["m-bound", "m-2025-mine"]
+
+
+async def test_confirming_as_listed_writes_no_preference(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    kb = world["kb"]
+    kb.alternatives = [candidate("2025") | {"material_id": "m-2025-mine"}]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-as-listed")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        have, _want = shown["requests"][0]["items"]
+        # 选回 knowbase 挑的那一份，也不算换
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={"picks": {have["ref"]: {"material_id": "m-2025", "version_no": 1}}},
+        )
+    assert [c for c in kb.calls if c[0] == "save_preference"] == []
+
+
+async def test_the_push_and_the_sweep_never_resume_the_same_task_twice(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """独立审 10-30 第 5 条：到点查的线已经挑出这件、推送同时领下了它；到点查的线再领就
+    领不到，只有一边接着跑、只续签一次；查完放开领用期限。"""
+    kb, supply = world["kb"], world["supply"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-race")
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+    supply.status = "ready"
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    stores = workbench_stores(db)
+    waiter = DataWaiter(stores, kb, supply, now=lambda: later)
+    async with stores() as repo:
+        due = await repo.due_task_resolutions(later)  # 到点查的线先挑出来
+    assert [str(r["task_id"]) for r in due] == [task_id]
+    pushed = await waiter.claim("d-1", owner_subject=f"sub-{A}")  # 推送同时领下
+    assert len(pushed) == 1
+    async with stores() as repo:
+        async with repo.transaction():
+            assert (
+                await repo.claim_task_resolution(
+                    task_id, now=later, until=later + CLAIM_LEASE
+                )
+                is None
+            )
+    assert await waiter.sweep() == 0  # 领着的时候到点查的线让开
+    assert await waiter.claim("d-1", owner_subject=f"sub-{A}") == []  # 推送重发也让开
+    assert await waiter.check_now(pushed) == 1
+    assert len([c for c in kb.calls if c[0] == "grant_by_confirmation"]) == 1
+    [row] = await rows(
+        db, "select status, checking_until from workbench_task_resolution"
+    )
+    assert (row["status"], row["checking_until"]) == ("ready", None)
+
+
+async def _waiting(http, db, world, key_: str) -> str:  # noqa: F811
+    task_id, _, _ = await asked(http, db, world, key_)
+    await http.post(f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={})
+    world["supply"].status = "ready"
+    return task_id
+
+
+async def test_a_task_that_ends_while_renewing_hands_the_new_grant_back(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """独立审 10-30 第二轮第 3 条：续签的时候委托结束了（交还那条线可能已经按 ref 交还过）：
+    刚签的那条不钉、马上交还；knowbase 对已交还的 ref 拒签，当终态收掉。"""
+    kb, supply = world["kb"], world["supply"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id = await _waiting(http, db, world, "k-v2-ended")
+
+    async def end_it() -> None:
+        async with db() as s, s.begin():
+            await s.execute(
+                text("update workbench_tasks set state = 'CANCELLED' where id = :t"),
+                {"t": task_id},
+            )
+
+    kb.on_grant = end_it
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    waiter = DataWaiter(workbench_stores(db), kb, supply, now=lambda: later)
+    assert await waiter.sweep() == 1
+    assert ("release", "g-confirmed") in kb.calls
+    pins = await rows(db, "select item_id from workbench_task_data")
+    assert "m-2024" not in [p["item_id"] for p in pins]
+    [row] = await rows(
+        db, "select status, checking_until from workbench_task_resolution"
+    )
+    assert (row["status"], row["checking_until"]) == ("cancelled", None)
+
+
+async def test_knowbase_refusing_a_released_ref_is_taken_as_the_end(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+    kb, supply = world["kb"], world["supply"]
+    await known(db)
+    async with make_client(A) as http:
+        await _waiting(http, db, world, "k-v2-released")
+    kb.grant_error = KnowbaseRefused(409, "ref_released")
+    later = datetime.now(UTC) + timedelta(minutes=5)
+    waiter = DataWaiter(workbench_stores(db), kb, supply, now=lambda: later)
+    # 第三轮第 6 条：委托还没结束（不该交还却交还了）：停下问用户，不悄悄取消
+    assert await waiter.sweep()
+    [row] = await rows(db, "select status, detail from workbench_task_resolution")
+    assert row["status"] == "ready"
+    assert row["detail"]["reason"] == "数据服务拒绝了：ref_released"
+    assert [r["status"] for r in row["detail"]["requests"]] == ["missing"]
+    # 委托已经结束的：当终态收掉
+    async with make_client(A) as http:
+        ended = await _waiting(http, db, world, "k-v2-released-2")
+    async with db() as s, s.begin():
+        await s.execute(
+            text("update workbench_tasks set state = 'CANCELLED' where id = :t"),
+            {"t": ended},
+        )
+        # 到点查的那一刻委托还没结束（领到的那一行是旧的），续签被拒时才看到它结束了
+        await s.execute(
+            text(
+                "update workbench_task_resolution set next_check_at = now()"
+                " where task_id = :t"
+            ),
+            {"t": ended},
+        )
+    stale = await rows(
+        db,
+        """select r.*, 'RUNNING' as task_state, t.owner_actor_id
+           from workbench_task_resolution r join workbench_tasks t on t.id = r.task_id
+           where r.task_id = :t""",
+        t=ended,
+    )
+    assert await waiter.check_now(stale) == 1
+    [row] = await rows(
+        db, "select status from workbench_task_resolution where task_id = :t", t=ended
+    )
+    assert row["status"] == "cancelled"
+
+
+async def test_releasing_a_claim_only_clears_ones_own(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """第二轮第 8 条：放开时只清自己领的那一次（期限值对得上）；期限长过最坏的一次查。"""
+    await known(db)
+    async with make_client(A) as http:
+        task_id = await _waiting(http, db, world, "k-v2-unclaim")
+    assert CLAIM_LEASE >= timedelta(minutes=8)
+    now = datetime.now(UTC) + timedelta(minutes=5)
+    stores = workbench_stores(db)
+    async with stores() as repo:
+        async with repo.transaction():
+            mine = await repo.claim_task_resolution(
+                task_id, now=now, until=now + CLAIM_LEASE
+            )
+    assert mine is not None
+    async with stores() as repo:
+        async with repo.transaction():
+            await repo.release_resolution_claim(task_id, now)  # 不是我领的那一次
+    [row] = await rows(db, "select checking_until from workbench_task_resolution")
+    assert row["checking_until"] == mine["checking_until"]
+    async with stores() as repo:
+        async with repo.transaction():
+            await repo.release_resolution_claim(task_id, mine["checking_until"])
+    [row] = await rows(db, "select checking_until from workbench_task_resolution")
+    assert row["checking_until"] is None
+
+
+async def test_uploaded_then_rechecked_with_the_users_own_token(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """第二轮第 5 条：「传好了，重新查」：凭本人令牌请 knowbase 重解析，面板再取是新的。"""
+    kb = world["kb"]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-recheck")
+        done = await http.post(f"/api/workbench/tasks/{task_id}/data-requests/recheck")
+        assert done.status_code == 200, done.text
+        assert done.json()["status"] == "rechecked"
+        assert [c for c in kb.calls if c[0] == "refresh_mine"] == [
+            ("refresh_mine", "res-1")
+        ]
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert [i["status"] for i in shown["requests"][0]["items"]] == [
+            "resolved",
+            "resolved",
+        ]
+        other = await http.post(
+            f"/api/workbench/tasks/{uuid.uuid4()}/data-requests/recheck"
+        )
+        assert other.status_code == 404
+
+
+async def test_a_slow_knowfeed_does_not_hold_the_panel(
+    make_client,
+    db,  # noqa: F811
+    world,
+    monkeypatch,
+) -> None:
+    """小项：面板上的预切合整体有时限，超了照常列、不带预计。"""
+    import asyncio
+
+    import app.application.workbench.expert_data as expert_module
+
+    supply = world["supply"]
+    monkeypatch.setattr(expert_module, "PREMATCH_BUDGET_SECONDS", 0.05)
+
+    async def slow(items, conditions):  # type: ignore[no-untyped-def]
+        await asyncio.sleep(1)
+        return {"items": []}
+
+    supply.prematch = slow
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-slow")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+    assert all("prematch" not in i for i in shown["requests"][0]["items"])
+
+
+async def test_only_a_missing_required_item_makes_it_incomplete(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    """第二轮第 7 条：缺项带上是不是必需的；可选的去掉不算「数据不全」，必需的不要了、
+    照现有的做才算。"""
+    from app.domain.workbench.data_plan import short_of_required
+
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-gaps")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        _have, want = shown["requests"][0]["items"]
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={"dropped": [want["ref"]]},
+        )
+    [row] = await rows(db, "select detail from workbench_task_resolution")
+    assert row["detail"]["gaps"] == [
+        {
+            "item": "上一年比较 600519.SH 2024-01-01–2024-12-31：你没要",
+            "required": False,
+        }
+    ]
+    assert short_of_required(row["detail"]["gaps"]) is False
+
+    async with make_client(A) as http:
+        other, _, _ = await asked(http, db, world, "k-v2-gaps-2")
+        declined = await http.post(
+            f"/api/workbench/tasks/{other}/data-requests/decline"
+        )
+        assert declined.json()["status"] == "declined"
+    [row] = await rows(
+        db, "select detail from workbench_task_resolution where task_id = :t", t=other
+    )
+    assert {(g["item"], g["required"]) for g in row["detail"]["gaps"]} == {
+        ("最近一年的年报：你没要", True),
+        ("上一年比较：你没要", False),
+    }
+    assert short_of_required(row["detail"]["gaps"]) is True
+
+
+async def test_a_switched_then_dropped_item_writes_no_preference(
+    make_client,
+    db,  # noqa: F811
+    world,
+) -> None:
+    kb = world["kb"]
+    kb.alternatives = [candidate("2025") | {"material_id": "m-2025-mine"}]
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-switch-drop")
+        shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        have, want = shown["requests"][0]["items"]
+        await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={
+                "picks": {have["ref"]: {"material_id": "m-2025-mine", "version_no": 1}},
+                "dropped": [have["ref"], want["ref"]],
+            },
+        )
+    assert [c for c in kb.calls if c[0] == "save_preference"] == []

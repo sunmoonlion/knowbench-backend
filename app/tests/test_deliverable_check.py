@@ -167,3 +167,69 @@ async def test_reading_without_pairing_is_unknown_and_refusals_propagate():
     )
     with pytest.raises(AgentOffline):
         await offline.read(owner="o", directory="/p", path="x")
+
+
+async def test_the_raw_bytes_come_back_unchanged():
+    """独立审 10-30 第 2 条：写进 knowbase 的按原样字节，二进制、非 UTF-8 不改一个字节；
+    验收那边的文字读法照旧（坏字节换成替代符）。"""
+    raw = b"\xff\xfe\x00%PDF\x81"
+    service = FakeService(
+        {"content": base64.b64encode(raw).decode(), "size": len(raw), "mtime": 2}
+    )
+    reader = AgentDeliverableCheck(service, stores_with({"relay_user": "u-abc"}))
+    found = await reader.read_bytes(owner="o", directory="/w", path="a.pdf")
+    assert found is not None and (found.content, found.mtime_ms) == (raw, 2)
+    text = await reader.read(owner="o", directory="/w", path="a.pdf")
+    assert text is not None and "�" in text.text
+
+
+class Methods:
+    """按方法回答的代理：fs/digest 没有时（老的 link）回 method_not_found。"""
+
+    def __init__(self, answers):
+        self.answers, self.calls = answers, []
+
+    async def call(self, relay_user, method, params=None):
+        self.calls.append(method)
+        answer = self.answers[method]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+async def test_the_digest_is_asked_on_the_computer_and_falls_back_to_reading():
+    """第 3 条：验收认下时记 sha256：先问 link 算（fs/digest），老的 link 没有就读回来算；
+    问不到回 None、不挡验收。"""
+    import hashlib
+
+    sha = "ab" * 32
+    check = AgentDeliverableCheck(
+        Methods({"fs/digest": {"size": 3, "mtime": 1, "sha256": sha}}),
+        stores_with({"relay_user": "u"}),
+    )
+    assert await check.digest(owner="o", directory="/w", path="a.md") == sha
+    raw = "成稿".encode()
+    old = Methods(
+        {
+            "fs/digest": AgentRefused(-32601, "Method not found"),
+            "fs/readFile": {
+                "content": base64.b64encode(raw).decode(),
+                "size": len(raw),
+            },
+        }
+    )
+    check = AgentDeliverableCheck(old, stores_with({"relay_user": "u"}))
+    assert await check.digest(owner="o", directory="/w", path="a.md") == (
+        hashlib.sha256(raw).hexdigest()
+    )
+    assert old.calls == ["fs/digest", "fs/readFile"]
+    offline = AgentDeliverableCheck(
+        Methods({"fs/digest": AgentOffline("off")}), stores_with({"relay_user": "u"})
+    )
+    assert await offline.digest(owner="o", directory="/w", path="a.md") is None
+    assert (
+        await AgentDeliverableCheck(Methods({}), stores_with(None)).digest(
+            owner="o", directory="/w", path="a.md"
+        )
+        is None
+    )

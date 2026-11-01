@@ -178,11 +178,8 @@ class DelegationService:
         if await self.repo.subject_of_actor(owner_actor_id) is None:
             raise DataChoiceInvalid("this account is not known to the data service")
         try:
-            return await expert_data.prepare(
-                pinned,
-                ref=f"knowbench:{idempotency_key}"[:255],
-                user_token=user_token,
-            )
+            # 运行授权的 ref 由 prepare 在服务端生成（每件委托唯一），不用幂等钥匙拼
+            return await expert_data.prepare(pinned, user_token=user_token)
         except WorkbenchError:
             raise
         except Exception as exc:

@@ -94,6 +94,24 @@ class KnowbaseDataV2(KnowbaseClient):
         )
         return body
 
+    async def save_preference(
+        self,
+        user_token: str,
+        *,
+        consumer: str,
+        key: dict[str, Any],
+        material_ids: list[str],
+    ) -> dict[str, Any] | None:
+        """用户在确认面板上把 knowbase 挑的那份换成另一份：记成偏好（用户 × 使用者 ×
+        描述 → 资料，SDD 0043 第 3.5 节）。凭本人令牌；只是下次解析的排序输入。"""
+        _, body, _ = await self._send(
+            "PUT",
+            "/preferences",
+            user_token,
+            json={"consumer": consumer, "key": key, "material_ids": material_ids},
+        )
+        return body
+
     async def run_grant(
         self,
         user_token: str,
@@ -126,6 +144,13 @@ class KnowbaseDataV2(KnowbaseClient):
             f"/service/resolutions/{_segment(resolution_id)}",
             await self._service_token(READ),
             params=params,
+        )
+        return body
+
+    async def refresh_mine(self, user_token: str, resolution_id: str) -> dict[str, Any]:
+        """本人在场的重解析（「传好了，重新查」）：已定的不动，没定的重找；形状同服务那条。"""
+        _, body, _ = await self._send(
+            "POST", f"/resolutions/{_segment(resolution_id)}/refresh", user_token
         )
         return body
 
@@ -195,14 +220,6 @@ class KnowbaseDataV2(KnowbaseClient):
             "POST", f"/runs/{_segment(ref)}/release", await self._service_token(READ)
         )
 
-    async def grant_input_set(self, grant_id: str) -> str | None:
-        """这条运行授权钉的那组输入的编号（产出记出处用：转为数据时上游受限的不得升档）。"""
-        _, body, _ = await self._send(
-            "GET", f"/run-grants/{_segment(grant_id)}", await self._service_token(READ)
-        )
-        found = body.get("input_set_id") if isinstance(body, dict) else None
-        return str(found) if found else None
-
     # —— 服务：替用户写产出区（SDD 0043 第 2.6 节）——
 
     async def write_output(
@@ -215,28 +232,61 @@ class KnowbaseDataV2(KnowbaseClient):
         content: bytes,
         expert_id: str | None = None,
         expert_version: str | None = None,
-        input_set_id: str | None = None,
+        grant_ref: str | None = None,
+        task_started_at: str | None = None,
+        task_finished_at: str | None = None,
+        incomplete: bool = False,
     ) -> dict[str, Any]:
         """只能写进受益用户的产出区；同一次运行同名的重放回原来那份，内容不同 409。
-        回 {material_id, version_no, sha256}。"""
-        params = {
+        回 {material_id, version_no, sha256}。
+
+        上游许可的依据（独立审 10-30 两轮定）：`grant_ref` 是这件事的运行授权 ref，knowbase
+        按这个 ref 下签过的授权（含已交还、过期的）与读数留痕算升档上限，ref 下没有任何读取
+        就不设上限；不带的按「只许本人用」。回包回显认下的依据 `provenance_basis`。
+        `task_started_at`、`task_finished_at`（ISO8601）：这件委托的起止，knowbase 把这段
+        时间里受益人经 knowbench 会话授权读过的资料也算进上限（工作台 MCP 的令牌分不出
+        调用来自对话还是委托步骤，委托里的模型可能借别的对话读了数据，宁严勿松）。
+        `incomplete=true`：必需的数据缺了、用户选了照做（0043 第 3.6 节）。"""
+        params: dict[str, str] = {
             "beneficiary": beneficiary,
             "task_ref": task_ref,
             "run_ref": run_ref,
             "name": name,
         }
-        provenance = {
+        given = {
             "expert_id": expert_id,
             "expert_version": expert_version,
-            "input_set_id": input_set_id,
+            "grant_ref": grant_ref,
+            "task_started_at": task_started_at,
+            "task_finished_at": task_finished_at,
         }
-        params |= {k: v for k, v in provenance.items() if v}
+        params |= {k: v for k, v in given.items() if v}
+        if incomplete:
+            params["incomplete"] = "true"
         _, body, _ = await self._send(
             "POST",
             "/outputs",
             await self._service_token(OUTPUT),
             params=params,
             content=content,
+        )
+        return body
+
+    async def find_output(
+        self, *, beneficiary: str, task_ref: str, run_ref: str, name: str
+    ) -> dict[str, Any]:
+        """这次运行同名已经写过的那份（写的时候回了 409 `output_exists`，查回来记成已写）：
+        {material_id, version_no, sha256}。"""
+        _, body, _ = await self._send(
+            "GET",
+            "/outputs/lookup",
+            await self._service_token(OUTPUT),
+            params={
+                "beneficiary": beneficiary,
+                "task_ref": task_ref,
+                "run_ref": run_ref,
+                "name": name,
+            },
         )
         return body
 

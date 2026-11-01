@@ -97,7 +97,10 @@ async def main() -> None:
     outputs = build_output_writer(get_postgres().session_factory, settings)
     writing = asyncio.create_task(outputs.run_forever(stopping)) if outputs else None
     if writing is None:
-        logger.warning("output writer is off: relay or signing key not configured")
+        logger.warning(
+            "output writer is off: WORKBENCH_OUTPUT_WRITE_ENABLED is off,"
+            " or relay or signing key not configured"
+        )
     try:
         await runner.run_forever()
     finally:

@@ -12,13 +12,21 @@
 还是取消。委托取消了就撤需求单。knowfeed 推来需求单办完了（契约 knowfeed-supply-status/v1，
 SDD 0045 第 2.5 节）就马上查这一张，不等到点；按单号轮询留着兜底。
 
-运行授权的 ref 是 `knowbench:<幂等钥匙>`：模型经工作台读数据时，工作台按委托找到它。
+预切合（契约 knowfeed-supply-prematch/v1，0043 第 3.3 节第 1 条）：确认面板上待确认的几项
+先问 knowfeed 能不能取、许可档、预计多久；确认时回包连同可接受的条件存进 knowbase 确认的
+供给条件快照。knowfeed 没配、补采开关关着、调不通，清单照常，只是不显示预计。
+用户把 knowbase 挑的那份换成另一份，确认后凭本人令牌写回 knowbase 的偏好（0043 第 3.5 节）。
+
+运行授权的 ref 由服务端在请专家时生成（`knowbench:run:<uuid>`，每件委托唯一，记在清单那一行的
+`grant_ref`；独立审 10-30 第二轮）：签授权、续签、交还、模型经工作台读数据、写产出都用它，
+不用客户端给的幂等钥匙拼。
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
@@ -28,10 +36,16 @@ from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import PinnedPack
-from app.domain.workbench.data_plan import Plan, item_ref, plan
+from app.domain.workbench.data_plan import Plan, gap, item_ref, plan
 from app.domain.workbench.data_request import DataRequest
 from app.domain.workbench.errors import DataChoiceInvalid, WorkbenchError
 from app.domain.workbench.states import TASK_TERMINAL
+from app.domain.workbench.supply_prematch import (
+    CONDITIONS,
+    MAX_ITEMS,
+    request_items,
+    supply_snapshot,
+)
 
 log = logging.getLogger(__name__)
 
@@ -47,8 +61,27 @@ CHECK_BACKOFF = (
     timedelta(minutes=5),
 )
 OPEN_DEMAND = ("accepted", "fetching")
-# 推送领下等数据的委托后，到点查的线让开这么久（马上查没办成就由它兜底）
-CLAIM_LEASE = timedelta(minutes=2)
+# 查一件等数据的委托先领下这么久（checking_until）：到点查的线与 knowfeed 推送都先抢，
+# 抢到的才往下走，免得两边同时接着跑、多签授权；查完只放开自己领的那一次，查到一半进程停了，
+# 过了期限别人再领。期限要长过最坏的一次查：knowfeed 换令牌 20 秒 + 查单 30 秒，knowbase 换
+# 令牌 20 秒 + 重解析 45 秒 + 续签 45 秒；httpx 的超时按连接、写、读各算一次，最坏约三倍，
+# 合计约 8 分钟，取 10 分钟
+CLAIM_LEASE = timedelta(minutes=10)
+# 面板上问预切合，整体最多等这么久（每次取委托数据都问；问不到清单照常）
+PREMATCH_BUDGET_SECONDS = 5.0
+# knowbase 对已交还的 ref 拒签新授权时回的码：委托已经结束，当终态处理
+REF_RELEASED = "ref_released"
+
+
+def preference_consumer(row: dict[str, Any]) -> str:
+    """偏好按专家记、不按版本记（`expert:<id>`，去掉 `@版本`）：专家升了版，用户上次换过
+    的照样用得上（独立审 10-30；约定写在 knowbench-app contracts/README）。"""
+    return str(row["consumer"]).split("@", 1)[0]
+
+
+def new_run_ref() -> str:
+    """一件委托的运行授权 ref：服务端生成、每件唯一，只用 `[A-Za-z0-9._:-]`。"""
+    return f"knowbench:run:{uuid.uuid4()}"
 
 
 class KnowbaseData(Protocol):
@@ -63,6 +96,9 @@ class KnowbaseData(Protocol):
         self, user_token: str, resolution_id: str, needs: list[dict[str, Any]]
     ) -> dict[str, Any]: ...
     async def refresh(self, subject: str, resolution_id: str) -> dict[str, Any]: ...
+    async def refresh_mine(
+        self, user_token: str, resolution_id: str
+    ) -> dict[str, Any]: ...
     async def service_resolution(
         self, subject: str, resolution_id: str, revision: int | None = None
     ) -> dict[str, Any]: ...
@@ -71,6 +107,14 @@ class KnowbaseData(Protocol):
     ) -> dict[str, Any]: ...
     async def grant_by_confirmation(self, **kw: Any) -> dict[str, Any]: ...
     async def release_run_grant(self, grant_id: str) -> None: ...
+    async def save_preference(
+        self,
+        user_token: str,
+        *,
+        consumer: str,
+        key: dict[str, Any],
+        material_ids: list[str],
+    ) -> dict[str, Any] | None: ...
 
 
 class SupplyDemands(Protocol):
@@ -78,6 +122,9 @@ class SupplyDemands(Protocol):
     async def submit(self, **kw: Any) -> dict[str, Any]: ...
     async def get(self, demand_id: str) -> dict[str, Any]: ...
     async def cancel(self, demand_id: str) -> dict[str, Any]: ...
+    async def prematch(
+        self, items: list[dict[str, Any]], conditions: dict[str, Any]
+    ) -> dict[str, Any]: ...
 
 
 @dataclass
@@ -111,11 +158,10 @@ class ExpertData:
         )
         self.now = now
 
-    async def prepare(
-        self, pinned: PinnedPack, *, ref: str, user_token: UserToken
-    ) -> Prepared:
+    async def prepare(self, pinned: PinnedPack, *, user_token: UserToken) -> Prepared:
         """建委托之前（本人在场）：先建一张空清单，第 0 步提出的数据在上面出新修订；
-        作者挑选的数据（冻结的绑定）这时就本人签授权、钉住。"""
+        作者挑选的数据（冻结的绑定）这时就本人签授权、钉住。运行授权的 ref 这时生成。"""
+        ref = new_run_ref()
         token = await user_token()
         params = params_of()
         resolution = await self.knowbase.resolve(
@@ -204,6 +250,7 @@ class ExpertData:
         )
         if draft.problems:
             raise DataChoiceInvalid("; ".join(draft.problems))
+        switched = _switched(_scoped(latest, asked), picks or {}, dropped or [])
         detail["requests"] = [
             {**r, "picks": picks or {}, "dropped": dropped or []}
             if r.get("id") in ids
@@ -211,6 +258,8 @@ class ExpertData:
             for r in detail.get("requests") or []
         ]
         if draft.confirm:
+            # 快照用面板那次问到的（用户看到的就是它），不在确认时再同步问；改过的清单出的
+            # 新条目面板没问过，就没有这几项
             confirmed = await self.knowbase.confirm(
                 token,
                 items=[
@@ -219,6 +268,7 @@ class ExpertData:
                 task_ref=str(row["grant_ref"]),
                 resolution_id=str(row["resolution_id"]),
                 revision=int(latest["revision"]),
+                supply=supply_snapshot(_shown_prematch(detail, draft.confirm)),
             )
             supply = [
                 b["item_id"]
@@ -252,6 +302,7 @@ class ExpertData:
                 detail["incomplete"] = (
                     list(detail.get("incomplete") or []) + draft.incomplete
                 )
+                detail["gaps"] = list(detail.get("gaps") or []) + draft.gaps
                 async with repo.transaction():
                     if pins:
                         await repo.pin_task_data(task_id, pins)
@@ -266,6 +317,7 @@ class ExpertData:
                         checks=0,
                         next_check_at=self.now() + CHECK_BACKOFF[0],
                     )
+                await self._remember(token, preference_consumer(row), switched)
                 return {"status": "supplying", "waiting_for": detail["waiting_for"]}
             latest = await self.knowbase.refresh(
                 owner_subject, str(row["resolution_id"])
@@ -282,6 +334,7 @@ class ExpertData:
 
         detail["requests"] = _mark(detail, ids, "done")
         detail["incomplete"] = list(detail.get("incomplete") or []) + draft.incomplete
+        detail["gaps"] = list(detail.get("gaps") or []) + draft.gaps
         async with repo.transaction():
             if pins:
                 await repo.pin_task_data(task_id, pins)
@@ -289,6 +342,7 @@ class ExpertData:
                 task_id, revision=int(latest["revision"]), detail=detail
             )
             await Ledger(repo).resume_data(task_id)
+        await self._remember(token, preference_consumer(row), switched)
         return {"status": "ready", "added": len(pins)}
 
     async def decline_requests(
@@ -317,6 +371,16 @@ class ExpertData:
                 or [f"{label}：你没要" for label in r.get("labels") or []]
             )
         ]
+        # 照现有的接着做：缺的每一条带上是不是必需的（必需的缺了才算「数据不全」）
+        detail["gaps"] = list(detail.get("gaps") or []) + [
+            g
+            for r in open_
+            for g in (
+                (r.get("missing_gaps") or [])
+                if r.get("missing")
+                else [gap(f"{n.name}：你没要", n.required) for n in request_needs(r)]
+            )
+        ]
         async with repo.transaction():
             await repo.update_task_resolution(task_id, detail=detail)
             if row["status"] != "waiting":
@@ -335,12 +399,81 @@ class ExpertData:
             await user_token(), str(row["resolution_id"])
         )
         out: dict[str, list[dict[str, Any]]] = {}
+        needs: list[DataRequest] = []
         for r in pending:
             scoped = _scoped(latest, request_needs(r))
+            needs += request_needs(r)
             out[str(r["id"])] = [
                 {**entry, "ref": item_ref(entry)} for entry in scoped.get("items") or []
             ]
+        entries = [e for items in out.values() for e in items]
+        try:
+            matched = await asyncio.wait_for(
+                self._prematch(entries, needs), PREMATCH_BUDGET_SECONDS
+            )
+        except TimeoutError:
+            log.warning("prematch with knowfeed took too long; listing without it")
+            matched = None
+        answers = {a["ref"]: a for a in (matched or {}).get("items") or []}
+        for entry in entries:
+            if entry["ref"] in answers:
+                entry["prematch"] = answers[entry["ref"]]
         return out
+
+    async def _prematch(
+        self, entries: list[dict[str, Any]], needs: list[DataRequest]
+    ) -> dict[str, Any] | None:
+        """待确认的几项问 knowfeed（0043 第 3.3 节第 1 条）。补采没开（含 knowfeed 没配）
+        不问：那时待确认的一律「暂不能补采」，显示预计反倒误导。问不到回 None，不挡。"""
+        if not self.supply_enabled or self.supply is None:
+            return None
+        items = request_items(entries, needs)
+        if not items:
+            return None
+        answers: list[dict[str, Any]] = []
+        try:
+            for start in range(0, len(items), MAX_ITEMS):
+                found = await self.supply.prematch(
+                    items[start : start + MAX_ITEMS], dict(CONDITIONS)
+                )
+                answers += list(found.get("items") or [])
+        except Exception:  # noqa: BLE001 — 预切合只是给人看的预计，问不到清单照常
+            log.warning("prematch with knowfeed failed; listing without estimates")
+            return None
+        # 每项带上问的那条描述键（快照里看得出问的是什么）
+        asked_keys = {i["ref"]: i.get("key") for i in items}
+        answers = [{**a, "key": asked_keys.get(a.get("ref"))} for a in answers]
+        return {"contract": "knowfeed-supply-prematch/v1", "items": answers}
+
+    async def recheck(
+        self, repo: WorkbenchStore, task: dict[str, Any], user_token: UserToken
+    ) -> dict[str, Any]:
+        """「传好了，重新查」：用户在 knowbase 上传了采不来的那份，凭本人令牌请 knowbase
+        重解析（已定的不动，没定的重找），面板再取就是新的结果。"""
+        task_id = str(task["id"])
+        row = await repo.get_task_resolution(task_id)
+        pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
+        if row is None or not pending or row.get("resolution_id") is None:
+            raise DataChoiceInvalid("nothing is waiting for your confirmation")
+        fresh = await self.knowbase.refresh_mine(
+            await user_token(), str(row["resolution_id"])
+        )
+        async with repo.transaction():
+            await repo.update_task_resolution(task_id, revision=int(fresh["revision"]))
+        return {"status": "rechecked", "revision": int(fresh["revision"])}
+
+    async def _remember(
+        self, token: str, consumer: str, switched: list[tuple[dict[str, Any], str]]
+    ) -> None:
+        """换过的记成偏好（用户 × 使用者 × 描述 → 资料，0043 第 3.5 节）。只是下次解析的
+        排序输入，写不成不挡这次确认。"""
+        for key, material_id in switched:
+            try:
+                await self.knowbase.save_preference(
+                    token, consumer=consumer, key=key, material_ids=[material_id]
+                )
+            except Exception:  # noqa: BLE001 — 偏好写不成记一行
+                log.warning("could not record the preference in knowbase")
 
     async def _sign_ready(
         self,
@@ -669,6 +802,42 @@ def _scoped(resolution: dict[str, Any], needs: list[DataRequest]) -> dict[str, A
     }
 
 
+def _switched(
+    resolution: dict[str, Any],
+    picks: dict[str, dict[str, Any]],
+    dropped: list[str],
+) -> list[tuple[dict[str, Any], str]]:
+    """用户把 knowbase 挑的那份换成了另一份的（已定的条目才算「换」；有歧义的选一份不算，
+    0043 第 3.5 节「已定的换成候选里的另一份……换过的记成偏好」）：（描述键，换成的资料）。
+    同一项既换了又去掉的不算（最后没用它）。"""
+    out: list[tuple[dict[str, Any], str]] = []
+    gone = set(dropped)
+    for item in resolution.get("items") or []:
+        ref = item_ref(item)
+        pick = picks.get(ref)
+        if pick is None or ref in gone or item.get("status") != "resolved":
+            continue
+        chosen = {
+            (str(c.get("material_id")), int(c.get("version_no") or 0))
+            for c in item.get("chosen") or []
+        }
+        mine = (str(pick.get("material_id")), int(pick.get("version_no") or 0))
+        if mine not in chosen and item.get("key"):
+            out.append((dict(item["key"]), mine[0]))
+    return out
+
+
+def _shown_prematch(
+    detail: dict[str, Any], confirming: list[dict[str, Any]]
+) -> dict[str, Any] | None:
+    """面板上那次问到的预切合（`detail.prematch`，取委托数据时记下），只留这次确认的几项。"""
+    shown = detail.get("prematch") or {}
+    items = [shown[c["ref"]] for c in confirming if c.get("ref") in shown]
+    if not items:
+        return None
+    return {"contract": "knowfeed-supply-prematch/v1", "items": items}
+
+
 def _mark(detail: dict[str, Any], ids: set[str], status: str) -> list[dict[str, Any]]:
     return [
         {**r, "status": status} if r.get("id") in ids else r
@@ -719,45 +888,71 @@ class DataWaiter:
     async def sweep(self) -> int:
         async with self.stores() as repo:
             due = await repo.due_task_resolutions(self.now())
-        return await self.check_now(due)
+        handled = 0
+        for row in due:
+            # 领一件查一件：推送那边正领着的、别的进程刚领走的，这里抢不到就让开；
+            # 不先把一批都领下（领着没查的那几件会白占着期限）
+            async with self.stores() as repo:
+                async with repo.transaction():
+                    mine = await repo.claim_task_resolution(
+                        str(row["task_id"]),
+                        now=self.now(),
+                        until=self.now() + CLAIM_LEASE,
+                    )
+            if mine is not None:
+                handled += await self.check_now([mine])
+        return handled
 
     async def claim(
         self, demand_id: str, *, owner_subject: str
     ) -> list[dict[str, Any]]:
-        """knowfeed 推来这张需求单办完了（契约 knowfeed-supply-status/v1）：把等它的几件
-        领下来。领下的这段时间到点查的线不碰；马上查没办成，过了这段时间照旧由它兜底。"""
+        """knowfeed 推来这张需求单办完了（契约 knowfeed-supply-status/v1）：把等它的、眼下
+        没人在查的几件领下来。领着的时候到点查的线不碰；马上查没办成，过了期限照旧由它兜底。"""
         async with self.stores() as repo:
             async with repo.transaction():
                 return await repo.claim_demand_resolutions(
                     demand_id,
                     owner_subject=owner_subject,
+                    now=self.now(),
                     until=self.now() + CLAIM_LEASE,
                 )
 
     async def check_now(self, rows: list[dict[str, Any]]) -> int:
-        """查这几件：到点的、或推送领下的。照旧以按单号查到的为准（推送可能重发、晚到）。"""
+        """查这几件（都是领到了的：到点的、或推送领下的）。照旧以按单号查到的为准（推送
+        可能重发、晚到）。"""
         handled = 0
         for row in rows:
             try:
                 await self._check(row)
                 handled += 1
             except Exception as exc:  # noqa: BLE001 — 一件出错不挡别的
-                status = int(getattr(exc, "status", 0) or 0)
-                code = str(getattr(exc, "code", "") or type(exc).__name__)
-                if 400 <= status < 500:
-                    # knowbase、knowfeed 明说不行（确认对不上、清单不是他的……）：不再等
-                    log.warning(
-                        "data wait refused task=%s code=%s", row["task_id"], code
-                    )
-                    await self._fail(
-                        row, f"数据服务拒绝了：{code}", row.get("detail") or {}
-                    )
-                else:
-                    log.warning(
-                        "data wait check failed task=%s code=%s", row["task_id"], code
-                    )
-                    await self._later(row)
+                await self._on_error(row, exc)
+            finally:
+                await self._unclaim(row)
         return handled
+
+    async def _unclaim(self, row: dict[str, Any]) -> None:
+        """只放开自己领的那一次（期限值对得上）：过了期限别人已经领走的不碰。"""
+        mine = row.get("checking_until")
+        if mine is None:
+            return
+        try:
+            async with self.stores() as repo:
+                async with repo.transaction():
+                    await repo.release_resolution_claim(str(row["task_id"]), mine)
+        except Exception:  # noqa: BLE001 — 放不开就等期限过
+            log.warning("could not release the claim task=%s", row["task_id"])
+
+    async def _on_error(self, row: dict[str, Any], exc: Exception) -> None:
+        status = int(getattr(exc, "status", 0) or 0)
+        code = str(getattr(exc, "code", "") or type(exc).__name__)
+        if 400 <= status < 500:
+            # knowbase、knowfeed 明说不行（确认对不上、清单不是他的……）：不再等
+            log.warning("data wait refused task=%s code=%s", row["task_id"], code)
+            await self._fail(row, f"数据服务拒绝了：{code}", row.get("detail") or {})
+        else:
+            log.warning("data wait check failed task=%s code=%s", row["task_id"], code)
+            await self._later(row)
 
     async def run_forever(self, stop: asyncio.Event) -> None:
         log.info("data waiter starting interval=%ss", self.interval_seconds)
@@ -834,7 +1029,12 @@ class DataWaiter:
         detail = {
             **detail,
             "requests": [
-                {**r, "status": "missing", "missing": done.missing}
+                {
+                    **r,
+                    "status": "missing",
+                    "missing": done.missing,
+                    "missing_gaps": done.missing_gaps,
+                }
                 if r.get("id") in ids and done.missing
                 else ({**r, "status": "done"} if r.get("id") in ids else r)
                 for r in (row.get("detail") or {}).get("requests") or []
@@ -843,38 +1043,76 @@ class DataWaiter:
             "waiting_for": [],
             "incomplete": list((row.get("detail") or {}).get("incomplete") or [])
             + [i for i in done.incomplete if i not in done.missing and i not in known],
+            "gaps": list((row.get("detail") or {}).get("gaps") or [])
+            + [
+                g
+                for g in done.gaps
+                if g["item"] not in done.missing and g["item"] not in known
+            ],
         }
         revision = int(fresh["revision"])
         pins: list[dict[str, Any]] = []
+        grant_id = None
         if done.pins:
-            grant = await self.knowbase.grant_by_confirmation(
-                subject=subject,
-                confirmation_id=str(row["confirmation_id"]),
-                resolution_id=str(row["resolution_id"]),
-                revision=revision,
-                ref=str(row["grant_ref"]),
-                items=done.grant_items,
-                ttl_seconds=GRANT_TTL_SECONDS,
-            )
-            pins = _with_grant(done.pins, str(grant["grant_id"]))
+            try:
+                grant = await self.knowbase.grant_by_confirmation(
+                    subject=subject,
+                    confirmation_id=str(row["confirmation_id"]),
+                    resolution_id=str(row["resolution_id"]),
+                    revision=revision,
+                    ref=str(row["grant_ref"]),
+                    items=done.grant_items,
+                    ttl_seconds=GRANT_TTL_SECONDS,
+                )
+            except Exception as exc:
+                if getattr(exc, "code", None) != REF_RELEASED:
+                    raise
+                # knowbase 说这个 ref 已经交还、不再签：委托已经结束的当终态收掉；没结束的
+                # （不该交还却交还了）停下问用户，不悄悄取消
+                async with self.stores() as repo:
+                    state = (await repo.get_task(task_id))["state"]
+                if state in TASK_TERMINAL:
+                    await self._settle(task_id, "cancelled", row, {})
+                else:
+                    await self._fail(
+                        row, f"数据服务拒绝了：{REF_RELEASED}", row.get("detail") or {}
+                    )
+                return
+            grant_id = str(grant["grant_id"])
+            pins = _with_grant(done.pins, grant_id)
         from app.application.workbench.ledger import Ledger
 
+        kept = False
         async with self.stores() as repo:
             async with repo.transaction():
                 current = await repo.get_task_resolution(task_id, for_update=True)
-                if current is None or current["status"] != "waiting":
-                    return  # 别处已经办过（重复、乱序的检查不重复开跑）
-                if pins:
-                    await repo.pin_task_data(task_id, pins)
-                await repo.update_task_resolution(
-                    task_id,
-                    status="ready",
-                    revision=revision,
-                    detail=detail,
-                    next_check_at=None,
-                )
-                if not done.missing:
-                    await Ledger(repo).resume_data(task_id)
+                ended = (await repo.get_task(task_id))["state"] in TASK_TERMINAL
+                if current is None or current["status"] != "waiting" or ended:
+                    # 别处已经办过（重复、乱序的检查不重复开跑），或委托在续签的时候结束了
+                    # （交还那条线可能已经按 ref 交还过）：刚签的那条不钉、马上交还
+                    if ended and current is not None and current["status"] == "waiting":
+                        await repo.update_task_resolution(
+                            task_id, status="cancelled", next_check_at=None
+                        )
+                else:
+                    kept = True
+                if kept:
+                    if pins:
+                        await repo.pin_task_data(task_id, pins)
+                    await repo.update_task_resolution(
+                        task_id,
+                        status="ready",
+                        revision=revision,
+                        detail=detail,
+                        next_check_at=None,
+                    )
+                    if not done.missing:
+                        await Ledger(repo).resume_data(task_id)
+        if not kept and grant_id is not None:
+            try:
+                await self.knowbase.release_run_grant(grant_id)
+            except Exception:  # noqa: BLE001 — 交还不成，到期也自己失效
+                log.warning("could not hand back an unused grant task=%s", task_id)
 
     async def _fail(self, row: dict[str, Any], reason: str, detail: dict[str, Any]):
         """取不来了（确认过了 7 天、数据服务明说不行）：停下问用户，照现有的接着做
@@ -898,6 +1136,10 @@ class DataWaiter:
                                 "missing": [
                                     f"{label}：{reason}"
                                     for label in r.get("labels") or []
+                                ],
+                                "missing_gaps": [
+                                    gap(f"{n.name}：{reason}", n.required)
+                                    for n in request_needs(r)
                                 ],
                             }
                             if r.get("id") in ids

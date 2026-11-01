@@ -6,7 +6,7 @@
   （`{material_id, page, text}`）时，取那一页的按页文字找原话。
 
 经 knowbase 数据 MCP 读，令牌当场签、只许这一个工具；授权是这件委托的
-（`knowbench:<幂等钥匙>`），委托没钉的读不到。
+（ref 在请专家时服务端生成，记在清单那一行），委托没钉的读不到。
 """
 
 from __future__ import annotations
@@ -115,6 +115,7 @@ class RunReader:
         subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
         if subject is None:
             raise RecordsRefused("this account is not known to the data service")
+        ref = await run_ref(repo, task)
         token = self.issuer.data_token(
             subject, sandbox=READER_SANDBOX, tools=[name]
         ).token
@@ -127,7 +128,7 @@ class RunReader:
                     "method": "tools/call",
                     "params": {
                         "name": name,
-                        "arguments": {**args, "run": run_ref(task)},
+                        "arguments": {**args, "run": ref},
                     },
                 },
             )

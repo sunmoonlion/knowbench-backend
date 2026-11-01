@@ -257,3 +257,15 @@ def test_the_model_sees_only_the_fields_the_contract_lists() -> None:
     given = material(IncubationRequest.model_validate(body))
     assert given["test_report"]["cases"][0]["steps"] == CASE["steps"]  # 报告原样给模型
     assert given["data_formats"] == [FORMAT]
+
+
+def test_the_method_names_the_new_material_and_keeps_tests_out_of_the_rules() -> None:
+    """独立审 10-30 第 9 条：数据格式那行写出新带的几样；测试报告只作提议，测试的问题与
+    期望不得写进规则或验收（所有者逐字核过的那段只补这两处）。"""
+    from app.domain.workbench.packs import INCUBATE_METHOD
+
+    assert "and their media type, description and readings" in INCUBATE_METHOD
+    assert (
+        "It only informs proposals; never write a case's question or expected answer "
+        "into rules or checks." in INCUBATE_METHOD
+    )

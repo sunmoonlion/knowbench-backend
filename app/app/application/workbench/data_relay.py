@@ -5,8 +5,11 @@
 定义列出来，只把 `run` / `session` 换成工作台的 `task` / `conversation`：
 
 - 带 `task`：先核这件委托是这个用户的、专家正在做（同读项目记录），换成 knowbase 认的
-  运行授权 ref `knowbench:<幂等钥匙>`；
-- 带 `conversation`：核这段对话是他的、在 knowbase 登记过会话，换成会话编号；
+  运行授权 ref（请专家时服务端生成、记在清单那一行的 `grant_ref`）；
+- 带 `conversation`：核这段对话是他的、在 knowbase 登记过会话、眼下不是专家在做（对话的
+  方向盘在用户手里），换成会话编号。委托步骤只认 `task`：工作台 MCP 的令牌只绑用户与沙箱，
+  分不出调用的是对话还是委托步骤，所以按对话这一头认——专家正在做的那段对话拒收
+  `conversation`，免得委托绕开这件委托的授权去读会话范围（独立审 10-30 第二轮）；
 - `scope=market`、`lookup`、`describe_items` 不要运行授权（全市场公开原件由开关管）。
 
 每次调用当场签一张几分钟有效的 `knowbase-data` 令牌（只许这一个工具），原样转给
@@ -45,9 +48,15 @@ class KnowbaseDataMcp(Protocol):
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]: ...
 
 
-def run_ref(task: dict[str, Any]) -> str:
-    """这件委托在 knowbase 那边的运行授权 ref（请专家时就这么签的）。"""
-    return f"knowbench:{task['idempotency_key']}"[:255]
+async def run_ref(repo: WorkbenchStore, task: dict[str, Any]) -> str:
+    """这件委托在 knowbase 那边的运行授权 ref：请专家的是服务端生成、记在清单那一行的；
+    knowlab 测试的用例委托是 knowlab 签测试授权用的 `<run_id>:<case_id>`（带测试集的
+    用例没有清单那一行，按用例查）。都没有的（内置专家）没有运行授权，读不了用户的数据。"""
+    row = await repo.get_task_resolution(str(task["id"]))
+    ref = (row or {}).get("grant_ref") or await repo.test_case_ref(str(task["id"]))
+    if not ref:
+        raise RecordsRefused("this task has no data of the user to read")
+    return str(ref)
 
 
 def rewrite(spec: dict[str, Any]) -> dict[str, Any]:
@@ -113,7 +122,7 @@ class DataRelay:
         if name not in NO_SCOPE and args.get("scope") != "market":
             if args.get("task"):
                 working = await self.records._working(args["task"])
-                forwarded["run"] = run_ref(working)
+                forwarded["run"] = await run_ref(self.repo, working)
             elif args.get("conversation"):
                 forwarded["session"] = await self._knowbase_session(
                     args["conversation"]
@@ -148,6 +157,9 @@ class DataRelay:
         session = await self.repo.get_session(
             as_id(conversation, "conversation"), owner_actor_id=self.records.owner
         )
+        if session.get("wheel") != "user" or session.get("active_task_id"):
+            # 专家正在这段对话里做委托：读数据只认 task（这件委托的授权）
+            raise RecordsRefused("in an expert's step, give the task id, not the chat")
         found = session.get("knowbase_session_id")
         expires = session.get("knowbase_session_expires_at")
         if not found or (expires is not None and expires <= datetime.now(UTC)):

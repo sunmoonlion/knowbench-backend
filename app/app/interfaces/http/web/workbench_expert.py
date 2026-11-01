@@ -33,6 +33,7 @@ from app.domain.security import Principal
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
+from app.domain.workbench.supply_prematch import eta_of
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     CONTRACT_VERSION,
@@ -240,7 +241,8 @@ async def task_data(
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ) -> dict[str, Any]:
     """这件委托用的数据（分身）：在定数据、钉了哪几份、在等哪几项、专家提出了什么（每一样
-    解析到哪、候选有哪些）、没取到的、数据不全的。内置专家的委托回 `listed: false`。"""
+    解析到哪、候选有哪些；要去取的带 knowfeed 预切合的结果 `prematch`）、没取到的、数据
+    不全的。内置专家的委托回 `listed: false`。"""
     repo = workbench_store(session)
     try:
         await repo.get_task(task_id, owner_actor_id=_actor(principal))
@@ -248,16 +250,37 @@ async def task_data(
         raise _http(exc) from exc
     row = await repo.get_task_resolution(task_id)
     pins = await repo.list_task_data(task_id)
+    # 成稿没存进 knowbase 的写明原因（独立审 10-30 第二轮：用户在委托页看得到）
+    outputs = [
+        {"path": o["path"], "reason": o["last_error"]}
+        for o in await repo.list_task_outputs(task_id)
+        if o["status"] == "failed"
+    ]
     if row is None:
-        return {"contract_version": CONTRACT_VERSION, "listed": False}
+        return {
+            "contract_version": CONTRACT_VERSION,
+            "listed": False,
+            "outputs_not_saved": outputs,
+        }
     detail = row.get("detail") or {}
     try:
         items = await expert_data().pending_items(row, user_token)
     except Exception:  # noqa: BLE001 — 看不到候选也照样列出要了什么
         items = {}
+    shown = {
+        e["ref"]: e["prematch"]
+        for entries in items.values()
+        for e in entries
+        if e.get("prematch")
+    }
+    if shown:
+        # 面板上问到的记下：用户确认时照它进供给条件快照，不再同步问一次
+        async with repo.transaction():
+            await repo.set_resolution_prematch(task_id, shown)
     return {
         "contract_version": CONTRACT_VERSION,
         "listed": True,
+        "outputs_not_saved": outputs,
         "status": row["status"],
         # 测试委托：提出的数据由作者在 knowlab 测试页确认（SDD 0046 第三节）
         "confirm_in": "knowlab" if row.get("resolution_id") is None else "here",
@@ -273,6 +296,8 @@ async def task_data(
                 "requested_at": r.get("requested_at"),
                 "needs": r.get("needs") or [],
                 "items": items.get(str(r.get("id"))) or [],
+                # 要去取的几项一共预计多久（预切合问到了才有，0043 第 3.3 节第 2 条）
+                "eta_seconds": eta_of(items.get(str(r.get("id"))) or []),
                 "missing": r.get("missing") or [],
             }
             for r in detail.get("requests") or []
@@ -324,6 +349,31 @@ async def confirm_data_requests(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     await _publish_commands_wakeup()
+    return {"contract_version": CONTRACT_VERSION, **done}
+
+
+@router.post("/tasks/{task_id}/data-requests/recheck")
+async def recheck_data_requests(
+    task_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+) -> dict[str, Any]:
+    """「传好了，重新查」：用户去 knowbase 上传了采不来的那份，凭本人令牌请 knowbase 重解析。"""
+    repo = workbench_store(session)
+    try:
+        task = await repo.get_task(task_id, owner_actor_id=_actor(principal))
+        try:
+            done = await expert_data().recheck(repo, task, user_token)
+        except WorkbenchError:
+            raise
+        except Exception as exc:
+            translated = refusal(exc)
+            if translated is None:
+                raise
+            raise translated from None
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **done}
 
 

@@ -346,6 +346,12 @@ class Settings(BaseSettings):
     workbench_data_supply_enabled: bool = Field(
         default=False, validation_alias="WORKBENCH_DATA_SUPPLY_ENABLED"
     )
+    # 委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）。默认关：knowbase 的
+    # outputs 接口要认出处依据（grant_ref、委托起止、回显 provenance_basis）的那一版上线后
+    # 再开（交 Fable 发版时开）；关着时待写的成稿留着，不推进、不计失败次数（独立审 10-30）
+    workbench_output_write_enabled: bool = Field(
+        default=False, validation_alias="WORKBENCH_OUTPUT_WRITE_ENABLED"
+    )
 
     @field_validator("cross_app_sources_json")
     @classmethod

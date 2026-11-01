@@ -122,6 +122,21 @@ async def answer(
         raise _http(exc) from exc
 
 
+@router.post("/test-runs/{run_id}/cancel")
+async def cancel(_: Caller, svc: Service, run_id: RunId) -> JSONResponse:
+    """停下这次测试（10-30 加：作者撤回交付、平台审成不过时停平台重跑）：在跑的用例委托
+    停下、授权交还、记成取消；已经结束的回原状态。回 RunResultV1。"""
+    try:
+        result = await svc.cancel(run_id)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    # 叫醒 runner 去中断作者电脑上在跑的那一轮（同网页上停委托）
+    from app.interfaces.endpoints.workbench_routes import _publish_commands_wakeup
+
+    await _publish_commands_wakeup()
+    return _out(result)
+
+
 @router.get("/users/{subject}/computers")
 async def computers(
     _: Caller,

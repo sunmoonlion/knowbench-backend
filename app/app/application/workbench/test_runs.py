@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -221,6 +221,46 @@ def _questions_of(
     return out
 
 
+async def _stop_case_task(
+    repo: WorkbenchStore,
+    task_id: str,
+    release_grant: Callable[[str], Awaitable[None]] | None,
+) -> None:
+    """测试取消了：这条用例的委托照停委托的做法停下（作者电脑上那一轮也中断），钉的数据
+    凭的授权（测试集的测试授权）交还；knowlab 那头也会撤，这里交不成不挡（到期也自己失效）。"""
+    task = await repo.get_task(task_id)
+    if TaskState(task["state"]) not in TASK_TERMINAL:
+        await cancel_task(repo, task_id, owner_actor_id=str(task["owner_actor_id"]))
+    if release_grant is None:
+        return
+    grants = {
+        str(d["grant_id"])
+        for d in await repo.list_task_data(task_id)
+        if d.get("grant_id") and d.get("grant_released_at") is None
+    }
+    for grant_id in sorted(grants):
+        try:
+            await release_grant(grant_id)
+        except Exception:  # noqa: BLE001 — 交还不成不挡取消
+            log.warning("could not hand back a test grant task=%s", task_id)
+            continue
+        async with repo.transaction():
+            await repo.mark_grant_released(grant_id)
+
+
+async def _remove_folder(
+    repo: WorkbenchStore, folders: TestFolders | None, run: dict[str, Any]
+) -> None:
+    """删这次测试的目录（账 129），在作者那台电脑上；删不掉的，那里下一个测试开跑前还会
+    再删。"""
+    owner, _, root = place(run)
+    if folders is None or not root:
+        return
+    actor = await repo.actor_for_subject(owner)
+    if actor is not None:
+        await folders.remove(owner=actor, root=root, folder=run_folder(run))
+
+
 class KnowbotTestService:
     """契约的三个接口：受理、查状态、回答。真正往前推的是 KnowbotTestConductor。"""
 
@@ -228,10 +268,64 @@ class KnowbotTestService:
         self,
         repo: WorkbenchStore,
         *,
+        release_grant: Callable[[str], Awaitable[None]] | None = None,
+        folders: TestFolders | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.repo = repo
+        # 交还一条授权（knowbase release_run_grant）：取消测试时交还用例委托签过的
+        self.release_grant = release_grant
+        # 取消时照推进器收尾的做法删这次测试的目录（账 129）；没配会合点时为 None
+        self.folders = folders
         self.now = now
+
+    async def cancel(self, run_id: str) -> dict[str, Any]:
+        """knowlab 停下这次测试（契约 knowbot-test-run/v1 的 cancel，10-30 加：作者撤回交付、
+        平台审成不过时停平台重跑，免得接着花作者的钱）。在跑的用例委托照停委托的做法停下
+        （作者电脑上那一轮也中断），这些委托签过的授权交还，测试记成取消；已经结束的回原
+        状态（重复调幂等）。"""
+        async with self.repo.transaction():
+            run = await self.repo.get_test_run(run_id, for_update=True)
+            if run is None:
+                raise NotFound("no such test run", run_id=run_id)
+            if run["status"] in FINAL:
+                return await self.status(run_id)
+            cases = await self.repo.list_test_cases(run_id)
+            request = _request(run)
+            spent = Decimal(str(run["spent"]))
+            for row in cases:
+                if row.get("result"):
+                    continue
+                if row.get("task_id"):
+                    # 在跑的那条已经花的钱记进这次测试（推进器收结果时才加，取消了就不会再收）
+                    task = await self.repo.get_task(str(row["task_id"]))
+                    spent += Decimal(str((task.get("budget") or {}).get("used") or "0"))
+                case = next(c for c in request.cases if c.case_id == row["case_id"])
+                await self.repo.update_test_case(
+                    run_id,
+                    case.case_id,
+                    result=case_result(
+                        case=case,
+                        task=None,
+                        steps=[],
+                        artifacts={},
+                        error="cancelled by knowlab",
+                    ),
+                )
+            now = self.now()
+            await self.repo.update_test_run(
+                run_id,
+                status="cancelled",
+                spent=spent,
+                finished_at=now,
+                cleanup_after=now + KEEP,
+            )
+        tasks = [str(c["task_id"]) for c in cases if c.get("task_id")]
+        for task_id in tasks:
+            await _stop_case_task(self.repo, task_id, self.release_grant)
+        await _remove_folder(self.repo, self.folders, run)
+        log.info("knowbot test run cancelled run=%s", run_id)
+        return await self.status(run_id)
 
     async def accept(self, request: RunRequest, *, caller: str) -> dict[str, Any]:
         await self._users_computer(request)
@@ -546,9 +640,12 @@ class KnowbotTestConductor:
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         folders: TestFolders | None = None,
         reader: DeliverableReader | None = None,
+        release_grant: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         self.stores = stores
         self.now = now
+        # 开到一半测试被取消了：刚开的用例委托停下、交还它凭的测试授权
+        self.release_grant = release_grant
         # 每次测试自己的目录，开跑前建好、测完删掉（账 129）；没配会合点服务流时为 None，只分项目不建目录
         self.folders = folders
         # 经会合点读那台电脑上的成稿（SDD 0037）；没配会合点时为 None，产出里写明没读
@@ -723,9 +820,10 @@ class KnowbotTestConductor:
                         )
                     return
                 async with repo.transaction():
-                    await repo.update_test_run(
+                    if not await repo.update_test_run_if_active(
                         run_id, status="running", started_at=now, blocked_reason=None
-                    )
+                    ):
+                        return  # 刚被取消
                 run = await repo.get_test_run(run_id)
                 assert run is not None
             request = _request(run)
@@ -762,6 +860,10 @@ class KnowbotTestConductor:
         total: int,
         account: Account,
     ) -> None:
+        async with repo.transaction():
+            locked = await repo.get_test_run(run["run_id"], for_update=True)
+            if locked is None or locked["status"] not in ACTIVE:
+                return  # 刚被取消：不再开新用例
         manifest = request.manifest
         pack = knowbots.pack_from_manifest(
             manifest,
@@ -799,20 +901,27 @@ class KnowbotTestConductor:
         )
         session = await repo.get_session(session_id)
         async with repo.transaction():
-            if not made.get("queued_behind"):
-                await repo.enqueue_command(
+            # 锁住测试记录再看一次：开委托的这一会儿 knowlab 取消了（取消那头看不到这件
+            # 委托），这里马上停下、交还授权，不记进用例
+            locked = await repo.get_test_run(run["run_id"], for_update=True)
+            cancelled = locked is None or locked["status"] not in ACTIVE
+            if not cancelled:
+                if not made.get("queued_behind"):
+                    await repo.enqueue_command(
+                        session_id=session_id,
+                        sandbox_id=str(session["sandbox_id"]),
+                        kind="task.drive",
+                        payload={"task_id": made["task_id"]},
+                    )
+                await repo.update_test_case(
+                    run["run_id"],
+                    case.case_id,
+                    project_id=account.project_id,
                     session_id=session_id,
-                    sandbox_id=str(session["sandbox_id"]),
-                    kind="task.drive",
-                    payload={"task_id": made["task_id"]},
+                    task_id=made["task_id"],
                 )
-            await repo.update_test_case(
-                run["run_id"],
-                case.case_id,
-                project_id=account.project_id,
-                session_id=session_id,
-                task_id=made["task_id"],
-            )
+        if cancelled:
+            await _stop_case_task(repo, str(made["task_id"]), self.release_grant)
 
     async def _follow_case(
         self,
@@ -1276,13 +1385,14 @@ class KnowbotTestConductor:
     ) -> None:
         now = self.now()
         async with repo.transaction():
-            await repo.update_test_run(
+            if not await repo.update_test_run_if_active(
                 run["run_id"],
                 status=status,
                 error=error,
                 finished_at=now,
                 cleanup_after=now + KEEP,
-            )
+            ):
+                return  # knowlab 已经取消了：不改回别的状态（目录由取消那头删）
         # 排查不用翻库：测试怎么结束的（qwen-007 走查：出错结束时 runner 一行日志都没有）
         log.info(
             "knowbot test run finished run=%s status=%s error=%s",
@@ -1291,13 +1401,7 @@ class KnowbotTestConductor:
             error or "",
         )
         # 测完就删这次的目录（账 129），在作者那台电脑上；删不掉的，那里下一个测试开跑前还会再删
-        owner, _, root = place(run)
-        if self.folders is not None and root:
-            actor = await repo.actor_for_subject(owner)
-            if actor is not None:
-                await self.folders.remove(
-                    owner=actor, root=root, folder=run_folder(run)
-                )
+        await _remove_folder(repo, self.folders, run)
 
     async def run_forever(self, stop: Any, interval_seconds: float) -> None:
         """runner 进程里的一条线：隔一会儿推一次在跑的测试、清一次到期的产出。"""

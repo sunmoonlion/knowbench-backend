@@ -41,6 +41,16 @@ _REASONS = {
 }
 
 
+def gap(item: str, required: bool) -> dict[str, Any]:
+    """缺的一条：白话（同 incomplete 里那条）与是不是必需的。"""
+    return {"item": item, "required": bool(required)}
+
+
+def short_of_required(gaps: list[dict[str, Any]]) -> bool:
+    """「数据不全」：必需的缺了（用户选了照做）；可选的去掉或缺了不算（0043 第 3.6 节）。"""
+    return any(g.get("required") for g in gaps)
+
+
 def item_ref(item: dict[str, Any]) -> str:
     """清单里一个条目的编号：哪一样 + 描述键（同一修订里唯一，跨修订稳定）。"""
     body = json.dumps(item.get("key") or {}, sort_keys=True, ensure_ascii=False)
@@ -56,6 +66,10 @@ class Plan:
     incomplete: list[str] = field(default_factory=list)
     # 补采结束后还没取到的（也在 incomplete 里）：等数据那条线据此停下问用户
     missing: list[str] = field(default_factory=list)
+    # incomplete、missing 的每一条带上是不是必需的（{item, required}）：只有必需的缺了、
+    # 用户选了照做，产出才标「数据不全」（0043 第 3.6 节；可选的去掉或缺了不算）
+    gaps: list[dict[str, Any]] = field(default_factory=list)
+    missing_gaps: list[dict[str, Any]] = field(default_factory=list)
 
     @property
     def grant_items(self) -> list[dict[str, Any]]:
@@ -107,6 +121,7 @@ def plan(
         label = _label(need, item)
         if ref in gone:
             out.incomplete.append(f"{label}：你没要")
+            out.gaps.append(gap(f"{label}：你没要", need.required))
             continue
         status = str(item.get("status"))
         chosen = _chosen(item, picks.get(ref))
@@ -137,6 +152,7 @@ def plan(
         )
         if reason:
             out.missing.append(f"{label}：{reason}")
+            out.missing_gaps.append(gap(f"{label}：{reason}", need.required))
         if status == "not_collectable" and item.get("reason") == "no_subject":
             reason = reason or "不限主体的没找到，也补采不了"
         reason = reason or _REASONS.get(status) or str(item.get("reason") or status)
@@ -144,6 +160,7 @@ def plan(
             out.problems.append(f"{label}：{reason}")
         else:
             out.incomplete.append(f"{label}：{reason}")
+            out.gaps.append(gap(f"{label}：{reason}", need.required))
     for binding in bindings:
         key = (binding.material_id, binding.version_no)
         if key in seen:

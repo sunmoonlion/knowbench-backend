@@ -178,3 +178,29 @@ async def test_knowlab_asks_whether_the_user_has_a_model_key(client, db):  # noq
         assert (await h.get(url)).json() == {"model_key": False}
         bad = "/api/internal/v1/knowbot-runtime/users/a%20b/readiness"
         assert (await h.get(bad)).status_code == 422
+
+
+async def test_knowlab_cancels_a_test_and_again_gets_the_same(client, db):  # noqa: F811
+    """cancel（10-30 加）：走 testrun 关系；没有这次测试 404；停下记成取消，重复调幂等。"""
+    client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
+        caller="knowlab",
+        principal=None,  # type: ignore[arg-type]
+    )
+    await authors_computer(db)
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
+    ) as h:
+        assert (await h.post(f"{BASE}/knowlab-run-9999/cancel")).status_code == 404
+        assert (await h.post(BASE, json=body("knowlab-run-0300"))).status_code == 202
+        first = await h.post(f"{BASE}/knowlab-run-0300/cancel")
+        assert first.status_code == 200, first.text
+        assert first.json()["status"] == "cancelled"
+        assert first.headers["cache-control"] == "no-store"
+        again = await h.post(f"{BASE}/knowlab-run-0300/cancel")
+        assert again.json() == first.json()
+    client.dependency_overrides.pop(require_testrun_service)
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
+    ) as h:
+        no_token = await h.post(f"{BASE}/knowlab-run-0300/cancel")
+        assert no_token.status_code == 401

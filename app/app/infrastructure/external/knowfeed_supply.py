@@ -11,6 +11,10 @@ knowfeed-supply-status/v1，接收端 `interfaces/endpoints/knowfeed_status_rout
 
 证券名录（`securities`）：委托第 0 步模型「查主体」，按名字查证券代码（decisions ⑭）；
 同一个服务身份，不看补采开关。
+
+预切合（`prematch`，契约 knowfeed-supply-prematch/v1，`domain/workbench/supply_prematch.py`）：
+确认之前问待确认的几项能不能取、许可档、预计多久；同一个服务身份与 scope。它只查来源目录、
+毫秒级，确认面板每次取数据都问，所以超时设得短，问不到面板照常列、只是不显示预计。
 """
 
 from __future__ import annotations
@@ -21,9 +25,14 @@ from typing import Any
 from urllib.parse import quote
 
 import httpx
+from pydantic import ValidationError
 
 from app.application.errors.exceptions import ServiceUnavailableError
+from app.domain.workbench.supply_prematch import PrematchResponse
 from app.infrastructure.external.service_client import ServiceClient, service_relation
+
+# 预切合只查来源目录（0045 第四节「毫秒级」）：问不到不挡面板
+PREMATCH_TIMEOUT = 5.0
 
 
 class KnowfeedRefused(Exception):
@@ -89,6 +98,23 @@ class KnowfeedSupply:
         )
         return found if isinstance(found, list) else []
 
+    async def prematch(
+        self, items: list[dict[str, Any]], conditions: dict[str, Any]
+    ) -> dict[str, Any]:
+        """回包照提供方的模型核过；对不上当作调不通。"""
+        answer = await self._send(
+            "POST",
+            "/prematch",
+            json={"items": items, "conditions": conditions},
+            limit_seconds=PREMATCH_TIMEOUT,
+        )
+        try:
+            return PrematchResponse.model_validate(answer).model_dump(mode="json")
+        except ValidationError as exc:
+            raise ServiceUnavailableError(
+                "knowfeed answered off contract", code="knowfeed_unavailable"
+            ) from exc
+
     async def _send(
         self,
         method: str,
@@ -96,6 +122,7 @@ class KnowfeedSupply:
         *,
         json: Any = None,
         params: dict[str, str] | None = None,
+        limit_seconds: float | None = None,
     ) -> Any:
         relation = service_relation("knowfeed", "supply-demand", self._environ)
         if relation is None:
@@ -107,7 +134,7 @@ class KnowfeedSupply:
         token = await self._client.token()
         try:
             async with httpx.AsyncClient(
-                timeout=self._timeout,
+                timeout=limit_seconds or self._timeout,
                 follow_redirects=False,
                 transport=self._transport,
             ) as client:

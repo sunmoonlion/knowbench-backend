@@ -331,7 +331,26 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
                 {"i": OWNER},
             )
             await s.commit()
-            task = await WorkbenchRepository(s).get_task(ids["task"])
+        async with client(served) as http:
+            # 没有清单的委托没有运行授权：读不了用户的数据
+            bare = await http.post(
+                URL, json=tool("list_inputs", task=ids["task"]), headers=bearer()
+            )
+            assert "has no data" in bare.json()["result"]["content"][0]["text"]
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.insert_task_resolution(
+                    {
+                        "task_id": ids["task"],
+                        "resolution_id": "res-1",
+                        "revision": 1,
+                        "consumer": "expert:k@1",
+                        "params": {},
+                        "grant_ref": "knowbench:run:relay-1",
+                        "status": "ready",
+                    }
+                )
         async with client(served) as http:
             listed = (
                 await http.post(URL, json=rpc("tools/list"), headers=bearer())
@@ -346,9 +365,8 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
             )
             assert got.json()["result"]["structuredContent"] == {"ok": True}
             claims, message = fake_kb.seen[-1]
-            assert message["params"]["arguments"] == {
-                "run": f"knowbench:{task['idempotency_key']}"
-            }
+            # 换成请专家时服务端生成的那个 ref（不是客户端的幂等钥匙）
+            assert message["params"]["arguments"] == {"run": "knowbench:run:relay-1"}
             assert (claims["aud"], claims["sub"], claims["azp"], claims["tools"]) == (
                 "knowbase-data",
                 "casdoor-alice",
@@ -370,6 +388,24 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
                 headers=bearer(),
             )
             assert "no data session" in chat.json()["result"]["content"][0]["text"]
+            # 专家正在做的那段对话：读数据只认 task，不收 conversation
+            async with db() as s, s.begin():
+                await s.execute(
+                    text(
+                        "update workbench_sessions set wheel = 'advisor',"
+                        " knowbase_session_id = 'kb-s-9',"
+                        " knowbase_session_expires_at = now() + interval '1 hour'"
+                        " where id = :s"
+                    ),
+                    {"s": ids["chat"]},
+                )
+            held = await http.post(
+                URL,
+                json=tool("read_input", conversation=ids["chat"], material_id="m"),
+                headers=bearer(),
+            )
+            assert "give the task id" in held.json()["result"]["content"][0]["text"]
+            assert fake_kb.seen[-1][1]["params"]["arguments"].get("session") is None
             stranger = await http.post(
                 URL,
                 json=tool("list_inputs", task=str(uuid.uuid4())),
@@ -398,6 +434,8 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
             assert result["structuredContent"]["value"] == "3000"
             assert fake_kb.seen[-1][1]["params"]["name"] == "read_facts"
 
+            async with db() as s, s.begin():  # 回到没有清单的委托
+                await s.execute(text("delete from workbench_task_resolution"))
             asked = await http.post(
                 URL,
                 json=tool(

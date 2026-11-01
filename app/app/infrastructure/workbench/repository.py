@@ -1408,6 +1408,30 @@ class WorkbenchRepository:
             {**changes, "run_id": run_id},
         )
 
+    async def update_test_run_if_active(self, run_id: str, **changes: Any) -> bool:
+        """只在测试还在跑（accepted、running、waiting）时改：knowlab 已经取消的不改回别的
+        状态（推进器与取消同时到时不互相盖）。回改没改成。"""
+        allowed = {
+            "status",
+            "spent",
+            "error",
+            "started_at",
+            "finished_at",
+            "cleanup_after",
+            "blocked_reason",
+        }
+        assert set(changes) <= allowed, sorted(set(changes) - allowed)
+        sets = ", ".join(f"{k} = :{k}" for k in changes)
+        r = await self.session.execute(
+            text(
+                f"""update workbench_test_runs set {sets} where run_id = :run_id
+                    and status in ('accepted', 'running', 'waiting')
+                    returning run_id"""
+            ),
+            {**changes, "run_id": run_id},
+        )
+        return r.first() is not None
+
     async def test_run_for_task(self, task_id: str) -> dict[str, Any] | None:
         r = await self.session.execute(
             text(
@@ -1419,6 +1443,20 @@ class WorkbenchRepository:
         )
         row = r.mappings().first()
         return dict(row) if row else None
+
+    async def test_case_ref(self, task_id: str) -> str | None:
+        """测试用例委托在 knowbase 那边的授权 ref：knowlab 签这条用例的测试授权用的
+        `<run_id>:<case_id>`（knowlab knowbot_test_data.with_test_set 这么拼；契约里用例
+        不带 ref，run_id、case_id 在交来的请求里本就有）。"""
+        r = await self.session.execute(
+            text(
+                """select run_id, case_id from workbench_test_cases
+                   where task_id = :t limit 1"""
+            ),
+            {"t": task_id},
+        )
+        row = r.first()
+        return f"{row[0]}:{row[1]}"[:255] if row else None
 
     async def is_test_session(self, session_id: str) -> bool:
         r = await self.session.execute(
@@ -1556,31 +1594,84 @@ class WorkbenchRepository:
         )
         return [dict(m) for m in r.mappings().all()]
 
-    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
-        """委托结束、还没交还的运行授权（测试的由 knowlab 撤，不在里面）。"""
+    async def runs_to_release(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """委托结束、还没交还授权的那几件：按这件委托的授权 ref 一次交还（knowbase
+        `release_run`），多签的也一起撤掉。测试的委托由 knowlab 撤，不在里面（它没有
+        knowbase 的清单）。"""
         r = await self.session.execute(
             text(
-                """select distinct d.grant_id from workbench_task_data d
-                   join workbench_tasks t on t.id = d.task_id
-                   where d.grant_id is not null and d.grant_released_at is null
-                     and d.grant_kind = 'delegation'
+                """select r.task_id, r.grant_ref from workbench_task_resolution r
+                   join workbench_tasks t on t.id = r.task_id
+                   where r.grants_released_at is null and r.resolution_id is not null
+                     and r.grant_ref is not null
+                     and coalesce(t.pack_source, '') <> 'knowlab-test'
                      and t.state in ('SUCCEEDED', 'REJECTED', 'FAILED', 'CANCELLED')
+                     -- 还在等数据、或有人正领着查（可能正在续签）的先不交还，免得交还
+                     -- 之后又签出一条
+                     and r.status <> 'waiting'
+                     and (r.checking_until is null or r.checking_until <= now())
+                   -- 交还不成的往后排，别让卡住的几件总占着前面
+                   order by r.release_attempts, r.updated_at
                    limit :n"""
             ),
             {"n": limit},
         )
-        return [str(row[0]) for row in r.all()]
+        return [
+            {"task_id": str(m["task_id"]), "grant_ref": str(m["grant_ref"])}
+            for m in r.mappings().all()
+        ]
+
+    async def mark_run_released(self, task_id: str, *, note: str | None = None) -> None:
+        """交还了（或 knowbase 明说不收、放弃了：note 记为什么）。"""
+        await self.session.execute(
+            text(
+                """update workbench_task_resolution set grants_released_at = now(),
+                   release_note = :note
+                   where task_id = :t and grants_released_at is null"""
+            ),
+            {"t": task_id, "note": note[:200] if note else None},
+        )
+        await self.session.execute(
+            text(
+                """update workbench_task_data set grant_released_at = now()
+                   where task_id = :t and grant_id is not null
+                     and grant_released_at is null and grant_kind = 'delegation'"""
+            ),
+            {"t": task_id},
+        )
+
+    async def mark_grant_released(self, grant_id: str) -> None:
+        """一条授权交还了（取消测试时交还用例委托凭的测试授权）。"""
+        await self.session.execute(
+            text(
+                """update workbench_task_data set grant_released_at = now()
+                   where grant_id = :g and grant_released_at is null"""
+            ),
+            {"g": grant_id},
+        )
+
+    async def note_release_attempt(self, task_id: str) -> None:
+        await self.session.execute(
+            text(
+                """update workbench_task_resolution
+                   set release_attempts = release_attempts + 1
+                   where task_id = :t"""
+            ),
+            {"t": task_id},
+        )
 
     async def add_task_outputs(
-        self, task_id: str, *, run_ref: str, paths: list[str]
+        self, task_id: str, *, run_ref: str, files: dict[str, str | None]
     ) -> None:
-        for path in paths:
+        """files：成稿路径 → 验收认下时那份的 sha256（没记下是 None）。"""
+        for path, sha256 in files.items():
             await self.session.execute(
                 text(
-                    """insert into workbench_task_outputs (task_id, run_ref, path)
-                       values (:t, :r, :p) on conflict do nothing"""
+                    """insert into workbench_task_outputs
+                       (task_id, run_ref, path, accepted_sha256)
+                       values (:t, :r, :p, :h) on conflict do nothing"""
                 ),
-                {"t": task_id, "r": run_ref, "p": path},
+                {"t": task_id, "r": run_ref, "p": path, "h": sha256},
             )
 
     async def due_task_outputs(
@@ -1589,13 +1680,28 @@ class WorkbenchRepository:
         r = await self.session.execute(
             text(
                 """select o.*, t.owner_actor_id, t.session_id, t.profile_id,
-                          t.profile_version, t.pack_source
+                          t.profile_version, t.pack_source,
+                          t.created_at as task_created_at,
+                          t.updated_at as task_updated_at
                    from workbench_task_outputs o
                    join workbench_tasks t on t.id = o.task_id
                    where o.status = 'pending' and o.next_try_at <= :now
+                     and t.state = 'SUCCEEDED'
                    order by o.next_try_at limit :n"""
             ),
             {"now": now, "n": limit},
+        )
+        return [dict(m) for m in r.mappings().all()]
+
+    async def list_task_outputs(self, task_id: str) -> list[dict[str, Any]]:
+        """这件委托的成稿写进 knowbase 的账（委托页显示没存进去的原因）。"""
+        r = await self.session.execute(
+            text(
+                """select path, status, last_error, material_id, written_at,
+                          accepted_sha256
+                   from workbench_task_outputs where task_id = :t order by path"""
+            ),
+            {"t": task_id},
         )
         return [dict(m) for m in r.mappings().all()]
 
@@ -1615,15 +1721,6 @@ class WorkbenchRepository:
         await self.session.execute(
             text(f"update workbench_task_outputs set {sets} where id = :id"),
             {**fields, "id": output_id},
-        )
-
-    async def mark_grant_released(self, grant_id: str) -> None:
-        await self.session.execute(
-            text(
-                """update workbench_task_data set grant_released_at = now()
-                   where grant_id = :g and grant_released_at is null"""
-            ),
-            {"g": grant_id},
         )
 
     # ---------- 第四版：解析清单、等数据（SDD 0043 第三节）----------
@@ -1680,6 +1777,7 @@ class WorkbenchRepository:
             "demand_id",
             "confirmation_id",
             "deadline",
+            "checking_until",
         }
         assert set(fields) <= allowed, set(fields) - allowed
         sets, values = [], {"t": task_id}
@@ -1708,6 +1806,7 @@ class WorkbenchRepository:
                    from workbench_task_resolution r
                    join workbench_tasks t on t.id = r.task_id
                    where r.status = 'waiting' and r.next_check_at <= :now
+                     and (r.checking_until is null or r.checking_until <= :now)
                    order by r.next_check_at limit :n"""
             ),
             {"now": now, "n": limit},
@@ -1715,21 +1814,66 @@ class WorkbenchRepository:
         return [dict(m) for m in r.mappings().all()]
 
     async def claim_demand_resolutions(
-        self, demand_id: str, *, owner_subject: str, until: datetime
+        self, demand_id: str, *, owner_subject: str, now: datetime, until: datetime
     ) -> list[dict[str, Any]]:
+        """推送来了：把等这张单子、眼下没人在查的几件领下来（领用期限 checking_until）。"""
         r = await self.session.execute(
             text(
                 """update workbench_task_resolution r
-                   set next_check_at = :until, updated_at = now()
+                   set checking_until = :until, updated_at = now()
                    from workbench_tasks t, auth_user u
                    where t.id = r.task_id and u.id = t.owner_actor_id
                      and r.demand_id = :d and r.status = 'waiting'
+                     and (r.checking_until is null or r.checking_until <= :now)
                      and u.subject = :owner
                    returning r.*, t.state as task_state, t.owner_actor_id"""
             ),
-            {"d": demand_id, "owner": owner_subject, "until": until},
+            {"d": demand_id, "owner": owner_subject, "now": now, "until": until},
         )
         return [dict(m) for m in r.mappings().all()]
+
+    async def release_resolution_claim(self, task_id: str, until: datetime) -> None:
+        """只放开自己领的那一次：期限值对得上才清（过期后别人再领的不碰）。"""
+        await self.session.execute(
+            text(
+                """update workbench_task_resolution set checking_until = null
+                   where task_id = :t and checking_until = :mine"""
+            ),
+            {"t": task_id, "mine": until},
+        )
+
+    async def set_resolution_prematch(
+        self, task_id: str, answers: dict[str, Any]
+    ) -> None:
+        """面板上问到的预切合记进 detail.prematch（按条目编号）：确认时照它进快照，不再问。
+        只改这一格，不碰 detail 的别处。"""
+        await self.session.execute(
+            text(
+                """update workbench_task_resolution
+                   set detail = jsonb_set(coalesce(detail, '{}'::jsonb), '{prematch}',
+                                          cast(:p as jsonb))
+                   where task_id = :t"""
+            ),
+            {"t": task_id, "p": json.dumps(answers, ensure_ascii=False, default=str)},
+        )
+
+    async def claim_task_resolution(
+        self, task_id: str, *, now: datetime, until: datetime
+    ) -> dict[str, Any] | None:
+        """到点查的线领一件：还在等、眼下没人在查才领得到（推送那边领着就让开）。"""
+        r = await self.session.execute(
+            text(
+                """update workbench_task_resolution r
+                   set checking_until = :until, updated_at = now()
+                   from workbench_tasks t
+                   where t.id = r.task_id and r.task_id = :t and r.status = 'waiting'
+                     and (r.checking_until is null or r.checking_until <= :now)
+                   returning r.*, t.state as task_state, t.owner_actor_id"""
+            ),
+            {"t": task_id, "now": now, "until": until},
+        )
+        row = r.mappings().first()
+        return dict(row) if row else None
 
     async def subject_of_actor(self, actor_id: str) -> str | None:
         r = await self.session.execute(

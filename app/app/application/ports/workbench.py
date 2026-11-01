@@ -768,17 +768,32 @@ class WorkbenchStore(Protocol):
         """这件委托钉住的数据，按次序；没钉过就是空的。"""
         ...
 
-    async def grants_to_release(self, *, limit: int = 50) -> list[str]:
-        """委托已结束、运行授权还没交还的授权编号（测试的由 knowlab 撤，不在里面）。"""
+    async def runs_to_release(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """委托已结束、授权还没交还的：[{task_id, grant_ref}]（测试的由 knowlab 撤，不在里面）。"""
         ...
+
+    async def mark_run_released(
+        self, task_id: str, *, note: str | None = None
+    ) -> None: ...
+
+    async def note_release_attempt(self, task_id: str) -> None: ...
 
     async def mark_grant_released(self, grant_id: str) -> None: ...
 
+    async def update_test_run_if_active(self, run_id: str, **changes: Any) -> bool:
+        """只在测试还在跑时改（已取消的不改回别的状态）；回改没改成。"""
+        ...
+
+    async def test_case_ref(self, task_id: str) -> str | None:
+        """测试用例委托的授权 ref（knowlab 签测试授权用的 `<run_id>:<case_id>`）。"""
+        ...
+
     # ---------- 成稿写进 knowbase 产出区（SDD 0043 第 2.6 节）----------
     async def add_task_outputs(
-        self, task_id: str, *, run_ref: str, paths: list[str]
+        self, task_id: str, *, run_ref: str, files: dict[str, str | None]
     ) -> None:
-        """委托交付了：每份成稿记一行待写（同一次交付同一个路径只记一次）。"""
+        """委托交付了：每份成稿记一行待写，带验收认下时那份的 sha256（同一次交付同一个
+        路径只记一次）。"""
         ...
 
     async def due_task_outputs(
@@ -814,10 +829,28 @@ class WorkbenchStore(Protocol):
         ...
 
     async def claim_demand_resolutions(
-        self, demand_id: str, *, owner_subject: str, until: datetime
+        self, demand_id: str, *, owner_subject: str, now: datetime, until: datetime
     ) -> list[dict[str, Any]]:
-        """knowfeed 推来这张需求单办完了：把等它的、归这个用户的几件领下来（下次到点查
-        挪到 until），回领到的（带 task_state、owner_actor_id）。"""
+        """knowfeed 推来这张需求单办完了：把等它的、归这个用户的、眼下没人在查的几件领下来
+        （领用期限 until），回领到的（带 task_state、owner_actor_id）。"""
+        ...
+
+    async def release_resolution_claim(self, task_id: str, until: datetime) -> None:
+        """只放开自己领的那一次（期限值对得上）。"""
+        ...
+
+    async def set_resolution_prematch(
+        self, task_id: str, answers: dict[str, Any]
+    ) -> None:
+        """面板上问到的预切合（按条目编号）记进清单那一行。"""
+        ...
+
+    async def list_task_outputs(self, task_id: str) -> list[dict[str, Any]]: ...
+
+    async def claim_task_resolution(
+        self, task_id: str, *, now: datetime, until: datetime
+    ) -> dict[str, Any] | None:
+        """到点查的线领一件（还在等、眼下没人在查）；领不到回 None。"""
         ...
 
     async def subject_of_actor(self, actor_id: str) -> str | None:

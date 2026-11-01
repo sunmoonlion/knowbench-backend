@@ -6,11 +6,16 @@
 
 分身测试的每条用例跑完时，测试推进器经同一条路把这次写了的成稿读回来（SDD 0037），
 放进这条用例的产出；读不到不影响结论。
+
+验收认下成稿时还问一下那份文件的 sha256（link 的 `fs/digest`，在用户电脑上算整份，不经会合点
+搬文件；老的 link 没有这一问就读回来算）。交付后替用户写进 knowbase 产出区之前，按原始字节
+（`read_bytes`，不转文字）再算一遍比对：对不上就是交付后改过（0043 第 2.6 节「出处照实」）。
 """
 
 from __future__ import annotations
 
 import base64
+import hashlib
 import re
 from dataclasses import dataclass, replace
 from typing import Protocol
@@ -46,11 +51,33 @@ class ReadFile:
     mtime_ms: int | None  # 代理报的修改时间（毫秒）；没报就是不知道
 
 
+@dataclass(frozen=True)
+class RawFile:
+    content: bytes  # 原样的字节：写进 knowbase 用，不转文字
+    mtime_ms: int | None
+
+
 class DeliverableReader(Protocol):
     async def read(
         self, *, owner: str, directory: str | None, path: str
     ) -> ReadFile | None:
         """成稿的文字与修改时间；问不到（没配对、没有项目目录）回 None；代理拒了、离线、太大抛 WorkbenchError。"""
+        ...
+
+
+class DeliverableBytes(Protocol):
+    async def read_bytes(
+        self, *, owner: str, directory: str | None, path: str
+    ) -> RawFile | None:
+        """成稿原样的字节（同 read 的规矩）：二进制、非 UTF-8 的不改一个字节。"""
+        ...
+
+
+class DeliverableDigest(Protocol):
+    async def digest(
+        self, *, owner: str, directory: str | None, path: str
+    ) -> str | None:
+        """那份文件的 sha256；问不到回 None（不挡验收）。"""
         ...
 
 
@@ -92,11 +119,52 @@ class AgentDeliverableCheck:
     async def read(
         self, *, owner: str, directory: str | None, path: str
     ) -> ReadFile | None:
-        if not directory or not path:
+        found = await self.read_bytes(owner=owner, directory=directory, path=path)
+        if found is None:
             return None
+        return ReadFile(
+            text=found.content.decode("utf-8", errors="replace"),
+            mtime_ms=found.mtime_ms,
+        )
+
+    async def digest(
+        self, *, owner: str, directory: str | None, path: str
+    ) -> str | None:
+        relay_user = await self._relay_user(owner) if directory and path else None
+        if not relay_user or not directory:
+            return None
+        try:
+            result = await self.service.call(
+                relay_user, "fs/digest", {"path": join_path(directory, path)}
+            )
+        except AgentRefused as exc:
+            if exc.code != "method_not_found":
+                return None
+            # 老的 link 没有 fs/digest：读回来算（成稿一次读得完的才行）
+            try:
+                found = await self.read_bytes(
+                    owner=owner, directory=directory, path=path
+                )
+            except WorkbenchError:
+                return None
+            return hashlib.sha256(found.content).hexdigest() if found else None
+        except WorkbenchError:
+            return None
+        sha = str(result.get("sha256") or "")
+        return sha if re.fullmatch(r"[0-9a-f]{64}", sha) else None
+
+    async def _relay_user(self, owner: str) -> str | None:
         async with self.stores() as repo:
             identity = await repo.get_relay_identity(owner)
         relay_user = identity.get("relay_user") if identity else None
+        return str(relay_user) if relay_user else None
+
+    async def read_bytes(
+        self, *, owner: str, directory: str | None, path: str
+    ) -> RawFile | None:
+        if not directory or not path:
+            return None
+        relay_user = await self._relay_user(owner)
         if not relay_user:
             return None
         result = await self.service.call(
@@ -115,8 +183,8 @@ class AgentDeliverableCheck:
             )
         raw = base64.b64decode(str(result.get("content") or ""))
         mtime = result.get("mtime")
-        return ReadFile(
-            text=raw.decode("utf-8", errors="replace"),
+        return RawFile(
+            content=raw,
             mtime_ms=int(mtime) if isinstance(mtime, int | float) else None,
         )
 

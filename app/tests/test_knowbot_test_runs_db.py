@@ -1423,3 +1423,172 @@ async def test_step_zero_in_a_test_asks_knowlab_and_the_answer_pins_the_test_set
         assert (await status(db, run_id))["questions"] == []
     finally:
         await fake.close()
+
+
+async def test_knowlab_cancels_a_running_test(db):
+    """knowbot-test-run/v1 的 cancel（10-30 加：作者撤回交付、平台审成不过时停平台重跑）：
+    在跑的用例委托停下、凭的测试授权交还、测试记成取消；重复调回原状态、不再交还。"""
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        body = request("knowlab-run-cancel1", doc=v2_doc()).model_dump(mode="json")
+        body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
+        await accept(db, RunRequest.model_validate(body))
+        await KnowbotTestConductor(workbench_stores(db)).tick()
+        task = await one_task(db)
+        async with db() as s, s.begin():  # 这条用例已经花了 1.5
+            await s.execute(
+                text(
+                    """update workbench_tasks
+                       set budget = jsonb_set(budget, '{used}', '"1.5"') where id = :t"""
+                ),
+                {"t": task["id"]},
+            )
+        released: list[str] = []
+        folders = Folders()
+
+        async def release(grant_id: str) -> None:
+            released.append(grant_id)
+
+        async with db() as s:
+            svc = KnowbotTestService(
+                WorkbenchRepository(s), release_grant=release, folders=folders
+            )
+            done = await svc.cancel("knowlab-run-cancel1")
+        assert done["status"] == "cancelled" and done["finished_at"]
+        # 在跑的那条已经花的钱记进这次测试；照推进器收尾的做法删这次的目录
+        assert done["cost"]["spent"] == "1.500000"
+        assert [c for c, _ in folders.calls] == ["remove"]
+        [case] = done["cases"]
+        assert case["status"] == "error" and "cancelled" in str(case)
+        assert released == ["g-case-1"]
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            stopped = await repo.get_task(str(task["id"]))
+            pins = await repo.list_task_data(str(task["id"]))
+        assert stopped["state"] == "CANCELLED" or stopped["cancel_requested_at"]
+        assert all(p["grant_released_at"] is not None for p in pins)
+        async with db() as s:
+            again = await KnowbotTestService(
+                WorkbenchRepository(s), release_grant=release
+            ).cancel("knowlab-run-cancel1")
+        assert again["status"] == "cancelled" and released == ["g-case-1"]
+        async with db() as s:
+            with pytest.raises(NotFound):
+                await KnowbotTestService(WorkbenchRepository(s)).cancel(
+                    "knowlab-run-x9"
+                )
+    finally:
+        await fake.close()
+
+
+async def test_a_case_with_its_test_set_reads_its_pinned_data_through_the_relay(db):
+    """带测试集的用例委托没有清单那一行：数据中继按用例换成 knowlab 签测试授权用的 ref
+    （`<run_id>:<case_id>`），读得到钉住的那份。"""
+    from app.application.workbench.data_relay import DataRelay
+    from app.application.workbench.records import ProjectRecords
+    from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
+
+    class DataMcp:
+        def __init__(self) -> None:
+            self.seen: list[dict] = []
+
+        async def data_mcp(self, token: str, message: dict) -> dict:
+            self.seen.append(message)
+            return {"jsonrpc": "2.0", "id": message["id"], "result": {"items": [PIN]}}
+
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        body = request("knowlab-run-relay1", doc=v2_doc()).model_dump(mode="json")
+        body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
+        await accept(db, RunRequest.model_validate(body))
+        await KnowbotTestConductor(workbench_stores(db)).tick()
+        task = await one_task(db)
+        kb = DataMcp()
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            relay = DataRelay(
+                ProjectRecords(repo, owner_actor_id=str(task["owner_actor_id"])),
+                kb,
+                TokenIssuer(generate_private_key_pem()),
+                sandbox="u-test",
+            )
+            got = await relay.call(7, "list_inputs", {"task": str(task["id"])})
+        assert got["result"] == {"items": [PIN]} and got["id"] == 7
+        [message] = kb.seen
+        assert message["params"] == {
+            "name": "list_inputs",
+            "arguments": {"run": "knowlab-run-relay1:c1"},
+        }
+    finally:
+        await fake.close()
+
+
+async def test_a_cancelled_test_is_not_restarted_or_overwritten(db):
+    """第三轮第 2 条：取消了的测试推进器不再开新用例、收尾也不改回别的状态。"""
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        body = request("knowlab-run-cancel2", doc=v2_doc()).model_dump(mode="json")
+        await accept(db, RunRequest.model_validate(body))
+        async with db() as s:
+            await KnowbotTestService(WorkbenchRepository(s)).cancel(
+                "knowlab-run-cancel2"
+            )
+        conductor = KnowbotTestConductor(workbench_stores(db))
+        await conductor.tick()
+        async with db() as s:
+            count = await s.execute(text("select count(*) from workbench_tasks"))
+            assert count.scalar_one() == 0
+            repo = WorkbenchRepository(s)
+            run = await repo.get_test_run("knowlab-run-cancel2")
+            await conductor._finish(repo, run, status="passed")
+        assert (await status(db, "knowlab-run-cancel2"))["status"] == "cancelled"
+    finally:
+        await fake.close()
+
+
+async def test_a_cancel_while_a_case_is_starting_stops_that_case(db, monkeypatch):
+    """第三轮第 2 条：开用例委托的那一会儿 knowlab 取消了（取消那头还看不到这件委托）：
+    推进器锁住测试记录再看一次，刚开的委托马上停下、交还它凭的测试授权，不记进用例。"""
+    import app.application.workbench.test_runs as runs_module
+
+    fake = ScriptedAppServer([])
+    await fake.start()
+    real = runs_module.Ledger.handover
+
+    async def handover_then_cancel(self, *args, **kw):  # type: ignore[no-untyped-def]
+        made = await real(self, *args, **kw)
+        async with db() as s, s.begin():
+            await s.execute(
+                text(
+                    "update workbench_test_runs set status = 'cancelled'"
+                    " where run_id = 'knowlab-run-cancel3'"
+                )
+            )
+        return made
+
+    monkeypatch.setattr(runs_module.Ledger, "handover", handover_then_cancel)
+    released: list[str] = []
+
+    async def release(grant_id: str) -> None:
+        released.append(grant_id)
+
+    try:
+        await setup_test_computer(db, fake)
+        body = request("knowlab-run-cancel3", doc=v2_doc()).model_dump(mode="json")
+        body["cases"][0]["data"] = {"grant_id": "g-case-3", "items": [PIN]}
+        await accept(db, RunRequest.model_validate(body))
+        await KnowbotTestConductor(workbench_stores(db), release_grant=release).tick()
+        task = await one_task(db)
+        assert task["state"] == "CANCELLED" or task["cancel_requested_at"]
+        assert released == ["g-case-3"]
+        async with db() as s:
+            [case] = await WorkbenchRepository(s).list_test_cases("knowlab-run-cancel3")
+        assert case["task_id"] is None
+    finally:
+        await fake.close()

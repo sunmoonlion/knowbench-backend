@@ -80,45 +80,90 @@ async def test_service_calls_use_their_own_relation_and_cache_the_token():
 
 async def test_the_draft_goes_to_the_output_area_with_its_own_relation():
     """SDD 0043 第 2.6 节：成稿以 knowbench 的服务身份（user-data-output）写进产出区，请求体
-    就是文件，受益用户、任务、运行、名字与出处在查询参数里；输入组合从运行授权上取。"""
+    就是文件、原样的字节，受益用户、任务、运行、名字与出处在查询参数里；上游许可按这件委托
+    的授权 ref 算（独立审 10-30），数据不全的带标记；409 之后能按同样几项查回已写的那份。"""
 
     def answer(request: httpx.Request) -> httpx.Response:
         if request.method == "GET":
             return httpx.Response(
-                200, json={"grant_id": "g1", "input_set_id": "f" * 64}
+                200, json={"material_id": "m1", "version_no": 1, "sha256": "a" * 64}
             )
         return httpx.Response(
             201, json={"material_id": "m1", "version_no": 1, "sha256": "a" * 64}
         )
 
     kb, seen, oidc = client(answer)
-    assert await kb.grant_input_set("g1") == "f" * 64
+    binary = b"%PDF-1.7\n\xff\xfe\x00"
     written = await kb.write_output(
         beneficiary="user-123",
         task_ref="knowbench:task:t1",
         run_ref="t1",
-        name="成稿.md",
-        content="# 成稿".encode(),
+        name="成稿.pdf",
+        content=binary,
         expert_id="k1",
         expert_version="3",
+        grant_ref="knowbench:k-1",
+        task_started_at="2026-10-30T01:00:00+00:00",
+        task_finished_at="2026-10-30T02:00:00+00:00",
+        incomplete=True,
     )
     assert written["material_id"] == "m1"
-    got, put = seen
-    assert got.url.path == "/api/internal/v2/user-data/run-grants/g1"
-    assert got.headers["authorization"] == "Bearer svc-knowbase:user-data-read"
+    await kb.write_output(
+        beneficiary="user-123",
+        task_ref="knowbench:task:t2",
+        run_ref="t2",
+        name="成稿.md",
+        content=b"# x",
+    )
+    found = await kb.find_output(
+        beneficiary="user-123",
+        task_ref="knowbench:task:t1",
+        run_ref="t1",
+        name="成稿.pdf",
+    )
+    assert found["material_id"] == "m1"
+    put, bare, lookup = seen
     assert put.url.path == "/api/internal/v2/user-data/outputs"
     assert put.headers["authorization"] == "Bearer svc-knowbase:user-data-output"
     assert put.headers["content-type"] == "application/octet-stream"
-    assert put.content == "# 成稿".encode()
+    assert put.content == binary
     assert dict(put.url.params) == {
         "beneficiary": "user-123",
         "task_ref": "knowbench:task:t1",
         "run_ref": "t1",
-        "name": "成稿.md",
+        "name": "成稿.pdf",
         "expert_id": "k1",
         "expert_version": "3",
+        "grant_ref": "knowbench:k-1",
+        "task_started_at": "2026-10-30T01:00:00+00:00",
+        "task_finished_at": "2026-10-30T02:00:00+00:00",
+        "incomplete": "true",
     }
-    assert oidc.calls == ["knowbase:user-data-read", "knowbase:user-data-output"]
+    assert dict(bare.url.params) == {
+        "beneficiary": "user-123",
+        "task_ref": "knowbench:task:t2",
+        "run_ref": "t2",
+        "name": "成稿.md",
+    }
+    assert (lookup.method, lookup.url.path) == (
+        "GET",
+        "/api/internal/v2/user-data/outputs/lookup",
+    )
+    assert lookup.headers["authorization"] == "Bearer svc-knowbase:user-data-output"
+    assert oidc.calls == ["knowbase:user-data-output"]
+
+
+async def test_the_user_asks_for_a_fresh_resolution_with_their_own_token():
+    """「传好了，重新查」：凭本人令牌请 knowbase 重解析（形状同服务那条）。"""
+    kb, seen, oidc = client(lambda r: httpx.Response(200, json={"revision": 3}))
+    assert (await kb.refresh_mine("user-tok", "r1"))["revision"] == 3
+    [request] = seen
+    assert (request.method, request.url.path) == (
+        "POST",
+        "/api/internal/v2/user-data/resolutions/r1/refresh",
+    )
+    assert request.headers["authorization"] == "Bearer user-tok"
+    assert oidc.calls == []
 
 
 async def test_refusals_keep_knowbases_code_and_failures_are_unavailable():
