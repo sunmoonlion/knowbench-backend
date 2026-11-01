@@ -138,6 +138,9 @@ def world(reader: Reader | None = None):  # type: ignore[no-untyped-def]
         ("x ** n", {"x": Decimal("1.5"), "n": Decimal(2)}, "2.25"),
         ("-2 ** 2", {}, "-4"),
         ("x ** 0", {"x": Decimal(3)}, "1"),
+        ("1.21 ** 0.5", {}, "1.1"),
+        ("x ** n", {"x": Decimal(4), "n": Decimal("1.5")}, "8"),
+        ("4 ** -0.5", {}, "0.5"),
     ],
 )
 def test_expressions_compute_exactly_in_decimal(expression, values, expected) -> None:
@@ -150,9 +153,12 @@ def test_expressions_compute_exactly_in_decimal(expression, values, expected) ->
         ("a / b", {"a": Decimal(1), "b": Decimal(0)}, calc.ZERO_DIVISOR),
         ("__import__('os')", {}, "not allowed"),
         ("a.real", {"a": Decimal(1)}, "only"),
-        ("a ** 0.5", {"a": Decimal(4)}, "whole-number exponent"),
-        ("a ** n", {"a": Decimal(2), "n": Decimal("1.5")}, "whole-number exponent"),
+        ("a ** 0.5", {"a": Decimal(-4)}, "fractional power needs a positive base"),
+        ("0 ** 0.5", {}, "fractional power needs a positive base"),
+        ("0 ** -0.5", {}, calc.ZERO_DIVISOR),
         ("a ** 101", {"a": Decimal(2)}, "at most 100"),
+        ("2 ** 100.1", {}, "at most 100"),
+        ("2 ** -100.1", {}, "at most 100"),
         ("0 ** -1", {}, calc.ZERO_DIVISOR),
         ("0 ** 0", {}, "cannot be computed"),
         ("xs ** 2", {"xs": [Decimal(1)]}, "needs sum"),
@@ -183,6 +189,22 @@ def test_rounding_is_half_up_and_expressions_compare_by_tree() -> None:
     assert calc.same_expression("(rev - cost) / rev", "(rev-cost)/rev")
     assert not calc.same_expression("(rev - cost) / rev", "rev - cost / rev")
     assert not calc.same_expression("x", "1 +")
+
+
+def test_fractional_power_preserves_expression_precision_and_repeatability() -> None:
+    assert calc.rounded(calc.evaluate("8 ** (1 / 3)", {}), 10) == Decimal(
+        "2.0000000000"
+    )
+    # Synthetic inputs with an independently known annual rate: 1000 * 1.1**3.
+    values = {"start": Decimal(1000), "end": Decimal(1331), "years": Decimal(3)}
+    expression = "(end / start) ** (1 / years) - 1"
+    result = calc.evaluate(expression, values)
+    assert calc.rounded(result, 4) == Decimal("0.1000")
+    assert result.as_tuple() == calc.evaluate(expression, values).as_tuple()
+    assert (
+        calc.evaluate("2 ** 0.5", {}).as_tuple()
+        == calc.evaluate("2 ** 0.5", {}).as_tuple()
+    )
 
 
 def test_a_knowbot_may_compute() -> None:
@@ -298,6 +320,24 @@ async def test_computed_numbers_must_be_in_the_record_and_match() -> None:
     strict = (rule("computed", "figures", expression="(h1 - q1) / q1"),)
     v = await verdict_of(good, strict, records)
     assert not v.ok and "used 'h1 - q1'" in v.checks[-1]["detail"]
+
+
+async def test_fractional_power_is_recomputed_by_the_existing_acceptance_path() -> None:
+    records, tool = world()
+    expression = "(end / start) ** (1 / 3) - 1"
+    computed = await tool.compute(
+        "t",
+        "synthetic growth",
+        expression,
+        {"start": fact(1), "end": fact(2)},
+        places=4,
+    )
+    assert computed["value"] == "0.3572"
+    rules = (rule("computed", "growth", tolerance=0.0001, expression=expression),)
+    output = {"growth": [{"compute_id": computed["id"], "value": "0.3572"}]}
+    assert (await verdict_of(json.dumps(output), rules, records)).ok
+    output["growth"][0]["value"] = "0.4"
+    assert not (await verdict_of(json.dumps(output), rules, records)).ok
 
 
 async def test_a_computed_zero_is_a_number() -> None:
