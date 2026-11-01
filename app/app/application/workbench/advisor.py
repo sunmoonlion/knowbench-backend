@@ -502,7 +502,7 @@ class Advisor:
                 )
                 return TaskState.WAITING
             if result.environment_lost or (
-                result.error and not result.final_text and not result.timed_out
+                (result.error or result.interrupted) and not result.timed_out
             ):
                 await led.attempt_transition(
                     attempt_id,
@@ -846,9 +846,20 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
-            if result.environment_lost or (
-                result.error and not result.final_text and not result.timed_out
+            # 进度文字或已经提出的部分需求都不是“定数据成功”。
+            # 失败、超时和中断不得把解析状态改为 ready，更不能推进第 1 步。
+            if (
+                result.environment_lost
+                or result.error
+                or result.timed_out
+                or result.interrupted
+                or result.stopped_by_user
             ):
+                failure = result.error or (
+                    "data planning timed out"
+                    if result.timed_out
+                    else "data planning interrupted"
+                )
                 await led.attempt_transition(
                     attempt_id,
                     AttemptState.FAILED,
@@ -856,6 +867,8 @@ class Advisor:
                     tokens=result.tokens,
                     failure_code="environment"
                     if result.environment_lost
+                    else "timeout"
+                    if result.timed_out
                     else "turn_error",
                     retryable=True,
                 )
@@ -865,12 +878,12 @@ class Advisor:
                             task_id,
                             TaskState.WAITING,
                             waiting_reason=WaitingReason.ENVIRONMENT,
-                            reason={"error": result.error},
+                            reason={"error": failure},
                         )
                     )["state"]
                 return (
                     await led.transition(
-                        task_id, TaskState.FAILED, reason={"error": result.error}
+                        task_id, TaskState.FAILED, reason={"error": failure}
                     )
                 )["state"]
             limit = task["budget"].get("limit")
@@ -884,7 +897,7 @@ class Advisor:
                     tokens=result.tokens,
                 )
                 return TaskState.WAITING
-            # 用户在审批面停下也算定完了：提了几样就确认几样，没提就照现有的做
+            # 只有正常结束的轮次才接受数据计划；确实无需数据时允许空需求。
             await led.attempt_transition(
                 attempt_id,
                 AttemptState.COMPLETED,

@@ -14,6 +14,7 @@ import copy
 import re
 import uuid
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -345,6 +346,53 @@ async def asked(http, db, world, key_: str, propose=PROPOSED):  # noqa: F811
     turn = StepZero(db, world["kb"], propose)
     state = await Advisor(workbench_stores(db), turn, records=True).drive(task_id)
     return task_id, turn, state
+
+
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        {"error": "HTTP 400: tool call result missing", "final_text": "先查主体"},
+        {"error": "HTTP 400: tool call result missing", "final_text": None},
+        {"timed_out": True, "error": "turn timed out", "final_text": "正在查"},
+        {"interrupted": True, "final_text": "正在查"},
+        {"stopped_by_user": True, "final_text": "暂停"},
+    ],
+)
+@pytest.mark.parametrize("propose", [[], PROPOSED])
+async def test_incomplete_data_turn_never_advances_even_with_text_or_proposals(
+    make_client,
+    db,
+    world,
+    monkeypatch,
+    outcome,
+    propose,
+):
+    original = StepZero.run_turn
+
+    async def failed(self, thread_id, text_, *, timeout=0):  # noqa: ASYNC109
+        await original(self, thread_id, text_, timeout=timeout)
+        return TurnResult(
+            turn_id="failed-turn", tokens={}, cost=Decimal("0.01"), **outcome
+        )
+
+    monkeypatch.setattr(StepZero, "run_turn", failed)
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, state = await asked(http, db, world, "k-failed-data-turn", propose)
+    assert state == "FAILED"
+    [task] = await rows(db, "select * from workbench_tasks where id=:t", t=task_id)
+    assert task["current_step"] == 0
+    [attempt] = await rows(
+        db, "select * from workbench_attempts where task_id=:t", t=task_id
+    )
+    assert attempt["status"] == "FAILED"
+    async with db() as s:
+        repo = workbench_store(s)
+        resolution = await repo.get_task_resolution(task_id)
+        assert resolution["status"] != "ready"
+        events = await repo.list_events(session_id=str(task["session_id"]))
+        assert not any(e["type"] == "step/accepted" for e in events)
+    assert not world["supply"].submitted
 
 
 async def test_asking_lists_nothing_and_step_zero_proposes_the_data(

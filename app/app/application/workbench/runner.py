@@ -439,14 +439,16 @@ class SandboxLink:
                     if w["error"] == "execution environment disconnected":
                         w["error"] = None
             return
-        if method == "error":
-            for w in self.turn_waiters.values():
-                w["error"] = str(params.get("message") or params)
-            return
         w = self.turn_waiters.get(turn_id) if turn_id else None
-        if w is None:
+        if w is None or thread_id_of(params) != w["thread_id"]:
             return
-        if method == "item/completed":
+        if method == "error":
+            # 0.155.1 的错误通知带 threadId/turnId/error/willRetry。
+            # 重试中的错误仍落事件账，但不污染最终成功，也不波及同沙箱的其他会话。
+            if not params.get("willRetry"):
+                error = params.get("error") or {}
+                w["error"] = str(error.get("message") or "turn error")
+        elif method == "item/completed":
             item = params.get("item") or {}
             if item.get("type") == "agentMessage" and item.get("text"):
                 w["text"] = item["text"]
@@ -456,9 +458,14 @@ class SandboxLink:
             w["reported"] = True
         elif method == "turn/completed":
             turn = params.get("turn") or {}
-            if turn.get("status") not in (None, "completed") and not w.get("error"):
-                w["error"] = f"turn {turn.get('status')}"
-                w["interrupted"] = turn.get("status") == "interrupted"
+            w["interrupted"] = turn.get("status") == "interrupted"
+            if turn.get("status") not in (None, "completed"):
+                error = turn.get("error") or {}
+                w["error"] = str(
+                    error.get("message")
+                    or w.get("error")
+                    or f"turn {turn.get('status')}"
+                )
             if not w["future"].done():
                 w["future"].set_result(True)
 
