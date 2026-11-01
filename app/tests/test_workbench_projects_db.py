@@ -127,6 +127,22 @@ async def test_a_project_is_a_folder_under_a_workspace(db):
     assert listed[1]["conversations"] == 0
 
 
+async def test_projects_on_a_removed_machine_stay_listed_with_its_name(db):
+    """账 179 的另一半：机器移除后项目还在列表里，机器名照显示、算离线；少了这两个字段前端整份清单校验不过。"""
+    env, _ = await machine(db)
+    created = await project(db, env, "maotai")
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            await repo.set_environment_status(env, "offline")
+            await repo.remove_environment(env, owner_actor_id=OWNER)
+    async with db() as s:
+        listed = await ProjectService(WorkbenchRepository(s)).listing(owner_actor_id=OWNER)
+    assert [p["title"] for p in listed] == [created["title"]]
+    assert listed[0]["environment_name"] == "laptop"
+    assert listed[0]["online"] is False
+
+
 @pytest.mark.parametrize("path", ["../elsewhere", "/etc", "a/../b", "C:\\x"])
 async def test_a_project_cannot_leave_its_workspace(db, path):
     """AT-INV-05"""
