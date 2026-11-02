@@ -13,7 +13,12 @@ from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
-from app.application.workbench.catalog import PinnedPack, pack_for_task, pinned_pack
+from app.application.workbench.catalog import (
+    PinnedPack,
+    PinnedTestCatalog,
+    pack_for_task,
+    pinned_pack,
+)
 from app.domain.workbench.errors import (
     BudgetExhausted,
     DataChoiceInvalid,
@@ -125,7 +130,7 @@ class Ledger:
         tenant: str = "default",
         profile_version: str | None = None,
         expert_pack_version: str | None = None,
-        snapshot: PinnedPack | None = None,
+        snapshot: PinnedPack | PinnedTestCatalog | None = None,
         pins: list[dict[str, Any]] | None = None,
         resolution: dict[str, Any] | None = None,
     ) -> dict[str, Any]:

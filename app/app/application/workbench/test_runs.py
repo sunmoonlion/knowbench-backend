@@ -39,7 +39,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
-from app.application.workbench.catalog import SOURCE_TEST, PinnedPack
+from app.application.workbench.catalog import SOURCE_TEST, PinnedPack, PinnedTestCatalog
 from app.application.workbench.deliverable_check import (
     DeliverableReader,
     DeliverableTooLarge,
@@ -99,6 +99,25 @@ KEEP_OUTPUTS = timedelta(
     days=30
 )  # 取好的成稿与交回物留 30 天，knowlab 早取走了（SDD 0037）
 NO_KNOWBOT = "00000000-0000-0000-0000-000000000000"  # 草稿还没有分身 id
+
+
+def _test_snapshot(request: RunRequest) -> PinnedPack | PinnedTestCatalog:
+    manifest = request.manifest
+    digest = knowbots.manifest_digest(manifest)
+    if manifest.get("schema") == knowbots.MANIFEST_SCHEMA_V3:
+        catalog = knowbots.catalog_from_manifest(
+            manifest,
+            knowbot_id=NO_KNOWBOT,
+            version=str(manifest.get("version")),
+        )
+        return PinnedTestCatalog(catalog, digest)
+    pack = knowbots.pack_from_manifest(
+        manifest,
+        knowbot_id=NO_KNOWBOT,
+        version=str(manifest.get("version")),
+        profile=trial_profile_id(request.run_id),
+    )
+    return PinnedPack(pack=pack, digest=digest, source=SOURCE_TEST)
 
 
 @dataclass(frozen=True)
@@ -276,6 +295,7 @@ class KnowbotTestService:
         *,
         release_grant: Callable[[str], Awaitable[None]] | None = None,
         folders: TestFolders | None = None,
+        dynamic_methods: bool = False,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.repo = repo
@@ -283,6 +303,9 @@ class KnowbotTestService:
         self.release_grant = release_grant
         # 取消时照推进器收尾的做法删这次测试的目录（账 129）；没配会合点时为 None
         self.folders = folders
+        # Internal integration capability only. Production bootstrap deliberately
+        # keeps this closed until author/sandbox acceptance; callers cannot set it.
+        self.dynamic_methods = dynamic_methods
         self.now = now
 
     async def cancel(self, run_id: str) -> dict[str, Any]:
@@ -344,12 +367,17 @@ class KnowbotTestService:
                 )
             return await self.status(request.run_id)
         manifest = request.manifest
-        knowbots.pack_from_manifest(  # 不合格抛 KnowbotInvalid（422），不受理
-            manifest,
-            knowbot_id=NO_KNOWBOT,
-            version=str(manifest.get("version")),
-            profile=trial_profile_id(request.run_id),
-        )
+        if (
+            manifest.get("schema") == knowbots.MANIFEST_SCHEMA_V3
+            and not self.dynamic_methods
+        ):
+            knowbots.pack_from_manifest(
+                manifest,
+                knowbot_id=NO_KNOWBOT,
+                version=str(manifest.get("version")),
+                profile=trial_profile_id(request.run_id),
+            )
+        _test_snapshot(request)  # Strict catalog, tools, policy and binding checks.
         # 作者自己出钱，上限是这次请求里的（SDD 0046 第三节，decisions ⑯）
         limit = Decimal(request.budget.limit)
         async with self.repo.transaction():
@@ -870,13 +898,7 @@ class KnowbotTestConductor:
             locked = await repo.get_test_run(run["run_id"], for_update=True)
             if locked is None or locked["status"] not in ACTIVE:
                 return  # 刚被取消：不再开新用例
-        manifest = request.manifest
-        pack = knowbots.pack_from_manifest(
-            manifest,
-            knowbot_id=NO_KNOWBOT,
-            version=str(manifest.get("version")),
-            profile=trial_profile_id(request.run_id),
-        )
+        snapshot = _test_snapshot(request)
         per_case = (Decimal(request.budget.limit) / total).quantize(
             Decimal("0.01"), rounding=ROUND_DOWN
         )
@@ -893,15 +915,13 @@ class KnowbotTestConductor:
                     "test-" + trial_profile_id(request.run_id)[13:] + "-" + case.case_id
                 )[:128],
                 session_id=session_id,
-                profile_id=pack.profile_id,
+                profile_id=trial_profile_id(request.run_id),
                 original_input={"text": case.input.question},
                 budget_limit=per_case if per_case > 0 else None,
                 client_context={"entry": "knowbot-test", "run_id": request.run_id},
             ),
             owner_actor_id=account.actor_id,
-            snapshot=PinnedPack(
-                pack=pack, digest=knowbots.manifest_digest(manifest), source=SOURCE_TEST
-            ),
+            snapshot=snapshot,
             pins=case_pins(case.data) if case.data else None,
             resolution=_test_planning(request, case),
         )

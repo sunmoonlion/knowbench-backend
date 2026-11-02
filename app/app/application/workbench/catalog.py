@@ -14,6 +14,7 @@ from app.application.ports.workbench import KnowmartSummoner, WorkbenchStore
 from app.application.workbench.plan_receipts import catalog_for_task
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import ExpertNotReady, KnowbotInvalid, NoSuchExpert
+from app.domain.workbench.method_catalog import MethodCatalog
 from app.domain.workbench.packs import ExpertPack, find_pack
 
 SOURCE_BUILTIN = "builtin"
@@ -39,6 +40,21 @@ class PinnedPack:
         """建委托时写进委托的三列。"""
         return {
             "pack_source": self.source,
+            "pack_digest": self.digest,
+            "pack_snapshot": self.pack.model_dump(mode="json"),
+        }
+
+
+@dataclass(frozen=True)
+class PinnedTestCatalog:
+    """Validated author test catalog, never a marketplace pin or fixed workflow."""
+
+    pack: MethodCatalog
+    digest: str
+
+    def task_columns(self) -> dict[str, Any]:
+        return {
+            "pack_source": SOURCE_TEST,
             "pack_digest": self.digest,
             "pack_snapshot": self.pack.model_dump(mode="json"),
         }

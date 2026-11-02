@@ -197,3 +197,26 @@ request_cancel 和实际构造器；原日志 /tmp/luna-proposal-race-first.txt 
 远程成功但回包丢失/本地落库前退出仍可能使重试收到 need_key_taken；没有实现操作
 收据与自动对账，不声称跨服务 exactly-once。用户确认/修改与新提采同时发生的完整
 合并仍是下一恢复单元。没有修改线上采单、保底专家、qwen 发布候选或 Wind 预算。
+
+
+## 2026-11-02 WP-10：受控动态孵化受理与完整执行链
+
+KnowbotTestService 增加默认关闭的构造期联调能力 dynamic_methods，生产 bootstrap
+不传此选项，普通 API 请求不能开门，商城 pack_from_manifest 仍拒绝 v3。受控受理
+先校验目录/引用/策略，再写既有测试表；Conductor 从已接受请求重建只读测试目录，
+Ledger 钉为 knowlab-test，复用实际 Runner/规划/Attempt/验收和多成果回收。
+没有新的执行器、HTTP 字段、配置开关或数据库迁移。关闭新受理不影响已有请求幂等
+读取与恢复；取消用原取消链，开跑前取消后不建任务。
+
+新增 7 项隔离数据库测试，不使用 SQL 改任务快照；实际编译的非财务引用目录在同一
+正式流程选择两步/三步计划，核最终别名、方法版本、任务摘要与已验成果。覆盖默认
+关闭、幂等、取消，以及摘要/定义/编译器篡改入库前拒绝。回复来自脚本 AppServer，
+并非真实付费模型或金融内容验证。固定测试、Ledger 和动态多成果回归合计 52 passed，
+72.89 秒，/tmp/luna-incubation-regression.log。ruff/pyright 通过，日志
+/tmp/luna-incubation-{ruff,pyright}.log。编译覆盖修正带来的两份跨端合成快照已更新，
+此前运行侧相关八文件 111 passed（/tmp/luna-coverage-runtime-regression.log）。
+
+本轮没有重复跑后端全量；上述是针对实际改动的回归。没有发布、开启线上 v3、修改
+本人暂停采单或新增 Wind 调用。下一步仍需真实作者/沙箱联合验收才决定生产准入。
+回退应用无需回退 schema，保留测试及任务记录；默认关闭只控制新受理，不能删除
+已受理任务的快照来回退。agy 财务内容继续待下一轮交回，不将测试夹具正式入库。
