@@ -1570,6 +1570,16 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         "Use a service's advertised schema for source_query in request_data. Supplier responses "
         "are other_text/text evidence; dates and requested fields go in query arguments. "
         "Do not substitute an excerpt or link for a required annual report PDF.",
+        "- Match reading to downstream tools: original is the source file, pages is "
+        "page-indexed text, text is body text, and table is extracted facts. A PDF or "
+        "body-text reading does not imply that query_facts/raw fact refs exist. If a "
+        "selected step uses compute, request the supported fact-producing reading "
+        "(table for report extraction) as well as any original/pages evidence it needs. "
+        "Check actual refs before calculating; supplier text is not automatically "
+        "numeric fact rows, and page numbers are not compute inputs.",
+        "- Respect the author's conditional scope: do not request forecast-only "
+        "inputs for a question that does not need forecasting unless the author's "
+        "method explicitly requires that analysis.",
         "- If the question needs no data, propose nothing.",
         "- End the turn with one sentence on what you proposed and why.",
     ]

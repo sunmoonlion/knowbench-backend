@@ -285,3 +285,16 @@ each_has.non_empty_keys/unique_by 检查非空字段和联合唯一性。没有�
 ruff、pyright 通过。运行证据 /tmp/kimi-method-runtime-tests.txt；未用生产数据或 Wind。
 父仓需同步 dynamic-methods v1/v2 schema，knowlab 同步 consumer lock。
 回退应同时回退依赖扩展的候选方法版本和编译/UI，不删历史任务或覆盖历史快照。
+
+
+## 2026-11-03 旧 waiting 不能默认缺数续跑
+
+旧解析 waiting 没有可证的当前采集执行状态时，确认路径拒绝推进并要求重新核对。
+用户显式去掉条目仍尊重其决定；实际补采结束 after_supply 的缺项仍走原交人路径。
+定数据提示区分 original/pages/text/table：文字不等于事实编号；compute 的上游需
+相应事实读法，按作者条件和本题范围提数据，不机械加预测数据。
+52 项规划/实际 HTTP/隔离 DB 回归通过；另新增 HTTP 负例 1 passed：旧 waiting
+确认返回422、无签新授权/无 demand、任务仍 WAITING/DATA；解析订正后确认正常派单。
+ruff/pyright 通过。没有改旧任务成功状态或冻结验收；旧专家缺数值验收另需作者新版。
+
+独立热修复以 #58 为基线，仅移植上述修复；原开发提交 6ef1211。

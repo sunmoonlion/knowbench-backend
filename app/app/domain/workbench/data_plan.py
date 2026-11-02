@@ -36,7 +36,7 @@ _REASONS = {
     "not_collectable": "采不来，要本人到 knowbase 上传",
     "unusable": "这份资料不能用（已禁用或许可不允许）",
     "ambiguous": "有几份对得上，要选一份",
-    "waiting": "正在取这一份，稍后再请",
+    "waiting": "采集状态尚未核实，请重新核对采单",
     "to_confirm": "暂不能补采",
 }
 
@@ -135,6 +135,10 @@ def plan(
                 if key not in seen:
                     seen.add(key)
                     out.pins.append(pin)
+            continue
+        if status == "waiting" and not after_supply:
+            # 旧解析可能只有确认记录、根本没有 demand；不能据此跳过补采或默认缺数照做。
+            out.problems.append(f"{label}：{_REASONS['waiting']}")
             continue
         if status == "to_confirm" and supply_enabled and not after_supply:
             out.confirm.append(

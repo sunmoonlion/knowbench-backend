@@ -218,3 +218,17 @@ def test_anything_may_go_and_gaps_are_only_recorded():
         ]
     }
     assert plan(anyone, NEEDS[:1]).incomplete == ["年报：不限主体的没找到，也补采不了"]
+
+
+@pytest.mark.parametrize("supply_enabled", [True, False])
+def test_legacy_waiting_is_not_silently_accepted_as_incomplete(supply_enabled):
+    item = entry("waiting")
+    result = plan({"items": [item]}, NEEDS, supply_enabled=supply_enabled)
+    assert result.problems and "重新核对采单" in result.problems[0]
+    assert result.incomplete == [] and result.pins == [] and result.confirm == []
+    # Explicitly dropping the item remains the user's decision.
+    dropped = plan({"items": [item]}, NEEDS, dropped=[item_ref(item)])
+    assert not dropped.problems and dropped.gaps[0]["required"]
+    # A tracked supply operation has ended: ask about the missing result.
+    ended = plan({"items": [item]}, NEEDS, after_supply=True)
+    assert ended.missing and ended.missing_gaps[0]["required"]

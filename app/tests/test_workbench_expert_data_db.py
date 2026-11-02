@@ -1460,3 +1460,47 @@ async def test_missing_data_can_be_reviewed_and_retried_in_the_same_task(
         assert second["idempotency_key"] != first["idempotency_key"]
         assert (await http.post(path + "/confirm", json={})).status_code == 422
         assert len(supply.submitted) == 2
+
+
+async def test_legacy_confirmation_waiting_cannot_resume_without_a_demand(
+    make_client,
+    db,
+    world,  # noqa: F811
+):
+    await known(db)
+    kb, supply = world["kb"], world["supply"]
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "legacy-confirmation-only")
+        missing = next(
+            i for i in kb.revisions[-1]["items"] if i["status"] == "to_confirm"
+        )
+        missing["status"] = "waiting"
+        grants_before = len([c for c in kb.calls if c[0] == "run_grant"])
+        response = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert response.status_code == 422
+        assert "重新核对采单" in response.text
+        assert not supply.submitted
+        assert len([c for c in kb.calls if c[0] == "run_grant"]) == grants_before
+        [task] = await rows(
+            db,
+            "select state, waiting_reason from workbench_tasks where id = :t",
+            t=task_id,
+        )
+        assert (task["state"], task["waiting_reason"]) == ("WAITING", "DATA")
+        [data] = await rows(
+            db,
+            "select demand_id, detail from workbench_task_resolution where task_id = :t",
+            t=task_id,
+        )
+        assert data["demand_id"] is None
+        assert data["detail"]["requests"][0]["status"] == "pending"
+        # Once a new provider resolution stops mistaking confirmation for progress,
+        # the same explicit confirmation goes through the real demand submit path.
+        missing["status"] = "to_confirm"
+        response = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert response.status_code == 200 and response.json()["status"] == "supplying"
+        assert len(supply.submitted) == 1
