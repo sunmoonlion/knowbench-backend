@@ -349,3 +349,19 @@ text_of 不再 normalize 导致输出受外部 Decimal context 精度截断。
 52 项规划/实际 HTTP/隔离 DB 回归通过；另新增 HTTP 负例 1 passed：旧 waiting
 确认返回422、无签新授权/无 demand、任务仍 WAITING/DATA；解析订正后确认正常派单。
 ruff/pyright 通过。没有改旧任务成功状态或冻结验收；旧专家缺数值验收另需作者新版。
+
+
+## 2026-11-03 第二轨证据与文件交付联调回归
+
+新增 test_method_evidence_delivery_db.py 与 test_source_query_delivery_db.py。
+动态计划选择既定方法→真实RunReader签名/任务grant校验→真实compute事件→
+sourced/computed/quoted/covers验收→实际临时Markdown文件→底稿投影→handback。
+合成模型/供应商端口，真实隔离数据库与临时文件；不是生产Wind/财务专家业务验收。
+正常案例通过；计算值/原值篡改、假引文、空引文、明确缺文件均按作者一次返工后停下，
+不生成最终成果与handback。已有软文件检查的“无法核实”情况未改，不声称所有通道离线都硬失败。
+供应商source_query从request_data到HTTP确认/需求下发/交付重解析贯通；模型伪造request_id
+不被接受；确认前无提交；成功钉text读法后续跑，失败显示missing，不偷偷再次查询。
+最终新增8项通过（13.44s），关联MCP/方法/供应商回归50项通过（68.30s，含新增中6项）；
+ruff和pyright通过。原始输出 /tmp/luna-second-track-evidence-final.log 与
+/tmp/luna-second-track-evidence-chain.log。初期测试夹具必需字段/状态断言纠正不计产品修复。
+只加测试，生产代码/契约不变；qwen本次发布候选不动。专家v2仍待编译修复发布后测试交付。
