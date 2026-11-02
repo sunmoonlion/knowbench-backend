@@ -506,6 +506,11 @@ async def test_parallel_remote_proposals_do_not_overwrite_a_successful_request(
     [
         {"error": "HTTP 400: tool call result missing", "final_text": "先查主体"},
         {"error": "HTTP 400: tool call result missing", "final_text": None},
+        {
+            "error": "data tools unavailable",
+            "platform_failure": True,
+            "final_text": None,
+        },
         {"timed_out": True, "error": "turn timed out", "final_text": "正在查"},
         {"interrupted": True, "final_text": "正在查"},
         {"stopped_by_user": True, "final_text": "暂停"},

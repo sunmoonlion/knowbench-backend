@@ -13,6 +13,7 @@ import logging
 import secrets
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import (
@@ -34,6 +35,10 @@ from app.application.workbench.execution_plan import (
 from app.application.workbench.expert_data import data_session_note
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_tools import bind_turn, capture_attempt
+from app.application.workbench.runtime_tools import (
+    declared_data_tools,
+    unavailable_data_tools,
+)
 from app.domain.workbench.deliverables import changed_paths
 from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
 from app.domain.workbench.memory import memory_note
@@ -489,6 +494,7 @@ class SandboxLink:
         plan = await self.runner.turn_plan(thread_id=thread_id, expert=True)
         await self.announce(thread_id, plan)
         async with self.runner.stores() as repo:
+            required_data = await declared_data_tools(repo, thread_id)
             expected_attempt = await capture_attempt(repo, thread_id)
             if expected_attempt is not None:
                 attempt = await repo.get_attempt(expected_attempt[1])
@@ -498,6 +504,16 @@ class SandboxLink:
                         sandboxPolicy={"type": "readOnly", "networkAccess": False},
                         approvalPolicy="never",
                     )
+        tool_error = await unavailable_data_tools(client, thread_id, required_data)
+        if tool_error:
+            return TurnResult(
+                turn_id=None,
+                final_text=None,
+                tokens={},
+                cost=Decimal("0"),
+                error=tool_error,
+                platform_failure=True,
+            )
         result = await client.request(
             "turn/start",
             {

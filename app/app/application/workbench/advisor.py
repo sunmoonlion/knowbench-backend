@@ -661,6 +661,8 @@ class Advisor:
                     turn_id=result.turn_id,
                     failure_code="environment"
                     if result.environment_lost
+                    else PLATFORM_FAILURE
+                    if result.platform_failure
                     else "turn_error",
                     retryable=True,
                 )
@@ -676,7 +678,12 @@ class Advisor:
                     )["state"]
                 return (
                     await led.transition(
-                        task_id, TaskState.FAILED, reason={"error": result.error}
+                        task_id,
+                        TaskState.FAILED,
+                        reason={
+                            "error": result.error,
+                            "platform": result.platform_failure,
+                        },
                     )
                 )["state"]
             declined = out_of_scope(result.final_text) if intake else None
@@ -993,6 +1000,8 @@ class Advisor:
                     if result.environment_lost
                     else "timeout"
                     if result.timed_out
+                    else PLATFORM_FAILURE
+                    if result.platform_failure
                     else "turn_error",
                     retryable=True,
                 )
@@ -1007,7 +1016,9 @@ class Advisor:
                     )["state"]
                 return (
                     await led.transition(
-                        task_id, TaskState.FAILED, reason={"error": failure}
+                        task_id,
+                        TaskState.FAILED,
+                        reason={"error": failure, "platform": result.platform_failure},
                     )
                 )["state"]
             limit = task["budget"].get("limit")

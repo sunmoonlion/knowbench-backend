@@ -15,6 +15,7 @@ class TurnResult:
     final_text: str | None
     tokens: dict[str, Any]  # 这一轮各次调用相加的用量（pricing.Usage.as_json）
     error: str | None = None
+    platform_failure: bool = False
     environment_lost: bool = False
     # 这一轮花了多少（估算）。不认识这个模型的单价时是 None：只有用量，没有金额
     cost: Decimal | None = None
