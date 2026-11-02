@@ -22,7 +22,8 @@ MAX_INPUTS = 500  # 一次计算最多这么多个输入
 MAX_ROUND = 10
 MAX_POWER = 100  # 乘方指数的绝对值上限，整数与分数指数共用
 PRECISION = 34
-NAME = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
+# Shared with JSON Schema; reject a trailing newline as well.
+NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}(?![\s\S])")
 COMPUTE_ID = re.compile(r"^c[1-9][0-9]{0,9}$")
 ZERO_DIVISOR = "denominator is zero"
 

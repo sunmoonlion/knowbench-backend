@@ -62,9 +62,10 @@ class KnowbotCompute:
         refs: dict[str, list[str]] = {}
         lists: set[str] = set()
         for key, value in inputs.items():
-            if not isinstance(key, str) or not calc.NAME.match(key):
+            if not isinstance(key, str) or not calc.NAME.fullmatch(key):
                 raise ComputeRefused(
-                    f"input name {str(key)[:40]!r} must be lower-case letters, digits or _"
+                    f"input name {str(key)[:40]!r} must start with an ASCII letter or _, "
+                    "followed by ASCII letters, digits or _ (1–32 characters, case-sensitive)"
                 )
             if isinstance(value, list):
                 lists.add(key)
