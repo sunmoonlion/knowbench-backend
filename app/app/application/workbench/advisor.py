@@ -1567,6 +1567,10 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         "- The user confirms, changes or drops these items before anything is "
         "fetched or read; you cannot read them in this turn.",
         f'- Discover available suppliers with discover_source_tools(task="{task_id}"). '
+        "Missing data does not always require collecting a new document: an available "
+        "supplier API query (for example Wind) may satisfy the need. Choose the evidence "
+        "form the selected methods actually require; do not request report PDFs merely "
+        "because numeric or textual information is missing. "
         "Use a service's advertised schema for source_query in request_data. Supplier responses "
         "are other_text/text evidence; dates and requested fields go in query arguments. "
         "Do not substitute an excerpt or link for a required annual report PDF.",

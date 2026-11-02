@@ -20,6 +20,7 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench.agent_download import ReleaseStore
+from app.application.workbench.delegation import DelegationService
 from app.application.workbench.grant_release import GrantReleaser
 from app.application.workbench.incubations import (
     IncubationConductor,
@@ -328,6 +329,16 @@ def _postgres_sessions() -> async_sessionmaker[AsyncSession]:
     from app.infrastructure.storage.postgres import get_postgres
 
     return get_postgres().session_factory
+
+
+def dynamic_market_owners() -> frozenset[str]:
+    return frozenset(get_settings().knowbot_dynamic_market_owners)
+
+
+def delegation_service(session: AsyncSession) -> DelegationService:
+    return DelegationService(
+        workbench_store(session), dynamic_method_owners=dynamic_market_owners()
+    )
 
 
 def test_run_service(session: AsyncSession) -> KnowbotTestService:

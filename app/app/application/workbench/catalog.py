@@ -14,6 +14,7 @@ from app.application.ports.workbench import KnowmartSummoner, WorkbenchStore
 from app.application.workbench.plan_receipts import catalog_for_task
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import ExpertNotReady, KnowbotInvalid, NoSuchExpert
+from app.domain.workbench.execution_plan import catalog_header
 from app.domain.workbench.method_catalog import MethodCatalog
 from app.domain.workbench.packs import ExpertPack, find_pack
 
@@ -35,13 +36,15 @@ class PinnedPack:
     bindings: tuple[knowbots.FrozenBinding, ...] = ()
     # 在 knowbase 那边这位专家这一版叫什么（测试中的草稿没有）
     consumer: str = ""
+    # The header is only for display. Execution always freezes the full catalog.
+    catalog: MethodCatalog | None = None
 
     def task_columns(self) -> dict[str, Any]:
         """建委托时写进委托的三列。"""
         return {
             "pack_source": self.source,
             "pack_digest": self.digest,
-            "pack_snapshot": self.pack.model_dump(mode="json"),
+            "pack_snapshot": (self.catalog or self.pack).model_dump(mode="json"),
         }
 
 
@@ -95,14 +98,44 @@ def expert_name(row: dict[str, Any]) -> str:
 def pack_from_pin(pin: dict[str, Any]) -> PinnedPack:
     knowbot_id, version = str(pin["knowbot_id"]), str(pin["version"])
     manifest = pin["manifest"]
-    pack = knowbots.pack_from_manifest(manifest, knowbot_id=knowbot_id, version=version)
+    catalog = None
+    if (
+        isinstance(manifest, dict)
+        and manifest.get("schema") == knowbots.MANIFEST_SCHEMA_V3
+    ):
+        catalog = knowbots.catalog_from_manifest(
+            manifest, knowbot_id=knowbot_id, version=version
+        ).model_copy(
+            update={
+                "name": str(manifest.get("name") or ""),
+                "tagline": str(manifest.get("tagline") or ""),
+            }
+        )
+        pack = catalog_header(
+            catalog, profile_id=knowbots.profile_id(knowbot_id, version)
+        )
+    else:
+        pack = knowbots.pack_from_manifest(
+            manifest, knowbot_id=knowbot_id, version=version
+        )
     knowbots.no_declarations(manifest, knowbot_id=knowbot_id)
     return PinnedPack(
         pack=pack,
         digest=str(pin["digest"]),
         bindings=knowbots.frozen_bindings(manifest, knowbot_id=knowbot_id),
         consumer=knowbots.consumer_of(knowbot_id, version),
+        catalog=catalog,
     )
+
+
+def require_dynamic_owner(
+    pinned: PinnedPack, *, subject: str | None, allowed: frozenset[str]
+) -> None:
+    """Deployment admission for new marketplace work, never an author approval."""
+    if pinned.catalog is not None and subject not in allowed:
+        raise KnowbotInvalid(
+            "dynamic marketplace execution is not enabled for this account"
+        )
 
 
 async def pinned_pack(
@@ -182,6 +215,7 @@ async def pin_knowbot(
     owner_actor_id: str,
     owner_subject: str,
     ref: str,
+    dynamic_method_owners: frozenset[str] = frozenset(),
 ) -> ExpertPack:
     """用户从 knowmart 选定回来（`knowbot=<分身>@<版本>`）：按他的会话向 knowmart 核一次，
     摘要对得上、工作台跑得了，才钉住。伪造的、别人的都是「没有这位专家」。"""
@@ -201,7 +235,15 @@ async def pin_knowbot(
         raise KnowbotInvalid(
             "the knowbot digest does not match its manifest", knowbot=knowbot_id
         )
-    pack = knowbots.pack_from_manifest(manifest, knowbot_id=knowbot_id, version=version)
+    pinned = pack_from_pin(
+        {
+            "knowbot_id": knowbot_id,
+            "version": version,
+            "manifest": manifest,
+            "digest": digest,
+        }
+    )
+    require_dynamic_owner(pinned, subject=owner_subject, allowed=dynamic_method_owners)
     async with repo.transaction():
         await repo.pin_knowbot(
             owner_actor_id=owner_actor_id,
@@ -211,4 +253,4 @@ async def pin_knowbot(
             digest=digest,
             manifest=manifest,
         )
-    return pack
+    return pinned.pack

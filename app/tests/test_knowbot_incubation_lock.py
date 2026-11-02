@@ -258,6 +258,11 @@ def test_the_model_sees_only_the_fields_the_contract_lists() -> None:
     assert given["test_report"]["cases"][0]["steps"] == CASE["steps"]  # 报告原样给模型
     assert given["data_formats"] == [FORMAT]
 
+    axes = {"name": "利润表", "columns": ["项目", "2024"], "rows": ["营业收入"]}
+    body["data_formats"] = [FORMAT | {"tables": [axes]}]
+    given = material(IncubationRequest.model_validate(body))
+    assert given["data_formats"][0]["tables"] == [axes]
+
 
 def test_the_method_names_the_new_material_and_keeps_tests_out_of_the_rules() -> None:
     """独立审 10-30 第 9 条：数据格式那行写出新带的几样；测试报告只作提议，测试的问题与

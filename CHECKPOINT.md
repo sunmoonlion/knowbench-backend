@@ -308,3 +308,17 @@ pyright 通过。日志 /tmp/luna-dynamic-intake-{tests,regression,types}.txt。
 原件 /tmp/luna-dynamic-live-{results,engine}.jsonl 与 engine-tests.txt，持久证据
 归档于 sunmoonun 总纲/数据拓扑重构/第二轨联调/2026-11-02-创意入口与动态测试。
 没有更新沙箱、续跑旧任务或代点采单；生产仍需 qwen 发布本增量后本人正式测试。
+
+
+## 2026-11-02 第二轨：商城动态专家准入与原入口衔接
+
+合入 #57 上的读工具预检修复 f15e492，保留动态作者测试增量。新增独立
+KNOWBOT_DYNAMIC_MARKET_OWNERS 精确 subject 配置，默认空；新 pin/委托均核，
+任务冻结完整方法目录（展示头不再代替目录），已有任务幂等恢复不受关闭准入影响。
+v3 依次走任务规划与定数据；缺数明确可走供应商查询（包括 Wind），不机械要求新采文档；
+方法要求 PDF 时仍不可用摘要替代。孵化格式消费锁同步，真实表轴可达模型 material。
+
+合并后读工具/准入定向 25 passed；商城 HTTP、旧专家委托/数据、引用方法运行、
+动态推进与孵化锁回归 83 passed（真实隔离 DB，无跳过），ruff、pyright 通过。
+日志 /tmp/luna-market-{merged,regression,pyright}.log。非生产准入已开启的结论；
+不把作者候选方法标为接受，不改 qwen 当前固定候选、不代点业务确认。

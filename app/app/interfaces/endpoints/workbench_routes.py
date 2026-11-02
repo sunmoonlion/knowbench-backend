@@ -35,7 +35,6 @@ from app.application.workbench.agent_service import (
     AgentServiceUnconfigured,
     validate_path,
 )
-from app.application.workbench.delegation import DelegationService
 from app.application.workbench.expert_data import ensure_data_session
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.interactions import cancel_task as stop_task
@@ -52,6 +51,7 @@ from app.bootstrap.workbench import (
     build_agent_service,
     build_provisioner,
     build_relay_admin,
+    delegation_service,
     expert_data,
     knowbase_v2,
     workbench_store,
@@ -934,7 +934,7 @@ async def handover(
     repo = workbench_store(session)
     req = HandoverRequest(session_id=session_id, **body.model_dump())
     try:
-        result = await DelegationService(repo).handover(
+        result = await delegation_service(session).handover(
             req,
             owner_actor_id=_actor(principal),
             user_token=user_token,

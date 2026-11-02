@@ -20,10 +20,11 @@ from app.application.workbench.catalog import (
     pin_knowbot,
     viewable_expert,
 )
-from app.application.workbench.delegation import DelegationService
 from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
 from app.bootstrap.workbench import (
+    delegation_service,
+    dynamic_market_owners,
     expert_data,
     find_expert_service,
     knowmart_summoner,
@@ -138,7 +139,7 @@ async def data_needs(
     （decisions ⑭）。内置专家不用数据：`contract` 是空的。
     """
     try:
-        found = await DelegationService(workbench_store(session)).data_needs(
+        found = await delegation_service(session).data_needs(
             owner_actor_id=_actor(principal), profile_id=pack_id
         )
     except WorkbenchError as exc:
@@ -163,6 +164,7 @@ async def pin(
             owner_actor_id=_actor(principal),
             owner_subject=principal.subject,
             ref=body.knowbot,
+            dynamic_method_owners=dynamic_market_owners(),
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -215,7 +217,7 @@ async def delegate(
     try:
         if not question:
             raise WorkbenchError("the question is empty")
-        made = await DelegationService(workbench_store(session)).from_expert_entry(
+        made = await delegation_service(session).from_expert_entry(
             owner_actor_id=_actor(principal),
             project_id=project_id,
             profile_id=body.expert,

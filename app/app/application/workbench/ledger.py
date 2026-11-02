@@ -18,6 +18,7 @@ from app.application.workbench.catalog import (
     PinnedTestCatalog,
     pack_for_task,
     pinned_pack,
+    require_dynamic_owner,
 )
 from app.domain.workbench.errors import (
     BudgetExhausted,
@@ -86,8 +87,14 @@ def _turn_open(task: dict[str, Any], attempt_id: Any) -> dict[str, Any]:
 
 
 class Ledger:
-    def __init__(self, repo: WorkbenchStore):
+    def __init__(
+        self,
+        repo: WorkbenchStore,
+        *,
+        dynamic_method_owners: frozenset[str] = frozenset(),
+    ):
         self.repo = repo
+        self.dynamic_method_owners = dynamic_method_owners
 
     async def open_method_step(
         self, task_id: str, *, expected_version: int
@@ -195,6 +202,12 @@ class Ledger:
                 if is_knowbot(req.profile_id)
                 else None
             )
+            if isinstance(pinned, PinnedPack) and pinned.catalog is not None:
+                require_dynamic_owner(
+                    pinned,
+                    subject=await self.repo.subject_of_actor(owner_actor_id),
+                    allowed=self.dynamic_method_owners,
+                )
             # 测试的委托（snapshot）钉的是这条用例的测试集（knowlab 核过）
             if snapshot is None and pinned is not None:
                 # 分身：请专家时建好了空清单，要什么数据由第 0 步提（decisions ⑭）

@@ -282,6 +282,11 @@ class Settings(BaseSettings):
         max_length=100,
         validation_alias="KNOWBOT_DYNAMIC_TEST_OWNERS",
     )
+    knowbot_dynamic_market_owners: tuple[str, ...] = Field(
+        default=(),
+        max_length=100,
+        validation_alias="KNOWBOT_DYNAMIC_MARKET_OWNERS",
+    )
     # 作为运行方跑孵化的一轮（专家孵化方案第八节）：在作者的账号下、他的电脑上跑（decisions ⑯）。
     # 推进器隔这么多秒推一次在跑的孵化
     knowbot_incubation_poll_seconds: float = Field(
@@ -419,13 +424,13 @@ class Settings(BaseSettings):
             )
         )
 
-    @field_validator("knowbot_dynamic_test_owners")
+    @field_validator("knowbot_dynamic_test_owners", "knowbot_dynamic_market_owners")
     @classmethod
-    def dynamic_test_owners_are_exact(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+    def dynamic_owners_are_exact(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if any(not re.fullmatch(r"[A-Za-z0-9._:@-]{1,512}", item) for item in value):
-            raise ValueError("dynamic test owners must be exact authenticated subjects")
+            raise ValueError("dynamic owners must be exact authenticated subjects")
         if len(set(value)) != len(value):
-            raise ValueError("dynamic test owners must be unique")
+            raise ValueError("dynamic owners must be unique")
         return value
 
     @field_validator("workbench_trusted_proxy_cidrs")

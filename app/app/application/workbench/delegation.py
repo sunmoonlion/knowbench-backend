@@ -20,6 +20,7 @@ from app.application.workbench.catalog import (
     builtin_on_view,
     offerable_expert,
     pinned_pack,
+    require_dynamic_owner,
 )
 from app.application.workbench.expert_data import ExpertData, Prepared, refusal
 from app.application.workbench.ledger import Ledger
@@ -29,7 +30,11 @@ from app.domain.workbench.errors import (
     IdempotencyConflict,
     WorkbenchError,
 )
-from app.domain.workbench.knowbots import MANIFEST_SCHEMA_V2, is_knowbot
+from app.domain.workbench.knowbots import (
+    MANIFEST_SCHEMA_V2,
+    MANIFEST_SCHEMA_V3,
+    is_knowbot,
+)
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.projects import default_title
 
@@ -41,8 +46,14 @@ UserToken = Callable[[], Awaitable[str]]
 
 
 class DelegationService:
-    def __init__(self, repo: WorkbenchStore):
+    def __init__(
+        self,
+        repo: WorkbenchStore,
+        *,
+        dynamic_method_owners: frozenset[str] = frozenset(),
+    ):
         self.repo = repo
+        self.dynamic_method_owners = dynamic_method_owners
 
     async def from_expert_entry(
         self,
@@ -121,7 +132,9 @@ class DelegationService:
             user_token=user_token,
         )
         try:
-            made = await Ledger(self.repo).handover(
+            made = await Ledger(
+                self.repo, dynamic_method_owners=self.dynamic_method_owners
+            ).handover(
                 req,
                 owner_actor_id=owner_actor_id,
                 tenant=tenant,
@@ -146,7 +159,10 @@ class DelegationService:
         pinned = await pinned_pack(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
-        return {"contract": MANIFEST_SCHEMA_V2, "bound": len(pinned.bindings)}
+        return {
+            "contract": MANIFEST_SCHEMA_V3 if pinned.catalog else MANIFEST_SCHEMA_V2,
+            "bound": len(pinned.bindings),
+        }
 
     async def _prepare(
         self,
@@ -173,9 +189,13 @@ class DelegationService:
         )
         if prior is not None:
             return Prepared()
+        subject = await self.repo.subject_of_actor(owner_actor_id)
+        require_dynamic_owner(
+            pinned, subject=subject, allowed=self.dynamic_method_owners
+        )
         if expert_data is None or user_token is None:
             raise DataChoiceInvalid("data cannot be chosen here")
-        if await self.repo.subject_of_actor(owner_actor_id) is None:
+        if subject is None:
             raise DataChoiceInvalid("this account is not known to the data service")
         try:
             # 运行授权的 ref 由 prepare 在服务端生成（每件委托唯一），不用幂等钥匙拼
@@ -244,7 +264,9 @@ class DelegationService:
                 title=default_title(question),
             )
             session_id = started["session_id"]
-            made = await Ledger(self.repo).handover(
+            made = await Ledger(
+                self.repo, dynamic_method_owners=self.dynamic_method_owners
+            ).handover(
                 request(session_id),
                 owner_actor_id=owner_actor_id,
                 tenant=tenant,
