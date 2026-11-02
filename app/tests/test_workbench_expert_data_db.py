@@ -10,6 +10,7 @@ knowbase、knowfeed 与模型的那一轮用替身。
 
 from __future__ import annotations
 
+import asyncio
 import copy
 import re
 import uuid
@@ -39,6 +40,7 @@ from app.application.workbench.expert_data import (
 )
 from app.bootstrap.workbench import workbench_store, workbench_stores
 from app.domain.workbench.data_plan import item_ref
+from app.domain.workbench.errors import DataChoiceInvalid
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
     require_supply_status_service,
@@ -347,6 +349,156 @@ async def asked(http, db, world, key_: str, propose=PROPOSED):  # noqa: F811
     turn = StepZero(db, world["kb"], propose)
     state = await Advisor(workbench_stores(db), turn, records=True).drive(task_id)
     return task_id, turn, state
+
+
+@pytest.mark.parametrize("cancelled", [False, True])
+async def test_proposal_return_preserves_new_detail_and_respects_cancellation(
+    make_client,
+    db,
+    world,
+    monkeypatch,
+    cancelled,  # noqa: F811
+):
+    from app.application.workbench.ledger import Ledger
+
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-proposal-race")
+    kb = world["kb"]
+    original = kb.add_needs
+
+    async def concurrent(subject, resolution_id, needs):
+        fresh = await original(subject, resolution_id, needs)
+        # A separate connection commits while the remote request is in flight.
+        async with db() as other:
+            repo = workbench_store(other)
+            async with repo.transaction():
+                await repo.set_resolution_prematch(task_id, {"new": "keep"})
+                if cancelled:
+                    await Ledger(repo).request_cancel(task_id, owner_actor_id=A)
+        return fresh
+
+    monkeypatch.setattr(kb, "add_needs", concurrent)
+    async with db() as session:
+        repo = workbench_store(session)
+        task = await repo.get_task(task_id)
+        if cancelled:
+            with pytest.raises(DataChoiceInvalid, match="no longer accepting"):
+                await request_data(repo, kb, task, PROPOSED[:1])
+        else:
+            result = await request_data(repo, kb, task, PROPOSED[:1])
+            assert result["request"] == "r2"
+        row = await repo.get_task_resolution(task_id)
+        assert row["detail"]["prematch"] == {"new": "keep"}
+        assert [r["id"] for r in row["detail"]["requests"]] == (
+            ["r1"] if cancelled else ["r1", "r2"]
+        )
+    assert not world["supply"].submitted
+
+
+async def test_parallel_author_test_proposals_have_distinct_ids(
+    make_client,
+    db,
+    world,  # noqa: F811
+):
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-test-proposal-race")
+    async with db() as session:
+        await session.execute(
+            text(
+                "update workbench_task_resolution set resolution_id=null where task_id=:t"
+            ),
+            {"t": task_id},
+        )
+        await session.commit()
+    ready = asyncio.Barrier(2)
+
+    async def propose():
+        async with db() as session:
+            repo = workbench_store(session)
+            task = await repo.get_task(task_id)
+            await ready.wait()
+            return await request_data(repo, None, task, PROPOSED[:1])  # type: ignore[arg-type]
+
+    results = await asyncio.wait_for(asyncio.gather(propose(), propose()), 10)
+    assert {r["request"] for r in results} == {"r2", "r3"}
+    async with db() as session:
+        row = await workbench_store(session).get_task_resolution(task_id)
+        requests = row["detail"]["requests"]
+        assert [r["id"] for r in requests] == ["r1", "r2", "r3"]
+        assert [r["needs"][0]["key"] for r in requests] == [
+            "req1_1",
+            "req2_1",
+            "req3_1",
+        ]
+
+
+async def test_provider_revision_conflict_is_not_reported_as_listed(
+    make_client,
+    db,
+    world,
+    monkeypatch,  # noqa: F811
+):
+    from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-provider-conflict")
+
+    async def conflict(*args):
+        raise KnowbaseRefused(409, "resolution_changed")
+
+    monkeypatch.setattr(world["kb"], "add_needs", conflict)
+    async with db() as session:
+        repo = workbench_store(session)
+        with pytest.raises(DataChoiceInvalid, match="reload it and retry"):
+            await request_data(
+                repo, world["kb"], await repo.get_task(task_id), PROPOSED
+            )
+        row = await repo.get_task_resolution(task_id)
+        assert [r["id"] for r in row["detail"]["requests"]] == ["r1"]
+
+
+async def test_parallel_remote_proposals_do_not_overwrite_a_successful_request(
+    make_client,
+    db,
+    world,
+    monkeypatch,  # noqa: F811
+):
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-remote-proposal-race")
+    ready = asyncio.Barrier(2)
+    original = world["kb"].add_needs
+
+    async def permissive_provider(subject, resolution_id, needs):
+        # Even an older provider returning success to both must not overwrite local state.
+        result = await original(subject, resolution_id, needs)
+        await ready.wait()
+        return result
+
+    monkeypatch.setattr(world["kb"], "add_needs", permissive_provider)
+
+    async def propose(reason):
+        async with db() as session:
+            repo = workbench_store(session)
+            return await request_data(
+                repo,
+                world["kb"],
+                await repo.get_task(task_id),
+                [{**PROPOSED[0], "reason": reason}],
+            )
+
+    results = await asyncio.wait_for(
+        asyncio.gather(propose("one"), propose("two"), return_exceptions=True), 10
+    )
+    assert sum(isinstance(r, DataChoiceInvalid) for r in results) == 1
+    assert sum(isinstance(r, dict) and r["request"] == "r2" for r in results) == 1
+    async with db() as session:
+        row = await workbench_store(session).get_task_resolution(task_id)
+        assert [r["id"] for r in row["detail"]["requests"]] == ["r1", "r2"]
+        assert row["detail"]["requests"][1]["labels"] in (["one"], ["two"])
 
 
 @pytest.mark.parametrize(

@@ -386,6 +386,8 @@ class ExpertData:
         detail["incomplete"] = list(detail.get("incomplete") or []) + draft.incomplete
         detail["gaps"] = list(detail.get("gaps") or []) + draft.gaps
         async with repo.transaction():
+            # resume_data 随后会锁 Task，须与提采提交保持同一锁序。
+            await repo.get_task(task_id, for_update=True)
             if pins:
                 await repo.pin_task_data(task_id, pins)
             await repo.update_task_resolution(
@@ -432,6 +434,7 @@ class ExpertData:
             )
         ]
         async with repo.transaction():
+            await repo.get_task(task_id, for_update=True)
             await repo.update_task_resolution(task_id, detail=detail)
             if row["status"] != "waiting":
                 await Ledger(repo).resume_data(task_id)
@@ -700,13 +703,13 @@ async def request_data(
         raise DataChoiceInvalid("this task does not use listed data")
     if not isinstance(asked, list) or not 1 <= len(asked) <= MAX_REQUEST_NEEDS:
         raise DataChoiceInvalid(f"ask for 1 to {MAX_REQUEST_NEEDS} items")
+    if row.get("resolution_id") is None:
+        # 本地测试提采无远程修订锁，编号和追加必须在同一短事务内完成。
+        return await _ask_the_tester(repo, task_id, asked, now)
     detail = dict(row.get("detail") or {})
     requests = list(detail.get("requests") or [])
     number = len(requests) + 1
     needs = [_asked_need(a, number, n) for n, a in enumerate(asked, start=1)]
-    if row.get("resolution_id") is None:
-        # 测试委托（SDD 0046 第三节）：不经运行方的账号解析，报给 knowlab 由作者确认
-        return await _ask_the_tester(repo, task_id, detail, requests, needs, now)
     subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
     if subject is None:
         raise DataChoiceInvalid("this account is not known to the data service")
@@ -734,8 +737,20 @@ async def request_data(
         "status": "pending",
         "requested_at": (now or datetime.now(UTC)).isoformat(),
     }
-    detail["requests"] = requests + [request]
     async with repo.transaction():
+        current = await _request_row(repo, task_id)
+        if current.get("resolution_id") != row.get("resolution_id"):
+            raise DataChoiceInvalid(
+                "this task's data list changed; list the data again"
+            )
+        detail = dict(current.get("detail") or {})
+        requests = list(detail.get("requests") or [])
+        if any(r["id"] == request["id"] for r in requests):
+            raise DataChoiceInvalid(
+                "another data request was listed; retry this request"
+            )
+        # 远程解析期间页面可能写过预切合等元信息；不能用调用前的 detail 覆盖它。
+        detail["requests"] = requests + [request]
         await repo.update_task_resolution(task_id, detail=detail)
     return {
         "status": "listed",
@@ -786,24 +801,42 @@ async def find_subject(directory: SubjectDirectory, name: object) -> dict[str, A
     }
 
 
+async def _request_row(repo: WorkbenchStore, task_id: str) -> dict[str, Any]:
+    """调用方持短事务；统一 Task → resolution 锁序，取消后的迟到响应不再写采单。"""
+    task = await repo.get_task(task_id, for_update=True)
+    if task["state"] in TASK_TERMINAL:
+        raise DataChoiceInvalid("this task is no longer accepting data requests")
+    row = await repo.get_task_resolution(task_id, for_update=True)
+    if row is None:
+        raise DataChoiceInvalid("this task does not use listed data")
+    return row
+
+
 async def _ask_the_tester(
     repo: WorkbenchStore,
     task_id: str,
-    detail: dict[str, Any],
-    requests: list[dict[str, Any]],
-    needs: list[DataRequest],
+    asked: list[dict[str, Any]],
     now: datetime | None,
 ) -> dict[str, Any]:
-    request = {
-        "id": f"r{len(requests) + 1}",
-        "needs": [n.model_dump(mode="json") for n in needs],
-        "labels": [n.name for n in needs],
-        "statuses": [],
-        "status": "pending",
-        "requested_at": (now or datetime.now(UTC)).isoformat(),
-    }
-    detail["requests"] = requests + [request]
     async with repo.transaction():
+        row = await _request_row(repo, task_id)
+        if row.get("resolution_id") is not None:
+            raise DataChoiceInvalid(
+                "this task's data list changed; list the data again"
+            )
+        detail = dict(row.get("detail") or {})
+        requests = list(detail.get("requests") or [])
+        number = len(requests) + 1
+        needs = [_asked_need(a, number, n) for n, a in enumerate(asked, start=1)]
+        request = {
+            "id": f"r{number}",
+            "needs": [n.model_dump(mode="json") for n in needs],
+            "labels": [n.name for n in needs],
+            "statuses": [],
+            "status": "pending",
+            "requested_at": (now or datetime.now(UTC)).isoformat(),
+        }
+        detail["requests"] = requests + [request]
         await repo.update_task_resolution(task_id, detail=detail)
     return {
         "status": "listed",
@@ -1187,8 +1220,9 @@ class DataWaiter:
         kept = False
         async with self.stores() as repo:
             async with repo.transaction():
+                task = await repo.get_task(task_id, for_update=True)
                 current = await repo.get_task_resolution(task_id, for_update=True)
-                ended = (await repo.get_task(task_id))["state"] in TASK_TERMINAL
+                ended = task["state"] in TASK_TERMINAL
                 if current is None or current["status"] != "waiting" or ended:
                     # 别处已经办过（重复、乱序的检查不重复开跑），或委托在续签的时候结束了
                     # （交还那条线可能已经按 ref 交还过）：刚签的那条不钉、马上交还
@@ -1291,4 +1325,8 @@ def refusal(exc: Exception) -> WorkbenchError | None:
         return DataChoiceInvalid(f"a chosen item cannot be read: {code}")
     if code in ("resolution_not_found", "confirmation_not_found"):
         return DataChoiceInvalid("this list is gone; list the data again")
+    if code == "resolution_changed":
+        return DataChoiceInvalid(
+            "the data list changed; reload it and retry your request"
+        )
     return DataChoiceInvalid(f"the data service refused: {code}")

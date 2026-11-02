@@ -173,3 +173,27 @@ ExpertDesk、底稿、文件定位、Runner 审批定位与孵化测试成果读
 - 实际编译的动态方法引用 v2 清单在同一执行器分别跑两步/三步计划，保持 report 方法
   版本 2、冻结作者快照与任务成果隔离。Driver 仍为预录，不证明真实模型选择质量。
   无迁移、Wind 调用或生产发布；v3 准入保持关闭，待 agy 作者页与真实沙箱完整联调。
+## 2026-11-02 补采并发与迟到回包保护（未发布）
+
+基线 8d1d8926b131ec00acf7b92f3d994e52e6914cc7，继续 feat/method-execution-view。
+正常远程提采完成后，按 Task → resolution 加短事务锁并重读当前 detail 再追加；
+保留同期预切合等页面信息，拒重复请求编号、清单身份漂移及终态任务迟到回包。
+本地作者测试不走 knowbase，编号/需求生成/追加一起持锁，两个并发调用不再用同一
+编号覆盖。会调用 resume_data 的数据收尾同步使用 Task 在前的锁序，避免反向互等。
+
+knowbase 配套 971747286c2b2329c8738f5735e8d76321651cc9 在原修订锁内核基版，
+冲突回 409 resolution_changed。工作台明确转为重读/重试错误，不报 listed。
+没有把网络调用放进这些行锁事务，没有新增清单状态、HTTP 字段、迁移或自动采集。
+
+验证：数据/孵化两文件 66 passed（/tmp/luna-proposal-race-focused.txt），随后补充
+旧提供方并发双成功守卫 1 passed（/tmp/luna-proposal-parallel.txt）。初次定向 2 个失败
+是新测试误用了不存在的 Ledger.cancel 和多传 KnowbaseRefused 参数，已改用真实
+request_cancel 和实际构造器；原日志 /tmp/luna-proposal-race-first.txt 保留。
+最终全仓 ruff/pyright 通过（/tmp/luna-proposal-race-{ruff,pyright}-final.txt）。
+最终全量 **1411 passed / 92 skipped / 2 既有 collection warnings**，591.87 秒；
+日志 /tmp/luna-proposal-race-full.txt，包含本次全部新增案例。
+
+边界：提供方的旧基版保护必须一起验证，工作台不能修复旧提供方已写坏的远程清单。
+远程成功但回包丢失/本地落库前退出仍可能使重试收到 need_key_taken；没有实现操作
+收据与自动对账，不声称跨服务 exactly-once。用户确认/修改与新提采同时发生的完整
+合并仍是下一恢复单元。没有修改线上采单、保底专家、qwen 发布候选或 Wind 预算。
