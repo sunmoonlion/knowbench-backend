@@ -17,7 +17,7 @@ from app.domain.workbench.errors import (
     StaleStateVersion,
 )
 from app.domain.workbench.knowbots import V2_TOOLS
-from app.domain.workbench.method_catalog import DynamicMethodCatalog
+from app.domain.workbench.method_catalog import MethodCatalog, parse_catalog
 from app.domain.workbench.method_plan import (
     PLAN_ARTIFACT,
     PLAN_STEP,
@@ -33,9 +33,9 @@ if TYPE_CHECKING:
     from app.application.workbench.ledger import Ledger
 
 
-def _catalog(task: dict[str, Any]) -> DynamicMethodCatalog:
+def _catalog(task: dict[str, Any]) -> MethodCatalog:
     try:
-        catalog = DynamicMethodCatalog.model_validate(task.get("pack_snapshot"))
+        catalog = parse_catalog(task.get("pack_snapshot"))
     except ValidationError:
         raise MethodPlanInvalid("task does not pin a dynamic method catalog") from None
     if not task.get("pack_digest") or catalog.version != task["profile_version"]:

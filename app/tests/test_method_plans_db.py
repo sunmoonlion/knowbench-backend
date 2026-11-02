@@ -99,6 +99,29 @@ async def test_accept_restart_replay_and_same_attempt_different_content(db):
         assert sum(e["type"] == "task/plan_accepted" for e in events) == 1
 
 
+async def test_plan_acceptance_retains_exact_independent_method_snapshot(db):
+    from test_referenced_method_catalog import manifest
+
+    snapshot = manifest()["pack"]
+    tid, _ = await task(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await session.execute(
+                text(
+                    "UPDATE workbench_tasks SET pack_snapshot=cast(:p as jsonb) WHERE id=:id"
+                ),
+                {"p": json.dumps(snapshot), "id": tid},
+            )
+    aid, version = await planned_attempt(db, tid)
+    assert await accept(db, tid, aid, version) == {"version": 1, "replayed": False}
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        row = await repo.get_task(tid)
+        assert row["pack_snapshot"] == snapshot
+        assert (await read_plan(repo, row)).proposal == proposal()
+
+
 async def test_same_catalog_two_tasks_keep_separate_plans_and_reject_cross_attempt(db):
     first, _ = await task(db)
     second, _ = await task(db)

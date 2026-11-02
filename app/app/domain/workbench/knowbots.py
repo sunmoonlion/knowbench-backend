@@ -23,7 +23,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.domain.workbench.errors import KnowbotInvalid
-from app.domain.workbench.method_catalog import DynamicMethodCatalog
+from app.domain.workbench.method_catalog import MethodCatalog, parse_catalog
 from app.domain.workbench.packs import ExpertPack
 from app.domain.workbench.tool_policy import TIER_ORDER, ToolPolicy
 
@@ -205,7 +205,7 @@ def pack_from_manifest(
 
 def catalog_from_manifest(
     manifest: object, *, knowbot_id: str, version: str
-) -> DynamicMethodCatalog:
+) -> MethodCatalog:
     """Validate a frozen catalog without admitting it to the fixed-step runner.
 
     The execution entry point stays fail-closed until planning attempts, artifact
@@ -233,7 +233,7 @@ def catalog_from_manifest(
     }:
         raise KnowbotInvalid("unknown catalog envelope fields", knowbot=knowbot_id)
     try:
-        catalog = DynamicMethodCatalog.model_validate(manifest.get("pack"))
+        catalog = parse_catalog(manifest.get("pack"))
     except ValidationError as exc:
         where = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
         raise KnowbotInvalid(

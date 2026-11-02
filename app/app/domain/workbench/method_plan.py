@@ -14,7 +14,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from app.domain.workbench.method_catalog import METHOD_ID, DynamicMethodCatalog
+from app.domain.workbench.method_catalog import METHOD_ID, MethodCatalog
 from app.domain.workbench.packs import Strict
 
 PLAN_ARTIFACT = "__method_plan__"
@@ -88,7 +88,7 @@ class AcceptedMethodPlan(Strict):
 
 
 def validate_plan(
-    catalog: DynamicMethodCatalog,
+    catalog: MethodCatalog,
     proposal: MethodPlan,
     *,
     previous: AcceptedMethodPlan | None,

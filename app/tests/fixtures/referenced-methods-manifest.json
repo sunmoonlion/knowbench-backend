@@ -1,0 +1,352 @@
+{
+  "schema": "knowbot-manifest/v3",
+  "name": "文档核对",
+  "tagline": "",
+  "version": "1",
+  "runtime": "knowbench",
+  "pack": {
+    "pack_id": "synthetic-references",
+    "version": "1",
+    "title": "文档核对",
+    "name": "文档核对",
+    "tagline": "",
+    "scope": {
+      "does": "按作者标准核对给定文档",
+      "does_not": "",
+      "elsewhere": ""
+    },
+    "runtime_contract": "knowbench/dynamic-methods/v2",
+    "planning": {
+      "method_text": "按问题选择核对方法。逐项核对后汇总，要求复核时再复核。",
+      "final_units": [
+        "report"
+      ],
+      "max_steps": 8,
+      "max_replans": 2,
+      "reserve": "0.05",
+      "input_max_chars": 8000
+    },
+    "method_units": [
+      {
+        "selection": {
+          "applies_when": "交回最终结果时",
+          "required": true,
+          "max_calls": 1
+        },
+        "contract": {
+          "step_id": "report",
+          "title": "汇总",
+          "summary": "列出每一条的核对结果。",
+          "why": "",
+          "input_refs": [
+            "inspect"
+          ],
+          "method_text": "你在按一位作者写定的方法做其中一步。方法是作者的：照下面写的做，不加自己的判断，不替作者补口径、阈值、预测方法。只用这一步给你的工具读数据；每个数只能来自数据或上游的交回物，不凭记忆、不自己编。不给买卖建议、评级、目标价。\n\n这一步：列出每一条的核对结果。\n\n用上：inspect（核对）\n\n交回一个 JSON，包含：\n- rows：列表\n\n只交回一个 JSON 对象，前后不加说明、不加代码块标记；交回项缺了或类型不对，这一步不算过。这一步不改任何文件。调用工具时照工具说明带上这件委托的委托号。",
+          "tools": [],
+          "output_artifact": "report",
+          "output_schema": {
+            "rows": [
+              "string"
+            ]
+          },
+          "acceptance": [
+            {
+              "kind": "json_object",
+              "label": "交回的是一个 JSON",
+              "message": "交回物不是 JSON 对象"
+            },
+            {
+              "kind": "required_keys",
+              "keys": [
+                "rows"
+              ],
+              "label": "交回项都在：「rows」",
+              "message": "缺交回项"
+            },
+            {
+              "kind": "covers",
+              "path": "rows",
+              "field": "id",
+              "source": "inspect.rows",
+              "source_field": "id",
+              "label": "「rows」与第「核对」步一一对上",
+              "message": "没过：「rows」与第「核对」步一一对上"
+            },
+            {
+              "kind": "no_positioning_advice",
+              "label": "没有评级、目标价、买卖建议",
+              "message": "含有评级、目标价或买卖建议的措辞"
+            }
+          ],
+          "on_reject": "back",
+          "max_reworks": 1,
+          "reserve": "0.05",
+          "input_max_chars": 8000,
+          "ask_before": [],
+          "back_to": "inspect",
+          "step_version": "2"
+        }
+      },
+      {
+        "selection": {
+          "applies_when": "需要核对文档时",
+          "required": true,
+          "max_calls": 3
+        },
+        "contract": {
+          "step_id": "inspect",
+          "title": "核对",
+          "summary": "只依据给定文档核对，不补充未提供的文字。",
+          "why": "",
+          "input_refs": [],
+          "method_text": "你在按一位作者写定的方法做其中一步。方法是作者的：照下面写的做，不加自己的判断，不替作者补口径、阈值、预测方法。只用这一步给你的工具读数据；每个数只能来自数据或上游的交回物，不凭记忆、不自己编。不给买卖建议、评级、目标价。\n\n这一步：只依据给定文档核对，不补充未提供的文字。\n\n交回一个 JSON，包含：\n- rows：列表\n\n只交回一个 JSON 对象，前后不加说明、不加代码块标记；交回项缺了或类型不对，这一步不算过。这一步不改任何文件。调用工具时照工具说明带上这件委托的委托号。",
+          "tools": [
+            "read_input"
+          ],
+          "output_artifact": "inspect",
+          "output_schema": {
+            "rows": [
+              "string"
+            ]
+          },
+          "acceptance": [
+            {
+              "kind": "json_object",
+              "label": "交回的是一个 JSON",
+              "message": "交回物不是 JSON 对象"
+            },
+            {
+              "kind": "required_keys",
+              "keys": [
+                "rows"
+              ],
+              "label": "交回项都在：「rows」",
+              "message": "缺交回项"
+            },
+            {
+              "kind": "list_min",
+              "path": "rows",
+              "min_items": 1,
+              "label": "「rows」至少 1 项",
+              "message": "没过：「rows」至少 1 项"
+            },
+            {
+              "kind": "no_positioning_advice",
+              "label": "没有评级、目标价、买卖建议",
+              "message": "含有评级、目标价或买卖建议的措辞"
+            }
+          ],
+          "on_reject": "rework",
+          "max_reworks": 1,
+          "reserve": "0.05",
+          "input_max_chars": 8000,
+          "ask_before": []
+        }
+      },
+      {
+        "selection": {
+          "applies_when": "用户要求复核时",
+          "required": false,
+          "max_calls": 2
+        },
+        "contract": {
+          "step_id": "review",
+          "title": "复核",
+          "summary": "再按同一原文逐项复核。",
+          "why": "",
+          "input_refs": [
+            "inspect"
+          ],
+          "method_text": "你在按一位作者写定的方法做其中一步。方法是作者的：照下面写的做，不加自己的判断，不替作者补口径、阈值、预测方法。只用这一步给你的工具读数据；每个数只能来自数据或上游的交回物，不凭记忆、不自己编。不给买卖建议、评级、目标价。\n\n这一步：再按同一原文逐项复核。\n\n用上：inspect（核对）\n\n交回一个 JSON，包含：\n- notes：文字\n\n只交回一个 JSON 对象，前后不加说明、不加代码块标记；交回项缺了或类型不对，这一步不算过。这一步不改任何文件。调用工具时照工具说明带上这件委托的委托号。",
+          "tools": [
+            "read_input"
+          ],
+          "output_artifact": "review",
+          "output_schema": {
+            "notes": "string"
+          },
+          "acceptance": [
+            {
+              "kind": "json_object",
+              "label": "交回的是一个 JSON",
+              "message": "交回物不是 JSON 对象"
+            },
+            {
+              "kind": "required_keys",
+              "keys": [
+                "notes"
+              ],
+              "label": "交回项都在：「notes」",
+              "message": "缺交回项"
+            },
+            {
+              "kind": "no_positioning_advice",
+              "label": "没有评级、目标价、买卖建议",
+              "message": "含有评级、目标价或买卖建议的措辞"
+            }
+          ],
+          "on_reject": "rework",
+          "max_reworks": 1,
+          "reserve": "0.05",
+          "input_max_chars": 8000,
+          "ask_before": []
+        }
+      }
+    ],
+    "method_compiler": "knowlab/workdraft-compiler/v1",
+    "method_sources": {
+      "report": {
+        "reference": {
+          "method_id": "00000000-0000-0000-0000-000000000002",
+          "version": 2,
+          "digest": "sha256:42ff710fc17f1c4476013c4add63bbc58c833b730e9300d88fe49a74dc4613dd",
+          "inputs": {
+            "records": "inspect"
+          }
+        },
+        "definition": {
+          "schema": "knowlab/method-definition/v1",
+          "step": {
+            "id": "method",
+            "title": "汇总",
+            "does": "列出每一条的核对结果。",
+            "why": "",
+            "uses": [
+              "records"
+            ],
+            "rules": [],
+            "ask_before": [],
+            "outputs": [
+              {
+                "name": "rows",
+                "type": "list",
+                "items": null
+              }
+            ],
+            "checks": [
+              {
+                "template": "covers",
+                "params": {
+                  "path": "rows",
+                  "field": "id",
+                  "source_step": "records",
+                  "source_path": "rows",
+                  "source_field": "id"
+                }
+              }
+            ],
+            "on_fail": {
+              "kind": "back",
+              "back_to": "records"
+            },
+            "advanced": {
+              "tools": [],
+              "reserve": "0.05",
+              "input_max_chars": 8000,
+              "output_schema": {
+                "rows": [
+                  "string"
+                ]
+              },
+              "output_file": null
+            },
+            "selection": {
+              "applies_when": "交回最终结果时",
+              "required": false,
+              "max_calls": 1
+            }
+          },
+          "input_schemas": {
+            "records": {
+              "rows": [
+                "string"
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "rule_sources": [
+    {
+      "rule": "汇总·怎样算对：「rows」与第「核对」步一一对上",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-00000000000c"
+    },
+    {
+      "rule": "核对·怎样算对：「rows」至少 1 项",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000014"
+    },
+    {
+      "rule": "planning",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000003"
+    },
+    {
+      "rule": "method_refs/report",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000004"
+    },
+    {
+      "rule": "steps/report/selection",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000007"
+    },
+    {
+      "rule": "steps/report/uses",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000008"
+    },
+    {
+      "rule": "steps/report/advanced",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000009"
+    },
+    {
+      "rule": "steps/report/on_fail",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-00000000000a"
+    },
+    {
+      "rule": "steps/inspect/selection",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-00000000000f"
+    },
+    {
+      "rule": "steps/inspect/uses",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000010"
+    },
+    {
+      "rule": "steps/inspect/advanced",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000011"
+    },
+    {
+      "rule": "steps/inspect/on_fail",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000012"
+    },
+    {
+      "rule": "steps/review/selection",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000017"
+    },
+    {
+      "rule": "steps/review/uses",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000018"
+    },
+    {
+      "rule": "steps/review/advanced",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-000000000019"
+    },
+    {
+      "rule": "steps/review/on_fail",
+      "source": "user_text",
+      "ref": "record:00000000-0000-0000-0000-00000000001a"
+    }
+  ]
+}
