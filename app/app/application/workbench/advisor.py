@@ -9,9 +9,8 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.acceptance import judge, out_of_scope, timed_out
@@ -20,6 +19,8 @@ from app.application.workbench.catalog import SNAPSHOT_SOURCES, pack_for_task
 from app.application.workbench.deliverable_check import DeliverableCheck, harden
 from app.application.workbench.expert_data import holds_task, pending_requests
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver
+from app.application.workbench.turn import TurnResult as TurnResult
 from app.domain.workbench import knowbots
 from app.domain.workbench.deliverables import (
     DELIVERABLE_RULES,
@@ -55,8 +56,6 @@ from app.domain.workbench.step_view import RAW_CHARS
 
 log = logging.getLogger(__name__)
 
-# 专家每一步的时限（一个 turn）。到点还没做完就停下，按验收不过走返工、退回或交人
-STEP_TIMEOUT_SECONDS = 900
 # 重做时列出上一次没过的几条，每条最多这么多字
 REWORK_FAILURES_SHOWN = 10
 REWORK_FAILURE_CHARS = 400
@@ -67,37 +66,6 @@ DATA_STEP_RESERVE = Decimal("0.05")
 # 给模型看的专家做法：每一步的说明最多这么多字，合起来最多这么多字
 DATA_STEP_METHOD_CHARS = 1200
 DATA_STEP_TOTAL_CHARS = 12000
-
-
-@dataclass
-class TurnResult:
-    turn_id: str | None
-    final_text: str | None
-    tokens: dict[str, Any]  # 这一轮各次调用相加的用量（pricing.Usage.as_json）
-    error: str | None = None
-    environment_lost: bool = False
-    # 这一轮花了多少（估算）。不认识这个模型的单价时是 None：只有用量，没有金额
-    cost: Decimal | None = None
-    interrupted: bool = False
-    # 用户在审批面点了「停下」（或等不到人）：这一轮是被人停的，不是出错
-    stopped_by_user: bool = False
-    stop_note: str | None = None
-    # 这一轮用补丁改到的文件（绝对路径）；成稿文件写了没有就看它（0015 §3.3）
-    files: list[str] = field(default_factory=list)
-    # 这一步到了时限还没做完，被工作台停下：最后一句只是进度说明，不是交回物，不拿去验
-    timed_out: bool = False
-
-
-class TurnDriver(Protocol):
-    """runner 的 SandboxLink 实现它：在给定 thread 上发一个 turn 并等它结束。"""
-
-    async def run_turn(
-        self,
-        thread_id: str,
-        text: str,
-        *,
-        timeout: float = STEP_TIMEOUT_SECONDS,  # noqa: ASYNC109
-    ) -> TurnResult: ...
 
 
 class Advisor:

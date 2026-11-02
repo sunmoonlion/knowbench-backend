@@ -112,3 +112,12 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 - 发现原取消逻辑先读活动 ID 再锁 Task，开步恰在中间发生会漏关新 Attempt。以发布候选的 request_cancel 替换测试运行中的方法，确定性复现预留残留 0.05（/tmp/luna-cancel-before-fix.txt）。已将开步、取消、结算、无人收尾及迟到费用统一 Task → Attempt 锁序，并校验迟到费用的任务归属；新回归通过，未绕过或删除断言。
 - 完整后端回归 1325 passed / 92 skipped / 2 既有 collection warnings（/tmp/luna-execution-plan-full-final.txt）；全量启动后最后增加跨任务视图误用守卫及一例，五个受影响文件最终重跑 80 passed（/tmp/luna-execution-plan-final-focused.txt），没有将它冒充另一轮全量。最终全仓 ruff、pyright 0 errors（/tmp/luna-execution-plan-{ruff,pyright}-final.txt）。更早的 1324 项全量是取消锁序修复之前的证据，不能替代本次结果。
 - 下一段继续接现有规划 turn、Advisor/Runner、工具调用鉴权、covers 的固定输入、页面/文件/测试报告、最终成果原子交付。当前仅提供经过测试的执行基础入口，真实 v3 准入仍拒绝；不能只改步骤栏或直接开放运行。实现在 docs/method-execution.md，根仓 methods.md 与双轨计划同步。回退应用保留已有 0025/0035 历史，不删除计划或成果。
+
+## 2026-11-02 WP-10 单元 3 第二段：有界规划服务与固定输入验收
+
+- 从 `0e0917aff9217be0da98fb853419b7befd734447` 继续 `feat/method-execution-view`。新增 MethodPlanner，复用现有沙箱 TurnDriver 端口、Ledger、Attempt 和计划 Artifact；把原 Advisor 的 TurnResult/TurnDriver/时限抽到 turn.py 共用，没有新增模型客户端或状态机。Advisor 的真实调度入口尚未调用本服务；测试 Driver 是替身，不能称真实沙箱已跑通。
+- 模型只收作者规划原文、冻结方法选择条件/输入槽/允许工具及既有计划和有效成果；严格解析 MethodPlan。保护已开始前缀、已完成输入钉确切成果版本，非法工具与改写前缀拒绝。失败提案计轮次与费用，下一轮可看拒绝原因；并发只发一轮。`run(parent_version=0)` 初次派发重试不会自动变成重规划，后续调整须明确父版本。
+- 规划 Attempt 完成、费用、计划/指针/事件与回队列在 Task 锁内同事务。非法提案回滚后再结算失败费用；取消迟到只补费用且按 turn_id 去重，超时/中断/环境丢失/超预算不收部分提案，事件故障整体回滚。预留失败不发 turn；跨任务误用拒绝。turn_id 与终态计费一起登记，不把“已收到 turn_id”当作“已计费”。
+- `active_method_inputs` 从活动实例绑定读取确切 ID/版本/摘要；动态 covers 直接使用该入口。同名新写入但未验收的成果不能替换本轮输入；已取消的实例不能验收。固定专家原读法保留。
+- 独立 PostgreSQL 全量 `1344 passed / 92 skipped / 2 既有 collection warnings`，599.87 秒（`/tmp/luna-method-planner-full.txt`）。全量启动后增加父计划版本重试守卫及一例测试，五文件最终 `139 passed`（`/tmp/luna-method-planner-final-focused.txt`）；不能把这一例声称包含在前述全量里。最终全仓 ruff 与 app 目录 pyright 0 errors（`/tmp/luna-method-planner-{ruff,pyright}-final.txt`）。早期规划/验收/计算三文件 98 通过不替代最终证据。
+- 仍未开放 v3，未改生产、Jenkins、qwen 候选、采单或 Wind（仍 3/5）。后续继续 Advisor/Runner 真正派发与原子收尾、按可信执行上下文进行 MCP 每次调用鉴权、页面/底稿/报告统一视图、完整最终交付。当前用户/沙箱级 MCP 令牌无法单靠 args.task 证明本轮身份；conversation/market/NO_SCOPE 入口也须覆盖。不要靠全局关闭工具误伤其他会话，也不要持 Task 长事务调用模型/远程文件。规划 Attempt 的完成不能让初次方法的范围检查误以为已经执行过方法。接续说明在 docs/method-execution.md。

@@ -267,3 +267,30 @@ async def active_method_step(
     ):
         raise MethodPlanInvalid("active method inputs changed")
     return step
+
+
+async def active_method_inputs(
+    repo: WorkbenchStore, task: dict[str, Any], view: ExecutionPlan
+) -> dict[str, Any]:
+    """The exact inputs of the current attempt, for deterministic acceptance.
+
+    Check the plan/lineage first, then fetch each registered version, never the
+    latest artifact with that name. A stale or unrelated attempt is not usable.
+    """
+    if view.receipt is None:
+        raise MethodPlanInvalid("method inputs require a dynamic task plan")
+    await active_method_step(repo, task, view)
+    attempt = await repo.get_attempt(str(task["active_attempt_id"]))
+    inputs = {}
+    for ref in attempt["input_artifact_versions"]:
+        artifact = await repo.get_artifact(
+            task_id=str(task["id"]), name=ref["name"], version=ref["version"]
+        )
+        if (
+            artifact is None
+            or str(artifact["id"]) != ref["id"]
+            or artifact["digest"] != ref["digest"]
+        ):
+            raise MethodPlanInvalid("bound input artifact changed")
+        inputs[ref["name"]] = artifact["content"]
+    return inputs

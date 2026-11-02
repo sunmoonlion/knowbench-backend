@@ -26,6 +26,11 @@ from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.acceptance import Verdict, value_at
+from app.application.workbench.execution_plan import (
+    active_method_inputs,
+    execution_for_task,
+    is_dynamic,
+)
 from app.application.workbench.knowbot_compute import computations
 from app.application.workbench.run_reader import MATERIAL_ID, RunReader, is_fact_ref
 from app.domain.workbench import compute as calc
@@ -266,15 +271,18 @@ async def judge_numbers(
     if not numeric or not isinstance(verdict.parsed, dict):
         return verdict
     records = await computations(repo, str(task["id"]))
-    upstream = (
-        {
-            a["name"]: a["content"]
-            for a in await repo.list_artifacts_with_content(str(task["id"]))
-            if a.get("kind") == "step"
-        }
-        if any(r.kind == "covers" for r in numeric)
-        else {}
-    )
+    upstream = {}
+    if any(r.kind == "covers" for r in numeric):
+        if is_dynamic(task):
+            view = await execution_for_task(repo, task)
+            assert view is not None
+            upstream = await active_method_inputs(repo, task, view)
+        else:
+            upstream = {
+                a["name"]: a["content"]
+                for a in await repo.list_artifacts_with_content(str(task["id"]))
+                if a.get("kind") == "step"
+            }
     for r in numeric:
         items = _items(value_at(verdict.parsed, r.path))
         platform = False
