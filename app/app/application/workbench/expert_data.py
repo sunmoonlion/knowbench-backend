@@ -38,7 +38,11 @@ from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import PinnedPack
 from app.domain.workbench.data_plan import Plan, gap, item_ref, plan
 from app.domain.workbench.data_request import DataRequest
-from app.domain.workbench.errors import DataChoiceInvalid, WorkbenchError
+from app.domain.workbench.errors import (
+    DataChoiceInvalid,
+    UserDataUnavailable,
+    WorkbenchError,
+)
 from app.domain.workbench.states import TASK_TERMINAL
 from app.domain.workbench.supply_prematch import (
     CONDITIONS,
@@ -1282,7 +1286,7 @@ def _backoff(checks: int) -> timedelta:
 
 
 def refusal(exc: Exception) -> WorkbenchError | None:
-    """knowbase、knowfeed 的 4xx 拒绝转成工作台的话（网页按 code 说人话）；别的原样。"""
+    """区分业务拒绝与上游接口故障，不能把缺路由或服务鉴权失败归咎于用户采单。"""
     status = int(getattr(exc, "status", 0) or 0)
     if not 400 <= status < 500:
         return None
@@ -1291,4 +1295,12 @@ def refusal(exc: Exception) -> WorkbenchError | None:
         return DataChoiceInvalid(f"a chosen item cannot be read: {code}")
     if code in ("resolution_not_found", "confirmation_not_found"):
         return DataChoiceInvalid("this list is gone; list the data again")
+    if status in (401, 403, 405, 429) or code in (
+        "http_error",
+        "knowbase_refused",
+        "knowfeed_refused",
+        "refused",
+        "validation_error",
+    ):
+        return UserDataUnavailable("the data service could not process this request")
     return DataChoiceInvalid(f"the data service refused: {code}")
