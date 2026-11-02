@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.workbench.method_catalog import PlanningContract
 from app.domain.workbench.test_runs import Runner
 
 CONTRACT = "knowbot-incubation/v1"
@@ -34,8 +35,8 @@ _STEP = STEP_ID[1:-1]
 _CELL = r"[A-Za-z0-9_-]{1,32}"
 _NAME = r"[^\s./\\\"'（）()、，,；;：:]{1,64}"
 CELL_PATH = (
-    r"^(name|tagline|scope|scope/(does|does_not|elsewhere)"
-    rf"|steps/{_STEP}(/(title|does|why|uses|rules|ask_before|outputs|checks|on_fail))?"
+    r"^(name|tagline|planning|scope|scope/(does|does_not|elsewhere)"
+    rf"|steps/{_STEP}(/(title|does|why|uses|rules|ask_before|outputs|checks|on_fail|selection))?"
     rf"|steps/{_STEP}/rules/{_CELL}"
     rf"|steps/{_STEP}/ask_before/{_CELL}"
     rf"|steps/{_STEP}/outputs/{_NAME}"
@@ -293,7 +294,9 @@ class Suggestion(Strict):
             raise ValueError("move carries the new position, from 0")
         if self.op in ("set", "add") and self.value is None:
             raise ValueError(f"{self.op} carries a value")
-        if _engineering(self.value):
+        if self.path == "planning" and self.op in ("set", "add"):
+            PlanningContract.model_validate(self.value)
+        elif _engineering(self.value):
             raise ValueError("a suggestion does not touch the engineering layer")
         return self
 

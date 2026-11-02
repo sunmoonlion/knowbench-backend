@@ -80,3 +80,13 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 测试用可独立计算的合成序列 1000→1331（三年、年增长 10%）验证公式，不把未经核对的公司数值冒充金标准；另覆盖精确平方根、三次根舍入、负分数指数、底数/指数边界、重复逐位一致，以及真实计算记录进入 computed 验收、伪造输出被拒。目标测试 82 passed，全量 1204 passed/92 skipped；ruff、pyright 均通过。0030/0048 说明同步在 luna/sunmoonun，提交待随工作包登记。完整财务金标准与预测方法仍需作者确认，不能由这些合成测试替代。
 
 下一步：依所有者 11-02 新决定设计任务内动态步骤/工具选择，方法论仍来自作者；Wind 当前只准本人研发、首轮最多 5 次真实取数，服务端接入待 W0 许可核验。固定保底题目标季度为 2025Q1/Q2，基期 2024 年度；必须区分报告期与当时可得信息，不把使用后来披露年报的历史演算声称为无前视回测。
+
+## 2026-11-02 WP-10 单元 1：动态作者目录（后续记录）
+
+从 7d8da3e18ef055aa38f821a17e6a7f464bc7795c 新建 feat/dynamic-methods，不推进 qwen 正在使用的 fix/supply-delivery。作者目录模型在 domain/workbench/method_catalog.py，生成父仓 dynamic-methods/v1 schema。catalog_from_manifest 检查 v3、方法引用/循环/必需成果闭包、限额与平台工具权限；目录不提供 workflow/step(index)，避免被固定调度器误当任务计划。pack_from_manifest 当前明确拒绝 v3，直到计划/Attempt/有效视图和最终验收都接通再开放。
+
+孵化 v1 原样携带动态工作稿，新增 planning/selection 建议路径，与 knowlab provider/锁同步。规划原文使用严格 PlanningContract；不能借 planning 注入单元 engineering。三方共同验证的非财务样例是 knowlab 编译器实际输出，保存在 tests/fixtures/dynamic-methods-manifest.json，无真实数据。
+
+完整 PostgreSQL 回归 1244 passed / 92 skipped（/tmp/luna-wp10-bench-full.txt）；全量启动后的最终动态计数边界与孵化契约更新，完整重跑受影响 6 文件 81 passed（/tmp/luna-wp10-bench-final-affected.txt）。最终全仓 ruff/pyright 通过。不能把 1244 当作最后每一行代码都重跑全量；最终差异由 81 项覆盖。无迁移、无生产操作、无 Wind 调用。
+
+下一单元是有界线性任务计划、确定性校验、Artifact 版本与 Task 接受指针/CAS，随后接现有 Attempt 预算、取消/恢复、有效计划视图、输入槽绑定实例和成果版本、必经/最终验收。不要直接把 catalog 转成缓存的 ExpertPack.workflow，不要把可变计划写入 pack_snapshot/digest。所有者要求重新孵化财务专家新版本，作者确认方法库；旧保底巨潮专家继续保留。

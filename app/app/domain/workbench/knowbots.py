@@ -23,11 +23,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.domain.workbench.errors import KnowbotInvalid
+from app.domain.workbench.method_catalog import DynamicMethodCatalog
 from app.domain.workbench.packs import ExpertPack
 from app.domain.workbench.tool_policy import TIER_ORDER, ToolPolicy
 
 PREFIX = "knowbot:"
 MANIFEST_SCHEMA_V2 = "knowbot-manifest/v2"
+MANIFEST_SCHEMA_V3 = "knowbot-manifest/v3"
 RUNTIME = "knowbench"
 KNOWBOT_ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 VERSION = r"[1-9][0-9]{0,5}"
@@ -149,6 +151,11 @@ def pack_from_manifest(
     """
     if not isinstance(manifest, dict):
         raise KnowbotInvalid("the knowbot manifest is not an object")
+    if manifest.get("schema") == MANIFEST_SCHEMA_V3:
+        raise KnowbotInvalid(
+            "dynamic method execution is not enabled; this runtime only runs fixed v2 experts",
+            knowbot=knowbot_id,
+        )
     problems: list[str] = []
     if manifest.get("schema") != MANIFEST_SCHEMA_V2:
         problems.append(f"schema must be {MANIFEST_SCHEMA_V2}")
@@ -194,3 +201,64 @@ def pack_from_manifest(
     if problems:
         raise KnowbotInvalid("; ".join(problems), knowbot=knowbot_id)
     return pack
+
+
+def catalog_from_manifest(
+    manifest: object, *, knowbot_id: str, version: str
+) -> DynamicMethodCatalog:
+    """Validate a frozen catalog without admitting it to the fixed-step runner.
+
+    The execution entry point stays fail-closed until planning attempts, artifact
+    bindings, final checks and all runtime views use the accepted task plan.
+    """
+    if not isinstance(manifest, dict):
+        raise KnowbotInvalid("the knowbot manifest is not an object")
+    if (
+        manifest.get("schema") != MANIFEST_SCHEMA_V3
+        or manifest.get("runtime") != RUNTIME
+        or manifest.get("version") != version
+    ):
+        raise KnowbotInvalid(
+            "unsupported catalog envelope or version", knowbot=knowbot_id
+        )
+    if set(manifest) - {
+        "schema",
+        "runtime",
+        "version",
+        "pack",
+        "name",
+        "tagline",
+        "bindings",
+        "rule_sources",
+    }:
+        raise KnowbotInvalid("unknown catalog envelope fields", knowbot=knowbot_id)
+    try:
+        catalog = DynamicMethodCatalog.model_validate(manifest.get("pack"))
+    except ValidationError as exc:
+        where = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
+        raise KnowbotInvalid(
+            "invalid method catalog: " + ", ".join(where[:8]), knowbot=knowbot_id
+        ) from None
+    if catalog.version != version:
+        raise KnowbotInvalid("catalog version differs", knowbot=knowbot_id)
+    for unit in catalog.method_units:
+        step = unit.contract
+        if set(step.tools) - V2_TOOLS:
+            raise KnowbotInvalid(
+                "method uses tools a knowbot cannot use", knowbot=knowbot_id
+            )
+        # Reuse the same effective platform policy as fixed experts.
+        from app.domain.workbench.tool_policy import merge_policy
+
+        try:
+            effective = merge_policy(_PLATFORM, step.tool_policy)
+        except ValueError:
+            raise KnowbotInvalid(
+                "method tool policy is looser than the platform", knowbot=knowbot_id
+            ) from None
+        if _no_looser_than_platform(effective):
+            raise KnowbotInvalid(
+                "method tool policy is looser than the platform", knowbot=knowbot_id
+            )
+    frozen_bindings(manifest, knowbot_id=knowbot_id)
+    return catalog
