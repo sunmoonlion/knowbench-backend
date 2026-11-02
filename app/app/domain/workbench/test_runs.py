@@ -35,12 +35,36 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class RowSelection(Strict):
+    """Provider-defined optional selector; zero or multiple matching rows fail."""
+
+    where: dict[str, str | int | float | bool] = Field(min_length=1, max_length=8)
+    field: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def _valid_columns(self) -> RowSelection:
+        import math
+
+        if any(not k.strip() or len(k) > 128 for k in self.where):
+            raise ValueError("row columns must be nonblank and at most 128 characters")
+        if any(
+            isinstance(v, float) and not math.isfinite(v) for v in self.where.values()
+        ):
+            raise ValueError("row values must be finite")
+        if not self.field.strip():
+            raise ValueError("row field must not be blank")
+        return self
+
+
 class Expectation(Strict):
     artifact: str = Field(min_length=1, max_length=128)
     path: str = Field(min_length=1, max_length=256)
     kind: Literal["equals", "approx", "contains"]
     value: str | int | float | bool
     tolerance: float | None = Field(default=None, ge=0, le=1)
+    row: RowSelection | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
 
 class CaseInput(Strict):
@@ -221,6 +245,32 @@ def _number(value: Any) -> Decimal | None:
     return number if number.is_finite() else None
 
 
+def _row_value(table: Any, selector: RowSelection) -> tuple[bool, Any]:
+    if not isinstance(table, list):
+        return False, None
+
+    def same(actual: Any, expected: Any) -> bool:
+        # 不把 True 当 1、不把 "2024" 当 2024，也不靠字符串化匹配对象。
+        if isinstance(expected, bool) or isinstance(actual, bool):
+            return type(actual) is type(expected) and actual == expected
+        if isinstance(expected, int | float) and isinstance(actual, int | float):
+            return actual == expected
+        return type(actual) is type(expected) and actual == expected
+
+    matches = [
+        row
+        for row in table
+        if isinstance(row, dict)
+        and all(
+            key in row and same(row[key], value)
+            for key, value in selector.where.items()
+        )
+    ]
+    if len(matches) != 1:
+        return False, None
+    return _walk(matches[0], selector.field)
+
+
 def expectation_met(expectation: Expectation, artifacts: dict[str, Any]) -> bool:
     """在最后的交回物里，这一项是不是用户说的那样。"""
     if expectation.artifact not in artifacts:
@@ -228,6 +278,10 @@ def expectation_met(expectation: Expectation, artifacts: dict[str, Any]) -> bool
     found, value = _walk(artifacts[expectation.artifact], expectation.path)
     if not found:
         return False
+    if expectation.row is not None:
+        found, value = _row_value(value, expectation.row)
+        if not found:
+            return False
     want = expectation.value
     if expectation.kind == "equals":
         if isinstance(want, bool) or isinstance(value, bool):

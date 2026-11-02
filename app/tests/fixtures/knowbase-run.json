@@ -207,7 +207,8 @@
             "required": true,
             "max_count": 1,
             "min_count": 1,
-            "description": "最近一年的年报"
+            "description": "最近一年的年报",
+            "source_query": null
           },
           {
             "key": "req1_2",
@@ -241,7 +242,8 @@
             "required": false,
             "max_count": 1,
             "min_count": 1,
-            "description": "上一年比较"
+            "description": "上一年比较",
+            "source_query": null
           }
         ],
         "items": [

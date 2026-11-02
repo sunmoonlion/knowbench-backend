@@ -311,3 +311,8 @@ ruff/pyright 通过。没有改旧任务成功状态或冻结验收；旧专家�
 日志 /tmp/luna-deliverable-integrity-before.log、/tmp/luna-deliverable-integrity-after.log；根仓保留副本。
 无迁移、契约或配置变更；只影响读取成稿的错误处理。未移动Qwen当前候选，后续集成发布。
 不校验Markdown与JSON语义一致，不宣称财务数字验收完成。专家v2仍等线上编译修复。
+
+
+## 2026-11-03 所有者确认新版财务测试
+
+测试运行端支持可选row选择器，缺行/重复行/非法形状失败；值不按字符串强制转换，True不等于1。134项规则/契约/计算回归通过，真实DB与runner两例覆盖持久化和重复行拒绝；供给/授权/续跑等扩展DB78项通过，接口样例最初因两个source_query:null失败，核对后与web夹具同步并单独复测1项通过。与knowlab provider同批发布，旧摘要不变。

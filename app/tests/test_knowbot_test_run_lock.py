@@ -11,11 +11,28 @@ import pytest
 from knowbot_fixtures import manifest
 
 from app.domain.workbench.test_runs import (
+    Expectation,
     RunCase,
     RunRequest,
     case_outputs,
     case_result,
 )
+
+
+def test_row_selection_satisfies_provider_contract():
+    schema = _schema(_lock(), "test-run-request.schema.json")
+    jsonschema = pytest.importorskip("jsonschema")
+    raw = {
+        "artifact": "metrics",
+        "path": "annual",
+        "kind": "approx",
+        "value": 100,
+        "tolerance": 0.001,
+        "row": {"where": {"year": "2024"}, "field": "revenue"},
+    }
+    jsonschema.validate(raw, {"$ref": "#/$defs/Expectation", "$defs": schema["$defs"]})
+    assert Expectation.model_validate(raw).model_dump(mode="json") == raw
+
 
 PARENT = Path(__file__).resolve().parents[3]
 LOCK = PARENT / "contracts/knowlab-test-run-lock.json"
