@@ -8,13 +8,16 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.application.workbench.catalog import pack_for_task
+from app.application.ports.workbench import WorkbenchStore
+from app.application.workbench.execution_plan import display_for_task
 from app.domain.workbench.deliverables import run_files, run_folder
 
 
-def task_dossier(task: dict[str, Any]) -> dict[str, Any] | None:
+async def task_dossier(
+    repo: WorkbenchStore, task: dict[str, Any]
+) -> dict[str, Any] | None:
     """{folder, expert, files}；专家包找不到或这位专家不写文件时是 None。"""
-    pack = pack_for_task(task)
+    pack = await display_for_task(repo, task)
     if pack is None or not pack.deliverable_files() or not task.get("created_at"):
         return None
     expert = pack.name or pack.title

@@ -10,10 +10,17 @@ from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
-from app.application.workbench.catalog import pack_for_task
+from app.application.workbench.execution_plan import (
+    current_artifacts,
+    display_for_task,
+    execution_for_task,
+    is_dynamic,
+)
 from app.application.workbench.expert_data import pending_requests
+from app.application.workbench.plan_receipts import read_plan_version
 from app.domain.workbench.dossier_view import dossier_markdown, dossier_view
 from app.domain.workbench.errors import NotFound
+from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.now_view import now_view
 from app.domain.workbench.packs import ExpertPack
 from app.domain.workbench.review_view import review_view
@@ -67,7 +74,7 @@ class ExpertDesk:
         self, task_id: str, owner_actor_id: str
     ) -> tuple[dict[str, Any], ExpertPack | None, list[dict[str, Any]]]:
         task = await self.repo.get_task(task_id, owner_actor_id=owner_actor_id)
-        pack = pack_for_task(task)
+        pack = await display_for_task(self.repo, task)
         attempts = await self.repo.list_attempts(task_id)
         return task, pack, attempts
 
@@ -94,7 +101,50 @@ class ExpertDesk:
             session_id=str(task["session_id"]), turn_ids=turns
         )
         contents = await self.repo.artifact_contents(task_id)
-        return steps_view(pack, task, attempts, verdicts, contents, items, only=only)
+        shown = steps_view(pack, task, attempts, verdicts, contents, items, only=only)
+        if is_dynamic(task) and task.get("accepted_plan_version"):
+            view = await execution_for_task(self.repo, task)
+            assert view and view.receipt
+            current = await current_artifacts(self.repo, task)
+            active = next(
+                (
+                    a
+                    for a in attempts
+                    if str(a["id"]) == str(task.get("active_attempt_id"))
+                ),
+                None,
+            )
+            planning = active and active["step_id"] == PLAN_STEP
+            for row in shown:
+                index = row["index"] - 1
+                instance = view.receipt.proposal.steps[index]
+                art = current.get(pack.workflow[index].output_artifact)
+                row["selection_reason"] = instance.reason
+                row["method_instance"] = instance.instance_id
+                row["current_result"] = (
+                    {k: art[k] for k in ("id", "version", "digest")} if art else None
+                )
+                if art is None:
+                    row["data"] = None  # Old accepted history is not current evidence.
+                if planning and index == int(task["current_step"]):
+                    row["status"] = "pending"
+        return shown
+
+    async def _plan(self, task: dict[str, Any]) -> dict[str, Any] | None:
+        if not is_dynamic(task):
+            return None
+        history = []
+        for version in range(1, int(task.get("accepted_plan_version") or 0) + 1):
+            receipt = await read_plan_version(self.repo, task, version)
+            history.append({"version": version, "reason": receipt.proposal.reason})
+        active = task.get("active_attempt_id")
+        attempt = await self.repo.get_attempt(str(active)) if active else None
+        return {
+            "version": task.get("accepted_plan_version"),
+            "planning": bool(attempt and attempt["step_id"] == PLAN_STEP),
+            "reason": history[-1]["reason"] if history else None,
+            "history": history,
+        }
 
     async def _reason(self, task: dict[str, Any]) -> dict[str, Any] | None:
         """为什么停在现在这个状态。打回的原因在委托上；其余的在最后一次状态变化的事件里。"""
@@ -115,11 +165,11 @@ class ExpertDesk:
             return None
         events = await self.repo.list_record_events(
             session_id=str(task["session_id"]),
-            types=("step/started", "thread/tokenUsage/updated"),
+            types=("attempt/opened", "step/started", "thread/tokenUsage/updated"),
         )
         seen = None
         for event in events:
-            if event["type"] == "step/started":
+            if event["type"] in ("attempt/opened", "step/started"):
                 # 找到这一步开始的地方；它之前的用量都不算
                 seen = Decimal("0") if event.get("attempt_id") == str(active) else None
             elif seen is not None:
@@ -134,7 +184,9 @@ class ExpertDesk:
         active = task.get("active_attempt_id")
         started = [
             e
-            for e in await self.repo.list_task_events(task_id, types=("step/started",))
+            for e in await self.repo.list_task_events(
+                task_id, types=("attempt/opened", "step/started")
+            )
             if active and e.get("attempt_id") == str(active)
         ]
         events: list[dict[str, Any]] = []
@@ -155,6 +207,32 @@ class ExpertDesk:
             else None
         )
         _, waiting = board_place(task, row)
+        attempt = await self.repo.get_attempt(str(active)) if active else None
+        if (
+            attempt
+            and attempt["step_id"] == PLAN_STEP
+            and task["state"] not in TASK_TERMINAL
+        ):
+            waiting = task["state"] == TaskState.WAITING
+            return {
+                "step": {
+                    "index": 0,
+                    "of": len(steps),
+                    "title": "规划任务",
+                    "summary": "选择已确定的方法",
+                    "why": "依据这次问题选择专家已有的方法，并确定执行顺序",
+                },
+                "doing": {
+                    "code": "waiting" if waiting else "planning",
+                    "text": "规划已暂停，等待恢复"
+                    if waiting
+                    else "正在为这次问题安排方法与顺序",
+                },
+                "redo": None,
+                "since": since,
+                "last_event_at": events[-1]["created_at"] if events else since,
+                "held": held,
+            }
         return now_view(
             task,
             steps,
@@ -209,6 +287,7 @@ class ExpertDesk:
             "active_interaction_id": str(task["active_interaction_id"])
             if task.get("active_interaction_id")
             else None,
+            "plan": await self._plan(task),
         }
 
     async def steps(self, task_id: str, *, owner_actor_id: str) -> dict[str, Any]:
@@ -225,7 +304,7 @@ class ExpertDesk:
             "task": await self._sheet(task, pack, steps),
             "now": await self._now(task, steps),
             "position": None
-            if task["state"] == TaskState.REJECTED
+            if task["state"] == TaskState.REJECTED or not pack.workflow
             else position(pack, task),
             "steps": steps,
         }
@@ -258,18 +337,24 @@ class ExpertDesk:
                 },
             }
         steps = await self._steps(task, pack, attempts, only=None)
-        latest = {
-            row["name"]: row
-            for row in await self.repo.list_artifacts_with_content(task_id)
-        }
+        current = await current_artifacts(self.repo, task)
+        conclusion = await self.repo.get_artifact(task_id=task_id, name="conclusion")
+        finals = None
+        if is_dynamic(task):
+            finals = ()
+            if task.get("accepted_plan_version"):
+                view = await execution_for_task(self.repo, task)
+                assert view is not None
+                finals = view.final_artifacts
         return dossier_view(
             pack,
             await self._sheet(task, pack, steps),
             task,
             steps,
             None if task["state"] == TaskState.REJECTED else position(pack, task),
-            {n: r for n, r in latest.items() if r["kind"] == "step"},
-            latest.get("conclusion"),
+            current,
+            conclusion,
+            final_artifacts=finals,
         )
 
     async def dossier_export(self, task_id: str, *, owner_actor_id: str) -> str:
@@ -294,7 +379,22 @@ class ExpertDesk:
                 str(interaction["task_id"]), owner_actor_id
             )
             question = question_of(task)
-            if pack is not None and int(task["current_step"]) < len(pack.workflow):
+            active = next(
+                (
+                    a
+                    for a in attempts
+                    if str(a["id"]) == str(task.get("active_attempt_id"))
+                ),
+                None,
+            )
+            method_phase = not is_dynamic(task) or bool(
+                active and (active.get("refs") or {}).get("kind") == "method_step"
+            )
+            if (
+                method_phase
+                and pack is not None
+                and int(task["current_step"]) < len(pack.workflow)
+            ):
                 (step,) = await self._steps(
                     task, pack, attempts, only=int(task["current_step"]) + 1
                 )
@@ -356,7 +456,7 @@ class ExpertDesk:
         running: list[dict[str, Any]] = []
         returned: list[dict[str, Any]] = []
         for task in await self.repo.list_tasks(owner_actor_id=owner_actor_id):
-            pack = pack_for_task(task)
+            pack = await display_for_task(self.repo, task)
             ended = task["state"] in TASK_TERMINAL
             if ended and len(returned) >= recent:
                 continue
@@ -375,7 +475,7 @@ class ExpertDesk:
                 "queued_behind": (
                     (task.get("original_input") or {}).get("client_context") or {}
                 ).get("queued_behind"),
-                "position": position(pack, task) if pack else None,
+                "position": position(pack, task) if pack and pack.workflow else None,
                 "budget": budget_view(task["budget"]),
                 "started_at": task.get("created_at"),
                 "ended_at": task.get("updated_at") if ended else None,
@@ -399,7 +499,7 @@ class ExpertDesk:
         for task in await self.repo.list_tasks(
             owner_actor_id=owner_actor_id, project_id=project_id
         ):
-            pack = pack_for_task(task)
+            pack = await display_for_task(self.repo, task)
             row = (
                 await self.repo.get_task_resolution(str(task["id"]))
                 if task["state"] == TaskState.WAITING
@@ -416,7 +516,9 @@ class ExpertDesk:
                     "state": task["state"],
                     "state_word": TERMINAL_WORDS.get(task["state"]),
                     "waiting": waiting,
-                    "position": position(pack, task) if pack else None,
+                    "position": position(pack, task)
+                    if pack and pack.workflow
+                    else None,
                     "budget": budget_view(task["budget"]),
                     "started_at": task.get("created_at"),
                     "ended_at": task.get("updated_at") if ended else None,

@@ -130,3 +130,10 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 - 专项 97 passed（/tmp/luna-method-advisor-rebind.txt）；追加迟到提问保护后 Advisor/Runner 50 passed（/tmp/luna-method-advisor-late.txt）。全量原始结果 1365 passed / 1 failed / 92 skipped / 2 既有 collection warnings，480.01 秒（/tmp/luna-method-advisor-full.txt）：usage 取消用例在立即取消终态后抢先读取费用，单测复现同一时序失败（/tmp/luna-method-advisor-stop-repro.txt）。按既有 0034 的先取消、迟到费用另结算语义，测试改为等待对应 turn 的 late_cost 回执，保留所有金额断言；使用量与动态 Advisor 两文件 23 passed（/tmp/luna-method-advisor-stop-final.txt）。最终全量留待下一段合并后重跑，不把失败日志冒充通过。ruff 与 app cwd pyright 通过。
 - 既有 ScriptedAppServer + 真实 Runner 验证 RECEIVED→规划→方法→交付；是预录工程证据，不能替代真实模型/数据验收。v3 准入仍关闭；下一段接 Runner 审批、ExpertDesk/文件/报告/UI 视图及工具入口每轮身份。
 - 权限准备：0.155.1 MCP 自动传 _meta.threadId、callId 与 x-codex-turn-metadata.turn_id，但不能只相信客户端声明；应核已认证 app-server 上报的调用事件、活动 Attempt 和工具子集。隔离容器 --network none、假 Responses/MCP 的实测 /tmp/luna-method-mcp-scope-probe-events.txt，无真实模型/数据调用。另证每线程 http_headers 独立，已加载线程直接 resume 忽略新头，unsubscribe 后 resume 才更新（/tmp/luna-method-mcp-scope-probe-resume.txt）。不能假定热更新生效或全局禁工具。初稿无首个 turn 导致无 rollout、未标只读导致等待审批超时的日志保留，成功探针才是依据。
+
+
+## 2026-11-02 WP-10 单元 3 第四段：计划与当前成果的读取面（未发布）
+
+ExpertDesk、底稿、文件定位、Runner 审批定位与孵化测试成果读取共用任务执行视图。未接受计划时只展示作者身份，不虚构步骤；接受后展示选择理由、计划版本/调整历史、当前有效成果版本。返工失效的历史仍可查，但不再进入当前底稿；动态底稿包含全部 final_outputs。规划/定数据的审批不冒充下一方法。固定专家保留原视图。真实 v3 准入仍关闭，MCP 工具权限正在接续。
+
+数据库相关回归 52 passed（/tmp/luna-method-views-focused-final.txt），类型检查 0 errors、ruff 通过。前端从隔离数据库导出的实际动态响应验证 Zod 契约，完整 377 passed / 2 skipped，typecheck/lint/i18n/生产构建通过（/tmp/luna-method-views-web-*）。最初三条新增组件测试使用了不匹配的会话标题，修正 fixture 引用后通过；没有放宽业务断言。后续全量后端验证统一记录在下一段，不把此前全量结果当作本段证据。

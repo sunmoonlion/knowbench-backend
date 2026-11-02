@@ -1173,10 +1173,11 @@ class KnowbotTestConductor:
         view = await ExpertDesk(repo).steps(
             str(task["id"]), owner_actor_id=account.actor_id
         )
+        from app.application.workbench.execution_plan import current_artifacts
+
         artifacts = {
-            a["name"]: a["content"]
-            for a in await repo.list_artifacts_with_content(str(task["id"]))
-            if a.get("kind") == "step"
+            name: a["content"]
+            for name, a in (await current_artifacts(repo, task)).items()
         }
         result = case_result(
             case=case,
@@ -1264,11 +1265,13 @@ class KnowbotTestConductor:
     ) -> tuple[dict[str, Any] | None, str | None]:
         """只读这条用例验收时记下了路径的那份成稿（每条用例的底稿在自己那一格）；文件的修改
         时间早于这条用例开始的不认，不是这次写的（审读 10-19 第 3 条）。"""
+        from app.application.workbench.execution_plan import current_artifacts
+
         written = sorted(
             (
                 a
-                for a in await repo.list_artifacts_with_content(str(task["id"]))
-                if a.get("kind") == "step" and a.get("workspace_path")
+                for a in (await current_artifacts(repo, task)).values()
+                if a.get("workspace_path")
             ),
             key=lambda a: str(a.get("created_at") or ""),
         )

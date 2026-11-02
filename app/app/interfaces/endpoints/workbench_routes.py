@@ -965,7 +965,7 @@ async def list_tasks(
     return {
         "contract_version": CONTRACT_VERSION,
         "tasks": [
-            {**_plain(t), "dossier": task_dossier(t)}
+            {**_plain(t), "dossier": await task_dossier(repo, t)}
             for t in await repo.list_tasks(
                 owner_actor_id=_actor(principal), session_id=session_id
             )

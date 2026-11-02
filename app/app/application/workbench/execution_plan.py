@@ -21,7 +21,11 @@ from app.domain.workbench.errors import (
     MethodPlanInvalid,
     StaleStateVersion,
 )
-from app.domain.workbench.execution_plan import ExecutionPlan, project_plan
+from app.domain.workbench.execution_plan import (
+    ExecutionPlan,
+    catalog_header,
+    project_plan,
+)
 from app.domain.workbench.method_plan import output_name
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState, Wheel
 
@@ -50,6 +54,36 @@ async def execution_for_task(
         return project_plan(catalog, receipt, profile_id=str(task["profile_id"]))
     except ValueError as exc:
         raise MethodPlanInvalid(str(exc)) from None
+
+
+async def display_for_task(repo: WorkbenchStore, task: dict[str, Any]):
+    """Read-only display can show the author's identity before a plan exists.
+
+    Dispatch still requires execution_for_task and an accepted receipt.
+    """
+    if is_dynamic(task) and task.get("accepted_plan_version") is None:
+        return catalog_header(
+            catalog_for_task(task), profile_id=str(task["profile_id"])
+        )
+    view = await execution_for_task(repo, task)
+    return view.pack if view else None
+
+
+async def current_artifacts(repo: WorkbenchStore, task: dict[str, Any]):
+    """Current accepted results for dossiers/reports; history remains separate."""
+    if is_dynamic(task):
+        if task.get("accepted_plan_version") is None:
+            return {}
+        view = await execution_for_task(repo, task)
+        assert view is not None
+        return {
+            a["name"]: a for a in (await accepted_results(repo, task, view)).values()
+        }
+    return {
+        a["name"]: a
+        for a in await repo.list_artifacts_with_content(str(task["id"]))
+        if a["kind"] == "step"
+    }
 
 
 def _inputs(

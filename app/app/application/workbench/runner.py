@@ -24,8 +24,8 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench.advisor import Advisor, TurnResult
-from app.application.workbench.catalog import pack_for_task
 from app.application.workbench.deliverable_check import DeliverableCheck
+from app.application.workbench.execution_plan import display_for_task, is_dynamic
 from app.application.workbench.expert_data import data_session_note
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.deliverables import changed_paths
@@ -799,8 +799,16 @@ class SandboxLink:
         task = pack = step = None
         if wheel == Wheel.advisor and session.get("active_task_id"):
             task = await repo.get_task(str(session["active_task_id"]))
-            pack = pack_for_task(task)
+            pack = await display_for_task(repo, task)
             step = pack.step(int(task["current_step"])) if pack else None
+            if is_dynamic(task):
+                active = task.get("active_attempt_id")
+                attempt = await repo.get_attempt(str(active)) if active else None
+                if (
+                    not attempt
+                    or (attempt.get("refs") or {}).get("kind") != "method_step"
+                ):
+                    step = None  # Planning/data turns are not the next method.
         return {"wheel": wheel, "task": task, "pack": pack, "step": step}
 
     async def _open_ask(

@@ -46,9 +46,26 @@ def pick(content: Any, path: str | None) -> Any:
     return current
 
 
-def layout_of(pack: ExpertPack) -> tuple[DossierBlock, ...]:
+def layout_of(
+    pack: ExpertPack, final_artifacts: tuple[str, ...] | None = None
+) -> tuple[DossierBlock, ...]:
+    if final_artifacts is not None:
+        # Dynamic finals may come from several instances, not just the last one.
+        return tuple(
+            DossierBlock(
+                key=step.step_id,
+                title=step.title,
+                kind="text",
+                artifact=step.output_artifact,
+                section="answer",
+            )
+            for step in pack.workflow
+            if step.output_artifact in final_artifacts
+        )
     if pack.dossier:
         return pack.dossier
+    if not pack.workflow:
+        return ()
     last = pack.workflow[-1]
     shape = last.output_schema
     blocks = [
@@ -145,6 +162,8 @@ def block_view(
     view["note"] = None
     # 小结的块只给小结；明细在它后面各自的表里
     view["content"] = None if block.kind == "coverage" else pick(content, block.path)
+    if block.kind == "text" and isinstance(view["content"], (dict, list)):
+        view["content"] = json.dumps(view["content"], ensure_ascii=False, indent=2)
     view["also"] = {name: pick(content, path) for name, path in block.also.items()}
     view["artifact"] = {
         "name": found["name"],
@@ -186,6 +205,8 @@ def dossier_view(
     position: dict[str, Any] | None,
     artifacts: dict[str, dict[str, Any]],
     conclusion: dict[str, Any] | None,
+    *,
+    final_artifacts: tuple[str, ...] | None = None,
 ) -> dict[str, Any]:
     """artifacts：每个交回物名字对应它通过验收的最新一版（带内容）。"""
     data = sheet.get("data")
@@ -194,13 +215,12 @@ def dossier_view(
         if not data
         else {k: data.get(k) for k in ("dataset", "data_version", "as_of")}
     )
-    blocks = [block_view(b, pack, artifacts, provenance) for b in layout_of(pack)]
+    layout = layout_of(pack, final_artifacts)
+    blocks = [block_view(b, pack, artifacts, provenance) for b in layout]
     sections = []
     for key, title in SECTIONS:
         mine = [
-            b
-            for b, laid in zip(blocks, layout_of(pack), strict=True)
-            if laid.section == key
+            b for b, laid in zip(blocks, layout, strict=True) if laid.section == key
         ]
         if mine:
             sections.append({"key": key, "title": title, "blocks": mine})

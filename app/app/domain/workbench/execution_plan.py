@@ -60,7 +60,15 @@ def project_plan(
                 slot, path = rule["source"].split(".", 1)
                 rule["source"] = output_name(bound[slot]) + "." + path
         workflow.append(StepContract.model_validate(data))
-    pack = ExpertPack(
+    pack = catalog_header(catalog, profile_id=profile_id).model_copy(
+        update={"workflow": tuple(workflow)}
+    )
+    return ExecutionPlan(pack=pack, receipt=receipt)
+
+
+def catalog_header(catalog: MethodCatalog, *, profile_id: str) -> ExpertPack:
+    """Display identity before planning, with no invented method sequence."""
+    return ExpertPack(
         pack_id=catalog.pack_id,
         version=catalog.version,
         profile_id=profile_id,
@@ -68,6 +76,5 @@ def project_plan(
         name=catalog.name,
         tagline=catalog.tagline,
         scope=catalog.scope,
-        workflow=tuple(workflow),
+        workflow=(),
     )
-    return ExecutionPlan(pack=pack, receipt=receipt)

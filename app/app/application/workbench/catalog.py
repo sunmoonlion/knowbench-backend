@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from app.application.ports.workbench import KnowmartSummoner, WorkbenchStore
+from app.application.workbench.plan_receipts import catalog_for_task
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import ExpertNotReady, KnowbotInvalid, NoSuchExpert
 from app.domain.workbench.packs import ExpertPack, find_pack
@@ -63,6 +64,12 @@ def expert_name(row: dict[str, Any]) -> str:
     if row.get("pack_source") in SNAPSHOT_SOURCES:
         if row.get("pack_name"):
             return str(row["pack_name"])
+        if (
+            isinstance(row.get("pack_snapshot"), dict)
+            and "runtime_contract" in row["pack_snapshot"]
+        ):
+            catalog = catalog_for_task(row)
+            return catalog.name or catalog.title
         pack = pack_for_task(row)
         return (pack.name or pack.title) if pack else ""
     pack = find_pack(str(row.get("profile_id") or ""), row.get("profile_version"))
