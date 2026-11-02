@@ -67,6 +67,7 @@ from app.application.workbench.test_folders import (
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import (
     InteractionRejected,
+    KnowbotInvalid,
     KnowbotTestConflict,
     KnowbotTestNoComputer,
     NotFound,
@@ -295,7 +296,7 @@ class KnowbotTestService:
         *,
         release_grant: Callable[[str], Awaitable[None]] | None = None,
         folders: TestFolders | None = None,
-        dynamic_methods: bool = False,
+        dynamic_method_owners: frozenset[str] = frozenset(),
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.repo = repo
@@ -303,9 +304,9 @@ class KnowbotTestService:
         self.release_grant = release_grant
         # 取消时照推进器收尾的做法删这次测试的目录（账 129）；没配会合点时为 None
         self.folders = folders
-        # Internal integration capability only. Production bootstrap deliberately
-        # keeps this closed until author/sandbox acceptance; callers cannot set it.
-        self.dynamic_methods = dynamic_methods
+        # Deployment-owned admission, never supplied by an HTTP request. An empty
+        # set closes new dynamic tests without breaking accepted runs or recovery.
+        self.dynamic_method_owners = dynamic_method_owners
         self.now = now
 
     async def cancel(self, run_id: str) -> dict[str, Any]:
@@ -369,14 +370,9 @@ class KnowbotTestService:
         manifest = request.manifest
         if (
             manifest.get("schema") == knowbots.MANIFEST_SCHEMA_V3
-            and not self.dynamic_methods
+            and request.owner_subject not in self.dynamic_method_owners
         ):
-            knowbots.pack_from_manifest(
-                manifest,
-                knowbot_id=NO_KNOWBOT,
-                version=str(manifest.get("version")),
-                profile=trial_profile_id(request.run_id),
-            )
+            raise KnowbotInvalid("dynamic author tests are not enabled for this owner")
         _test_snapshot(request)  # Strict catalog, tools, policy and binding checks.
         # 作者自己出钱，上限是这次请求里的（SDD 0046 第三节，decisions ⑯）
         limit = Decimal(request.budget.limit)

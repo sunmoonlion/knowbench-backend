@@ -23,6 +23,56 @@ ENV = "7a1f0c2e-5b6d-4e8f-9a0b-1c2d3e4f5a6b"  # 作者接入的那台电脑
 ROOT = "/home/me/work"
 
 
+@pytest.mark.parametrize("allowed", [False, True])
+async def test_dynamic_intake_uses_deployment_owner_list(
+    client, db, monkeypatch, allowed
+):
+    from test_referenced_method_catalog import manifest as dynamic_manifest
+
+    from app.bootstrap import workbench
+
+    client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
+        caller="knowlab",
+        principal=None,  # type: ignore[arg-type]
+    )
+    config = Settings(
+        KNOWBOT_DYNAMIC_TEST_OWNERS=["user-123"] if allowed else ["someone-else"]
+    )
+    monkeypatch.setattr(workbench, "get_settings", lambda: config)
+    await authors_computer(db)
+    request = body("dynamic-route") | {"manifest": dynamic_manifest()}
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
+    ) as http:
+        response = await http.post(BASE, json=request)
+        assert response.status_code == (202 if allowed else 422), response.text
+        if allowed:
+            # Closing new intake preserves the already accepted run and its digest.
+            monkeypatch.setattr(workbench, "get_settings", lambda: Settings())
+            assert (await http.post(BASE, json=request)).json() == response.json()
+        else:
+            async with db() as session:
+                assert (
+                    await WorkbenchRepository(session).get_test_run("dynamic-route")
+                    is None
+                )
+        assert (
+            await http.post(
+                BASE, json=request | {"dynamic_method_owners": ["user-123"]}
+            )
+        ).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "owners", [["*"], ["user-123", "user-123"], [""], [" user-123"]]
+)
+def test_dynamic_owner_configuration_rejects_ambiguous_subjects(owners):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        Settings(KNOWBOT_DYNAMIC_TEST_OWNERS=owners)
+
+
 def body(run_id="knowlab-run-0100"):
     return {
         "contract": "knowbot-test-run/v1",

@@ -275,6 +275,13 @@ class Settings(BaseSettings):
     knowbot_test_poll_seconds: float = Field(
         default=5.0, ge=1, le=300, validation_alias="KNOWBOT_TEST_POLL_SECONDS"
     )
+    # Exact author subjects admitted to dynamic incubation tests. Marketplace
+    # admission is separate; neither HTTP payloads nor model output can opt in.
+    knowbot_dynamic_test_owners: tuple[str, ...] = Field(
+        default=(),
+        max_length=100,
+        validation_alias="KNOWBOT_DYNAMIC_TEST_OWNERS",
+    )
     # 作为运行方跑孵化的一轮（专家孵化方案第八节）：在作者的账号下、他的电脑上跑（decisions ⑯）。
     # 推进器隔这么多秒推一次在跑的孵化
     knowbot_incubation_poll_seconds: float = Field(
@@ -411,6 +418,15 @@ class Settings(BaseSettings):
                 parts.fragment,
             )
         )
+
+    @field_validator("knowbot_dynamic_test_owners")
+    @classmethod
+    def dynamic_test_owners_are_exact(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if any(not re.fullmatch(r"[A-Za-z0-9._:@-]{1,512}", item) for item in value):
+            raise ValueError("dynamic test owners must be exact authenticated subjects")
+        if len(set(value)) != len(value):
+            raise ValueError("dynamic test owners must be unique")
+        return value
 
     @field_validator("workbench_trusted_proxy_cidrs")
     @classmethod

@@ -48,7 +48,10 @@ def dynamic_request(run_id="dynamic-author-integration"):
 async def admit(db, req, *, enabled=True):
     async with db() as session:
         return await KnowbotTestService(
-            WorkbenchRepository(session), dynamic_methods=enabled
+            WorkbenchRepository(session),
+            dynamic_method_owners=frozenset({req.owner_subject})
+            if enabled
+            else frozenset(),
         ).accept(req, caller="knowlab")
 
 

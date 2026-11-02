@@ -273,3 +273,26 @@ each_has.non_empty_keys/unique_by 检查非空字段和联合唯一性。没有�
 ruff、pyright 通过。运行证据 /tmp/kimi-method-runtime-tests.txt；未用生产数据或 Wind。
 父仓需同步 dynamic-methods v1/v2 schema，knowlab 同步 consumer lock。
 回退应同时回退依赖扩展的候选方法版本和编译/UI，不删历史任务或覆盖历史快照。
+
+## 2026-11-02 第二轨：作者测试准入与真实模型隔离执行
+
+独立分支 feat/dynamic-author-intake，不改变 qwen 正在发布的 31e3701。将仅能测试
+构造的布尔开关替换成部署侧精确作者 subject 列表 KNOWBOT_DYNAMIC_TEST_OWNERS，
+bootstrap 接入。默认空，HTTP 不能指定；仅该作者的新动态孵化测试可以受理，
+目录/方法摘要、电脑归属、预算与数据授权继续原路径。关闭准入不影响已有 run
+的幂等恢复。商城 v3 仍关闭；无新表、迁移或请求协议字段。
+
+HTTP/动态生命周期 17 passed，固定测试/规划/MCP/多成果回归 52 passed，ruff 与
+pyright 通过。日志 /tmp/luna-dynamic-intake-{tests,regression,types}.txt。
+
+另外用实际用户沙箱 Codex 0.155.1 / kimi-k3 做了两层验证：两种题目生成不同计划，
+均通过实际校验器；隔离 DB 的正式受理→Conductor→Runner→Advisor→验收→结果
+回收，两条合成文档任务 2 passed（166.12 秒），选择 2/3 方法。8 个实际模型 turn，
+包括 1 个非法 JSON 规划被拒并在次数上限内重试。没有替换助手输出或修补 JSON。
+模型用量采用实报值，金额只是既有配置价目表的估算；不宣称厂商实际账单已核对。
+
+验证边界：本地连接登记为合成测试账号，探针转接各 turn 至独立真实沙箱线程，
+合成文档全部在题面，无数据 MCP/relay/Wind 或 PDF 检验；不是线上任务端到端验收。
+原件 /tmp/luna-dynamic-live-{results,engine}.jsonl 与 engine-tests.txt，持久证据
+归档于 sunmoonun 总纲/数据拓扑重构/第二轨联调/2026-11-02-创意入口与动态测试。
+没有更新沙箱、续跑旧任务或代点采单；生产仍需 qwen 发布本增量后本人正式测试。

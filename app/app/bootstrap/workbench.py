@@ -335,6 +335,7 @@ def test_run_service(session: AsyncSession) -> KnowbotTestService:
     settings = get_settings()
     return KnowbotTestService(
         workbench_store(session),
+        dynamic_method_owners=frozenset(settings.knowbot_dynamic_test_owners),
         release_grant=knowbase_v2().release_run_grant,
         # 取消时删这次测试的目录（同推进器收尾）；没打开隔离就没有目录
         folders=(
