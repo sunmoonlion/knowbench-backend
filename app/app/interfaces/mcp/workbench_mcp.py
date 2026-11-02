@@ -99,6 +99,18 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "discover_source_tools": {
+        "description": "Discover registered data suppliers available to this task owner. Omit service to list domains, then pass one service to read its current tool input schemas. This does not fetch financial data. Use the exact route and arguments in request_data.source_query; user confirmation is still required. Supplier responses may contain annual report excerpts or links and are not necessarily complete PDFs.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task": _TASK,
+                "service": {"type": "string", "maxLength": 64},
+            },
+            "required": ["task"],
+            "additionalProperties": False,
+        },
+    },
     "find_subject": {
         "description": (
             "Look up the code of a listed company by its name, short name, pinyin "
@@ -135,7 +147,11 @@ TOOLS: dict[str, dict[str, Any]] = {
             "without it) and reason (why it is needed). At most 20 items. "
             "If a value is rejected, consult describe_items and correct that value; "
             "do not drop required data or substitute a different document type "
-            "just to pass validation. State any additional baseline period separately."
+            "just to pass validation. State any additional baseline period separately. "
+            "For a discovered supplier tool, set source_query={channel,service,tool,arguments}, "
+            "doc_type=other_text, period={kind:none}, reading=text. Dates and exact data fields "
+            "belong in tool arguments. This asks for original supplier response evidence, not "
+            "an issuer PDF. Request report originals separately when page checks need them."
         ),
         "inputSchema": {
             "type": "object",
@@ -151,6 +167,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                         "properties": {
                             "subject": {"type": "string", "maxLength": 64},
                             "doc_type": copy.deepcopy(_DATA_FIELDS["doc_type"]),
+                            "source_query": copy.deepcopy(_DATA_FIELDS["source_query"]),
                             "period": copy.deepcopy(_DATA_FIELDS["period"]),
                             "reading": {"enum": ["original", "text", "pages", "table"]},
                             "topics": copy.deepcopy(_DATA_FIELDS["topics"]),
@@ -270,6 +287,12 @@ async def call(
         return await request_data(
             records.repo, knowbase_v2(), working, args.get("needs") or []
         )
+    if name == "discover_source_tools":
+        working = await records._working(args.get("task"))
+        subject = await records.repo.subject_of_actor(str(working["owner_actor_id"]))
+        if subject is None:
+            return {"sources": []}
+        return await knowfeed_supply().source_tools(subject, args.get("service"))
     if name == "find_subject":
         await records._working(args.get("task"))
         return await find_subject(knowfeed_supply(), args.get("name"))

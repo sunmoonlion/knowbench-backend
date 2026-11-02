@@ -41,6 +41,7 @@ _KEY_FIELDS = (
     "edition",
     "topics",
     "industry",
+    "source_query",
 )
 
 
@@ -49,13 +50,14 @@ class PrematchKey(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    subject: str = Field(min_length=1, max_length=64)
+    subject: str | None = Field(default=None, min_length=1, max_length=64)
     doc_type: str = Field(min_length=1, max_length=32)
     period_start: date | None = None
     period_end: date | None = None
     edition: Literal["full", "summary", "english"] = "full"
     topics: list[str] = Field(default_factory=list, max_length=12)
     industry: str | None = Field(default=None, max_length=16)
+    source_query: dict[str, object] | None = None
 
 
 class PrematchItem(BaseModel):
@@ -118,7 +120,9 @@ def request_items(
     out: list[dict[str, Any]] = []
     for entry in entries:
         key = entry.get("key") or {}
-        if entry.get("status") != "to_confirm" or not key.get("subject"):
+        if entry.get("status") != "to_confirm" or not (
+            key.get("subject") or key.get("source_query")
+        ):
             continue
         need = by_key.get(str(entry.get("need_key")))
         given = {f: key[f] for f in _KEY_FIELDS if key.get(f) not in (None, [])}

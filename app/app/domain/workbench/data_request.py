@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
 
 DocType = Literal[
     "disclosure",
@@ -143,6 +143,16 @@ class PeriodRule(_Strict):
     months: int | None = Field(default=None, ge=1, le=60)
 
 
+class SourceQuery(_Strict):
+    """Confirmed query against a registered supplier; credentials never travel here."""
+
+    channel: str = Field(pattern=r"^[a-z][a-z0-9-]{1,39}$")
+    service: str = Field(pattern=r"^[a-z][a-z0-9_]{0,63}$")
+    tool: str = Field(pattern=r"^[a-z][a-z0-9_]{0,99}$")
+    arguments: dict[str, JsonValue] = Field(max_length=50)
+    request_id: str | None = Field(default=None, pattern=r"^[a-f0-9]{32}$")
+
+
 class DataRequest(_Strict):
     """一样数据：主体（证券代码、机构编号；空是不限主体）、类型（细类，或只写大类）、
     期间规则、版本形态、格式、份数、是不是必需、要的读法、来源限制、多候选时的优先
@@ -169,3 +179,4 @@ class DataRequest(_Strict):
     edition: Edition = "full"
     topics: tuple[Topic, ...] = Field(default=(), max_length=12)
     industry: Industry | None = None
+    source_query: SourceQuery | None = None

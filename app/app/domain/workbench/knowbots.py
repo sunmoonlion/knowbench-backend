@@ -48,7 +48,12 @@ DATA_MCP_TOOLS: frozenset[str] = frozenset(
         "lookup",
     }
 )
-V2_TOOLS: frozenset[str] = DATA_MCP_TOOLS | {"compute", "request_data", "find_subject"}
+V2_TOOLS: frozenset[str] = DATA_MCP_TOOLS | {
+    "compute",
+    "request_data",
+    "find_subject",
+    "discover_source_tools",
+}
 _PLATFORM = ToolPolicy()
 _FROZEN = r"^expert:[A-Za-z0-9._-]{1,64}@[0-9][0-9.]{0,31}$"
 

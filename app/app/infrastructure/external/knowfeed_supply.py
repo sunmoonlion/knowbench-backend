@@ -91,6 +91,14 @@ class KnowfeedSupply:
     async def cancel(self, demand_id: str) -> dict[str, Any]:
         return await self._send("POST", f"/demands/{quote(demand_id, safe='')}/cancel")
 
+    async def source_tools(
+        self, owner: str, service: str | None = None
+    ) -> dict[str, Any]:
+        params = {"owner": owner}
+        if service:
+            params["service"] = service
+        return await self._send("GET", "/source-tools", params=params)
+
     async def securities(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         """按名字或代码查证券：[{subject, name}]，对得上的在前。"""
         found = await self._send(

@@ -858,6 +858,10 @@ def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataRequest:
         raise DataChoiceInvalid("each item is an object")
     period = asked.get("period") or {"kind": "none"}
     reason = str(asked.get("reason") or "").strip()
+    source_query = asked.get("source_query")
+    if isinstance(source_query, dict):
+        # The model proposes a fresh acquisition; only the resolver owns its identity.
+        source_query = {k: v for k, v in source_query.items() if k != "request_id"}
     try:
         return DataRequest.model_validate(
             {
@@ -866,7 +870,12 @@ def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataRequest:
                 **({"subject": asked["subject"]} if asked.get("subject") else {}),
                 "doc_type": asked.get("doc_type"),
                 "period": period,
-                "formats": ALL_FORMATS,
+                "formats": ["text"] if asked.get("source_query") else ALL_FORMATS,
+                **(
+                    {"source_query": source_query, "sources": ["collected"]}
+                    if asked.get("source_query")
+                    else {}
+                ),
                 "required": asked.get("essential") is True,
                 "min_count": 1,
                 "max_count": int(asked.get("max_count") or 1),

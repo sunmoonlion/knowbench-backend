@@ -1,3 +1,12 @@
+# 2026-11-02 Wind 通用查询与年报证据（开发候选，未发布）
+
+基线 `24b6415aeaa36e4cf9a6dc4ed113232607ac9859`。本轮本人要求第二轨作为主演示、巨潮保底，财务与年报都纳入、不限制为财务专线。
+
+新增 discover_source_tools（owner 从任务身份取，不认模型传 owner），数据准备可按真实 schema 提出 source_query；参数进入既有确认/预切合/交付链。模型不能复用自己提供的 request_id，解析器生成新查询身份。不扩大作者方法冻结工具范围。
+验证定向数据/MCP/方法权限 94 passed / 1 failed，旧只读工具清单断言漏新 discovery；修正后该模块 6 passed（/tmp/luna-wind-bench-mcp-final.log），最终请求形状/身份 15 passed（/tmp/luna-wind-bench-last-tests.log）。ruff 全仓通过、pyright 0 errors。未跑本轮后端全量；已有动态测试构造开关不变，正式 v3/商城仍关闭。
+
+发布由 qwen/Jenkins；不代点用户采单、不修改线上任务。以下为此前历史：
+
 # 工具回传故障与步骤推进修复（2026-11-02）
 
 发布基线：Jenkins #43 的 `7a1c4beaa30fd1c66b1ec12d75fd6388109e2450`；分支：`fix/tool-roundtrip-release`。原修复先在 6032cbd 基线验证，再移植到当前线上基线。

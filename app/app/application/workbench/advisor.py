@@ -1555,6 +1555,10 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         "the steps need it). At most 20 items.",
         "- The user confirms, changes or drops these items before anything is "
         "fetched or read; you cannot read them in this turn.",
+        f'- Discover available suppliers with discover_source_tools(task="{task_id}"). '
+        "Use a service's advertised schema for source_query in request_data. Supplier responses "
+        "are other_text/text evidence; dates and requested fields go in query arguments. "
+        "Do not substitute an excerpt or link for a required annual report PDF.",
         "- If the question needs no data, propose nothing.",
         "- End the turn with one sentence on what you proposed and why.",
     ]

@@ -89,6 +89,7 @@ async def test_the_handshake_and_the_list_of_tools(served):
         assert names == [
             "list_project_conversations",
             "read_project_conversation",
+            "discover_source_tools",
             "find_subject",
             "request_data",
             "find_expert",
@@ -99,6 +100,7 @@ async def test_the_handshake_and_the_list_of_tools(served):
         for spec in listed["result"]["tools"]:
             assert spec["name"].startswith(("list_", "read_")) or spec["name"] in (
                 "compute",
+                "discover_source_tools",
                 "request_data",
                 "find_subject",
                 "find_expert",
