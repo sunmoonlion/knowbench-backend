@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 import re
 from dataclasses import dataclass, replace
@@ -26,6 +27,7 @@ from app.application.workbench.agent_service import (
     MAX_READ_BYTES,
     AgentRefused,
     AgentService,
+    AgentServiceFailed,
 )
 from app.domain.workbench.errors import WorkbenchError
 
@@ -176,12 +178,25 @@ class AgentDeliverableCheck:
                 "length": MAX_READ_BYTES,
             },
         )
-        size = int(result.get("size") or 0)
+        size = result.get("size")
+        if type(size) is not int or size < 0:
+            raise AgentServiceFailed("invalid deliverable size")
         if size > MAX_READ_BYTES:
             raise DeliverableTooLarge(
                 "the deliverable is larger than one read", size=size
             )
-        raw = base64.b64decode(str(result.get("content") or ""))
+        content = result.get("content")
+        if not isinstance(content, str):
+            raise AgentServiceFailed("invalid deliverable content")
+        try:
+            raw = base64.b64decode(content, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise AgentServiceFailed("invalid deliverable encoding") from exc
+        # This is a whole-file read at offset zero. A partial response must not
+        # become an evidence copy or the old-link digest of a complete report.
+        # Older responses may omit eof; their byte length must still match.
+        if len(raw) != size or ("eof" in result and result["eof"] is not True):
+            raise AgentServiceFailed("incomplete deliverable read")
         mtime = result.get("mtime")
         return RawFile(
             content=raw,

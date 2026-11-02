@@ -365,3 +365,16 @@ sourced/computed/quoted/covers验收→实际临时Markdown文件→底稿投影
 ruff和pyright通过。原始输出 /tmp/luna-second-track-evidence-final.log 与
 /tmp/luna-second-track-evidence-chain.log。初期测试夹具必需字段/状态断言纠正不计产品修复。
 只加测试，生产代码/契约不变；qwen本次发布候选不动。专家v2仍待编译修复发布后测试交付。
+
+## 2026-11-03 成稿读取完整性修复
+
+基线 c0486f9；read_bytes 原先不核返回字节与 size/eof，截断响应可能被测试报告标为
+完整，或在缺少验收摘要时作为产出写入 knowbase；老 link 的 digest 回退也会对半份文件算哈希。
+先加12个故障响应回归全部失败，再补严格 Base64、非负整型 size、全量字节数及可选 eof 校验。
+错误沿用 AgentServiceFailed：产出写入留 pending 重试，测试成稿读取留错误，旧 link 摘要回退返回未知。
+完整空文件与未带 eof 的旧响应仍接受；已有文件存在性“问不到→软检查”规则不变。
+真实隔离数据库证明有/无验收摘要两种情况下都不归档半份文件，恢复后写入原样完整内容。
+文件/归档/动态测试导出/动态证据成稿 66 passed（48.89s），ruff/pyright通过。
+日志 /tmp/luna-deliverable-integrity-before.log、/tmp/luna-deliverable-integrity-after.log；根仓保留副本。
+无迁移、契约或配置变更；只影响读取成稿的错误处理。未移动Qwen当前候选，后续集成发布。
+不校验Markdown与JSON语义一致，不宣称财务数字验收完成。专家v2仍等线上编译修复。
