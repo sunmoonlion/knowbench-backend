@@ -13,6 +13,7 @@ from app.application.workbench.agent_service import (
     MAX_READ_BYTES,
     AgentOffline,
     AgentRefused,
+    AgentServiceFailed,
 )
 from app.application.workbench.deliverable_check import (
     AgentDeliverableCheck,
@@ -183,6 +184,43 @@ async def test_the_raw_bytes_come_back_unchanged():
     assert text is not None and "�" in text.text
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"content": "YQ==", "size": 2, "eof": False},
+        {"content": "YQ==", "size": 2, "eof": True},
+        {"content": "YQ==", "size": 0, "eof": True},
+        {"content": "YQ==", "size": 1, "eof": False},
+        {"content": "YQ==!", "size": 1},
+        {"content": "不是base64", "size": 1},
+        {"content": "YQ==", "size": "1"},
+        {"content": "YQ==", "size": True},
+        {"content": "", "size": -1},
+        {"content": "", "size": 0, "eof": "true"},
+        {"content": ""},
+        {"size": 0},
+    ],
+)
+async def test_partial_or_malformed_bytes_are_not_delivered_as_a_complete_file(
+    response,
+):
+    reader = AgentDeliverableCheck(
+        FakeService(response), stores_with({"relay_user": "u"})
+    )
+    with pytest.raises(AgentServiceFailed):
+        await reader.read_bytes(owner="o", directory="/w", path="report.md")
+
+
+@pytest.mark.parametrize("eof", [{}, {"eof": True}])
+async def test_complete_empty_file_is_preserved_including_legacy_responses(eof):
+    reader = AgentDeliverableCheck(
+        FakeService({"content": "", "size": 0, **eof}),
+        stores_with({"relay_user": "u"}),
+    )
+    result = await reader.read_bytes(owner="o", directory="/w", path="report.md")
+    assert result is not None and result.content == b""
+
+
 class Methods:
     """按方法回答的代理：fs/digest 没有时（老的 link）回 method_not_found。"""
 
@@ -195,6 +233,17 @@ class Methods:
         if isinstance(answer, Exception):
             raise answer
         return answer
+
+
+async def test_old_link_digest_never_hashes_a_partial_read():
+    service = Methods(
+        {
+            "fs/digest": AgentRefused(-32601, "Method not found"),
+            "fs/readFile": {"content": "YQ==", "size": 9, "eof": False},
+        }
+    )
+    reader = AgentDeliverableCheck(service, stores_with({"relay_user": "u"}))
+    assert await reader.digest(owner="o", directory="/w", path="report.md") is None
 
 
 async def test_the_digest_is_asked_on_the_computer_and_falls_back_to_reading():

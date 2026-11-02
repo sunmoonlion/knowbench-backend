@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import hashlib
 from datetime import UTC, datetime
@@ -14,6 +15,7 @@ from typing import Any
 
 import pytest
 from sqlalchemy import text
+from test_deliverable_check import FakeService, stores_with
 from test_workbench_advisor_db import ANSWER, PLAN, ScriptedAppServer, drive, seed
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
@@ -21,6 +23,7 @@ from test_workbench_routes import make_client as make_client  # noqa: F401
 
 from app.application.errors.exceptions import ServiceUnavailableError
 from app.application.workbench.deliverable_check import (
+    AgentDeliverableCheck,
     DeliverableTooLarge,
     RawFile,
 )
@@ -213,6 +216,36 @@ async def test_not_written_does_not_block_and_is_tried_again(db):  # noqa: F811
     area.error = None
     writer.now = lambda: now + RETRY[0] + RETRY[1]
     assert await writer.sweep() == 1
+    [row] = await rows(db)
+    assert row["status"] == "written" and row["last_error"] is None
+
+
+@pytest.mark.parametrize("accepted", [MD, None])
+async def test_partial_read_retries_before_archiving_the_complete_report(db, accepted):  # noqa: F811
+    await delivered(db, accepted=accepted)
+    now = datetime.now(UTC)
+    service = FakeService(
+        {
+            "content": base64.b64encode(MD[:5]).decode(),
+            "size": len(MD),
+            "mtime": int(now.timestamp() * 1000),
+            "eof": False,
+        }
+    )
+    reader = AgentDeliverableCheck(service, stores_with({"relay_user": "u"}))
+    area = Area()
+    writer = OutputWriter(workbench_stores(db), reader, area, now=lambda: now)
+    assert await writer.sweep() == 0
+    [row] = await rows(db)
+    assert row["status"] == "pending"
+    assert row["last_error"] == "成稿没读到：agent_service_failed"
+    assert area.written == []
+
+    service.result.update(content=base64.b64encode(MD).decode(), eof=True)
+    writer.now = lambda: now + RETRY[0]
+    assert await writer.sweep() == 1
+    [written] = area.written
+    assert written["content"] == MD
     [row] = await rows(db)
     assert row["status"] == "written" and row["last_error"] is None
 
