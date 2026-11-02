@@ -44,6 +44,12 @@ from app.application.workbench.deliverable_check import (
     DeliverableReader,
     DeliverableTooLarge,
 )
+from app.application.workbench.execution_plan import (
+    current_artifacts,
+    execution_for_task,
+    final_results,
+    is_dynamic,
+)
 from app.application.workbench.expert_data import (
     new_pins,
     pending_requests,
@@ -1173,12 +1179,12 @@ class KnowbotTestConductor:
         view = await ExpertDesk(repo).steps(
             str(task["id"]), owner_actor_id=account.actor_id
         )
-        from app.application.workbench.execution_plan import current_artifacts
-
-        artifacts = {
-            name: a["content"]
-            for name, a in (await current_artifacts(repo, task)).items()
-        }
+        selected = (
+            await final_results(repo, task)
+            if is_dynamic(task)
+            else await current_artifacts(repo, task)
+        )
+        artifacts = {name: a["content"] for name, a in selected.items()}
         result = case_result(
             case=case,
             task=task,
@@ -1235,7 +1241,48 @@ class KnowbotTestConductor:
                 (await desk.step(task_id, n, owner_actor_id=account.actor_id))["step"]
                 for n in range(1, steps + 1)
             ]
-            deliverable, note = await self._deliverable(repo, task, full)
+            final_outputs = []
+            plan_version = None
+            if is_dynamic(task):
+                deliverable, note = None, None
+                if task.get("accepted_plan_version") is not None:
+                    execution = await execution_for_task(repo, task)
+                    assert execution is not None and execution.receipt is not None
+                    plan_version = execution.receipt.version
+                    accepted = await final_results(repo, task)
+                    for (
+                        method,
+                        instance,
+                    ) in execution.receipt.proposal.final_outputs.items():
+                        artifact = accepted.get(method)
+                        result: dict[str, Any] = {
+                            "method_id": method,
+                            "instance_id": instance,
+                            "result": None,
+                            "note": "这个最终方法尚无当前有效的已验成果",
+                        }
+                        if artifact is not None:
+                            result.update(
+                                result={
+                                    "id": str(artifact["id"]),
+                                    "version": artifact["version"],
+                                    "digest": artifact["digest"],
+                                },
+                                artifact=artifact["content"],
+                                note=None,
+                            )
+                            if artifact.get("workspace_path"):
+                                (
+                                    result["deliverable"],
+                                    result["note"],
+                                ) = await self._read_deliverable(
+                                    repo, task, artifact, instance
+                                )
+                                if result["deliverable"] is not None and timed_out:
+                                    result["note"] = "超时收尾时取的，可能没写完"
+                        final_outputs.append(result)
+            else:
+                deliverable, note = await self._deliverable(repo, task, full)
             if deliverable is not None and timed_out:
                 note = "超时收尾时取的，可能没写完"
             return case_outputs(
@@ -1244,6 +1291,8 @@ class KnowbotTestConductor:
                 steps=full,
                 deliverable=deliverable,
                 deliverable_note=note,
+                plan_version=plan_version,
+                final_outputs=final_outputs,
             )
         except Exception:  # noqa: BLE001 - 产出取不到不拖累结论
             log.exception(
@@ -1265,8 +1314,6 @@ class KnowbotTestConductor:
     ) -> tuple[dict[str, Any] | None, str | None]:
         """只读这条用例验收时记下了路径的那份成稿（每条用例的底稿在自己那一格）；文件的修改
         时间早于这条用例开始的不认，不是这次写的（审读 10-19 第 3 条）。"""
-        from app.application.workbench.execution_plan import current_artifacts
-
         written = sorted(
             (
                 a
@@ -1277,7 +1324,6 @@ class KnowbotTestConductor:
         )
         if not written:
             return None, "这条用例没有写成稿：写稿那一步没走到，或没写文件"
-        path = str(written[-1]["workspace_path"])
         step_id = next(
             (
                 str(s.get("step_id"))
@@ -1286,6 +1332,17 @@ class KnowbotTestConductor:
             ),
             None,
         )
+        return await self._read_deliverable(repo, task, written[-1], step_id)
+
+    async def _read_deliverable(
+        self,
+        repo: WorkbenchStore,
+        task: dict[str, Any],
+        artifact: dict[str, Any],
+        step_id: str | None,
+    ) -> tuple[dict[str, Any] | None, str | None]:
+        """One existing file-reading path for both fixed and dynamic final outputs."""
+        path = str(artifact["workspace_path"])
         if self.reader is None:
             return None, "没有读电脑上文件的通道（会合点没配），成稿没取"
         session = await repo.get_session(str(task["session_id"]))

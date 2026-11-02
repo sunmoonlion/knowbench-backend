@@ -148,3 +148,28 @@ ExpertDesk、底稿、文件定位、Runner 审批定位与孵化测试成果读
 - 首次全量 1387 passed / 7 failed / 92 skipped：6 个是新增测试夹具的 publisher 参数和 recorder 接线缺失，1 个是上述固定接口 plan:null 差异；已逐项修复，原日志 /tmp/luna-method-runtime-full.txt 保留。动态定数据新增测试最初缺 grant_ref fixture，补齐后 2 passed；未放宽断言。
 - 固定 Codex 0.155.1 在网络隔离容器内跑合成 Responses/MCP：模型调用元信息与 app-server 事件一致，direct call 没有轮次身份，线程 header 隔离、live resume 不刷新而卸载后 resume 刷新均通过。复跑脚本 scripts/probes/codex_mcp_provenance.py，/tmp/luna-method-provenance-probe-final.txt。不读用户配置/Key、不调用真实模型或 Wind，未改全局沙箱配置。
 - 当前 v3 外部准入仍关闭；作者方法库 UI/内容由 agy 负责，后续继续对齐孵化测试的稳定期望与多成果回执，再做真实沙箱/作者流程验收。本轮不发版、不动 qwen 候选、Jenkins、sources、线上任务或采单。Wind 仍 3/5、W0 未决；保底仍巨潮。
+
+## 2026-11-02 WP-10 单元 3 第六段：稳定测试期望与多成果产出（未发布）
+
+- 基线 ee3c40c09d2cffa6ce37773411c5f610fe2a2138，接续 feat/method-execution-view。
+  final_results 将作者声明的最终方法别名经接受计划映射到确切已验成果，测试断言仍用
+  原 equals/approx/contains。动态测试请求拒绝非最终方法名/实例名，不复制评价引擎。
+- 测试产出携 plan_version 和全部 final_outputs（方法/实例/成果 ID、版、摘要/JSON/
+  可选文件）；重做失效成果只留历史，步骤 current=false。复用原作者工作区文件读取，
+  未读到、过大、过旧和超时有说明。总量限制省内容、不丢引用，旧固定响应字段不变。
+  provider 为 knowlab-backend ad076ff2591b296d1a22a5780aa15fafc7915013，父仓
+  090c985c64cb78a87cf488a59159f3e8390581b6；本父仓只更新 case-outputs schema 消费摘要。
+- 全量隔离 PostgreSQL 1405 passed / 92 skipped / 2 既有 collection warnings，494.43 秒
+  （/tmp/luna-method-exports-bench-full.txt）。全量开始后只补真实 conductor 结果落库断言
+  及实际编译引用清单的两任务运行测试，四文件最终 11 passed，
+  /tmp/luna-method-exports-reference-final.txt；没有把追加测试冒充已纳入该次全量。
+  最终全仓 ruff/pyright 0 errors，/tmp/luna-method-exports-bench-{ruff,pyright}-final.txt。
+- 新数据库测试发现 UUID 未转字符串导致整份产出序列化失败，已修。初版测试还误设
+  非最后实例为最终成果、covers 输入不匹配、假定 JSONB 字段顺序及忽略底稿目录；按
+  既有真实契约纠正夹具/断言后通过，未放宽校验器。conductor 持久化验证改用既有独立
+  get_test_case_outputs，列表接口本来就不带 2 MB 产出。初始日志保留于
+  /tmp/luna-method-test-exports-db*.txt、/tmp/luna-method-test-exports-final*.txt 和
+  /tmp/luna-method-exports-final-focused*.txt。
+- 实际编译的动态方法引用 v2 清单在同一执行器分别跑两步/三步计划，保持 report 方法
+  版本 2、冻结作者快照与任务成果隔离。Driver 仍为预录，不证明真实模型选择质量。
+  无迁移、Wind 调用或生产发布；v3 准入保持关闭，待 agy 作者页与真实沙箱完整联调。

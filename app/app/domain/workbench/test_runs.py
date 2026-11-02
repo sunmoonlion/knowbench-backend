@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -132,6 +133,24 @@ class RunRequest(Strict):
         ids = [c.case_id for c in self.cases]
         if len(ids) != len(set(ids)):
             raise ValueError("case ids must be unique")
+        if self.manifest.get("schema") == "knowbot-manifest/v3":
+            pack = self.manifest.get("pack")
+            planning = pack.get("planning") if isinstance(pack, dict) else None
+            finals = planning.get("final_units") if isinstance(planning, dict) else None
+            if (
+                not isinstance(finals, (list, tuple))
+                or not finals
+                or any(not isinstance(v, str) for v in finals)
+            ):
+                raise ValueError(
+                    "dynamic test manifests require declared final methods"
+                )
+            if any(
+                e.artifact not in finals for c in self.cases for e in c.expectations
+            ):
+                raise ValueError(
+                    "dynamic expectations must name a declared final method"
+                )
         return self
 
     def digest(self) -> str:
@@ -275,6 +294,8 @@ def case_result(
     platform: list[str] = []
     for step in steps:
         accepted = step.get("status") == "accepted"
+        if "current_result" in step and step["current_result"] is None:
+            accepted = False
         failed: list[dict[str, Any]] = []
         for attempt in reversed(step.get("attempts") or []):
             if attempt.get("outcome") in ("accepted", "rejected"):
@@ -350,10 +371,12 @@ def step_output(step: dict[str, Any]) -> dict[str, Any]:
     """工作台单步视图（带交回物与过程的那种）里一步的最后一次尝试 → 产出里的一步。
 
     通过的带交回物；没过的带最后一次交回的内容与原文、逐条验收；没开始的 not_reached。"""
-    head = {
+    head: dict[str, Any] = {
         "step_id": str(step.get("step_id") or "")[:128],
         "title": str(step.get("title") or "")[:200],
     }
+    if "current_result" in step:
+        head["current"] = step["current_result"] is not None
     attempts = step.get("attempts") or []
     if not attempts:
         return {**head, "outcome": "not_reached", "checks": []}
@@ -392,6 +415,8 @@ def case_outputs(
     deliverable: dict[str, Any] | None,
     deliverable_note: str | None,
     error: str | None = None,
+    plan_version: int | None = None,
+    final_outputs: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """一条用例的产出，合计不超过 OUTPUTS_BYTES（留出余量给对方补默认字段）。
 
@@ -406,6 +431,22 @@ def case_outputs(
         "steps": [step_output(s) for s in steps][:200],
         "error": error[:500] if error else None,
     }
+    if final_outputs:
+        if plan_version is None:
+            raise ValueError("final outputs require an accepted plan version")
+        out.update(
+            plan_version=plan_version, final_outputs=copy.deepcopy(final_outputs)
+        )
+        for final in out["final_outputs"]:
+            if "artifact" in final and _json_bytes(final["artifact"]) > ARTIFACT_BYTES:
+                final["artifact_omitted_bytes"] = _json_bytes(final.pop("artifact"))
+            file = final.get("deliverable")
+            if file and len(file["text"]) > DELIVERABLE_CHARS:
+                final["deliverable"] = {
+                    **file,
+                    "text": file["text"][:DELIVERABLE_CHARS],
+                    "truncated": True,
+                }
     if deliverable is not None and len(deliverable["text"]) > DELIVERABLE_CHARS:
         out["deliverable"] = {
             **deliverable,
@@ -431,6 +472,18 @@ def _drop_artifacts(out: dict[str, Any]) -> None:
         if _json_bytes(out) <= _BUDGET:
             return
         step["artifact_omitted_bytes"] = _json_bytes(step.pop("artifact"))
+
+
+def _drop_final_contents(out: dict[str, Any]) -> None:
+    """Keep every final identity even when its content cannot fit the response."""
+    for final in sorted(out.get("final_outputs") or [], key=_json_bytes, reverse=True):
+        if _json_bytes(out) <= _BUDGET:
+            return
+        if "artifact" in final:
+            final["artifact_omitted_bytes"] = _json_bytes(final.pop("artifact"))
+        if final.get("deliverable"):
+            final["deliverable"] = None
+            final["note"] = "这份成稿太大，本次只保留已验成果引用"
 
 
 def _cut_raw(out: dict[str, Any]) -> None:
@@ -475,6 +528,7 @@ def _outcomes_only(out: dict[str, Any]) -> None:
             "title": s["title"],
             "outcome": s["outcome"],
             "checks": [],
+            **({"current": s["current"]} if "current" in s else {}),
         }
         for s in out["steps"]
     ]
@@ -483,6 +537,7 @@ def _outcomes_only(out: dict[str, Any]) -> None:
 
 _GIVE_WAY = (
     _drop_artifacts,
+    _drop_final_contents,
     _cut_raw,
     _drop_raw,
     _failed_checks_only,

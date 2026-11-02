@@ -86,6 +86,24 @@ async def current_artifacts(repo: WorkbenchStore, task: dict[str, Any]):
     }
 
 
+async def final_results(repo: WorkbenchStore, task: dict[str, Any]):
+    """Stable author final names resolve through the exact accepted plan.
+
+    Never pick an instance by its name/order or substitute a latest artifact.
+    This is a projection for the existing test predicates, not a new evaluator.
+    """
+    if not is_dynamic(task) or task.get("accepted_plan_version") is None:
+        return {}
+    view = await execution_for_task(repo, task)
+    assert view is not None and view.receipt is not None
+    results = await accepted_results(repo, task, view)
+    return {
+        method: results[instance]
+        for method, instance in view.receipt.proposal.final_outputs.items()
+        if instance in results
+    }
+
+
 def _inputs(
     view: ExecutionPlan,
     index: int,
