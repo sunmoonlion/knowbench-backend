@@ -14,6 +14,7 @@ from test_workbench_ledger_db import db as db
 from test_workbench_records_db import world
 from test_workbench_review_db import unbalanced
 
+from app.application.workbench.data_relay import RELAYED
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.bootstrap.api import create_app
 from app.infrastructure.storage.postgres import get_db_session
@@ -289,6 +290,10 @@ class FakeDataMcp:
                             },
                         },
                         {"name": "not_relayed", "inputSchema": {"type": "object"}},
+                        *[
+                            {"name": name, "inputSchema": {"type": "object"}}
+                            for name in sorted(RELAYED - {"list_inputs"})
+                        ],
                     ]
                 },
             }
@@ -321,7 +326,7 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
 
     fake_kb = FakeDataMcp()
     monkeypatch.setattr(mcp, "knowbase_v2", lambda: fake_kb)
-    relay_module._tools_cache.update(at=0.0, tools=[])
+    relay_module._tools_cache.clear()
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
         async with db() as s:

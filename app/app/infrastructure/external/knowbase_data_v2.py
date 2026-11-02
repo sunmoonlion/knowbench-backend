@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ BASE_V2 = "/api/internal/v2/user-data"
 DATA_MCP_PATH = "/api/mcp/data"
 READ = "user-data-read"
 OUTPUT = "user-data-output"
+log = logging.getLogger(__name__)
 
 
 class KnowbaseDataV2(KnowbaseClient):
@@ -292,6 +294,10 @@ class KnowbaseDataV2(KnowbaseClient):
 
     # —— 数据 MCP 中继（0048）——
 
+    @property
+    def data_mcp_configured(self) -> bool:
+        return bool(self._environ.get("KNOWBASE_INTERNAL_URL", "").strip())
+
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]:
         """把一条 JSON-RPC 原样交给 knowbase 数据 MCP；令牌是工作台当场签的
         `knowbase-data` 令牌。只回 JSON（knowbase 不开流）。"""
@@ -314,10 +320,27 @@ class KnowbaseDataV2(KnowbaseClient):
             raise ServiceUnavailableError(
                 "knowbase is unreachable", code="knowbase_unavailable"
             ) from exc
-        if response.status_code >= 500 or response.status_code == 401:
-            raise ServiceUnavailableError(
-                "knowbase data tools failed", code="knowbase_unavailable"
-            )
-        if response.status_code == 202 or not response.content:
+        if response.status_code == 202 and "id" not in message:
             return {}
-        return response.json()
+        if response.status_code != 200:
+            log.warning("knowbase_data_mcp_http_error status=%s", response.status_code)
+            raise ServiceUnavailableError(
+                f"knowbase data MCP returned HTTP {response.status_code}",
+                code="knowbase_mcp_http_error",
+            )
+        try:
+            reply = response.json()
+        except ValueError:
+            reply = None
+        if (
+            not isinstance(reply, dict)
+            or reply.get("jsonrpc") != "2.0"
+            or reply.get("id") != message.get("id")
+            or ("result" in reply) == ("error" in reply)
+            or not isinstance(reply.get("result", reply.get("error")), dict)
+        ):
+            raise ServiceUnavailableError(
+                "knowbase data MCP returned an invalid response",
+                code="knowbase_mcp_invalid_response",
+            )
+        return reply

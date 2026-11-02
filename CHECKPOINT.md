@@ -229,3 +229,31 @@ Ledger 钉为 knowlab-test，复用实际 Runner/规划/Attempt/验收和多成�
 本人暂停采单或新增 Wind 调用。下一步仍需真实作者/沙箱联合验收才决定生产准入。
 回退应用无需回退 schema，保留测试及任务记录；默认关闭只控制新受理，不能删除
 已受理任务的快照来回退。agy 财务内容继续待下一轮交回，不将测试夹具正式入库。
+
+## 2026-11-02 #52 数据读工具发现故障修复（合入原整合候选）
+
+基线 cb597459ef3ce0a9507657e2cf55609c0f924f8e。用户要求修复后并入现有发版；
+qwen 负责 Jenkins/集群，本轮只读诊断线上，不操作委托/确认单/等待提问。
+真实工作台 Pod 对配置的 knowbase HTTPS /api/mcp/data 返回 404 text/plain；
+knowbase 本地同路径无凭据返回 401 JSON，双方签名公钥指纹与 issuer 一致。
+根因是 service-access 模板漏路由，DataRelay 又吞异常返回成功的残缺目录。
+官方 app-server thread/read 显示另外两次拒绝分别是读取当前会话、compute 空 inputs；
+不能由这些正常拒绝推断任务绑定坏了。mcpServerStatus/list 实测当前线程仅 6 个
+项目/提采工具，没有 9 个数据工具。未读内部 SQLite，未输出凭据。
+
+补 knowbase 内部 HTTPS Exact 路由（sunmoonun 同批）；客户端校验 HTTP/JSON-RPC，
+只对 notification 接受 202；中继失败返回 -32003，只有完整目录可进入有界缓存，
+按提供方/身份/沙箱/签名上下文隔离并返回副本。未配置数据服务的安装仍支持项目工具。
+日志只有故障类别/HTTP 状态，不写令牌/上游正文。不改数据授权、计算校验或任务状态。
+
+验证：35 项发现/客户端测试通过；包含它们的工作台定向集 124 passed in 10.71s，
+日志 /tmp/luna-data-mcp-regression.log；提供方真实隔离 DB MCP 8 passed in 7.38s，
+/tmp/luna-data-mcp-provider.log。真实 knowbase ASGI/JWT→knowbench HTTP 客户端→中继
+发现 9 个工具，/tmp/luna-real-mcp-catalog.log（脚本 /tmp/luna_check_real_mcp_catalog.py）。
+ruff / pyright 通过；部署模板用真实 config/Jinja 渲染 dev/test，1 个测试通过。
+首次定向命令使用了不存在的 test_workbench_run_reader.py，收集前退出，已改用真实
+存在的 MCP/compute/method_runner 测试集重跑；不将那次空跑算通过。未跑后端全量。
+
+剩余：qwen 按同一交接更新入口声明和镜像；真实 tools/list 及已有线程目录刷新后
+验收，旧任务的用户提问继续由本人决定。无迁移、Wind 真实调用为 0；当前不是生产
+已修复的结论，不能用本地通过代替发布后检查。回退保留用户材料与记录。

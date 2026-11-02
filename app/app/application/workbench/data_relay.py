@@ -19,14 +19,16 @@ knowbase；能读什么由 knowbase 每次按授权核，工作台拿不到用�
 from __future__ import annotations
 
 import copy
+import logging
 import time
+from collections import OrderedDict
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.records import ProjectRecords, as_id
 from app.application.workbench.tokens import TokenIssuer
-from app.domain.workbench.errors import RecordsRefused
+from app.domain.workbench.errors import RecordsRefused, UserDataUnavailable
 from app.domain.workbench.knowbots import DATA_MCP_TOOLS
 
 NO_SCOPE = frozenset({"describe_items", "lookup"})
@@ -41,7 +43,8 @@ _CONVERSATION = {
     "description": "In a chat: the conversation id given in the instructions.",
 }
 _TOOLS_TTL_SECONDS = 600
-_tools_cache: dict[str, Any] = {"at": 0.0, "tools": []}
+_tools_cache: OrderedDict[tuple, tuple[float, list[dict[str, Any]]]] = OrderedDict()
+log = logging.getLogger(__name__)
 
 
 class KnowbaseDataMcp(Protocol):
@@ -97,23 +100,63 @@ class DataRelay:
         self.reader = RunReader(knowbase, issuer)
 
     async def tools(self) -> list[dict[str, Any]]:
-        """数据工具的定义（照 knowbase，缓存几分钟）；knowbase 不通就是空的。"""
-        if time.monotonic() - _tools_cache["at"] < _TOOLS_TTL_SECONDS:
-            return list(_tools_cache["tools"])
+        """只缓存完整的成功目录；配置了数据服务却发现失败时明确报错。"""
+        # Deliberately unconfigured installations retain project-only tools.
+        # A configured but broken service must never advertise a partial catalog.
+        if getattr(self.knowbase, "data_mcp_configured", True) is False:
+            return []
         try:
             subject = await self._subject()
+            key = (
+                self.knowbase,
+                subject,
+                self.sandbox,
+                self.issuer.kid,
+                self.issuer.issuer,
+            )
+            cached = _tools_cache.get(key)
+            if cached and time.monotonic() - cached[0] < _TOOLS_TTL_SECONDS:
+                _tools_cache.move_to_end(key)
+                return copy.deepcopy(cached[1])
             token = self.issuer.data_token(
                 subject, sandbox=self.sandbox, tools=sorted(RELAYED)
             ).token
             reply = await self.knowbase.data_mcp(
                 token, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
             )
-        except Exception:  # noqa: BLE001 — 数据工具暂时不列，项目工具照常
-            return []
-        listed = (reply.get("result") or {}).get("tools") or []
-        tools = [rewrite(t) for t in listed if t.get("name") in RELAYED]
-        _tools_cache.update(at=time.monotonic(), tools=tools)
-        return list(tools)
+            result = reply.get("result")
+            listed = result.get("tools") if isinstance(result, dict) else None
+            if reply.get("error") or not isinstance(listed, list):
+                raise ValueError("invalid tool catalog")
+            specs = {}
+            for spec in listed:
+                if not isinstance(spec, dict) or not isinstance(spec.get("name"), str):
+                    raise ValueError("invalid tool definition")
+                name = spec["name"]
+                if name not in RELAYED:
+                    continue
+                if name in specs or not isinstance(spec.get("inputSchema"), dict):
+                    raise ValueError("invalid or duplicate tool definition")
+                specs[name] = rewrite(spec)
+            if set(specs) != RELAYED:
+                raise ValueError("incomplete tool catalog")
+            tools = list(specs.values())
+        except Exception as exc:
+            # Never log upstream bodies or tokens. HTTP/protocol codes are enough
+            # to distinguish unavailable transport from missing user materials.
+            log.warning(
+                "workbench_data_tools_unavailable cause=%s code=%s",
+                type(exc).__name__,
+                getattr(exc, "code", "catalog_invalid"),
+            )
+            raise UserDataUnavailable(
+                "The data tool catalog is unavailable. Retry tools/list after the "
+                "service recovers; this does not mean the task has no data."
+            ) from None
+        _tools_cache[key] = (time.monotonic(), copy.deepcopy(tools))
+        while len(_tools_cache) > 128:
+            _tools_cache.popitem(last=False)
+        return tools
 
     async def call(self, mid: Any, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """换好范围、签好令牌，转给 knowbase；回 knowbase 的 JSON-RPC 回复（编号换回来）。"""

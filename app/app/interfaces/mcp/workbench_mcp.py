@@ -351,7 +351,10 @@ async def handle(
     if method == "ping":
         return _ok(mid, {})
     if method == "tools/list":
-        data_tools = await relay.tools() if relay is not None else []
+        try:
+            data_tools = await relay.tools() if relay is not None else []
+        except WorkbenchError as exc:
+            return _err(mid, -32003, exc.message)
         return _ok(
             mid,
             {
