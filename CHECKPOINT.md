@@ -137,3 +137,14 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 ExpertDesk、底稿、文件定位、Runner 审批定位与孵化测试成果读取共用任务执行视图。未接受计划时只展示作者身份，不虚构步骤；接受后展示选择理由、计划版本/调整历史、当前有效成果版本。返工失效的历史仍可查，但不再进入当前底稿；动态底稿包含全部 final_outputs。规划/定数据的审批不冒充下一方法。固定专家保留原视图。真实 v3 准入仍关闭，MCP 工具权限正在接续。
 
 数据库相关回归 52 passed（/tmp/luna-method-views-focused-final.txt），类型检查 0 errors、ruff 通过。前端从隔离数据库导出的实际动态响应验证 Zod 契约，完整 377 passed / 2 skipped，typecheck/lint/i18n/生产构建通过（/tmp/luna-method-views-web-*）。最初三条新增组件测试使用了不匹配的会话标题，修正 fixture 引用后通过；没有放宽业务断言。后续全量后端验证统一记录在下一段，不把此前全量结果当作本段证据。
+
+
+## 2026-11-02 WP-10 单元 3 第五段：实际轮次工具鉴权与跨层验证（未发布）
+
+- MethodToolGuard 已接入真实 MCP HTTP 路由，校验沙箱/线程/轮次/callId、Runner 观察的工具事件与完整参数，再校验活动 Attempt 的已接受计划、输入和工具子集。覆盖 conversation/market/no-scope、取消后省略 task、旧轮次、跨沙箱、元信息伪造及底层 run/session 注入。账户存在动态历史后不回退无来源校验；普通聊天使用既有 turn/accepted(by=user)。数据读取继续走既有任务 grant，不代用户确认。
+- Runner 在发送前捕获活动 Attempt，以 turn/start 响应写 refs.runtime_turn_id；费用去重的 turn_ids 仍与结算一起写。绑定失败中断并保留用量。规划只读且不挂用户执行环境；原生审批核实际轮次/活动方法，重复请求和已有 grant 不覆盖作者 deny。动态定数据无 MCP 时失败，不假装数据齐全。规划只接收有界的已钉资料元信息及请求状态，不注入未读内容或数据授权凭据。
+- 固定专家继续返回原 HTTP 形状，修复第四段额外 plan:null 导致契约 fixture 不一致的问题。没有放宽固定契约或更新基线 fixture 来掩盖差异。
+- 完整后端回归 1396 passed / 92 skipped / 2 既有 collection warnings（508.68 秒，/tmp/luna-method-runtime-full-final.txt）。全量启动后补了规划数据元信息及跨层测试，相关四文件最后 44 passed（/tmp/luna-method-runtime-contract-final.txt），含真实 Runner websocket → MCP HTTP → 隔离 DB → 合成 knowbase → 最终成果的验证。最终 ruff/pyright 通过（/tmp/luna-method-runtime-{ruff,pyright}-final.txt）。
+- 首次全量 1387 passed / 7 failed / 92 skipped：6 个是新增测试夹具的 publisher 参数和 recorder 接线缺失，1 个是上述固定接口 plan:null 差异；已逐项修复，原日志 /tmp/luna-method-runtime-full.txt 保留。动态定数据新增测试最初缺 grant_ref fixture，补齐后 2 passed；未放宽断言。
+- 固定 Codex 0.155.1 在网络隔离容器内跑合成 Responses/MCP：模型调用元信息与 app-server 事件一致，direct call 没有轮次身份，线程 header 隔离、live resume 不刷新而卸载后 resume 刷新均通过。复跑脚本 scripts/probes/codex_mcp_provenance.py，/tmp/luna-method-provenance-probe-final.txt。不读用户配置/Key、不调用真实模型或 Wind，未改全局沙箱配置。
+- 当前 v3 外部准入仍关闭；作者方法库 UI/内容由 agy 负责，后续继续对齐孵化测试的稳定期望与多成果回执，再做真实沙箱/作者流程验收。本轮不发版、不动 qwen 候选、Jenkins、sources、线上任务或采单。Wind 仍 3/5、W0 未决；保底仍巨潮。

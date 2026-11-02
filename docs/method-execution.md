@@ -97,8 +97,72 @@ Advisor 在无计划时调用 MethodPlanner，随后按任务视图开方法 Att
 身份；有计划显示实例、选择理由、计划调整历史与当前成果版本。底稿只使用有效前缀及
 全部最终成果，历史结果仍保留供核对。测试报告的单文件交付契约仍不等同多成果交付。
 
-在保持 v3 准入关闭的前提下继续 MCP 鉴权。MCP 当前只绑用户/沙箱，args.task 并非受信调用身份；
-conversation、market、NO_SCOPE 等路径也必须覆盖。不能改整个沙箱的全局工具配置来冒充
-单个任务的权限，也不能只改提示词或步骤栏就开放动态执行。
+MCP 调用鉴权已经接线，见下节。v3 仍拒绝外部准入；尚需与作者方法库页面、孵化测试
+期望/多成果输出契约以及真实沙箱共同验收，不能将替身协议测试当作上线许可。固定专家
+响应不增加 plan:null，原非空 knowbase 数据 HTTP 契约快照必须逐字通过。
 
 发布分支由 qwen 单独维护，本开发不进入正在发布的合并候选。
+
+
+## 真实轮次与工具权限
+
+`method_tools.py` 复用现有 Task/Attempt、沙箱身份与会话事件。Runner 发 turn/start 前捕获
+活动 Attempt，收到响应后将实际 turn_id 写入 refs.runtime_turn_id；它不等于计费完成，
+不会提前写入用于费用去重的 turn_ids。绑定失败要中断并保留实际用量，不能收到响应却
+丢掉费用。规划使用宿主只读策略、不挂用户执行环境，不准提权；方法轮次恢复原执行环境。
+
+HTTP MCP 在所有本地工具和数据中继之前检查：
+
+- `_meta.x-codex-turn-metadata` 的线程、轮次与 callId 必须与 Runner 经已认证 app-server
+  收到并落库的 item/started 相符，server、tool、完整 arguments 也一致。metadata 本身
+  不是凭据，模型给的 task/conversation 更不是。沙箱 JWT、线程所有者及沙箱记录必须对应。
+- HTTP 与 websocket 可能先后到达，最多等 2 秒让事件/轮次绑定落库；不锁 Task 等网络，
+  超时拒绝，不回退放行。turn/completed 后旧调用不能重放。
+- 动态任务只认当前活动 Attempt 及其已接受计划、固定输入和所选工具。规划轮次无工具；
+  定数据只许 find_subject/describe_items/request_data；方法按冻结子集。拒绝借另一任务、
+  conversation 或 scope=market 绕过；lookup/describe_items 即使不带 task，也必须通过
+  该轮次的工具子集检查，再走现有 knowbase 公共发现规则。
+- DataRelay 仍向 knowbase 传服务端持有的运行授权。模型不能直接提供底层 run/session；
+  方法工具授权不替代数据授权，更不替用户确认采单。动态定数据在 MCP 未配置时失败，
+  不把“没有工具”写成“数据齐了”。
+- 为防去掉 task 参数或取消后退回旧入口，账户一旦存在动态任务历史，该账户的调用都需
+  可核实的执行来源。普通聊天使用原有 turn/accepted（by=user）证明，仍可并行使用自己的
+  数据会话；仅有固定专家的账户保持既有路径。不能手工删除历史来规避此检查。
+
+原生审批按活动方法和实际 turn_id 定位，规划/定数据不能借下一方法的权限放行；绑定
+损坏、旧轮次或作者明确 deny 都拒绝，已有任务授权和重复请求不能扩大作者边界。该检查
+针对 app-server 发来的审批请求；本轮没有另建本机命令执行器或声称屏蔽所有只读宿主工具。
+`tools/list` 仍列平台能力，调用时强制限制，不能将清单展示当作每轮的权限凭据。
+
+### 固定版本协议探针
+
+`scripts/probes/codex_mcp_provenance.py` 只在无外网、全新 home 的一次性容器中运行；Responses
+和 MCP 都是 loopback 合成服务，不读任何用户 Key、不调用真实模型/Wind。以项目固定的
+Codex 0.155.1 验证：模型 MCP 调用有线程/轮次/callId，且与 item/started 一致；客户端直接
+mcpServer/tool/call 没有轮次身份。thread/start 的 MCP header 可分线程，但已装载线程的
+thread/resume 不更新 header，unsubscribe 后再 resume 才更新。因此实现不依靠热重写全局
+header，不动其他线程配置。升级 Codex 时须重新跑此探针，不能把版本实测当永久协议保证。
+
+运行方式（准备本地已验证的固定版本二进制及已有含 Python 的镜像；不自动下载）：
+
+```sh
+probe_codex_bin=/absolute/path/to/pinned/codex
+probe_python_image=your-existing-python-image
+docker run --rm --network none --read-only --cap-drop ALL \
+  --security-opt no-new-privileges --user 0 --tmpfs /tmp --tmpfs /root \
+  -v "$probe_codex_bin:/probe/codex:ro" \
+  -v "$PWD/scripts/probes/codex_mcp_provenance.py:/probe/probe.py:ro" \
+  --entrypoint python "$probe_python_image" /probe/probe.py
+```
+
+探针打印版本与五个核验布尔值；不打印凭据、请求头或用户消息。通用接口参考
+[官方 app-server 文档](https://developers.openai.com/codex/app-server/)与
+[MCP 配置文档](https://developers.openai.com/codex/mcp/)，上面的热更新与 metadata 结论
+以固定二进制实测为依据。生产接入前仍需真实沙箱的完整工具轮次验收。
+
+`test_method_tools_db.py` 覆盖伪造元信息/参数、旧轮次、跨沙箱/任务/会话、市场与无范围
+入口、取消后省略 task、绑定损坏、并发到达、底层 grant 注入、原生审批与作者 deny。
+`test_method_runner_mcp_db.py` 经真实 Runner websocket 读取、真实 MCP HTTP 路由和隔离
+PostgreSQL，调用合成 knowbase 并完成计划/方法/最终交付；它仍不代表真实供应商验收。
+
+规划上下文另带最多 100 份已钉资料元信息（名字/来源/原件版本/读法）与 100 条请求编号和状态，超出显式计数；不带 grant、未读取正文或未确认需求内容。它只帮助选择方法，不能作为数据已可读的授权证明。

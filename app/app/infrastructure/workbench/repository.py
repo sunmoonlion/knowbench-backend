@@ -2922,6 +2922,58 @@ class WorkbenchRepository:
         row = r.mappings().first()
         return dict(row) if row else None
 
+    async def requires_mcp_provenance(self, owner_actor_id: str) -> bool:
+        result = await self.session.execute(
+            text("""select exists(select 1 from workbench_tasks
+                    where owner_actor_id = :owner
+                      and pack_snapshot ? 'runtime_contract')"""),
+            {"owner": owner_actor_id},
+        )
+        return bool(result.scalar())
+
+    async def attempt_for_runtime_turn(
+        self, *, session_id: str, turn_id: str
+    ) -> dict[str, Any] | None:
+        result = await self.session.execute(
+            text("""select a.* from workbench_attempts a
+                    join workbench_tasks t on t.id = a.task_id
+                    where t.session_id = :session
+                      and a.refs->>'runtime_turn_id' = :turn"""),
+            {"session": session_id, "turn": turn_id},
+        )
+        rows = result.mappings().all()
+        # Ambiguous identity is not authority, even if a corrupted row matches.
+        return dict(rows[0]) if len(rows) == 1 else None
+
+    async def is_accepted_user_turn(self, *, session_id: str, turn_id: str) -> bool:
+        result = await self.session.execute(
+            text("""select exists(select 1 from workbench_session_events
+                    where session_id = :session and event_type = 'turn/accepted'
+                      and payload->>'by' = 'user'
+                      and payload->'turn'->>'id' = :turn)"""),
+            {"session": session_id, "turn": turn_id},
+        )
+        return bool(result.scalar())
+
+    async def observed_mcp_call(
+        self, *, session_id: str, turn_id: str, call_id: str
+    ) -> dict[str, Any] | None:
+        result = await self.session.execute(
+            text("""select payload from workbench_session_events
+                    where session_id = :session and event_type = 'item/started'
+                      and payload->>'turnId' = :turn
+                      and payload->'item'->>'id' = :call
+                      and payload->'item'->>'type' = 'mcpToolCall'
+                      and not exists(select 1 from workbench_session_events done
+                        where done.session_id = :session
+                          and done.event_type = 'turn/completed'
+                          and coalesce(done.payload->>'turnId', done.payload->'turn'->>'id') = :turn)
+                    order by cursor desc limit 1"""),
+            {"session": session_id, "turn": turn_id, "call": call_id},
+        )
+        row = result.scalar()
+        return dict(row) if row else None
+
     async def get_interaction_by_request(
         self, *, session_id: str, request_id: str
     ) -> dict[str, Any] | None:

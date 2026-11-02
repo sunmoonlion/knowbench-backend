@@ -98,6 +98,11 @@ class MethodPlanner:
             question = json.dumps(
                 task["original_input"].get("input", {}), ensure_ascii=False
             )
+            pinned = await repo.list_task_data(task_id)
+            resolution = await repo.get_task_resolution(task_id)
+            requests = list(
+                ((resolution or {}).get("detail") or {}).get("requests") or []
+            )
             context = {
                 "question": question[: catalog.planning.input_max_chars],
                 "question_truncated": len(question) > catalog.planning.input_max_chars,
@@ -109,6 +114,32 @@ class MethodPlanner:
                 "completed_prefix": int(task["current_step"]),
                 "adjustment_reason": adjustment_reason,
                 "accepted_results": results,
+                # Selection can see existing inputs, never an invented claim
+                # that pending requests are authorized/readable. Actual reads
+                # still go through the current task grant and method guard.
+                "data": {
+                    "metadata_only": True,
+                    "resolution_status": (resolution or {}).get("status"),
+                    "pinned": [
+                        {
+                            "name": str(p.get("name") or "")[:255],
+                            "source": str(p.get("source") or "")[:64],
+                            "item_id": str(p.get("item_id") or "")[:128],
+                            "version_no": p.get("version_no"),
+                            "rendition_kind": p.get("rendition_kind"),
+                        }
+                        for p in pinned[:100]
+                    ],
+                    "pinned_omitted": max(0, len(pinned) - 100),
+                    "requests": [
+                        {
+                            "id": str(r.get("id") or "")[:128],
+                            "status": str(r.get("status") or "")[:64],
+                        }
+                        for r in requests[:100]
+                    ],
+                    "requests_omitted": max(0, len(requests) - 100),
+                },
                 "last_rejection": rejected[-1]["payload"]["reason"]
                 if rejected
                 else None,

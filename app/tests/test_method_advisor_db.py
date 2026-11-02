@@ -89,6 +89,53 @@ async def test_existing_advisor_plans_executes_and_delivers_all_final_outputs(db
         assert all(a["status"] == AttemptState.COMPLETED for a in attempts)
 
 
+@pytest.mark.parametrize("records", [True, False])
+async def test_dynamic_data_planning_uses_selected_methods_and_cannot_skip_missing_mcp(
+    db, records
+):
+    tid, _ = await task(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await repo.insert_task_resolution(
+                {
+                    "task_id": tid,
+                    "resolution_id": "synthetic-data",
+                    "revision": 1,
+                    "consumer": "expert:synthetic@1",
+                    "grant_ref": "synthetic-task-grant",
+                    "params": {},
+                    "status": "planning",
+                }
+            )
+    replies = [proposal().model_dump_json()]
+    if records:
+        replies += ["No additional data is needed for this synthetic task.", ROWS, ROWS]
+    driver = Driver(replies)
+    state = await Advisor(SqlWorkbenchStores(db), driver, records=records).drive(tid)
+    assert state == (TaskState.SUCCEEDED if records else TaskState.FAILED)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        row = await repo.get_task(tid)
+        assert row["accepted_plan_version"] == 1
+        resolution = await repo.get_task_resolution(tid)
+        assert resolution["status"] == ("ready" if records else "planning")
+        attempts = await repo.list_attempts(tid)
+        assert [a["step_id"] for a in attempts] == (
+            [PLAN_STEP, "data-plan", "inspect_1", "report_1"]
+            if records
+            else [PLAN_STEP]
+        )
+    if records:
+        chosen = {u.contract.step_id: u.contract.title for u in catalog().method_units}
+        assert (
+            chosen["inspect"] in driver.prompts[1]
+            and chosen["report"] in driver.prompts[1]
+        )
+        assert chosen["review"] not in driver.prompts[1]
+        assert "First: is this question for this expert?" in driver.prompts[2]
+
+
 async def test_backtracking_binds_new_inputs_and_excludes_old_outputs(db):
     tid, _ = await task(db)
     driver = Driver(
@@ -329,7 +376,15 @@ async def test_old_reply_cannot_dismiss_later_turn_question(db):
 async def test_existing_runner_protocol_executes_dynamic_task_from_received(db):
     from test_workbench_advisor_db import ScriptedAppServer, close, drive, seed
 
-    fake = ScriptedAppServer([proposal().model_dump_json(), ROWS, ROWS])
+    settings = []
+
+    class RecordingServer(ScriptedAppServer):
+        async def handle(self, ws, msg):
+            if msg["method"] == "turn/start":
+                settings.append(msg["params"])
+            await super().handle(ws, msg)
+
+    fake = RecordingServer([proposal().model_dump_json(), ROWS, ROWS])
     await fake.start()
     runner = None
     try:
@@ -355,7 +410,17 @@ async def test_existing_runner_protocol_executes_dynamic_task_from_received(db):
                 == catalog().runtime_contract
             )
             assert row["current_step"] == 2
+            attempts = await WorkbenchRepository(session).list_attempts(tid)
+            assert len(attempts) == 3
+            assert all(a["refs"]["runtime_turn_id"] in a["turn_ids"] for a in attempts)
         assert len(fake.turn_inputs) == 3
+        assert settings[0]["sandboxPolicy"] == {
+            "type": "readOnly",
+            "networkAccess": False,
+        }
+        assert settings[0]["environments"] == []
+        assert settings[0]["approvalPolicy"] == "never"
+        assert all(p["sandboxPolicy"]["type"] == "workspaceWrite" for p in settings[1:])
     finally:
         if runner:
             await close(runner)

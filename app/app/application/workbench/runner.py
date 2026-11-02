@@ -25,12 +25,19 @@ from app.application.ports.workbench import (
 )
 from app.application.workbench.advisor import Advisor, TurnResult
 from app.application.workbench.deliverable_check import DeliverableCheck
-from app.application.workbench.execution_plan import display_for_task, is_dynamic
+from app.application.workbench.execution_plan import (
+    active_method_step,
+    display_for_task,
+    execution_for_task,
+    is_dynamic,
+)
 from app.application.workbench.expert_data import data_session_note
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.method_tools import bind_turn, capture_attempt
 from app.domain.workbench.deliverables import changed_paths
-from app.domain.workbench.errors import StaleStateVersion
+from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
 from app.domain.workbench.memory import memory_note
+from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.pricing import (
     DEFAULT_PRICES,
@@ -481,6 +488,16 @@ class SandboxLink:
         await self.ensure_thread(thread_id)
         plan = await self.runner.turn_plan(thread_id=thread_id, expert=True)
         await self.announce(thread_id, plan)
+        async with self.runner.stores() as repo:
+            expected_attempt = await capture_attempt(repo, thread_id)
+            if expected_attempt is not None:
+                attempt = await repo.get_attempt(expected_attempt[1])
+                if attempt["step_id"] == PLAN_STEP:
+                    plan.settings.update(
+                        environments=[],
+                        sandboxPolicy={"type": "readOnly", "networkAccess": False},
+                        approvalPolicy="never",
+                    )
         result = await client.request(
             "turn/start",
             {
@@ -514,6 +531,29 @@ class SandboxLink:
         loop = asyncio.get_running_loop()
         started, waited_before = loop.time(), self.waited(thread_id)
         try:
+            if expected_attempt is not None:
+                try:
+                    async with self.runner.stores() as repo:
+                        bound = await bind_turn(
+                            repo, expected_attempt, thread_id, turn_id
+                        )
+                except (
+                    Exception
+                ):  # Retain the actual turn/usage even if persistence failed.
+                    log.exception("method turn binding failed thread=%s", thread_id)
+                    bound = False
+                if not bound:
+                    waiter["error"] = "execution changed before turn binding"
+                    try:
+                        await client.request(
+                            "turn/interrupt",
+                            {"threadId": thread_id, "turnId": turn_id},
+                            timeout=30,
+                        )
+                    except AppServerError:
+                        log.warning(
+                            "method turn interrupt unconfirmed thread=%s", thread_id
+                        )
             # 这一步的时限不算等人答的时间：专家停下来问人时，钟停着（2026-10-19 K19 第 2 稿：
             # 所有者思考作答的时间算进了 15 分钟，这一步超时判失败，问题还挂着、测试卡死）
             while True:
@@ -732,7 +772,21 @@ class SandboxLink:
                     pack.policy_for(step), category, tokens, after_decline=after_decline
                 )
             source = None
-            if granted and not after_decline:
+            dynamic = task is not None and is_dynamic(task)
+            if (
+                task is not None
+                and dynamic
+                and (
+                    step is None
+                    or (
+                        pack is not None
+                        and pack.policy_for(step).tier_of(category) == "deny"
+                    )
+                    or not await self._matches_method_turn(repo, task, params)
+                )
+            ):
+                tier = "deny"
+            if granted and not after_decline and not (dynamic and tier == "deny"):
                 tier, source = "allow", "task_grant"
             elif tier == "allow":
                 source = "policy"
@@ -809,7 +863,23 @@ class SandboxLink:
                     or (attempt.get("refs") or {}).get("kind") != "method_step"
                 ):
                     step = None  # Planning/data turns are not the next method.
+                else:
+                    try:
+                        view = await execution_for_task(repo, task)
+                        assert view is not None
+                        step = await active_method_step(repo, task, view)
+                    except MethodPlanInvalid:
+                        step = None
         return {"wheel": wheel, "task": task, "pack": pack, "step": step}
+
+    async def _matches_method_turn(
+        self, repo: WorkbenchStore, task: dict[str, Any], params: dict[str, Any]
+    ) -> bool:
+        active = task.get("active_attempt_id")
+        if not active or not params.get("turnId"):
+            return False
+        attempt = await repo.get_attempt(str(active))
+        return (attempt.get("refs") or {}).get("runtime_turn_id") == params["turnId"]
 
     async def _open_ask(
         self,

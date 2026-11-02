@@ -874,6 +874,17 @@ class Advisor:
             assert view is not None
             pack = view.pack
             if not self.records:
+                if view.dynamic:
+                    return (
+                        await led.transition(
+                            task_id,
+                            TaskState.FAILED,
+                            reason={
+                                "code": "mcp_unavailable",
+                                "message": "工作台数据工具不可用，不能跳过数据确认",
+                            },
+                        )
+                    )["state"]
                 # 沙箱里没配工作台的工具：提不了，照现有的做
                 async with repo.transaction():
                     await repo.update_task_resolution(task_id, status="ready")

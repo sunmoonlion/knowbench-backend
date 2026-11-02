@@ -30,6 +30,7 @@ from app.application.workbench.data_relay import RELAYED, DataRelay
 from app.application.workbench.expert_data import find_subject, request_data
 from app.application.workbench.find_expert import find_expert
 from app.application.workbench.knowbot_compute import KnowbotCompute
+from app.application.workbench.method_tools import MethodToolGuard
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader
 from app.application.workbench.tokens import TokenIssuer
@@ -300,6 +301,7 @@ async def handle(
     owner: str,
     per_minute: int,
     relay: DataRelay | None = None,
+    guard: MethodToolGuard | None = None,
 ) -> dict[str, Any] | None:
     method = message.get("method")
     mid = message.get("id")
@@ -345,6 +347,12 @@ async def handle(
         return _err(mid, -32602, "arguments must be an object")
     if not limiter.allow(owner, per_minute):
         return _tool_error(mid, "rate limit exceeded; retry later")
+    if guard is not None:
+        try:
+            await guard.check(name, args, params.get("_meta"))
+        except WorkbenchError as exc:
+            log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
+            return _tool_error(mid, exc.message)
     if relayed:
         assert relay is not None
         try:
@@ -425,12 +433,18 @@ async def rpc(
         return JSONResponse(_err(None, -32700, "parse error"), status_code=400)
     records = ProjectRecords(workbench_store(session), owner_actor_id=owner)
     relay = DataRelay(records, knowbase_v2(), issuer, sandbox=sandbox)
+    guard = MethodToolGuard(records.repo, owner=owner, sandbox=sandbox)
     messages = body if isinstance(body, list) else [body]
     replies = []
     for message in messages:
         if isinstance(message, dict):
             reply = await handle(
-                records, message, owner=owner, per_minute=per_minute, relay=relay
+                records,
+                message,
+                owner=owner,
+                per_minute=per_minute,
+                relay=relay,
+                guard=guard,
             )
             if reply is not None:
                 replies.append(reply)

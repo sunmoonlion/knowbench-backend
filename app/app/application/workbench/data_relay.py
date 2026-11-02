@@ -117,6 +117,8 @@ class DataRelay:
 
     async def call(self, mid: Any, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """换好范围、签好令牌，转给 knowbase；回 knowbase 的 JSON-RPC 回复（编号换回来）。"""
+        if "run" in args or "session" in args:
+            raise RecordsRefused("data service grants are assigned by the workbench")
         forwarded = {k: v for k, v in args.items() if k not in ("task", "conversation")}
         working = None
         if name not in NO_SCOPE and args.get("scope") != "market":

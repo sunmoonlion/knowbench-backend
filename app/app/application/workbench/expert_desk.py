@@ -287,7 +287,7 @@ class ExpertDesk:
             "active_interaction_id": str(task["active_interaction_id"])
             if task.get("active_interaction_id")
             else None,
-            "plan": await self._plan(task),
+            **({"plan": await self._plan(task)} if is_dynamic(task) else {}),
         }
 
     async def steps(self, task_id: str, *, owner_actor_id: str) -> dict[str, Any]:
