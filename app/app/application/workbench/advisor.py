@@ -9,16 +9,25 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
-from app.application.workbench.acceptance import judge, out_of_scope, timed_out
+from app.application.workbench.acceptance import Verdict, judge, out_of_scope, timed_out
 from app.application.workbench.acceptance_numbers import judge_numbers
 from app.application.workbench.catalog import SNAPSHOT_SOURCES, pack_for_task
 from app.application.workbench.deliverable_check import DeliverableCheck, harden
+from app.application.workbench.execution_plan import (
+    accepted_results,
+    active_method_step,
+    execution_for_task,
+    is_dynamic,
+)
 from app.application.workbench.expert_data import holds_task, pending_requests
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.method_planner import MethodPlanner
+from app.application.workbench.plan_receipts import catalog_for_task
 from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver
 from app.application.workbench.turn import TurnResult as TurnResult
 from app.domain.workbench import knowbots
@@ -31,7 +40,12 @@ from app.domain.workbench.deliverables import (
     placed,
     run_folder,
 )
-from app.domain.workbench.errors import BudgetExhausted
+from app.domain.workbench.errors import (
+    BudgetExhausted,
+    MethodInputInvalidated,
+    MethodPlanInvalid,
+)
+from app.domain.workbench.execution_plan import ExecutionPlan
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.packs import (
@@ -48,7 +62,6 @@ from app.domain.workbench.states import (
     PLATFORM_FAILURE,
     TASK_TERMINAL,
     AttemptState,
-    InvalidTransition,
     TaskState,
     WaitingReason,
 )
@@ -66,6 +79,15 @@ DATA_STEP_RESERVE = Decimal("0.05")
 # 给模型看的专家做法：每一步的说明最多这么多字，合起来最多这么多字
 DATA_STEP_METHOD_CHARS = 1200
 DATA_STEP_TOTAL_CHARS = 12000
+
+
+@dataclass
+class StepAssessment:
+    verdict: Verdict | None = None
+    output_file: str | None = None
+    written: bool | None = None
+    checked: str | None = None
+    error: str | None = None
 
 
 class Advisor:
@@ -98,7 +120,9 @@ class Advisor:
                 await led.transition(task_id, TaskState.VALIDATING)
                 task = await repo.get_task(task_id)
             if task["state"] == TaskState.VALIDATING:
-                pack = pack_for_task(task)
+                pack = (
+                    catalog_for_task(task) if is_dynamic(task) else pack_for_task(task)
+                )
                 if pack is None:
                     # 专家还在、只是委托绑的那一版已经下架（升版前建的单）：说清楚，别说成不在范围。
                     # 分身的委托自带快照，不会走到这里
@@ -138,7 +162,11 @@ class Advisor:
                     expert_pack_version=pack.version,
                     acceptance_contract={
                         "pack_id": pack.pack_id,
-                        "steps": [st.step_id for st in pack.workflow],
+                        **(
+                            {"runtime_contract": pack.runtime_contract}
+                            if not isinstance(pack, ExpertPack)
+                            else {"steps": [st.step_id for st in pack.workflow]}
+                        ),
                     },
                 )
                 await repo.commit()
@@ -180,6 +208,18 @@ class Advisor:
     # ---------------- 一步 ----------------
 
     async def _step_once(self, task_id: str) -> str:
+        try:
+            return await self._execute_next(task_id)
+        except MethodInputInvalidated as exc:
+            # Raised only before dispatch, after the opening transaction rolls
+            # back. A new bounded proposal must explicitly rebind the input.
+            return await MethodPlanner(self.stores, self.driver).run(
+                task_id,
+                parent_version=int(str(exc.details["plan_version"])),
+                adjustment_reason=str(exc),
+            )
+
+    async def _execute_next(self, task_id: str) -> str:
         async with self.stores() as repo:
             led = Ledger(repo)
             task = await repo.get_task(task_id)
@@ -191,17 +231,22 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
-            pack = pack_for_task(task)
-            assert pack is not None
+            needs_plan = is_dynamic(task) and task.get("accepted_plan_version") is None
+            held = await self._data_hold(repo, led, task_id)
+            if held is not None:
+                return held
             row = await repo.get_task_resolution(task_id)
             planning = row is not None and row["status"] == "planning"
+        if needs_plan:
+            return await MethodPlanner(self.stores, self.driver).run(task_id)
         if planning:
             return await self._plan_data(task_id)
         async with self.stores() as repo:
             led = Ledger(repo)
             task = await repo.get_task(task_id)
-            pack = pack_for_task(task)
-            assert pack is not None
+            view = await execution_for_task(repo, task)
+            assert view is not None
+            pack = view.pack
             step = pack.step(int(task["current_step"]))
             if step is None:
                 return await self._finish(led, repo, task, pack)
@@ -214,7 +259,7 @@ class Advisor:
                 and a["failure_code"] == "acceptance"
             )
             inputs = {}
-            for name in step.input_refs:
+            for name in () if view.dynamic else step.input_refs:
                 art = await repo.get_artifact(task_id=task_id, name=name)
                 if art is None:
                     return (
@@ -230,16 +275,28 @@ class Advisor:
                     )["state"]
                 inputs[name] = {"version": art["version"], "content": art["content"]}
             try:
-                opened = await led.open_attempt(
-                    task_id,
-                    step_id=step.step_id,
-                    step_version=step.step_version,
-                    input_artifact_versions=[
-                        {"name": k, "version": v["version"]} for k, v in inputs.items()
-                    ],
-                    reserve=Decimal(step.reserve),
-                    meta={"reworks": reworks},
-                )
+                if view.dynamic:
+                    opened = await led.open_method_step(
+                        task_id, expected_version=task["state_version"]
+                    )
+                    step, inputs, view = (
+                        opened["step"],
+                        opened["inputs"],
+                        opened["execution"],
+                    )
+                    pack = view.pack
+                else:
+                    opened = await led.open_attempt(
+                        task_id,
+                        step_id=step.step_id,
+                        step_version=step.step_version,
+                        input_artifact_versions=[
+                            {"name": k, "version": v["version"]}
+                            for k, v in inputs.items()
+                        ],
+                        reserve=Decimal(step.reserve),
+                        meta={"reworks": reworks},
+                    )
             except BudgetExhausted as exc:
                 log.info("budget exhausted before step %s: %s", step.step_id, exc)
                 return await self._hard_stop(led, repo, task_id)
@@ -313,7 +370,11 @@ class Advisor:
                 pack.intake_scope()
                 if step.step_id == pack.workflow[0].step_id
                 and not answered["proceed"]
-                and not any(a["status"] == AttemptState.COMPLETED for a in attempts)
+                and not any(
+                    a["status"] == AttemptState.COMPLETED
+                    and a["step_id"] in {st.step_id for st in pack.workflow}
+                    for a in attempts
+                )
                 else None
             )
             # 这一次委托的底稿放在自己那一格，不覆盖别的对话与前几次（所有者 2026-10-14）
@@ -368,25 +429,107 @@ class Advisor:
             thread_id, text, timeout=STEP_TIMEOUT_SECONDS
         )
 
+        try:
+            assessment = await self._assess_step(
+                task_id, attempt_id, step, result, folder, intake
+            )
+        except Exception as exc:  # The completed turn still needs cost settlement.
+            log.exception(
+                "step assessment failed task=%s attempt=%s", task_id, attempt_id
+            )
+            assessment = StepAssessment(error=type(exc).__name__)
+        return await self._settle_step(
+            task_id, attempt_id, view, step, result, assessment, reworks, intake
+        )
+
+    async def _assess_step(
+        self,
+        task_id: str,
+        attempt_id: str,
+        step: StepContract,
+        result: TurnResult,
+        folder: str,
+        intake: Scope | None,
+    ) -> StepAssessment:
+        """Read evidence without a task lock; settlement rechecks the active binding."""
         async with self.stores() as repo:
+            await Ledger(repo).end_turn_waits(task_id, attempt_id=attempt_id)
+            task = await repo.get_task(task_id)
+            if (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL:
+                return StepAssessment()
+            if (
+                result.stopped_by_user
+                or result.environment_lost
+                or ((result.error or result.interrupted) and not result.timed_out)
+                or (intake and out_of_scope(result.final_text))
+            ):
+                return StepAssessment()
+            verdict = (
+                timed_out(STEP_TIMEOUT_SECONDS // 60, step.acceptance)
+                if result.timed_out
+                else await judge_numbers(
+                    judge(result.final_text, step.acceptance),
+                    step.acceptance,
+                    repo=repo,
+                    task=task,
+                    reader=self.reader,
+                )
+            )
+            # 成稿文件写了没有：先认这一轮报过的 fileChange；没见到就经会合点问代理那个文件在不在
+            # （0022 段 4）：在 → 认；明确不在 → 验收不过；问不到 → 只记事件、不填路径（软检查）
+            written = None
+            checked = None
+            output_file = placed(step.output_file, folder) if step.output_file else None
+            if verdict.ok and output_file:
+                seen = deliverable_seen(result.files, output_file)
+                found = None
+                if not seen and self.deliverables is not None:
+                    session = await repo.get_session(str(task["session_id"]))
+                    found = await self.deliverables.exists(
+                        owner=str(task["owner_actor_id"]),
+                        directory=session.get("project_root"),
+                        path=output_file,
+                    )
+                verdict, written, checked = harden(
+                    verdict, written=seen, found=found, output_file=output_file
+                )
+            return StepAssessment(verdict, output_file, written, checked)
+
+    async def _settle_step(
+        self,
+        task_id: str,
+        attempt_id: str,
+        view: ExecutionPlan,
+        step: StepContract,
+        result: TurnResult,
+        assessment: StepAssessment,
+        reworks: int,
+        intake: Scope | None,
+    ) -> str:
+        """All outcome writes, accounting and cursor changes commit together."""
+        pack = view.pack
+        async with self.stores() as repo, repo.transaction():
+            await repo.get_task(task_id, for_update=True)
             led = Ledger(repo)
             consumed = result.cost or Decimal("0")
             # 这一轮结束了：它里面还挂着的问题作废、委托回到在跑，下面才按结果走得下去
-            await led.end_turn_waits(task_id)
+            await led.end_turn_waits(task_id, attempt_id=attempt_id)
             task = await repo.get_task(task_id)
-            settled = (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL
-            if not settled:
-                try:
-                    await led.attempt_transition(
-                        attempt_id, AttemptState.RUNNING, turn_id=result.turn_id
-                    )
-                except InvalidTransition:
-                    # 读完到改之间被取消插了进来：同样当作别人已经收了尾
-                    settled = (await repo.get_attempt(attempt_id))[
-                        "status"
-                    ] in ATTEMPT_TERMINAL
-                    if not settled:
-                        raise
+            attempt = await repo.get_attempt(attempt_id)
+            if (
+                str(attempt["task_id"]) != task_id
+                or attempt["step_id"] != step.step_id
+                or attempt["step_version"] != step.step_version
+            ):
+                raise MethodPlanInvalid(
+                    "step result does not belong to this task instance"
+                )
+            settled = attempt["status"] in ATTEMPT_TERMINAL
+            if not settled and attempt["status"] in (
+                AttemptState.CREATED,
+                AttemptState.SUSPENDED,
+            ):
+                await led.attempt_transition(attempt_id, AttemptState.RUNNING)
             if settled:
                 # 这一轮跑着的时候委托已被别人收尾（取消、测试超时、对账；0034 §三.1），尝试也已关掉：
                 # 花掉的钱补记到委托上（按这一轮的编号只记一次）；这一轮结束了，放开项目，安静停下
@@ -397,9 +540,11 @@ class Advisor:
                     tokens=result.tokens,
                     turn_id=result.turn_id,
                 )
-                await led.release_turn(task_id)
+                await led.release_turn(task_id, attempt_id=attempt_id)
                 return (await repo.get_task(task_id))["state"]
             task = await repo.get_task(task_id)
+            if str(task.get("active_attempt_id")) != attempt_id:
+                raise MethodPlanInvalid("step result is no longer the active attempt")
             if task["cancel_requested_at"] is not None:
                 # 用户点了停止：这一步被中断。已经花的照记，做完的部分交回
                 await led.attempt_transition(
@@ -407,6 +552,7 @@ class Advisor:
                     AttemptState.CANCELLED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                     failure_code="cancelled",
                 )
                 if task["state"] in TASK_TERMINAL:
@@ -417,6 +563,41 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
+            check_error = assessment.error
+            if not check_error and view.dynamic:
+                try:
+                    current = await execution_for_task(repo, task)
+                    if (
+                        current is None
+                        or current.receipt != view.receipt
+                        or await active_method_step(repo, task, current) != step
+                    ):
+                        raise MethodPlanInvalid(
+                            "step result belongs to a stale plan or instance"
+                        )
+                except MethodPlanInvalid as exc:
+                    check_error = type(exc).__name__
+            if check_error:
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.FAILED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                    failure_code=PLATFORM_FAILURE,
+                    retryable=False,
+                )
+                return (
+                    await led.transition(
+                        task_id,
+                        TaskState.FAILED,
+                        reason={
+                            "error": "step assessment failed",
+                            "type": check_error,
+                            "platform": True,
+                        },
+                    )
+                )["state"]
             if result.stopped_by_user:
                 # 用户在审批面点了「停下」或等不到人：这一步停在这里等用户决定（approval.md：WAITING(USER)，
                 # 这里用现成的 input 待办表达：带着要求重做，或停止）
@@ -425,6 +606,7 @@ class Advisor:
                     AttemptState.FAILED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                     failure_code="stopped",
                     retryable=True,
                 )
@@ -440,7 +622,6 @@ class Advisor:
                     task_id=task_id,
                     attempt_id=attempt_id,
                 )
-                await repo.commit()
                 it = await led.open_interaction(
                     task_id,
                     kind="input",
@@ -477,6 +658,7 @@ class Advisor:
                     AttemptState.FAILED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                     failure_code="environment"
                     if result.environment_lost
                     else "turn_error",
@@ -513,36 +695,17 @@ class Advisor:
                     AttemptState.BUDGET_EXCEEDED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                 )
                 return TaskState.WAITING
-            verdict = (
-                timed_out(STEP_TIMEOUT_SECONDS // 60, step.acceptance)
-                if result.timed_out
-                else await judge_numbers(
-                    judge(result.final_text, step.acceptance),
-                    step.acceptance,
-                    repo=repo,
-                    task=task,
-                    reader=self.reader,
-                )
+            verdict = assessment.verdict
+            assert verdict is not None
+            output_file, written, checked = (
+                assessment.output_file,
+                assessment.written,
+                assessment.checked,
             )
-            # 成稿文件写了没有：先认这一轮报过的 fileChange；没见到就经会合点问代理那个文件在不在
-            # （0022 段 4）：在 → 认；明确不在 → 验收不过；问不到 → 只记事件、不填路径（软检查）
-            written = None
-            output_file = placed(step.output_file, folder) if step.output_file else None
-            if verdict.ok and output_file:
-                seen = deliverable_seen(result.files, output_file)
-                found = None
-                if not seen and self.deliverables is not None:
-                    session = await repo.get_session(str(task["session_id"]))
-                    found = await self.deliverables.exists(
-                        owner=str(task["owner_actor_id"]),
-                        directory=session.get("project_root"),
-                        path=output_file,
-                    )
-                verdict, written, checked = harden(
-                    verdict, written=seen, found=found, output_file=output_file
-                )
+            if checked is not None:
                 await repo.append_event(
                     session_id=str(task["session_id"]),
                     kind="task",
@@ -570,6 +733,7 @@ class Advisor:
                     AttemptState.COMPLETED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                     output_artifacts=[
                         {
                             "name": art["name"],
@@ -597,22 +761,6 @@ class Advisor:
                     task_id=task_id,
                     attempt_id=attempt_id,
                 )
-                await repo.commit()
-                if pack.step(int(task["current_step"]) + 1) is None:
-                    return await self._finish(
-                        led, repo, await repo.get_task(task_id), pack
-                    )
-                # 专家这一步要了新数据（request_data）：在步骤边界停下等用户确认、补齐
-                async with repo.transaction():
-                    row = await repo.get_task_resolution(task_id, for_update=True)
-                    if holds_task(row):
-                        await led.transition(
-                            task_id,
-                            TaskState.WAITING,
-                            waiting_reason=WaitingReason.DATA,
-                            reason=_waiting_reason(row),
-                        )
-                        return TaskState.WAITING
                 await self._requeue(led, task_id)
                 return TaskState.QUEUED
             # 不合格
@@ -621,6 +769,7 @@ class Advisor:
                 AttemptState.FAILED,
                 consumed=consumed,
                 tokens=result.tokens,
+                turn_id=result.turn_id,
                 # 超时也记成验收不过：返工额度照算，不会因为一直超时而无限重做
                 failure_code="acceptance",
                 retryable=True,
@@ -646,7 +795,6 @@ class Advisor:
                 task_id=task_id,
                 attempt_id=attempt_id,
             )
-            await repo.commit()
             if reworks < step.max_reworks:  # 还有返工额度：重做本步
                 await self._requeue(led, task_id)
                 return TaskState.QUEUED
@@ -679,7 +827,6 @@ class Advisor:
                         expected_version=int(task["state_version"]),
                         current_step=pack.index_of(step.back_to),
                     )
-                    await repo.commit()
                     await self._requeue(led, task_id)
                     return TaskState.QUEUED
             # 返工用尽、退回的次数也用尽：交人（AT-24）
@@ -723,8 +870,9 @@ class Advisor:
         async with self.stores() as repo:
             led = Ledger(repo)
             task = await repo.get_task(task_id)
-            pack = pack_for_task(task)
-            assert pack is not None
+            view = await execution_for_task(repo, task)
+            assert view is not None
+            pack = view.pack
             if not self.records:
                 # 沙箱里没配工作台的工具：提不了，照现有的做
                 async with repo.transaction():
@@ -772,22 +920,17 @@ class Advisor:
             thread_id, text, timeout=STEP_TIMEOUT_SECONDS
         )
 
-        async with self.stores() as repo:
+        async with self.stores() as repo, repo.transaction():
+            # DataWaiter also locks resolution before task; keep one lock order.
+            await repo.get_task_resolution(task_id, for_update=True)
+            await repo.get_task(task_id, for_update=True)
             led = Ledger(repo)
             consumed = result.cost or Decimal("0")
-            await led.end_turn_waits(task_id)
-            settled = (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL
-            if not settled:
-                try:
-                    await led.attempt_transition(
-                        attempt_id, AttemptState.RUNNING, turn_id=result.turn_id
-                    )
-                except InvalidTransition:
-                    settled = (await repo.get_attempt(attempt_id))[
-                        "status"
-                    ] in ATTEMPT_TERMINAL
-                    if not settled:
-                        raise
+            await led.end_turn_waits(task_id, attempt_id=attempt_id)
+            status = (await repo.get_attempt(attempt_id))["status"]
+            settled = status in ATTEMPT_TERMINAL
+            if status in (AttemptState.CREATED, AttemptState.SUSPENDED):
+                await led.attempt_transition(attempt_id, AttemptState.RUNNING)
             if settled:
                 await led.record_late_cost(
                     task_id,
@@ -796,7 +939,7 @@ class Advisor:
                     tokens=result.tokens,
                     turn_id=result.turn_id,
                 )
-                await led.release_turn(task_id)
+                await led.release_turn(task_id, attempt_id=attempt_id)
                 return (await repo.get_task(task_id))["state"]
             task = await repo.get_task(task_id)
             if task["cancel_requested_at"] is not None:
@@ -805,6 +948,7 @@ class Advisor:
                     AttemptState.CANCELLED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                     failure_code="cancelled",
                 )
                 if task["state"] in TASK_TERMINAL:
@@ -833,6 +977,7 @@ class Advisor:
                     AttemptState.FAILED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                     failure_code="environment"
                     if result.environment_lost
                     else "timeout"
@@ -863,6 +1008,7 @@ class Advisor:
                     AttemptState.BUDGET_EXCEEDED,
                     consumed=consumed,
                     tokens=result.tokens,
+                    turn_id=result.turn_id,
                 )
                 return TaskState.WAITING
             # 只有正常结束的轮次才接受数据计划；确实无需数据时允许空需求。
@@ -871,6 +1017,7 @@ class Advisor:
                 AttemptState.COMPLETED,
                 consumed=consumed,
                 tokens=result.tokens,
+                turn_id=result.turn_id,
                 output_artifacts=[],
             )
             row = await repo.get_task_resolution(task_id)
@@ -964,6 +1111,7 @@ class Advisor:
             AttemptState.CANCELLED,
             consumed=result.cost or Decimal("0"),
             tokens=result.tokens,
+            turn_id=result.turn_id,
             failure_code="out_of_scope",
         )
         await repo.append_event(
@@ -974,7 +1122,6 @@ class Advisor:
             task_id=task_id,
             attempt_id=attempt_id,
         )
-        await repo.commit()
         name = pack.name or pack.title
         await led.open_interaction(
             task_id,
@@ -1037,12 +1184,11 @@ class Advisor:
             )
 
     async def _requeue(self, led: Ledger, task_id: str) -> bool:
-        async with self.stores() as repo:
-            task = await repo.get_task(task_id)
-            if task["state"] == TaskState.RUNNING:
-                await Ledger(repo).transition(task_id, TaskState.QUEUED)
-                return True
-            return task["state"] == TaskState.QUEUED
+        task = await led.repo.get_task(task_id)
+        if task["state"] == TaskState.RUNNING:
+            await led.transition(task_id, TaskState.QUEUED)
+            return True
+        return task["state"] == TaskState.QUEUED
 
     async def _hard_stop(self, led: Ledger, repo: WorkbenchStore, task_id: str) -> str:
         task = await repo.get_task(task_id)
@@ -1071,56 +1217,98 @@ class Advisor:
         pack: ExpertPack,
     ) -> str:
         task_id = str(task["id"])
-        last = pack.workflow[-1]
-        result_art = await repo.get_artifact(task_id=task_id, name=last.output_artifact)
-        attempts = await repo.list_attempts(task_id)
-        did = [f"{a['step_id']}: {a['status']}" for a in attempts]
-        verified = [e for e in await repo.list_artifacts(task_id)]
+        view = await execution_for_task(repo, task)
+        assert view is not None
+        finals = {}
+        if view.dynamic:
+            if int(task["current_step"]) != len(view.pack.workflow):
+                raise MethodPlanInvalid("not all planned instances have completed")
+            results = await accepted_results(repo, task, view)
+            assert view.receipt is not None
+            finals = {
+                key: results[instance]
+                for key, instance in view.receipt.proposal.final_outputs.items()
+            }
+            verified = list(results.values())
+            result_art = None  # The handback names every required final output.
+        else:
+            result_art = await repo.get_artifact(
+                task_id=task_id, name=pack.workflow[-1].output_artifact
+            )
+            verified = await repo.list_artifacts(task_id)
         files = sorted(
             {a["workspace_path"] for a in verified if a.get("workspace_path")}
         )
-        handback = {
-            "did": did,
-            "verified": [
-                {"artifact": a["name"], "version": a["version"], "digest": a["digest"]}
-                for a in verified
-            ],
-            "unknown": [],
-            # 成稿在项目目录里（0015）；这里只记路径作证据
-            "files": files,
-            "workspace_restore": (
-                "成稿写在项目目录：" + "、".join(files) + "；不要就删掉这些文件"
-                if files
-                else "顾问没有登记写出的成稿文件；如有改动见各步 Artifact 与对话里的改动面板"
-            ),
-            "budget": task["budget"],
-        }
-        hb = await repo.put_artifact(
-            task_id=task_id,
-            attempt_id=None,
-            name="handback",
-            kind="handback",
-            content=handback,
+        # Remote file hashing must not hold the task lock. Recheck after it.
+        fingerprints = (
+            await self._fingerprints(repo, task, files)
+            if files and task.get("pack_source") != "knowlab-test"
+            else {}
         )
-        if files and task.get("pack_source") != "knowlab-test":
-            # 成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）：runner 里另一条线写，
-            # 写不进去不挡交付；测试的证据由 knowlab 写
-            # （委托成功是终态，一件委托只交付一次，运行编号就用委托编号：续跑重进这里也不重记）
-            await repo.add_task_outputs(
-                task_id,
-                run_ref=task_id,
-                files=await self._fingerprints(repo, task, files),
+        expected_version = task["state_version"]
+        async with repo.transaction():
+            task = await repo.get_task(task_id, for_update=True)
+            if (
+                task["state"] in TASK_TERMINAL
+                or task["state_version"] != expected_version
+            ):
+                return task["state"]
+            if (
+                task.get("active_attempt_id")
+                or task.get("active_interaction_id")
+                or task["state"] not in (TaskState.QUEUED, TaskState.RUNNING)
+            ):
+                return task["state"]
+            if view.dynamic:
+                await accepted_results(repo, task, view)
+            attempts = await repo.list_attempts(task_id)
+            handback = {
+                "did": [f"{a['step_id']}: {a['status']}" for a in attempts],
+                "verified": [
+                    {
+                        "artifact": a["name"],
+                        "version": a["version"],
+                        "digest": a["digest"],
+                    }
+                    for a in verified
+                ],
+                "unknown": [],
+                "files": files,
+                "workspace_restore": (
+                    "成稿写在项目目录：" + "、".join(files) + "；不要就删掉这些文件"
+                    if files
+                    else "顾问没有登记写出的成稿文件；如有改动见各步 Artifact 与对话里的改动面板"
+                ),
+                "budget": task["budget"],
+            }
+            if view.receipt:
+                handback.update(
+                    plan_version=view.receipt.version,
+                    final_outputs={
+                        key: {k: art[k] for k in ("id", "name", "version", "digest")}
+                        for key, art in finals.items()
+                    },
+                )
+            hb = await repo.put_artifact(
+                task_id=task_id,
+                attempt_id=None,
+                name="handback",
+                kind="handback",
+                content=handback,
             )
-        await repo.commit()
-        task = await repo.get_task(task_id)
-        if task["state"] == TaskState.QUEUED:  # 重启后从游标续到末尾的情形
-            await led.transition(task_id, TaskState.RUNNING)
-        r = await led.transition(
-            task_id,
-            TaskState.SUCCEEDED,
-            terminal_result_ref=result_art["id"] if result_art else hb["id"],
-        )
-        return r["state"]
+            if fingerprints:
+                await repo.add_task_outputs(
+                    task_id, run_ref=task_id, files=fingerprints
+                )
+            if task["state"] == TaskState.QUEUED:
+                await led.transition(task_id, TaskState.RUNNING)
+            return (
+                await led.transition(
+                    task_id,
+                    TaskState.SUCCEEDED,
+                    terminal_result_ref=result_art["id"] if result_art else hb["id"],
+                )
+            )["state"]
 
     async def _fingerprints(
         self, repo: WorkbenchStore, task: dict[str, Any], files: list[str]

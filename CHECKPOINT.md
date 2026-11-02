@@ -121,3 +121,12 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 - `active_method_inputs` 从活动实例绑定读取确切 ID/版本/摘要；动态 covers 直接使用该入口。同名新写入但未验收的成果不能替换本轮输入；已取消的实例不能验收。固定专家原读法保留。
 - 独立 PostgreSQL 全量 `1344 passed / 92 skipped / 2 既有 collection warnings`，599.87 秒（`/tmp/luna-method-planner-full.txt`）。全量启动后增加父计划版本重试守卫及一例测试，五文件最终 `139 passed`（`/tmp/luna-method-planner-final-focused.txt`）；不能把这一例声称包含在前述全量里。最终全仓 ruff 与 app 目录 pyright 0 errors（`/tmp/luna-method-planner-{ruff,pyright}-final.txt`）。早期规划/验收/计算三文件 98 通过不替代最终证据。
 - 仍未开放 v3，未改生产、Jenkins、qwen 候选、采单或 Wind（仍 3/5）。后续继续 Advisor/Runner 真正派发与原子收尾、按可信执行上下文进行 MCP 每次调用鉴权、页面/底稿/报告统一视图、完整最终交付。当前用户/沙箱级 MCP 令牌无法单靠 args.task 证明本轮身份；conversation/market/NO_SCOPE 入口也须覆盖。不要靠全局关闭工具误伤其他会话，也不要持 Task 长事务调用模型/远程文件。规划 Attempt 的完成不能让初次方法的范围检查误以为已经执行过方法。接续说明在 docs/method-execution.md。
+
+## 2026-11-02 WP-10 单元 3 第三段：动态执行循环与事务收尾
+
+- 基线 b6784a7493956d026e89377f8f91200f68349263，继续 feat/method-execution-view。用户要求休息期间持续推进可独立开发验证的部分；发布归 qwen，作者内容/真实验收与许可确认留待本人。本轮无部署、线上修改、Wind 调用，3/5 不变。
+- Advisor 接 MethodPlanner 与任务视图，开步绑定输入；首个方法范围检查不被规划/定数据完成跳过。远程验收与文件指纹在锁外，结果/费用/事件/游标/返工/交人与最终 handback/Outbox/成功均原子提交。最终核全 final_outputs；重启末尾不重发模型。
+- 显式输入 pin 返工失效后，派发先拒绝，再有界重规划重绑同一上游已验收新版；方法/顺序/依赖/工具及旧收据不改，已完成前缀不可改。额度用尽明确失败。取消后的费用只补一次；旧回执不得撤销新问题或释放新项目占用。验收异常/绑定不符不收成果但结算已发生费用。
+- 专项 97 passed（/tmp/luna-method-advisor-rebind.txt）；追加迟到提问保护后 Advisor/Runner 50 passed（/tmp/luna-method-advisor-late.txt）。全量原始结果 1365 passed / 1 failed / 92 skipped / 2 既有 collection warnings，480.01 秒（/tmp/luna-method-advisor-full.txt）：usage 取消用例在立即取消终态后抢先读取费用，单测复现同一时序失败（/tmp/luna-method-advisor-stop-repro.txt）。按既有 0034 的先取消、迟到费用另结算语义，测试改为等待对应 turn 的 late_cost 回执，保留所有金额断言；使用量与动态 Advisor 两文件 23 passed（/tmp/luna-method-advisor-stop-final.txt）。最终全量留待下一段合并后重跑，不把失败日志冒充通过。ruff 与 app cwd pyright 通过。
+- 既有 ScriptedAppServer + 真实 Runner 验证 RECEIVED→规划→方法→交付；是预录工程证据，不能替代真实模型/数据验收。v3 准入仍关闭；下一段接 Runner 审批、ExpertDesk/文件/报告/UI 视图及工具入口每轮身份。
+- 权限准备：0.155.1 MCP 自动传 _meta.threadId、callId 与 x-codex-turn-metadata.turn_id，但不能只相信客户端声明；应核已认证 app-server 上报的调用事件、活动 Attempt 和工具子集。隔离容器 --network none、假 Responses/MCP 的实测 /tmp/luna-method-mcp-scope-probe-events.txt，无真实模型/数据调用。另证每线程 http_headers 独立，已加载线程直接 resume 忽略新头，unsubscribe 后 resume 才更新（/tmp/luna-method-mcp-scope-probe-resume.txt）。不能假定热更新生效或全局禁工具。初稿无首个 turn 导致无 rollout、未标只读导致等待审批超时的日志保留，成功探针才是依据。

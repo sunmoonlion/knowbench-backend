@@ -16,7 +16,11 @@ from app.application.workbench.plan_receipts import (
     read_plan,
     read_plan_version,
 )
-from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
+from app.domain.workbench.errors import (
+    MethodInputInvalidated,
+    MethodPlanInvalid,
+    StaleStateVersion,
+)
 from app.domain.workbench.execution_plan import ExecutionPlan, project_plan
 from app.domain.workbench.method_plan import output_name
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState, Wheel
@@ -49,7 +53,11 @@ async def execution_for_task(
 
 
 def _inputs(
-    view: ExecutionPlan, index: int, results: dict[str, dict[str, Any]]
+    view: ExecutionPlan,
+    index: int,
+    results: dict[str, dict[str, Any]],
+    *,
+    dispatch: bool = False,
 ) -> list[dict[str, Any]]:
     assert view.receipt is not None
     step = view.receipt.proposal.steps[index]
@@ -59,6 +67,11 @@ def _inputs(
         if artifact is None:
             raise MethodPlanInvalid("input instance has no current accepted result")
         if binding.version is not None and artifact["version"] != binding.version:
+            if dispatch:
+                raise MethodInputInvalidated(
+                    "pinned input was invalidated by rework",
+                    plan_version=view.receipt.version,
+                )
             raise MethodPlanInvalid("pinned input was invalidated by rework")
         refs.append(
             {
@@ -216,7 +229,7 @@ async def open_method_step(
         if step is None:
             raise MethodPlanInvalid("no next method instance")
         results = await accepted_results(repo, task, view)
-        refs = _inputs(view, index, results)
+        refs = _inputs(view, index, results, dispatch=True)
         opened = await ledger.open_attempt(
             task_id,
             step_id=step.step_id,

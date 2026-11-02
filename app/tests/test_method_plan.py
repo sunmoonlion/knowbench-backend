@@ -146,6 +146,40 @@ def test_started_but_not_completed_instance_is_also_protected():
         )
 
 
+@pytest.mark.parametrize(
+    "change", [None, "tools", "source", "version", "completed", "future"]
+)
+def test_rework_only_rebinds_invalidated_pin_to_same_accepted_upstream(change):
+    old = proposal().model_dump(mode="json")
+    old["steps"][1]["inputs"][0]["version"] = 1
+    receipt = previous().model_copy(update={"proposal": MethodPlan.model_validate(old)})
+    new = copy.deepcopy(old)
+    new["parent_version"] = 1
+    new["steps"][1]["inputs"][0]["version"] = 2
+    context = dict(
+        previous=receipt,
+        protected_prefix=2,
+        completed_prefix=1,
+        results={"inspect_1": 2},
+    )
+    if change == "tools":
+        new["steps"][1]["tools"] = ["read_input"]
+    elif change == "source":
+        new["steps"][1]["inputs"][0]["instance_id"] = "other"
+    elif change == "version":
+        new["steps"][1]["inputs"][0]["version"] = 3
+    elif change == "completed":
+        context["completed_prefix"] = 2
+    elif change == "future":
+        context["completed_prefix"] = 0
+    if change:
+        with pytest.raises(ValueError, match="prefix"):
+            validate(MethodPlan.model_validate(new), **context)
+    else:
+        validate(MethodPlan.model_validate(new), **context)
+        assert receipt.proposal.steps[1].inputs[0].version == 1
+
+
 def test_platform_capability_can_only_narrow_the_author_tool_set():
     with pytest.raises(ValueError, match="tools"):
         validate(proposal(), available_tools=frozenset())

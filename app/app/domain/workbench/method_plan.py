@@ -112,11 +112,34 @@ def validate_plan(
     if previous is not None:
         if protected_prefix > len(previous.proposal.steps):
             raise ValueError("invalid previous executed prefix")
-        if (
-            proposal.steps[:protected_prefix]
-            != previous.proposal.steps[:protected_prefix]
-        ):
-            raise ValueError("executed prefix cannot be replaced")
+        for index in range(protected_prefix):
+            before = previous.proposal.steps[index]
+            after = proposal.steps[index]
+            if before == after:
+                continue
+            # Rework may invalidate a started consumer's explicit input pin.
+            # Only that version may change, in a new receipt; method identity,
+            # ordering, dependencies, tools and the completed prefix stay frozen.
+            if (
+                index < completed_prefix
+                or before.model_copy(update={"inputs": after.inputs}) != after
+                or len(before.inputs) != len(after.inputs)
+            ):
+                raise ValueError("executed prefix cannot be replaced")
+            for old, new in zip(before.inputs, after.inputs, strict=True):
+                if old == new:
+                    continue
+                if (
+                    old.model_copy(update={"version": new.version}) != new
+                    or old.version is None
+                    or new.version is None
+                    or results.get(new.instance_id) != new.version
+                    or new.instance_id
+                    not in {s.instance_id for s in proposal.steps[:completed_prefix]}
+                ):
+                    raise ValueError(
+                        "executed prefix input must pin its accepted replacement"
+                    )
     validate_composition(catalog, proposal, available_tools=available_tools)
     completed = {s.instance_id for s in proposal.steps[:completed_prefix]}
     for step in proposal.steps[protected_prefix:]:

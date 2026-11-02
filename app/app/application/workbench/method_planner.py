@@ -35,7 +35,13 @@ class MethodPlanner:
         self.stores = stores
         self.driver = driver
 
-    async def run(self, task_id: str, *, parent_version: int = 0) -> str:
+    async def run(
+        self,
+        task_id: str,
+        *,
+        parent_version: int = 0,
+        adjustment_reason: str | None = None,
+    ) -> str:
         """Plan once against the requested parent; a stale retry cannot replan.
 
         Initial dispatch uses zero. A later explicit boundary adjustment must
@@ -100,6 +106,8 @@ class MethodPlanner:
                 if previous
                 else None,
                 "protected_prefix": protected,
+                "completed_prefix": int(task["current_step"]),
+                "adjustment_reason": adjustment_reason,
                 "accepted_results": results,
                 "last_rejection": rejected[-1]["payload"]["reason"]
                 if rejected
@@ -163,11 +171,11 @@ class MethodPlanner:
                     tokens=result.tokens,
                     turn_id=result.turn_id,
                 )
-                await led.release_turn(task_id)
+                await led.release_turn(task_id, attempt_id=attempt_id)
                 return task["state"]
             if str(task.get("active_attempt_id")) != attempt_id:
                 raise MethodPlanInvalid("planning attempt is no longer active")
-            await led.end_turn_waits(task_id)
+            await led.end_turn_waits(task_id, attempt_id=attempt_id)
             if attempt["status"] == AttemptState.CREATED:
                 await led.attempt_transition(attempt_id, AttemptState.RUNNING)
             task = await repo.get_task(task_id)
@@ -275,7 +283,7 @@ def compose_plan(catalog: MethodCatalog, context: dict[str, Any]) -> str:
         [
             "Plan this task using only the author's frozen methods below. Do not execute methods, call tools or edit files in this turn. Return one JSON object only, without markdown fences.",
             "Author's planning method:\n" + catalog.planning.method_text,
-            "Choose and order existing method IDs; never invent or edit methods, checks, budgets or permissions. Each input slot must bind to an earlier instance. Preserve the protected prefix exactly. For a completed input use its accepted version; for a future output omit the version. Tools must be a subset of that method's allowed_tools. final_outputs maps required final method IDs to their selected instances.",
+            "Choose and order existing method IDs; never invent or edit methods, checks, budgets or permissions. Each input slot must bind to an earlier instance. Preserve the completed prefix exactly. In the remaining protected prefix only replace an invalidated explicit input version with that same upstream instance's current accepted version; preserve all other fields. For a completed input use its accepted version; for a future output omit the version. Tools must be a subset of that method's allowed_tools. final_outputs maps required final method IDs to their selected instances.",
             "Limits:\n"
             + json.dumps(
                 {

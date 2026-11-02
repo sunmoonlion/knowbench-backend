@@ -330,7 +330,17 @@ async def test_stopping_the_expert_in_the_middle_of_a_step(make_client, db):  # 
             "by": "user",
             "running": True,
         }
-        # 被停下的那一步，已经花的照记
+        # 0034: cancellation is immediate; the interrupted sandbox reply settles
+        # separately. Wait for its receipt, not merely the task's terminal state.
+        async def interrupted_cost_settled() -> bool:
+            return any(
+                e["type"] == "attempt/late_cost"
+                and e["payload"].get("turn_id") == d.fake.interrupted[0]
+                for e in await d.events(session)
+            )
+
+        assert await d.until(interrupted_cost_settled)
+        # 被停下的那一步，已经花的照记；金额断言仍检查完整结算。
         after = (await d.http.get(f"/api/workbench/tasks/{task_id}/steps")).json()
         assert after["task"]["state_word"] == "已取消"
         assert after["task"]["reason_text"] == "你取消了这个委托"

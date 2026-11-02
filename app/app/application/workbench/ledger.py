@@ -659,13 +659,20 @@ class Ledger:
                 "interrupt": live or state is TaskState.WAITING,
             }
 
-    async def end_turn_waits(self, task_id: str) -> bool:
+    async def end_turn_waits(
+        self, task_id: str, *, attempt_id: str | None = None
+    ) -> bool:
         """推它的那一轮结束了（做完、超时、出错）：那一轮里开的、还没人答的审批与提问作废，委托从等待
         回到在跑，推它的程序接着按这一轮的结果走（重做、交人或结束）。委托级的等待（开步前的提问、
         交人、追加预算）不动。不这样做，问题挂着、委托停在等待，谁也推不动（2026-10-19 K19 第 2 稿）。
         """
         async with self.repo.transaction():
             task = await self.repo.get_task(task_id, for_update=True)
+            if (
+                attempt_id is not None
+                and str(task.get("active_attempt_id")) != attempt_id
+            ):
+                return False  # A late reply must not dismiss a newer turn's ask.
             if not await self._waits_on_codex(task):
                 return False
             await self.repo.cancel_pending_interactions(
@@ -687,7 +694,9 @@ class Ledger:
         it = await self.repo.get_interaction(str(task["active_interaction_id"]))
         return bool(((it.get("prompt") or {}).get("subject") or {}).get("request_id"))
 
-    async def release_turn(self, task_id: str, *, expired: bool = False) -> bool:
+    async def release_turn(
+        self, task_id: str, *, expired: bool = False, attempt_id: str | None = None
+    ) -> bool:
         """Codex 里那一轮确认结束了（推它的程序这一轮跑完、收尾时确认停下），或等过了 TURN_HOLD_SECONDS：
         放开项目、放行下一位（0034 §三.1）。等过时限的记一条「费用待核对」——那一轮花了多少拿不到了。"""
         async with self.repo.transaction():
@@ -697,6 +706,8 @@ class Ledger:
             hold = context.pop("turn_open", None)
             if hold is None:
                 return False
+            if attempt_id is not None and hold.get("attempt_id") != attempt_id:
+                return False  # An old reply cannot release a later live turn.
             original["client_context"] = context
             await self.repo.cas_task(
                 task_id,

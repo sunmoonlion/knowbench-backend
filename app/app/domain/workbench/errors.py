@@ -59,6 +59,10 @@ class MethodPlanInvalid(WorkbenchError):
     http_status = 409
 
 
+class MethodInputInvalidated(MethodPlanInvalid):
+    """Dispatch needs a new receipt after rework; no attempt was opened."""
+
+
 class RootOutsideWhitelist(WorkbenchError):
     code = "root_outside_whitelist"
     http_status = 400
