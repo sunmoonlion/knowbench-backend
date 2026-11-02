@@ -1,3 +1,15 @@
+# 2026-11-02：专家数据工具执行前检查（#57 修复候选）
+
+真实任务 9319ae09 只读核查：最终 FAILED（14:46:36 UTC，用户停止），前七步按 json_object/required_keys/no_positioning_advice 放行；成稿因 JSON 不合格返工等待。不是后台记成功，但数据不可读未在步骤前阻断。集群 knowbase-service-access 仍无 /api/mcp/data；入口声明由 qwen 按已有发布授权补齐，勿在本工位改线上对象。
+
+新 runtime_tools 使用现有 AppServerConnection，从服务端冻结步骤读取允许的数据工具，执行前以当前 threadId 查询真实 mcpServerStatus/list；缺项/发现异常明确平台失败，无 turn/start、无 token 消耗、不落成果、不推进游标。不自动 reload、不代答、不改授权；方法规划与无数据工具步骤不多探测。失败说明不输出供应商正文/凭据。协议从运行中的 Codex 0.155.1 生成 schema 核实（toolsAndAuthOnly/threadId/toolsError）。固定与动态共用同一入口。
+
+初始开发在 b86cdcdb 后隔离工位，最终只交本补丁到 #57 后端 31e37014143cfa2bf95e2ee28e0dd9d759bdf829，不夹带尚未发布的作者准入配置或商城动态增量。初轮 75 passed；补规划失败分类与动态真 Runner/工具回归后 85 passed，ruff/pyright 通过。日志 /tmp/luna-preflight-final-tests.log、/tmp/luna-preflight-pyright.log。旧专家弱验收未被篡改，尚需在新专家版本补作者确认的数值/出处判据；此补丁不宣称能识别所有无证据文字或运行中所有工具错误。
+
+规则：C-C7 只用 app-server 协议；C-D11 状态仍由 Ledger；C-R10 本地测试不等于线上验收。回退恢复 #57 镜像/源码，保留历史任务。无迁移/新配置。下一步交 qwen 同批发布：入口路由到位、工作台目录完整、旧线程刷新、本人再做新任务；不得复活已失败任务或改其产物。
+
+此前记录：
+
 # 2026-11-02 Wind 通用查询与年报证据（开发候选，未发布）
 
 基线 `24b6415aeaa36e4cf9a6dc4ed113232607ac9859`。本轮本人要求第二轨作为主演示、巨潮保底，财务与年报都纳入、不限制为财务专线。

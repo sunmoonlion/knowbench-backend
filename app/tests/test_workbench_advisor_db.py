@@ -62,6 +62,27 @@ class ScriptedAppServer:
         elif m == "thread/start":
             tid = f"thread-{uuid.uuid4().hex[:8]}"
             await send({"id": rid, "result": {"thread": {"id": tid}, "model": MODEL}})
+        elif m == "mcpServerStatus/list":
+            from app.domain.workbench.knowbots import DATA_MCP_TOOLS
+
+            await send(
+                {
+                    "id": rid,
+                    "result": {
+                        "data": [
+                            {
+                                "name": "sunmoon_workbench",
+                                "runtimeStatus": "connected",
+                                "tools": {
+                                    n: {"name": n, "inputSchema": {}}
+                                    for n in DATA_MCP_TOOLS
+                                },
+                            }
+                        ],
+                        "nextCursor": None,
+                    },
+                }
+            )
         elif m == "turn/start":
             tid, turn_id = p["threadId"], f"turn-{uuid.uuid4().hex[:6]}"
             text = p["input"][0]["text"]
