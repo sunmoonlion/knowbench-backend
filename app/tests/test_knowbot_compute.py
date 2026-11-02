@@ -281,7 +281,7 @@ async def test_compute_takes_facts_by_ref_and_records_the_computation() -> None:
             "not a fact ref",
         ),
         ({"a": 123}, "a", "must be a fact ref"),
-        ({"A": "x"}, "A", "lower-case"),
+        ({"A": "x"}, "A", "not a fact ref"),
         ({}, "1", "inputs must be"),
         ({"a": fact(99)}, "a", "no such fact"),
         ({"a": fact(2), "z": fact(4)}, "a / z", "denominator is zero"),
@@ -302,6 +302,38 @@ async def test_facts_cannot_be_read_without_the_reader() -> None:
     tool = KnowbotCompute(records)  # type: ignore[arg-type]
     with pytest.raises(ComputeRefused, match="cannot be read here"):
         await tool.compute("t", "x", "a", {"a": fact(2)})
+
+
+async def test_reconciliation_symbols_preserve_case_and_evidence() -> None:
+    records, tool = world()
+    result = await tool.compute(
+        "t",
+        "balance",
+        "A - (L + E)",
+        {"A": fact(2), "L": fact(1), "E": fact(4)},
+        2,
+    )
+    assert result["value"] == "150.15"
+    assert result["formula"] == "A - (L + E)"
+    assert result["inputs"][0] == {"name": "A", "ref": fact(2), "value": "250.25"}
+    chained = await tool.compute(
+        "t", "case sensitive", "A - a", {"A": result["id"], "a": fact(1)}
+    )
+    assert chained["value"] == "50.05"
+    assert len(records.repo.events) == 2
+    with pytest.raises(ComputeRefused, match="unknown name"):
+        await tool.compute("t", "wrong case", "a", {"A": fact(1)})
+    assert len(records.repo.events) == 2
+
+
+@pytest.mark.parametrize("name", ["1A", "A.B", "A-B", "Ａ", "A\n", "A" * 33])
+async def test_invalid_symbols_refused_before_reading(name: str) -> None:
+    reader = Reader()
+    records, tool = world(reader)
+    with pytest.raises(ComputeRefused, match="input name"):
+        await tool.compute("t", "invalid symbol", "1", {name: fact(1)})
+    assert reader.asked == []
+    assert records.repo.events == []
 
 
 async def test_compute_limits_round_and_input_count() -> None:

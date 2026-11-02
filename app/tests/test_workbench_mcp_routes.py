@@ -41,8 +41,8 @@ def rpc(method, params=None, mid=1):
     return {"jsonrpc": "2.0", "id": mid, "method": method, "params": params or {}}
 
 
-def tool(name, **arguments):
-    return rpc("tools/call", {"name": name, "arguments": arguments})
+def tool(tool_name, **arguments):
+    return rpc("tools/call", {"name": tool_name, "arguments": arguments})
 
 
 @pytest.fixture
@@ -439,6 +439,28 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
             result = computed.json()["result"]
             assert result["isError"] is False, result
             assert result["structuredContent"]["value"] == "3000"
+            assert fake_kb.seen[-1][1]["params"]["name"] == "read_facts"
+
+            # Regression: real reconciliation calls used A/L/E; keep symbols as written.
+            upper = await http.post(
+                URL,
+                json=tool(
+                    "compute",
+                    task=ids["task"],
+                    name="balance",
+                    expression="A - (L + E)",
+                    inputs={
+                        "A": FakeDataMcp.FACT,
+                        "L": FakeDataMcp.FACT,
+                        "E": FakeDataMcp.FACT,
+                    },
+                ),
+                headers=bearer(),
+            )
+            upper_result = upper.json()["result"]
+            assert upper_result["isError"] is False, upper_result
+            assert upper_result["structuredContent"]["value"] == "-1500"
+            assert upper_result["structuredContent"]["formula"] == "A - (L + E)"
             assert fake_kb.seen[-1][1]["params"]["name"] == "read_facts"
 
             async with db() as s, s.begin():  # 回到没有清单的委托

@@ -40,6 +40,7 @@ from app.bootstrap.workbench import (
     knowmart_catalog,
     workbench_store,
 )
+from app.domain.workbench.compute import NAME as COMPUTE_NAME
 from app.domain.workbench.data_request import DataRequest
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
@@ -204,6 +205,9 @@ TOOLS: dict[str, dict[str, Any]] = {
             "Compute one number exactly (decimal) and record it. `inputs` maps short "
             "names to fact refs (fact:… or raw:… from query_facts), to the id of an "
             "earlier computation of this task (e.g. c17), or to a list of them. "
+            "Input names are case-sensitive ASCII identifiers, 1–32 characters: "
+            "start with a letter or _, then letters, digits or _. For example, "
+            "inputs {A: fact:…, L: fact:…, E: fact:…} uses expression A - (L + E). "
             "`expression` uses only those names, "
             "numbers, + - * / ( ), ** (fractional exponents require a positive base; "
             "absolute exponent at most 100, e.g. (end / start) ** (1 / years) - 1), "
@@ -221,6 +225,9 @@ TOOLS: dict[str, dict[str, Any]] = {
                 "expression": {"type": "string", "maxLength": 500},
                 "inputs": {
                     "type": "object",
+                    "minProperties": 1,
+                    "maxProperties": 50,
+                    "propertyNames": {"pattern": COMPUTE_NAME.pattern},
                     "additionalProperties": {
                         "anyOf": [
                             {"type": "string"},

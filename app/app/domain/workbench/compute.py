@@ -23,7 +23,8 @@ MAX_ROUND = 10
 MAX_POWER = 100  # 乘方指数的绝对值上限，整数与分数指数共用
 PRECISION = 34
 MAX_LITERAL_EXPONENT = 999999  # Decimal 默认范围；拒绝巨型指数，避免序列化无界展开
-NAME = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
+# Shared with the JSON Schema: unlike $, this end assertion rejects a trailing newline.
+NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,31}(?![\s\S])")
 COMPUTE_ID = re.compile(r"^c[1-9][0-9]{0,9}$")
 ZERO_DIVISOR = "denominator is zero"
 
