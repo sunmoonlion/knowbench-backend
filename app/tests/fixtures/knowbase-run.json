@@ -1,0 +1,323 @@
+{
+  "steps": {
+    "contract_version": 2,
+    "task": {
+      "task_id": "63ab2ea1-6dfd-51e6-b288-617b0e638ff8",
+      "session_id": "a1bd1fc0-1dfb-549d-b1ec-1a9d8f0b7f01",
+      "project_id": "55cc5808-4388-544c-a6fb-76786ad433a6",
+      "expert": {
+        "id": "knowbot:e52bc48b-549d-5f39-891a-c87d1866e6cf@1",
+        "name": "我的方法",
+        "version": "1"
+      },
+      "question": "分析茅台",
+      "state": "WAITING",
+      "state_word": null,
+      "waiting_reason": "DATA",
+      "cancel_requested": false,
+      "reason": {
+        "data": "requested",
+        "requests": [
+          "r1"
+        ],
+        "waiting_for": [
+          "最近一年的年报",
+          "上一年比较"
+        ]
+      },
+      "reason_text": "",
+      "budget": {
+        "currency": "CNY",
+        "limit": null,
+        "used": "0.00",
+        "reserved": "0.00",
+        "left": null,
+        "running": "0.00",
+        "spent": "0.00",
+        "estimated": true
+      },
+      "data": null,
+      "chosen_data": [
+        {
+          "need": null,
+          "name": "专家自带的资料",
+          "source": "knowbase"
+        }
+      ],
+      "started_at": "2026-01-01T00:00:00+00:00",
+      "ended_at": null,
+      "seconds": 0,
+      "active_interaction_id": null
+    },
+    "now": {
+      "step": {
+        "index": 1,
+        "of": 2,
+        "title": "数据准备",
+        "summary": "等待数据确认或补采完成",
+        "why": "需要先核对并确认本次的数据范围；获准的数据准备好后，专家才继续分析"
+      },
+      "doing": {
+        "code": "waiting",
+        "text": "停下来了，在等你决定"
+      },
+      "redo": null,
+      "since": "2026-01-01T00:00:00+00:00",
+      "last_event_at": "2026-01-01T00:00:00+00:00",
+      "held": false
+    },
+    "position": {
+      "step": 1,
+      "of": 2,
+      "title": "拆步",
+      "left": 2
+    },
+    "steps": [
+      {
+        "index": 1,
+        "step_id": "plan",
+        "title": "拆步",
+        "summary": "把问题拆成不超过三步",
+        "why": "",
+        "uses": [],
+        "tools": [],
+        "returns": "plan",
+        "checks": [
+          {
+            "label": "交回的格式对"
+          },
+          {
+            "label": "有计划"
+          },
+          {
+            "label": "计划不是空的"
+          }
+        ],
+        "after_rejection": {
+          "reworks": 1,
+          "then": "human",
+          "back_to": null,
+          "backs": 0,
+          "text": "重做，最多 1 次；仍不过，停下来问你"
+        },
+        "reserve": "0.05",
+        "status": "waiting",
+        "attempts": [],
+        "times": 0,
+        "rejected": 0,
+        "spent": "0.00",
+        "data": null
+      },
+      {
+        "index": 2,
+        "step_id": "answer",
+        "title": "按计划作答",
+        "summary": "按计划作答，每个说法带出处",
+        "why": "",
+        "uses": [
+          {
+            "artifact": "plan",
+            "step": 1,
+            "title": "拆步"
+          }
+        ],
+        "tools": [],
+        "returns": "answer",
+        "checks": [
+          {
+            "label": "交回的格式对"
+          },
+          {
+            "label": "有回答和出处"
+          },
+          {
+            "label": "回答不是空的"
+          },
+          {
+            "label": "没有评级、目标价、买卖建议"
+          }
+        ],
+        "after_rejection": {
+          "reworks": 1,
+          "then": "human",
+          "back_to": null,
+          "backs": 0,
+          "text": "重做，最多 1 次；仍不过，停下来问你"
+        },
+        "reserve": "0.05",
+        "status": "pending",
+        "attempts": [],
+        "times": 0,
+        "rejected": 0,
+        "spent": "0.00",
+        "data": null
+      }
+    ]
+  },
+  "data": {
+    "contract_version": 2,
+    "listed": true,
+    "outputs_not_saved": [],
+    "status": "ready",
+    "confirm_in": "here",
+    "waiting_for": [],
+    "demand_status": null,
+    "supply_progress": null,
+    "reason": null,
+    "incomplete": [],
+    "requests": [
+      {
+        "id": "r1",
+        "labels": [
+          "最近一年的年报",
+          "上一年比较"
+        ],
+        "status": "pending",
+        "requested_at": "2026-01-01T00:00:00+00:00",
+        "needs": [
+          {
+            "key": "req1_1",
+            "name": "最近一年的年报",
+            "period": {
+              "end": "2025-12-31",
+              "kind": "fixed",
+              "count": null,
+              "start": "2025-01-01",
+              "months": null,
+              "disclosed_by_task_date": false
+            },
+            "tables": [],
+            "topics": [],
+            "caliber": null,
+            "edition": "full",
+            "formats": [
+              "pdf",
+              "excel",
+              "csv",
+              "text",
+              "markdown",
+              "html"
+            ],
+            "reading": "pages",
+            "sources": [],
+            "subject": "600519.SH",
+            "doc_type": "annual_report",
+            "industry": null,
+            "priority": null,
+            "required": true,
+            "max_count": 1,
+            "min_count": 1,
+            "description": "最近一年的年报"
+          },
+          {
+            "key": "req1_2",
+            "name": "上一年比较",
+            "period": {
+              "end": "2024-12-31",
+              "kind": "fixed",
+              "count": null,
+              "start": "2024-01-01",
+              "months": null,
+              "disclosed_by_task_date": false
+            },
+            "tables": [],
+            "topics": [],
+            "caliber": null,
+            "edition": "full",
+            "formats": [
+              "pdf",
+              "excel",
+              "csv",
+              "text",
+              "markdown",
+              "html"
+            ],
+            "reading": "pages",
+            "sources": [],
+            "subject": "600519.SH",
+            "doc_type": "annual_report",
+            "industry": null,
+            "priority": null,
+            "required": false,
+            "max_count": 1,
+            "min_count": 1,
+            "description": "上一年比较"
+          }
+        ],
+        "items": [
+          {
+            "need_key": "req1_1",
+            "key": {
+              "subject": "600519.SH",
+              "doc_type": "annual_report",
+              "period_start": "2025-01-01",
+              "period_end": "2025-12-31"
+            },
+            "status": "resolved",
+            "chosen": [
+              {
+                "material_id": "m-2025",
+                "basis": "public",
+                "version_no": 1,
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "content_origin": "disclosure",
+                "disclosed_on": null,
+                "data_format": "pdf",
+                "rendition_kind": "pages",
+                "rendition_no": 1,
+                "rendition_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+                "name": "贵州茅台2025年年度报告.pdf",
+                "media_type": "application/pdf",
+                "size_bytes": 100
+              }
+            ],
+            "candidates": [],
+            "reason": null,
+            "ref": "req1_1:9e0c5fab7a1f"
+          },
+          {
+            "need_key": "req1_2",
+            "key": {
+              "subject": "600519.SH",
+              "doc_type": "annual_report",
+              "period_start": "2024-01-01",
+              "period_end": "2024-12-31"
+            },
+            "status": "to_confirm",
+            "chosen": [],
+            "candidates": [],
+            "reason": null,
+            "ref": "req1_2:0be8f8435503",
+            "prematch": {
+              "ref": "req1_2:0be8f8435503",
+              "status": "available",
+              "reason": null,
+              "license": "self",
+              "eta_seconds": 300,
+              "readings_missing": [],
+              "candidates": [],
+              "key": {
+                "subject": "600519.SH",
+                "doc_type": "annual_report",
+                "period_start": "2024-01-01",
+                "period_end": "2024-12-31",
+                "edition": "full",
+                "topics": []
+              }
+            }
+          }
+        ],
+        "eta_seconds": 300,
+        "missing": []
+      }
+    ],
+    "pinned": [
+      {
+        "name": "专家自带的资料",
+        "need": null,
+        "version_no": 3,
+        "basis": "frozen_binding"
+      }
+    ]
+  }
+}
