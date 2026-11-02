@@ -10,7 +10,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from app.domain.workbench.tool_policy import (
     ToolPolicy,
@@ -62,6 +69,10 @@ class AcceptanceRule(Strict):
     also: tuple[str, ...] = ()  # covers：同一交回物里一起算的别的几处列表
     tolerance: float = Field(default=0, ge=0)  # 数值类：差的绝对值不超过它算一致
     expression: str | None = None  # computed：记录里的算式必须就是这个（比语法树）
+    expected_value: float | None = Field(default=None, strict=True, allow_inf_nan=False)
+    input_keys: tuple[str, ...] = ()
+    non_empty_keys: tuple[str, ...] = ()
+    unique_by: tuple[str, ...] = ()
     message: str = ""  # 不通过时的说明
     label: str = ""  # 这条验收的名字，通过时也显示
 
@@ -83,7 +94,29 @@ class AcceptanceRule(Strict):
             )
         if (self.source or self.source_field or self.also) and self.kind != "covers":
             raise ValueError("only covers reads an upstream artifact")
+        if self.input_keys and self.kind != "computed":
+            raise ValueError("input_keys require computed")
+        if self.expected_value is not None and self.kind != "computed":
+            raise ValueError("only computed can require an expected value")
+        if (self.non_empty_keys or self.unique_by) and self.kind != "each_has":
+            raise ValueError("row constraints require each_has")
+        for names in (self.input_keys, self.non_empty_keys, self.unique_by):
+            if len(names) != len(set(names)) or any(not name.strip() for name in names):
+                raise ValueError("row constraint fields must be unique nonblank names")
         return self
+
+    @model_serializer(mode="wrap")
+    def _without_unused_extensions(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        # Preserve historical snapshots byte-for-byte when new checks are absent.
+        result = handler(self)
+        if self.expected_value is None:
+            result.pop("expected_value", None)
+        for key in ("input_keys", "non_empty_keys", "unique_by"):
+            if not getattr(self, key):
+                result.pop(key, None)
+        return result
 
 
 OUTPUT_FILE_CHARS = 256

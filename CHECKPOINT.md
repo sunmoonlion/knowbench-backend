@@ -257,3 +257,19 @@ ruff / pyright 通过；部署模板用真实 config/Jinja 渲染 dev/test，1 �
 剩余：qwen 按同一交接更新入口声明和镜像；真实 tools/list 及已有线程目录刷新后
 验收，旧任务的用户提问继续由本人决定。无迁移、Wind 真实调用为 0；当前不是生产
 已修复的结论，不能用本地通过代替发布后检查。回退保留用户材料与记录。
+
+
+## 2026-11-02：kimi 方法库复核后的通用验收修复
+
+基线 15643e2（含 Luna #52 数据 MCP 路由/发现修复），分支 fix/kimi-method-validation。
+AcceptanceRule 可选扩展：computed.expected_value 校验记录值和交回值均在目标容差内；
+computed.input_keys 将同名数值字段绑定到本任务计算记录中的已解析操作数；
+each_has.non_empty_keys/unique_by 检查非空字段和联合唯一性。没有财务专用执行器。
+未使用的新字段不进入序列化，旧快照不增加默认键。旧运行器 extra=forbid 会拒绝新规则，
+不能在未升级的运行器上发布依赖这些检查的方法。
+
+验收：运行侧验收/计算/目录/计划 231 passed、1 skipped；最后追加两条容差及数值唯一性
+反例后，验收/计算子集 150 passed（含新增两项）。隔离数据库 method_acceptance 2 passed。
+ruff、pyright 通过。运行证据 /tmp/kimi-method-runtime-tests.txt；未用生产数据或 Wind。
+父仓需同步 dynamic-methods v1/v2 schema，knowlab 同步 consumer lock。
+回退应同时回退依赖扩展的候选方法版本和编译/UI，不删历史任务或覆盖历史快照。

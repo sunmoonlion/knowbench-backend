@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -149,10 +150,11 @@ def out_of_scope(text: str | None) -> dict[str, str] | None:
 
 
 def _each_has(val: Any, rule: AcceptanceRule) -> tuple[bool, str]:
-    """列表的每一项都有 keys；写了 field/values 的，那一项只能取其中之一。空列表算过。"""
+    """Check row fields, optional nonblank content and unique scalar identities."""
     if not isinstance(val, list):
         return False, "not a list"
     bad = []
+    seen = set()
     for i, item in enumerate(val):
         if not isinstance(item, dict):
             bad.append(f"#{i} is not an object")
@@ -160,8 +162,36 @@ def _each_has(val: Any, rule: AcceptanceRule) -> tuple[bool, str]:
         missing = [k for k in rule.keys if k not in item]
         if missing:
             bad.append(f"#{i} misses {missing}")
-        elif rule.values and item.get(rule.field or "") not in rule.values:
+        if rule.values and item.get(rule.field or "") not in rule.values:
             bad.append(f"#{i} {rule.field}={item.get(rule.field or '')!r}")
+        for key in rule.non_empty_keys:
+            value = item.get(key)
+            if (
+                value is None
+                or value == []
+                or value == {}
+                or (isinstance(value, str) and not value.strip())
+            ):
+                bad.append(f"#{i} {key} is empty")
+        if rule.unique_by:
+            values = [item.get(key) for key in rule.unique_by]
+            if any(
+                not isinstance(v, str | int | float | bool)
+                or (isinstance(v, str) and not v.strip())
+                or (isinstance(v, float) and not math.isfinite(v))
+                for v in values
+            ):
+                bad.append(f"#{i} has an invalid row identity")
+            else:
+                identity = tuple(
+                    ("number", v)
+                    if isinstance(v, int | float) and not isinstance(v, bool)
+                    else (type(v).__name__, v)
+                    for v in values
+                )
+                if identity in seen:
+                    bad.append(f"#{i} duplicate row identity")
+                seen.add(identity)
     return not bad, "; ".join(bad[:5])
 
 

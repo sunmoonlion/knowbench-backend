@@ -80,12 +80,36 @@ def _computed(
             bad.append(
                 f"#{i} {cid} says {item.get('value')} but computed {record.get('value')}"
             )
+        elif rule.expected_value is not None and (
+            not _close(computed, Decimal(str(rule.expected_value)), rule.tolerance)
+            or not _close(value, Decimal(str(rule.expected_value)), rule.tolerance)
+        ):
+            bad.append(
+                f"#{i} {cid} computed {record.get('value')}, expected {rule.expected_value}"
+            )
         elif rule.expression and not calc.same_expression(
             str(record.get("expression") or ""), rule.expression
         ):
             bad.append(
                 f"#{i} {cid} used {record.get('expression')!r}, not {rule.expression!r}"
             )
+        if record is not None and rule.input_keys:
+            operands = {
+                entry.get("name"): calc.decimal_of(entry.get("value"))
+                for entry in record.get("inputs", [])
+                if isinstance(entry, dict)
+            }
+            for key in rule.input_keys:
+                reported = calc.decimal_of(item.get(key))
+                operand = operands.get(key)
+                if (
+                    reported is None
+                    or operand is None
+                    or not _close(reported, operand, rule.tolerance)
+                ):
+                    bad.append(
+                        f"#{i} {cid} input {key} does not match the reported field"
+                    )
     return bad
 
 
