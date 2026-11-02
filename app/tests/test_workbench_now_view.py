@@ -142,3 +142,20 @@ def test_every_field_an_expert_hands_back_has_a_word_for_the_user():
         "data_version": "数据版本",
     }
     assert labels_of("文字") == {}
+
+
+def test_confirmed_data_wait_is_not_another_request_for_user_decision():
+    now = now_view(
+        task("WAITING", step=0, waiting_reason="DATA"),
+        STEPS,
+        events=[],
+        since="t0",
+        held=False,
+        waiting_for_data_service=True,
+    )
+    assert now is not None
+    assert now["doing"]["code"] == "supplying"
+    assert "已确认" in now["doing"]["text"]
+    assert "等你决定" not in now["doing"]["text"]
+    assert now["step"]["summary"] == "等待采集与加工完成"
+    assert "取不到" in now["step"]["why"]

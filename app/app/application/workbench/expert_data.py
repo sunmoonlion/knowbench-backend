@@ -326,7 +326,11 @@ class ExpertData:
                 demand = await self.supply.submit(
                     owner=owner_subject,
                     confirmation_id=str(confirmed["confirmation_id"]),
-                    idempotency_key=f"kb-{task_id}-{'-'.join(sorted(ids))}"[:128],
+                    idempotency_key=(
+                        f"kb-{task_id}-{detail['supply_retry']}-{'-'.join(sorted(ids))}"
+                        if detail.get("supply_retry")
+                        else f"kb-{task_id}-{'-'.join(sorted(ids))}"
+                    )[:128],
                     task_ref=str(row["grant_ref"]),
                     proposer="expert",
                     chain=[str(row["consumer"]), task_id],
@@ -344,6 +348,7 @@ class ExpertData:
                 detail["requests"] = _mark(detail, ids, "supplying")
                 detail["phase"] = {"requests": sorted(ids)}
                 detail["waiting_for"] = [c["label"] for c in draft.confirm]
+                detail["supply_progress"] = supply_progress(demand, self.now())
                 detail["incomplete"] = (
                     list(detail.get("incomplete") or []) + draft.incomplete
                 )
@@ -493,18 +498,49 @@ class ExpertData:
     async def recheck(
         self, repo: WorkbenchStore, task: dict[str, Any], user_token: UserToken
     ) -> dict[str, Any]:
-        """「传好了，重新查」：用户在 knowbase 上传了采不来的那份，凭本人令牌请 knowbase
-        重解析（已定的不动，没定的重找），面板再取就是新的结果。"""
+        """本人重新核对待确认或未取齐的采单。保留任务与范围，失败项回到确认面板；
+        不自动签约或取数。重新确认时使用新一轮幂等键，避免重放上一轮失败的需求单。"""
         task_id = str(task["id"])
         row = await repo.get_task_resolution(task_id)
-        pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
-        if row is None or not pending or row.get("resolution_id") is None:
+        pending = [
+            r
+            for r in pending_requests(row)
+            if r.get("status") in ("pending", "missing")
+        ]
+        if (
+            row is None
+            or not pending
+            or row.get("resolution_id") is None
+            or row["status"] == "waiting"
+        ):
             raise DataChoiceInvalid("nothing is waiting for your confirmation")
         fresh = await self.knowbase.refresh_mine(
             await user_token(), str(row["resolution_id"])
         )
         async with repo.transaction():
-            await repo.update_task_resolution(task_id, revision=int(fresh["revision"]))
+            current = await repo.get_task_resolution(task_id, for_update=True)
+            if (
+                current is None
+                or current["status"] == "waiting"
+                or (await repo.get_task(task_id))["state"] in TASK_TERMINAL
+            ):
+                raise DataChoiceInvalid(
+                    "this task is no longer waiting for a data decision"
+                )
+            detail = dict(current.get("detail") or {})
+            missing = {
+                r["id"]
+                for r in pending_requests(current)
+                if r.get("status") == "missing"
+            }
+            if missing:
+                detail["requests"] = _mark(detail, missing, "pending")
+                detail["supply_retry"] = uuid.uuid4().hex
+            await repo.update_task_resolution(
+                task_id,
+                revision=int(fresh["revision"]),
+                detail=detail,
+            )
         return {"status": "rechecked", "revision": int(fresh["revision"])}
 
     async def _remember(
@@ -609,6 +645,23 @@ def data_session_note(session: dict[str, Any], now: datetime) -> str | None:
 ALL_FORMATS = ["pdf", "excel", "csv", "text", "markdown", "html"]
 # 一次最多提这么多样（knowbase 一张清单最多 20 样、展开后 200 条）
 MAX_REQUEST_NEEDS = 20
+
+
+def supply_progress(demand: dict[str, Any], checked_at: datetime) -> dict[str, Any]:
+    """供给服务的最近一次真实快照，只投影展示所需字段，不转发原件或回执。"""
+    return {
+        "checked_at": checked_at.isoformat(),
+        "items": [
+            {
+                "id": str(i["item_id"]),
+                "key": i.get("key"),
+                "readings": i.get("readings") or [],
+                "status": str(i["status"]),
+                "reason": i.get("reason"),
+            }
+            for i in demand.get("items") or []
+        ],
+    }
 
 
 def pending_requests(row: dict[str, Any] | None) -> list[dict[str, Any]]:
@@ -1024,7 +1077,11 @@ class DataWaiter:
             return
         demand = await self.supply.get(str(row["demand_id"]))
         status = str(demand.get("status"))
-        detail = {**(row.get("detail") or {}), "demand_status": status}
+        detail = {
+            **(row.get("detail") or {}),
+            "demand_status": status,
+            "supply_progress": supply_progress(demand, self.now()),
+        }
         if status in OPEN_DEMAND:
             deadline = row.get("deadline")
             if deadline is not None and self.now() >= deadline:

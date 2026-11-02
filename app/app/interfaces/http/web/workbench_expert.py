@@ -286,6 +286,7 @@ async def task_data(
         "confirm_in": "knowlab" if row.get("resolution_id") is None else "here",
         "waiting_for": detail.get("waiting_for") or [],
         "demand_status": detail.get("demand_status"),
+        "supply_progress": detail.get("supply_progress"),
         "reason": detail.get("reason"),
         "incomplete": detail.get("incomplete") or [],
         "requests": [

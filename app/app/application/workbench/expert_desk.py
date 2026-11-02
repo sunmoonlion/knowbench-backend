@@ -148,7 +148,23 @@ class ExpertDesk:
             )
         session = await self.repo.get_session(str(task["session_id"]))
         held = await self.repo.sandbox_held(str(session["sandbox_id"]))
-        return now_view(task, steps, events=events, since=since, held=held)
+        row = (
+            await self.repo.get_task_resolution(task_id)
+            if task["state"] == TaskState.WAITING
+            and task.get("waiting_reason") == WaitingReason.DATA
+            else None
+        )
+        _, waiting = board_place(task, row)
+        return now_view(
+            task,
+            steps,
+            events=events,
+            since=since,
+            held=held,
+            waiting_for_data_service=bool(
+                row and waiting and waiting["who"] == "data_service"
+            ),
+        )
 
     async def _sheet(
         self,

@@ -21,6 +21,7 @@ DOING = {
     "writing": "在写这一步的交回物",
     "checking": "这一步做完了，在逐条验收",
     "waiting": "停下来了，在等你决定",
+    "supplying": "采单已确认，正在等待数据服务完成采集与加工",
     "offline": "你的机器断开了，在等它回来",
 }
 
@@ -57,6 +58,7 @@ def now_view(
     events: list[dict[str, Any]],
     since: Any,
     held: bool,
+    waiting_for_data_service: bool = False,
 ) -> dict[str, Any] | None:
     """steps 是步骤视图；events 是这一次开做之后这段对话的事件；since 是这一次开做的时间。
 
@@ -75,6 +77,8 @@ def now_view(
     data_wait = (
         state == TaskState.WAITING and task.get("waiting_reason") == WaitingReason.DATA
     )
+    if data_wait and waiting_for_data_service:
+        code = "supplying"
     text = DOING[code] + (f"：{detail}" if detail else "")
     times = int(step.get("times") or 0)
     rejected = int(step.get("rejected") or 0)
@@ -88,11 +92,15 @@ def now_view(
             "index": step["index"],
             "of": len(steps),
             "title": "数据准备" if data_wait else step["title"],
-            "summary": "等待数据确认或补采完成"
+            "summary": "等待采集与加工完成"
+            if code == "supplying"
+            else "等待数据确认或补采完成"
             if data_wait
             else step.get("summary") or "",
             "why": (
-                "需要先核对并确认本次的数据范围；获准的数据准备好后，专家才继续分析"
+                "你已确认采单，数据服务正在处理；所需数据准备好后专家自动继续，取不到的会列明原因"
+                if code == "supplying"
+                else "需要先核对并确认本次的数据范围；获准的数据准备好后，专家才继续分析"
                 if data_wait
                 else step.get("why") or ""
             ),

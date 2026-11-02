@@ -216,6 +216,7 @@ class FakeKnowbase:
 class FakeSupply:
     def __init__(self) -> None:
         self.status = "fetching"
+        self.items: list[dict[str, Any]] = []
         self.submitted: list[dict[str, Any]] = []
         self.cancelled: list[str] = []
         self.looked_up: list[str] = []
@@ -249,7 +250,7 @@ class FakeSupply:
         return {"demand_id": f"d-{len(self.submitted)}", "status": "fetching"}
 
     async def get(self, demand_id: str) -> dict[str, Any]:
-        return {"demand_id": demand_id, "status": self.status}
+        return {"demand_id": demand_id, "status": self.status, "items": self.items}
 
     async def cancel(self, demand_id: str) -> dict[str, Any]:
         self.cancelled.append(demand_id)
@@ -465,6 +466,10 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         )
         assert confirmed.status_code == 200, confirmed.text
         assert confirmed.json()["status"] == "supplying"
+        current = await http.get(f"/api/workbench/tasks/{task_id}/steps")
+        assert current.status_code == 200
+        assert current.json()["now"]["doing"]["code"] == "supplying"
+        assert "已确认" in current.json()["now"]["doing"]["text"]
     [(_, asked_for)] = [c for c in kb.calls if c[0] == "confirm"]
     assert asked_for["items"] == [{"key": key("2024"), "need_key": "req1_2"}]
     assert asked_for["task_ref"] == ref
@@ -479,7 +484,25 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
     stores = workbench_stores(db)
     later = datetime.now(UTC) + timedelta(minutes=10)
     waiter = DataWaiter(stores, kb, supply, now=lambda: later)
-    assert await waiter.sweep() == 1  # 还在取：不动
+    supply.items = [
+        {
+            "item_id": "i-failed",
+            "key": key("2024"),
+            "readings": ["table"],
+            "status": "failed",
+            "reason": "invalid_request",
+            "receipt": {"private": "must-not-leak"},
+        }
+    ]
+    assert await waiter.sweep() == 1  # 还在取：不动，但部分失败已可见
+    async with make_client(A) as http:
+        response = await http.get(f"/api/workbench/tasks/{task_id}/data")
+        progress = response.json()["supply_progress"]
+        assert progress["checked_at"] == later.isoformat()
+        assert progress["items"][0]["status"] == "failed"
+        assert progress["items"][0]["reason"] == "invalid_request"
+        assert "receipt" not in progress["items"][0]
+        assert "must-not-leak" not in response.text
     supply.status = "ready"
     waiter.now = lambda: later + timedelta(hours=1)
     assert await waiter.sweep() == 1
@@ -1206,3 +1229,40 @@ async def test_a_switched_then_dropped_item_writes_no_preference(
             },
         )
     assert [c for c in kb.calls if c[0] == "save_preference"] == []
+
+
+async def test_missing_data_can_be_reviewed_and_retried_in_the_same_task(
+    make_client, db, world
+):
+    kb, supply = world["kb"], world["supply"]
+    kb.arrives = False
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-retry-failed-supply")
+        path = f"/api/workbench/tasks/{task_id}/data-requests"
+        assert (await http.post(path + "/confirm", json={})).status_code == 200
+        first = supply.submitted[0]
+        supply.status = "failed"
+        waiter = DataWaiter(
+            workbench_stores(db),
+            kb,
+            supply,
+            now=lambda: datetime.now(UTC) + timedelta(hours=1),
+        )
+        assert await waiter.sweep() == 1
+        before = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert before["requests"][0]["status"] == "missing"
+        reviewed = await http.post(path + "/recheck", json={})
+        assert reviewed.status_code == 200, reviewed.text
+        after = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
+        assert after["requests"][0]["status"] == "pending"
+        assert after["requests"][0]["needs"] == before["requests"][0]["needs"]
+        assert len(supply.submitted) == 1  # 重新核对不是代用户确认
+        assert (await http.post(path + "/recheck", json={})).status_code == 200
+        assert (await http.post(path + "/confirm", json={})).status_code == 200
+        second = supply.submitted[1]
+        assert second["task_ref"] == first["task_ref"]
+        assert second["items"] == first["items"]
+        assert second["idempotency_key"] != first["idempotency_key"]
+        assert (await http.post(path + "/confirm", json={})).status_code == 422
+        assert len(supply.submitted) == 2
