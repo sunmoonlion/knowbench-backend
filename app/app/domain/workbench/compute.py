@@ -22,6 +22,7 @@ MAX_INPUTS = 500  # 一次计算最多这么多个输入
 MAX_ROUND = 10
 MAX_POWER = 100  # 乘方指数的绝对值上限，整数与分数指数共用
 PRECISION = 34
+MAX_LITERAL_EXPONENT = 999999  # Decimal 默认范围；拒绝巨型指数，避免序列化无界展开
 NAME = re.compile(r"^[a-z_][a-z0-9_]{0,31}$")
 COMPUTE_ID = re.compile(r"^c[1-9][0-9]{0,9}$")
 ZERO_DIVISOR = "denominator is zero"
@@ -44,7 +45,9 @@ def decimal_of(value: Any) -> Decimal | None:
 
 def text_of(number: Decimal) -> str:
     """十进制字符串：不用科学记数，去掉末尾的 0。"""
-    text = format(number.normalize(), "f")
+    text = format(number, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
     return "0" if text in {"0", "-0"} else text
 
 
@@ -95,8 +98,9 @@ def evaluate(expression: str, values: dict[str, Value]) -> Decimal:
         raise ComputeError("the expression is empty")
     if len(expression) > MAX_EXPRESSION:
         raise ComputeError("the expression is too long")
+    expression = expression.strip()
     try:
-        tree = ast.parse(expression.strip(), mode="eval")
+        tree = ast.parse(expression, mode="eval")
     except SyntaxError:
         raise ComputeError("the expression is not valid") from None
     _check_shape(tree)
@@ -107,11 +111,7 @@ def evaluate(expression: str, values: dict[str, Value]) -> Decimal:
         if isinstance(node, ast.Constant):
             if isinstance(node.value, bool) or not isinstance(node.value, int | float):
                 raise ComputeError("only numbers can be written in the expression")
-            return (
-                Decimal(repr(node.value))
-                if isinstance(node.value, float)
-                else Decimal(node.value)
-            )
+            return _literal(node, expression)
         if isinstance(node, ast.Name):
             if node.id not in values:
                 raise ComputeError(
@@ -180,6 +180,40 @@ def _power(base: Decimal, exponent: Decimal) -> Decimal:
         return +value
 
 
+def _literal(node: ast.Constant, expression: str) -> Decimal:
+    """Decimal 从原始字面量读，不能用 AST 已舍入的 float（会丢金额末位）。"""
+    if isinstance(node.value, int):
+        return Decimal(node.value)
+    source = ast.get_source_segment(expression, node)
+    if source is None:
+        raise ComputeError("a number is missing its source")
+    value = Decimal(source.replace("_", ""))
+    exponent = value.as_tuple().exponent
+    if not isinstance(exponent, int) or abs(exponent) > MAX_LITERAL_EXPONENT:
+        raise ComputeError("a number's exponent is out of range")
+    return value
+
+
+def _expression_tree(expression: str) -> ast.Expression:
+    expression = expression.strip()
+    tree = ast.parse(expression, mode="eval")
+    _check_shape(tree)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Constant) and isinstance(node.value, float):
+            value = _literal(node, expression)
+            sign, digits, exponent = value.as_tuple()
+            assert isinstance(exponent, int)  # Python 数值字面量是有限的十进制数
+            # 同值不同写法 1.00 / 1e0 保持等价，不调用受当前精度影响的 normalize。
+            digits = list(digits)
+            while digits and digits[-1] == 0:
+                digits.pop()
+                exponent += 1
+            # kind 标记区分真实字符串常量；仅用于 AST 比较，不执行此树。
+            node.kind = "decimal"
+            node.value = repr((sign, tuple(digits), exponent if digits else 0))
+    return tree
+
+
 def _scalar(value: Value) -> Decimal:
     if isinstance(value, list):
         raise ComputeError("a list of numbers needs sum, avg, median, min or max")
@@ -200,8 +234,8 @@ def rounded(value: Decimal, places: int | None) -> Decimal:
 def same_expression(left: str, right: str) -> bool:
     """两个算式写法相同（空格、多余括号不算）：比语法树。"""
     try:
-        return ast.dump(ast.parse(left.strip(), mode="eval")) == ast.dump(
-            ast.parse(right.strip(), mode="eval")
-        )
-    except (SyntaxError, AttributeError):
+        if len(left) > MAX_EXPRESSION or len(right) > MAX_EXPRESSION:
+            return False
+        return ast.dump(_expression_tree(left)) == ast.dump(_expression_tree(right))
+    except (SyntaxError, AttributeError, TypeError, ComputeError, InvalidOperation):
         return False

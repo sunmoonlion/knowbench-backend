@@ -322,3 +322,20 @@ v3 依次走任务规划与定数据；缺数明确可走供应商查询（包�
 动态推进与孵化锁回归 83 passed（真实隔离 DB，无跳过），ruff、pyright 通过。
 日志 /tmp/luna-market-{merged,regression,pyright}.log。非生产准入已开启的结论；
 不把作者候选方法标为接受，不改 qwen 当前固定候选、不代点业务确认。
+
+## 2026-11-03 WP-1：精确小数、公式比对与披露参考回归
+
+修复 compute 的小数字面量先经 AST float 舍入的问题：
+9007199254740993.01 - 9007199254740993 旧值 1.0，现值 0.01。
+按原始字面量读 Decimal；公式 AST 比对使用精确规范值，保留 1.00/1e0 等价，
+不同末位不再混同；指数限制在 Decimal 默认数量级范围，避免无界字符串展开。
+text_of 不再 normalize 导致输出受外部 Decimal context 精度截断。
+
+新增 financial-reference-cases.json：茅台年报、宁德中报 14 项原值与 13 道公式参考，
+记录公开 PDF 链接、SHA-256、页码、原单位和口径。仅工程夹具、待第二人复核和作者
+接受；fact ID 为测试替身。实际 KnowbotCompute→计算事件→验收验证正常结果、错数、
+空结果与缺失事实；不将财务公式硬编码到通用生产计算器，不改变旧任务冻结规则。
+
+计算/验收/引用目录及隔离 DB 方法运行合并回归 189 passed，无跳过，3.87s；ruff
+通过，pyright 0 errors。日志 /tmp/luna-wp1-all.log、/tmp/luna-wp1-pyright.log。
+没有生产 DB、采单、任务或方法版本操作。qwen 当前发布候选不变；本提交待后续整合。

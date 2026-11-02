@@ -6,7 +6,8 @@ from __future__ import annotations
 import contextlib
 import json
 import uuid
-from decimal import Decimal
+from decimal import Decimal, localcontext
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -151,6 +152,8 @@ def test_expressions_compute_exactly_in_decimal(expression, values, expected) ->
     ("expression", "values", "message"),
     [
         ("a / b", {"a": Decimal(1), "b": Decimal(0)}, calc.ZERO_DIVISOR),
+        ("1e1000000000", {}, "exponent is out of range"),
+        ("1e-1000000000", {}, "exponent is out of range"),
         ("__import__('os')", {}, "not allowed"),
         ("a.real", {"a": Decimal(1)}, "only"),
         ("a ** 0.5", {"a": Decimal(-4)}, "fractional power needs a positive base"),
@@ -205,6 +208,33 @@ def test_fractional_power_preserves_expression_precision_and_repeatability() -> 
         calc.evaluate("2 ** 0.5", {}).as_tuple()
         == calc.evaluate("2 ** 0.5", {}).as_tuple()
     )
+
+
+@pytest.mark.parametrize(
+    ("expression", "expected"),
+    [
+        ("9007199254740993.01 - 9007199254740993", "0.01"),
+        ("0.123456789012345678901", "0.123456789012345678901"),
+        ("1.23456789012345678901e-2", "0.0123456789012345678901"),
+        ("9_007_199_254_740_993.01 - 9007199254740993", "0.01"),
+        ("0x10 + 0b10", "18"),  # 保持已有整数字面量语义
+    ],
+)
+def test_decimal_literals_never_round_trip_through_binary_float(expression, expected):
+    assert calc.evaluate(expression, {}) == Decimal(expected)
+
+
+def test_formula_acceptance_distinguishes_literals_that_share_the_same_float():
+    assert not calc.same_expression(
+        "x + 0.123456789012345678901", "x + 0.123456789012345678902"
+    )
+    assert calc.same_expression("x + 1.00", "x + 1e0")
+    assert not calc.same_expression("x + 1.00", 'x + "(0, (1,), 0)"')
+    assert calc.same_expression("x + 0.00", "x + 0e3")
+    assert not calc.same_expression("x + 1", "x + 1.0")  # 保留整数/小数字面量区分
+    with localcontext() as ctx:
+        ctx.prec = 5
+        assert not calc.same_expression("x + 1.234567", "x + 1.234568")
 
 
 def test_a_knowbot_may_compute() -> None:
@@ -785,3 +815,76 @@ def test_new_rules_check_their_own_settings() -> None:
         AcceptanceRule(kind="covers", path="x", field="f", source="nodot")
     with pytest.raises(ValueError, match="only covers"):
         AcceptanceRule(kind="list_min", path="x", source="a.b")
+
+
+async def test_computed_acceptance_rejects_float_colliding_formula_literals() -> None:
+    records, tool = world()
+    expression = "a + 0.123456789012345678901"
+    computed = await tool.compute("t", "precise literal", expression, {"a": fact(4)})
+    output = json.dumps(
+        {"figures": [{"compute_id": computed["id"], "value": computed["value"]}]}
+    )
+    assert (
+        await verdict_of(
+            output, (rule("computed", "figures", expression=expression),), records
+        )
+    ).ok
+    wrong = "a + 0.123456789012345678902"
+    verdict = await verdict_of(
+        output, (rule("computed", "figures", expression=wrong),), records
+    )
+    assert not verdict.ok
+    assert "used" in verdict.checks[-1]["detail"]
+
+
+def test_decimal_text_does_not_round_to_ambient_context_precision() -> None:
+    with localcontext() as ctx:
+        ctx.prec = 6
+        assert (
+            calc.text_of(Decimal("123456789.0123456789012345678901234"))
+            == "123456789.0123456789012345678901234"
+        )
+        assert calc.text_of(Decimal("1200.000")) == "1200"
+        assert calc.text_of(Decimal("-0.000")) == "0"
+
+
+REFERENCE = json.loads(
+    (Path(__file__).parent / "fixtures" / "financial-reference-cases.json").read_text()
+)
+
+
+@pytest.mark.parametrize("case", REFERENCE["cases"], ids=lambda case: case["id"])
+async def test_disclosure_reference_through_compute_and_acceptance(
+    case, monkeypatch
+) -> None:
+    # Only the reader is substituted. Public disclosure values are engineering
+    # fixtures pending human review, not real run grants or author acceptance.
+    inputs = {}
+    for index, (alias, key) in enumerate(case["inputs"].items(), start=100):
+        source = REFERENCE["facts"][key]
+        value = Decimal(source["raw_value"]) * Decimal(source["multiplier"])
+        assert value == Decimal(source["value"])
+        ref = fact(index)
+        monkeypatch.setitem(FACTS, ref, value)
+        inputs[alias] = ref
+    records, tool = world()
+    computed = await tool.compute(
+        "t", case["id"], case["expression"], inputs, places=case["places"]
+    )
+    assert Decimal(computed["value"]) == Decimal(case["expected"])
+    rules = (
+        rule("list_min", "figures", min_items=1),
+        rule("computed", "figures", tolerance=0, expression=case["expression"]),
+    )
+    output = {"figures": [{"compute_id": computed["id"], "value": case["expected"]}]}
+    assert (await verdict_of(json.dumps(output), rules, records)).ok
+    output["figures"][0]["value"] = str(Decimal(case["expected"]) + Decimal("0.0001"))
+    assert not (await verdict_of(json.dumps(output), rules, records)).ok
+    assert not (await verdict_of('{"figures": []}', rules, records)).ok
+
+
+async def test_missing_reference_fact_never_creates_a_compute_record() -> None:
+    records, tool = world()
+    with pytest.raises(ComputeRefused, match="no such fact"):
+        await tool.compute("t", "missing disclosure", "rev", {"rev": fact(9000)})
+    assert records.repo.events == []

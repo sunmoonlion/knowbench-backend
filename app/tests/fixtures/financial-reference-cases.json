@@ -1,0 +1,331 @@
+{
+  "status": "assistant_verified_pending_independent_human_review",
+  "purpose": "Engineering regression only; not an accepted author method or live fact record. Sources and pages are explicit; test fact IDs are synthetic.",
+  "sources": {
+    "mt2024": {
+      "url": "https://static.cninfo.com.cn/finalpage/2025-04-03/1222993920.PDF",
+      "sha256": "5299f4940e2ce4e91084b73dc457d558b9d335fa76fbfee6227e4254eb7f4a30",
+      "pages": 143
+    },
+    "mt2021": {
+      "url": "https://static.cninfo.com.cn/finalpage/2022-03-31/1212755849.PDF",
+      "sha256": "f65effdde58bcea99fd6bdb53f61b31d5c432e6dfb2661e5caf05156a433ea5a",
+      "pages": 124
+    },
+    "cat2024h1": {
+      "url": "https://static.cninfo.com.cn/finalpage/2024-07-27/1220740372.PDF",
+      "sha256": "2a690cb2471c1f0d4539d909a9f068c03710a838ddd35313175790169e85eab1",
+      "pages": 174
+    }
+  },
+  "facts": {
+    "rev": {
+      "source": "mt2024",
+      "page": 63,
+      "row": "营业收入",
+      "raw_value": "170899152276.34",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "170899152276.34",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "profit": {
+      "source": "mt2024",
+      "page": 5,
+      "row": "归属于上市公司股东的净利润",
+      "raw_value": "86228146421.62",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "86228146421.62",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "cost": {
+      "source": "mt2024",
+      "page": 63,
+      "row": "营业成本",
+      "raw_value": "13789482367.98",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "13789482367.98",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "start": {
+      "source": "mt2021",
+      "page": 5,
+      "row": "营业收入",
+      "raw_value": "106190154843.76",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "106190154843.76",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2021",
+      "scope": "合并"
+    },
+    "ocf": {
+      "source": "mt2024",
+      "page": 67,
+      "row": "经营活动产生的现金流量净额",
+      "raw_value": "92463692168.43",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "92463692168.43",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "capex": {
+      "source": "mt2024",
+      "page": 67,
+      "row": "购建固定资产、无形资产和其他长期资产支付的现金",
+      "raw_value": "4678712053.56",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "4678712053.56",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "liabilities": {
+      "source": "mt2024",
+      "page": 60,
+      "row": "负债合计",
+      "raw_value": "56933264798.10",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "56933264798.10",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "assets": {
+      "source": "mt2024",
+      "page": 5,
+      "row": "总资产",
+      "raw_value": "298944579918.70",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "298944579918.70",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "equity_end": {
+      "source": "mt2024",
+      "page": 5,
+      "row": "归属于上市公司股东的净资产（本期末）",
+      "raw_value": "233105984399.47",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "233105984399.47",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2024",
+      "scope": "合并"
+    },
+    "equity_begin": {
+      "source": "mt2024",
+      "page": 5,
+      "row": "归属于上市公司股东的净资产（上期末）",
+      "raw_value": "215668571607.43",
+      "raw_unit": "元",
+      "multiplier": "1",
+      "value": "215668571607.43",
+      "currency": "CNY",
+      "subject": "600519.SH",
+      "period": "2023",
+      "scope": "合并"
+    },
+    "cat_rev": {
+      "source": "cat2024h1",
+      "page": 69,
+      "row": "营业收入",
+      "raw_value": "16676683.36",
+      "raw_unit": "万元",
+      "multiplier": "10000",
+      "value": "166766833600.00",
+      "currency": "CNY",
+      "subject": "300750.SZ",
+      "period": "2024H1",
+      "scope": "合并"
+    },
+    "cat_rnd": {
+      "source": "cat2024h1",
+      "page": 69,
+      "row": "研发费用",
+      "raw_value": "859245.24",
+      "raw_unit": "万元",
+      "multiplier": "10000",
+      "value": "8592452400.00",
+      "currency": "CNY",
+      "subject": "300750.SZ",
+      "period": "2024H1",
+      "scope": "合并"
+    },
+    "segment_rev": {
+      "source": "cat2024h1",
+      "page": 15,
+      "row": "动力电池系统营业收入",
+      "raw_value": "11264872.09",
+      "raw_unit": "万元",
+      "multiplier": "10000",
+      "value": "112648720900.00",
+      "currency": "CNY",
+      "subject": "300750.SZ",
+      "period": "2024H1",
+      "scope": "动力电池系统分部"
+    },
+    "segment_cost": {
+      "source": "cat2024h1",
+      "page": 15,
+      "row": "动力电池系统营业成本",
+      "raw_value": "8234893.78",
+      "raw_unit": "万元",
+      "multiplier": "10000",
+      "value": "82348937800.00",
+      "currency": "CNY",
+      "subject": "300750.SZ",
+      "period": "2024H1",
+      "scope": "动力电池系统分部"
+    }
+  },
+  "cases": [
+    {
+      "id": "Q01",
+      "expression": "rev",
+      "inputs": {
+        "rev": "rev"
+      },
+      "expected": "170899152276.34",
+      "places": 2
+    },
+    {
+      "id": "Q02",
+      "expression": "profit",
+      "inputs": {
+        "profit": "profit"
+      },
+      "expected": "86228146421.62",
+      "places": 2
+    },
+    {
+      "id": "Q03",
+      "expression": "cost",
+      "inputs": {
+        "cost": "cost"
+      },
+      "expected": "13789482367.98",
+      "places": 2
+    },
+    {
+      "id": "Q04",
+      "expression": "(rev - cost) / rev",
+      "inputs": {
+        "rev": "rev",
+        "cost": "cost"
+      },
+      "expected": "0.9193",
+      "places": 4
+    },
+    {
+      "id": "Q05",
+      "expression": "(rev / start) ** (1 / 3) - 1",
+      "inputs": {
+        "rev": "rev",
+        "start": "start"
+      },
+      "expected": "0.1719",
+      "places": 4
+    },
+    {
+      "id": "Q06",
+      "expression": "ocf",
+      "inputs": {
+        "ocf": "ocf"
+      },
+      "expected": "92463692168.43",
+      "places": 2
+    },
+    {
+      "id": "Q07",
+      "expression": "capex",
+      "inputs": {
+        "capex": "capex"
+      },
+      "expected": "4678712053.56",
+      "places": 2
+    },
+    {
+      "id": "Q08",
+      "expression": "ocf - capex",
+      "inputs": {
+        "ocf": "ocf",
+        "capex": "capex"
+      },
+      "expected": "87784980114.87",
+      "places": 2
+    },
+    {
+      "id": "Q09",
+      "expression": "liabilities / assets",
+      "inputs": {
+        "liabilities": "liabilities",
+        "assets": "assets"
+      },
+      "expected": "0.1904",
+      "places": 4
+    },
+    {
+      "id": "Q10",
+      "expression": "profit / avg(equity_begin, equity_end)",
+      "inputs": {
+        "profit": "profit",
+        "equity_begin": "equity_begin",
+        "equity_end": "equity_end"
+      },
+      "expected": "0.3843",
+      "places": 4
+    },
+    {
+      "id": "Q11",
+      "expression": "cat_rev",
+      "inputs": {
+        "cat_rev": "cat_rev"
+      },
+      "expected": "166766833600.00",
+      "places": 2
+    },
+    {
+      "id": "Q12",
+      "expression": "cat_rnd",
+      "inputs": {
+        "cat_rnd": "cat_rnd"
+      },
+      "expected": "8592452400.00",
+      "places": 2
+    },
+    {
+      "id": "Q13",
+      "expression": "(segment_rev - segment_cost) / segment_rev",
+      "inputs": {
+        "segment_rev": "segment_rev",
+        "segment_cost": "segment_cost"
+      },
+      "expected": "0.2690",
+      "places": 4
+    }
+  ]
+}
