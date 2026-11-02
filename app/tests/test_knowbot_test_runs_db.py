@@ -411,6 +411,42 @@ async def test_unmet_expectations_fail_the_case(db):
         await fake.close()
 
 
+@pytest.mark.parametrize("duplicate", [False, True])
+async def test_row_expectation_survives_storage_and_real_runner(duplicate, db):
+    rows = [{"year": "2023", "revenue": 50}, {"year": "2024", "revenue": 100}]
+    if duplicate:
+        rows.append({"year": "2024", "revenue": 100})
+    reply = json.loads(ANSWER) | {"annual_metrics": rows}
+    fake = ScriptedAppServer([PLAN, json.dumps(reply)])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        raw = request("knowlab-row-selection").model_dump(mode="json")
+        raw["cases"][0]["expectations"] = [
+            {
+                "artifact": "answer",
+                "path": "annual_metrics",
+                "kind": "approx",
+                "value": 100,
+                "tolerance": 0.001,
+                "row": {"where": {"year": "2024"}, "field": "revenue"},
+            }
+        ]
+        await accept(db, RunRequest.model_validate(raw))
+        conductor = KnowbotTestConductor(workbench_stores(db))
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        await conductor.tick()
+        done = await status(db, "knowlab-row-selection")
+        assert done["status"] == ("failed" if duplicate else "passed"), done
+        assert done["cases"][0]["expectations"] == [not duplicate]
+    finally:
+        await close(runner)
+        await fake.close()
+
+
 async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
     """受理关口（账 130）：测试里没人点「照做」，记失败，并写明专家认为问题不归它、理由是什么。"""
     decline = json.dumps(
