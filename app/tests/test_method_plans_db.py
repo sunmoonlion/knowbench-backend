@@ -372,7 +372,8 @@ async def test_replan_pins_accepted_results_and_preserves_history(db):
     async with db() as session:
         repo = WorkbenchRepository(session)
         led = Ledger(repo)
-        step = (await led.open_attempt(tid, step_id="inspect_1", step_version="1"))[
+        row = await repo.get_task(tid)
+        step = (await led.open_method_step(tid, expected_version=row["state_version"]))[
             "attempt_id"
         ]
         await led.attempt_transition(step, AttemptState.RUNNING)
@@ -419,7 +420,8 @@ async def test_replan_refuses_unaccepted_result_even_when_cursor_claims_complete
     async with db() as session:
         repo = WorkbenchRepository(session)
         led = Ledger(repo)
-        step = (await led.open_attempt(tid, step_id="inspect_1", step_version="1"))[
+        row = await repo.get_task(tid)
+        step = (await led.open_method_step(tid, expected_version=row["state_version"]))[
             "attempt_id"
         ]
         await led.attempt_transition(step, AttemptState.RUNNING)

@@ -9,21 +9,25 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from pydantic import ValidationError
+from app.application.workbench.execution_plan import (
+    accepted_results,
+    execution_for_task,
+)
+from app.application.workbench.plan_receipts import catalog_for_task, validate_receipt
 
+# Existing callers keep this read API; ownership is the shared read-only module.
+from app.application.workbench.plan_receipts import read_plan as read_plan
 from app.domain.workbench.errors import (
     IdempotencyConflict,
     MethodPlanInvalid,
     StaleStateVersion,
 )
 from app.domain.workbench.knowbots import V2_TOOLS
-from app.domain.workbench.method_catalog import MethodCatalog, parse_catalog
 from app.domain.workbench.method_plan import (
     PLAN_ARTIFACT,
     PLAN_STEP,
     AcceptedMethodPlan,
     MethodPlan,
-    output_name,
     validate_plan,
 )
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState
@@ -31,53 +35,6 @@ from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskStat
 if TYPE_CHECKING:
     from app.application.ports.workbench import WorkbenchStore
     from app.application.workbench.ledger import Ledger
-
-
-def _catalog(task: dict[str, Any]) -> MethodCatalog:
-    try:
-        catalog = parse_catalog(task.get("pack_snapshot"))
-    except ValidationError:
-        raise MethodPlanInvalid("task does not pin a dynamic method catalog") from None
-    if not task.get("pack_digest") or catalog.version != task["profile_version"]:
-        raise MethodPlanInvalid("task author version is not pinned")
-    return catalog
-
-
-async def read_plan(
-    repo: WorkbenchStore, task: dict[str, Any]
-) -> AcceptedMethodPlan | None:
-    """Read exactly the accepted version; never infer it from the latest artifact."""
-    version = task.get("accepted_plan_version")
-    if version is None:
-        return None
-    artifact = await repo.get_artifact(
-        task_id=str(task["id"]), name=PLAN_ARTIFACT, version=int(version)
-    )
-    return _receipt(task, artifact, int(version))
-
-
-def _receipt(
-    task: dict[str, Any], artifact: dict[str, Any] | None, version: int
-) -> AcceptedMethodPlan:
-    if artifact is None or artifact["kind"] != "method_plan":
-        raise MethodPlanInvalid("accepted plan artifact is missing")
-    try:
-        plan = AcceptedMethodPlan.model_validate(artifact["content"])
-    except ValidationError:
-        raise MethodPlanInvalid("accepted plan receipt is invalid") from None
-    if (
-        plan.task_id != str(task["id"])
-        or str(artifact["task_id"]) != str(task["id"])
-        or plan.version != version
-        or artifact["version"] != version
-        or plan.proposal.parent_version != version - 1
-        or plan.pack_digest != task["pack_digest"]
-        or plan.attempt_id != str(artifact["attempt_id"])
-    ):
-        raise MethodPlanInvalid(
-            "accepted plan does not match its task and author version"
-        )
-    return plan
 
 
 async def _ready(
@@ -110,7 +67,7 @@ async def open_plan(
     async with repo.transaction():
         task = await repo.get_task(task_id, for_update=True)
         await _ready(repo, task, expected_version)
-        catalog = _catalog(task)
+        catalog = catalog_for_task(task)
         previous = await read_plan(repo, task)
         attempts = await repo.list_attempts(task_id)
         if any(a["status"] not in ATTEMPT_TERMINAL for a in attempts):
@@ -147,7 +104,7 @@ async def accept_plan(
         # All plan acceptors take the task lock first; receipt publication and CAS
         # are one commit, serialized with cancellation and competing acceptors.
         task = await repo.get_task(task_id, for_update=True)
-        catalog = _catalog(task)
+        catalog = catalog_for_task(task)
         attempt = await repo.get_attempt(attempt_id)
         if str(attempt["task_id"]) != task_id or attempt.get("step_id") != PLAN_STEP:
             raise MethodPlanInvalid("not this task's planning attempt")
@@ -165,7 +122,7 @@ async def accept_plan(
             artifact = await repo.get_artifact(
                 task_id=task_id, name=PLAN_ARTIFACT, version=int(accepted["version"])
             )
-            receipt = _receipt(task, artifact, int(accepted["version"]))
+            receipt = validate_receipt(task, artifact, int(accepted["version"]))
             if receipt.proposal.digest() != proposal.digest():
                 raise IdempotencyConflict(
                     "planning attempt already accepted different content"
@@ -205,36 +162,19 @@ async def accept_plan(
             for index, step in enumerate(steps):
                 if step.instance_id in started:
                     protected = max(protected, index + 1)
-                if index >= completed:
-                    continue
-                artifact = await repo.get_artifact(
-                    task_id=task_id, name=output_name(step.instance_id)
-                )
-                source = next(
-                    (
-                        a
-                        for a in attempts
-                        if artifact and str(a["id"]) == str(artifact["attempt_id"])
-                    ),
-                    None,
-                )
-                if (
-                    artifact is None
-                    or artifact["kind"] != "step"
-                    or source is None
-                    or source["status"] != AttemptState.COMPLETED
-                    or source.get("step_id") != step.instance_id
-                    or not any(
-                        str(o.get("id")) == str(artifact["id"])
-                        and o.get("version") == artifact["version"]
-                        and o.get("name") == artifact["name"]
-                        for o in source["output_artifacts"]
-                    )
-                ):
-                    raise MethodPlanInvalid(
-                        "completed prefix has no valid accepted result"
-                    )
-                results[step.instance_id] = int(artifact["version"])
+            # Replanning and dispatch must agree on accepted outputs. Never
+            # infer a version from an unrelated latest Artifact of the same name.
+            view = await execution_for_task(repo, task)
+            assert view is not None
+            try:
+                accepted_outputs = await accepted_results(repo, task, view)
+            except MethodPlanInvalid as exc:
+                raise MethodPlanInvalid(
+                    "completed prefix has no valid accepted result: " + str(exc)
+                ) from None
+            results = {
+                key: int(value["version"]) for key, value in accepted_outputs.items()
+            }
         try:
             validate_plan(
                 catalog,

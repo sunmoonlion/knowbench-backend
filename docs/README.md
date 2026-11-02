@@ -23,5 +23,7 @@
 | `alembic/versions/` 里它的迁移文件 | 同上 |
 | `scripts/pair_fixture.py`、`scripts/delivery_runtime_probe.py` | 模板带来的，要在模板里处理 |
 
+当前任务方法计划的执行视图、成果绑定与取消并发边界见 [方法执行说明](method-execution.md)。
+
 现在的产品代码是工作台：`app/application/workbench/`、`app/domain/workbench/`、`app/infrastructure/workbench/`。
 

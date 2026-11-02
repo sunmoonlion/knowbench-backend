@@ -102,3 +102,13 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 - 合成目录、无模型/网络调用；独立 PostgreSQL schema 定向最终 54 passed（/tmp/luna-method-plan-tests-final.txt），包括实际并发接受/取消两种锁顺序、同包两任务、故障回滚、失效成果、收据损坏和迁移保护。首次失败是测试 fixture 两会话复用幂等键，已改按会话生成键，未放松业务校验。初始输出 /tmp/luna-method-plan-tests-first.txt 保留。完整 PostgreSQL 回归 1289 passed / 92 skipped / 2 个既有 collection warnings（/tmp/luna-method-plan-full.txt，420.91 秒）。全量启动后仅补了恢复故障测试与说明性注释，相关三个文件最终另跑 54 项通过；不把该全量数声称为新补四例也在其中。最终 app 目录内 uv run --locked pyright 为 0 errors，ruff check app tests alembic/versions/20261102_0035_method_plans.py 通过；输出 /tmp/luna-method-plan-{pyright-final,ruff-final}.txt。一次在仓根运行 pyright 未使用 app 目录配置，产生 3 个错误，原输出保留于 /tmp/luna-method-plan-pyright-wrong-cwd.txt；正式检查按项目目录重跑通过。
 
 所有者追加确认三层：方法单元独立版本、专家精确引用、任务动态组合。当前目录仍是专家内方法，尚未实现独立主档。详见 sunmoonun 的 methods.md 与 decisions.md；WP-10 新增单元 1a，先补 knowlab 作者主档、输入槽/专家连接分离和跨应用引用契约，再开放运行。计划 method_id 只是冻结目录内的别名，不能用它在运行时挑选全局方法新版。此单元仍拒绝 v3 执行；未接 advisor 派发、有效视图、运行鉴权、返工失效传播、页面和最终验收。接续时不得把任务计划塞入共享 ExpertPack 缓存。
+
+
+## 2026-11-02 WP-10 单元 3 首段：有效视图、事务开步与取消边界
+
+- 开发基线 707ef08cdb6763ccc1a47f4d5d7d2c9b0bc7ef12，独立 `feat/method-execution-view`。qwen 正在使用的合并候选父仓 `release/recovery-methods@2f08c6999feb03f3005393c81f430513ea197ad7` 没有移动；本轮不发版、不加新发版交接、不改线上任务或采单。Wind 仍 3/5，没有新增调用。
+- 已实现 `domain/workbench/execution_plan.py` 纯投影、`plan_receipts.py` 共用读取、`execution_plan.py` 任务输入/成果/权限绑定与 `Ledger.open_method_step` 原子开步。复用现有 StepContract/Attempt/Artifact/预算，不写入作者包缓存、不新增迁移。重规划共用已验收成果读取，修复按名称取 latest 可能误选未验收版本的问题。
+- 已完成游标前成果的计划、方法、输入链核验；回退后后缀立即不可用、上游改版后旧依赖拒绝。明确钉住的旧版失效不会擅自跟随 latest；后续返工交互/重规划处置仍待接入。
+- 发现原取消逻辑先读活动 ID 再锁 Task，开步恰在中间发生会漏关新 Attempt。以发布候选的 request_cancel 替换测试运行中的方法，确定性复现预留残留 0.05（/tmp/luna-cancel-before-fix.txt）。已将开步、取消、结算、无人收尾及迟到费用统一 Task → Attempt 锁序，并校验迟到费用的任务归属；新回归通过，未绕过或删除断言。
+- 完整后端回归 1325 passed / 92 skipped / 2 既有 collection warnings（/tmp/luna-execution-plan-full-final.txt）；全量启动后最后增加跨任务视图误用守卫及一例，五个受影响文件最终重跑 80 passed（/tmp/luna-execution-plan-final-focused.txt），没有将它冒充另一轮全量。最终全仓 ruff、pyright 0 errors（/tmp/luna-execution-plan-{ruff,pyright}-final.txt）。更早的 1324 项全量是取消锁序修复之前的证据，不能替代本次结果。
+- 下一段继续接现有规划 turn、Advisor/Runner、工具调用鉴权、covers 的固定输入、页面/文件/测试报告、最终成果原子交付。当前仅提供经过测试的执行基础入口，真实 v3 准入仍拒绝；不能只改步骤栏或直接开放运行。实现在 docs/method-execution.md，根仓 methods.md 与双轨计划同步。回退应用保留已有 0025/0035 历史，不删除计划或成果。

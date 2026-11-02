@@ -117,6 +117,34 @@ def validate_plan(
             != previous.proposal.steps[:protected_prefix]
         ):
             raise ValueError("executed prefix cannot be replaced")
+    validate_composition(catalog, proposal, available_tools=available_tools)
+    completed = {s.instance_id for s in proposal.steps[:completed_prefix]}
+    for step in proposal.steps[protected_prefix:]:
+        for binding in step.inputs:
+            if binding.instance_id in completed:
+                if (
+                    binding.version is None
+                    or results.get(binding.instance_id) != binding.version
+                ):
+                    raise ValueError(
+                        "input must pin the current accepted artifact version"
+                    )
+            elif binding.version is not None:
+                raise ValueError("a future output cannot claim an artifact version")
+
+
+def validate_composition(
+    catalog: MethodCatalog, proposal: MethodPlan, *, available_tools: Set[str]
+) -> None:
+    """Validate frozen structure independently of the current execution cursor.
+
+    Loading an accepted historical plan must not treat its already-bound inputs
+    as future outputs. Temporal checks belong to acceptance and dispatch.
+    """
+    if proposal.parent_version > catalog.planning.max_replans:
+        raise ValueError("replanning limit exceeded")
+    if len(proposal.steps) > catalog.planning.max_steps:
+        raise ValueError("step limit exceeded")
     units = {u.contract.step_id: u for u in catalog.method_units}
     counts = Counter(s.method_id for s in proposal.steps)
     required = set(catalog.planning.final_units) | {
@@ -128,9 +156,8 @@ def validate_plan(
         raise ValueError("final outputs differ from the author contract")
     earlier: dict[str, PlannedStep] = {}
     output_paths: list[tuple[str, ...]] = []
-    completed = {s.instance_id for s in proposal.steps[:completed_prefix]}
     last_call: dict[str, str] = {}
-    for index, step in enumerate(proposal.steps):
+    for step in proposal.steps:
         unit = units.get(step.method_id)
         if unit is None:
             raise ValueError("unknown method")
@@ -154,17 +181,6 @@ def validate_plan(
             source = earlier.get(binding.instance_id)
             if source is None or source.method_id != binding.slot:
                 raise ValueError("input must reference an earlier matching method")
-            if index >= protected_prefix:
-                if binding.instance_id in completed:
-                    if (
-                        binding.version is None
-                        or results.get(binding.instance_id) != binding.version
-                    ):
-                        raise ValueError(
-                            "input must pin the current accepted artifact version"
-                        )
-                elif binding.version is not None:
-                    raise ValueError("a future output cannot claim an artifact version")
         earlier[step.instance_id] = step
         last_call[step.method_id] = step.instance_id
     if any(

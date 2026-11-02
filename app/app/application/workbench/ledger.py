@@ -84,6 +84,13 @@ class Ledger:
     def __init__(self, repo: WorkbenchStore):
         self.repo = repo
 
+    async def open_method_step(
+        self, task_id: str, *, expected_version: int
+    ) -> dict[str, Any]:
+        from app.application.workbench.execution_plan import open_method_step
+
+        return await open_method_step(self, task_id, expected_version=expected_version)
+
     async def open_method_plan(
         self, task_id: str, *, expected_version: int
     ) -> dict[str, Any]:
@@ -312,15 +319,16 @@ class Ledger:
         读到之后有人动过（版本变了）就不动，返回 None。
         """
         async with self.repo.transaction():
-            peek = await self.repo.get_task(task_id)
+            # All task/attempt writers lock the task first. A cancellation or
+            # new dispatch cannot change the active attempt between these reads.
+            task = await self.repo.get_task(task_id, for_update=True)
             attempt = (
                 await self.repo.get_attempt(
-                    str(peek["active_attempt_id"]), for_update=True
+                    str(task["active_attempt_id"]), for_update=True
                 )
-                if peek.get("active_attempt_id") is not None
+                if task.get("active_attempt_id") is not None
                 else None
             )
-            task = await self.repo.get_task(task_id, for_update=True)
             if (
                 int(task["state_version"]) != expected_version
                 or TaskState(task["state"]) in TASK_TERMINAL
@@ -592,17 +600,17 @@ class Ledger:
         等那一轮确认结束（`release_turn`），最多 TURN_HOLD_SECONDS。
         """
         async with self.repo.transaction():
-            peek = await self.repo.get_task(task_id, owner_actor_id=owner_actor_id)
-            # 先锁尝试再锁委托，和结算一轮（attempt_transition）同一个顺序，免得互相等死
-            attempt = (
-                await self.repo.get_attempt(
-                    str(peek["active_attempt_id"]), for_update=True
-                )
-                if peek.get("active_attempt_id") is not None
-                else None
-            )
+            # Serialize with dispatch before choosing the attempt to close.
+            # Reading the active ID before locking could miss a just-opened turn.
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner_actor_id, for_update=True
+            )
+            attempt = (
+                await self.repo.get_attempt(
+                    str(task["active_attempt_id"]), for_update=True
+                )
+                if task.get("active_attempt_id") is not None
+                else None
             )
             if TaskState(task["state"]) in TASK_TERMINAL:
                 return {
@@ -728,8 +736,10 @@ class Ledger:
         if not consumed:
             return
         async with self.repo.transaction():
-            attempt = await self.repo.get_attempt(attempt_id, for_update=True)
             task = await self.repo.get_task(task_id, for_update=True)
+            attempt = await self.repo.get_attempt(attempt_id, for_update=True)
+            if str(attempt["task_id"]) != task_id:
+                raise IdempotencyConflict("late cost attempt belongs to another task")
             if turn_id and turn_id in (attempt.get("turn_ids") or []):
                 return  # 这一轮已经记过：同一笔花费只记一次（重复回报、重试）
             await self.repo.update_attempt(
@@ -876,9 +886,12 @@ class Ledger:
     ) -> dict[str, Any]:
         target = AttemptState(target)
         async with self.repo.transaction():
+            # Attempt ownership is immutable; peek only to identify the task,
+            # then take task -> attempt locks like dispatch, cancel and recovery.
+            peek = await self.repo.get_attempt(attempt_id)
+            task = await self.repo.get_task(str(peek["task_id"]), for_update=True)
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
             validate_attempt_transition(attempt["status"], target)
-            task = await self.repo.get_task(str(attempt["task_id"]), for_update=True)
             fields: dict[str, Any] = {"status": target}
             if turn_id:
                 fields["turn_ids"] = [*attempt["turn_ids"], turn_id]
