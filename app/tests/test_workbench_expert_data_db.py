@@ -1292,6 +1292,43 @@ async def test_uploaded_then_rechecked_with_the_users_own_token(
         assert other.status_code == 404
 
 
+@pytest.mark.parametrize(
+    "status, code, expected",
+    [
+        (404, "http_error", (503, "user_data_unavailable")),
+        (405, "http_error", (503, "user_data_unavailable")),
+        (401, "unauthorized", (503, "user_data_unavailable")),
+        (404, "resolution_not_found", (422, "data_choice_invalid")),
+    ],
+)
+async def test_recheck_distinguishes_upstream_failure_without_mutating_the_task(
+    make_client,
+    db,
+    world,
+    monkeypatch,
+    status,
+    code,
+    expected,
+) -> None:
+    from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+    async def refused_refresh(*args):
+        raise KnowbaseRefused(status, code)
+
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "k-v2-recheck-failure")
+        before = await rows(db, "select * from workbench_task_resolution")
+        calls = list(world["kb"].calls)
+        monkeypatch.setattr(world["kb"], "refresh_mine", refused_refresh)
+        result = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/recheck"
+        )
+        assert (result.status_code, result.json()["code"]) == expected, result.text
+        assert await rows(db, "select * from workbench_task_resolution") == before
+        assert world["kb"].calls == calls
+
+
 async def test_a_slow_knowfeed_does_not_hold_the_panel(
     make_client,
     db,  # noqa: F811
