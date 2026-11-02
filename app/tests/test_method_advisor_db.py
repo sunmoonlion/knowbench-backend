@@ -154,6 +154,39 @@ async def test_backtracking_binds_new_inputs_and_excludes_old_outputs(db):
         assert Decimal((await repo.get_task(tid))["budget"]["used"]) == Decimal("0.06")
 
 
+@pytest.mark.parametrize(
+    "paths", [("analysis/report.md", "forecast/report.md"), (None, "reports/交回.md")]
+)
+async def test_colliding_placed_files_never_dispatch_methods_or_deliver(db, paths):
+    tid, _ = await task(db)
+
+    def with_files(document):
+        document["planning"]["max_replans"] = 0
+        for method_id, path in zip(("inspect", "report"), paths, strict=True):
+            next(
+                u
+                for u in document["method_units"]
+                if u["contract"]["step_id"] == method_id
+            )["contract"]["output_file"] = path
+
+    await patch_catalog(db, tid, with_files)
+    driver = Driver([proposal().model_dump_json()])
+    assert await Advisor(SqlWorkbenchStores(db), driver).drive(tid) == TaskState.FAILED
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        row = await repo.get_task(tid)
+        assert row["accepted_plan_version"] is None and row["current_step"] == 0
+        assert Decimal(row["budget"]["used"]) == Decimal("0.01")
+        assert Decimal(row["budget"]["reserved"]) == 0
+        assert not await repo.list_artifacts(tid)
+        attempts = await repo.list_attempts(tid)
+        assert [a["step_id"] for a in attempts] == [PLAN_STEP]
+        assert attempts[0]["failure_code"] == "method_plan_invalid"
+        rejected = await repo.list_task_events(tid, types=("task/plan_rejected",))
+        assert "conflicting output" in rejected[0]["payload"]["reason"]
+    assert len(driver.prompts) == 1
+
+
 async def test_restart_continues_accepted_plan_and_ignores_unaccepted_latest(db):
     tid, _ = await task(db)
     first = Advisor(

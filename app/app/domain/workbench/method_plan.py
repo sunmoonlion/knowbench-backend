@@ -14,6 +14,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
+from app.domain.workbench.deliverables import HANDBACK_FILE, placed
 from app.domain.workbench.method_catalog import METHOD_ID, MethodCatalog
 from app.domain.workbench.packs import Strict
 
@@ -179,6 +180,10 @@ def validate_composition(
         raise ValueError("final outputs differ from the author contract")
     earlier: dict[str, PlannedStep] = {}
     output_paths: list[tuple[str, ...]] = []
+    # All deliverables share this run's folder, and placed() retains only their
+    # basename. Validate the actual destinations as well as the declared paths;
+    # different author directories must not hide an overwrite or the handback.
+    destinations = {placed(HANDBACK_FILE, "run").casefold()}
     last_call: dict[str, str] = {}
     for step in proposal.steps:
         unit = units.get(step.method_id)
@@ -192,12 +197,14 @@ def validate_composition(
             # Plans can run on case-insensitive client filesystems. Two instances
             # must not overwrite a shared file or use a file as a directory.
             path = tuple(unit.contract.output_file.casefold().split("/"))
-            if any(
+            destination = placed(unit.contract.output_file, "run").casefold()
+            if destination in destinations or any(
                 path[: len(other)] == other or other[: len(path)] == path
                 for other in output_paths
             ):
                 raise ValueError("method instances have conflicting output files")
             output_paths.append(path)
+            destinations.add(destination)
         if {i.slot for i in step.inputs} != set(unit.contract.input_refs):
             raise ValueError("method inputs do not match the author slots")
         for binding in step.inputs:

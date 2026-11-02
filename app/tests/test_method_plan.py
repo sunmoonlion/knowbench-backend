@@ -210,6 +210,8 @@ def test_author_step_and_replan_limits(limit, value, plan):
         ("report.md", "report.md"),
         ("Report.md", "report.md"),
         ("reports", "reports/final.md"),
+        ("analysis/report.md", "forecast/report.md"),
+        ("analysis/Report.MD", "forecast/report.md"),
     ],
 )
 def test_selected_methods_cannot_overwrite_each_others_files(paths):
@@ -226,6 +228,73 @@ def test_selected_methods_cannot_overwrite_each_others_files(paths):
             results={},
             available_tools=V2_TOOLS,
         )
+
+
+@pytest.mark.parametrize("path", ["交回.md", "reports/交回.md", "reports/交回.MD"])
+def test_method_deliverable_cannot_overwrite_the_run_handback(path):
+    doc = catalog().model_dump(mode="json")
+    doc["method_units"][0]["contract"]["output_file"] = path
+    with pytest.raises(ValueError, match="conflicting output"):
+        validate_plan(
+            type(catalog()).model_validate(doc),
+            proposal(),
+            previous=None,
+            protected_prefix=0,
+            completed_prefix=0,
+            results={},
+            available_tools=V2_TOOLS,
+        )
+
+
+def test_distinct_deliverables_keep_their_author_paths_and_placement():
+    from app.domain.workbench.deliverables import run_files
+
+    doc = catalog().model_dump(mode="json")
+    paths = ("analysis/inspection.md", "forecast/report.md")
+    for unit, path in zip(doc["method_units"][:2], paths, strict=True):
+        unit["contract"]["output_file"] = path
+    author = type(catalog()).model_validate(doc)
+    validate_plan(
+        author,
+        proposal(),
+        previous=None,
+        protected_prefix=0,
+        completed_prefix=0,
+        results={},
+        available_tools=V2_TOOLS,
+    )
+    assert [u.contract.output_file for u in author.method_units[:2]] == list(paths)
+    assert run_files(paths, "run") == [
+        "run/inspection.md",
+        "run/report.md",
+        "run/交回.md",
+    ]
+
+
+@pytest.mark.parametrize("select_optional", [False, True])
+def test_file_conflicts_only_apply_to_methods_selected_for_this_task(select_optional):
+    doc = catalog().model_dump(mode="json")
+    for unit in doc["method_units"]:
+        if unit["contract"]["step_id"] in {"review", "report"}:
+            unit["contract"]["output_file"] = unit["contract"]["step_id"] + "/result.md"
+    author = type(catalog()).model_validate(doc)
+
+    def check():
+        validate_plan(
+            author,
+            proposal(review=select_optional),
+            previous=None,
+            protected_prefix=0,
+            completed_prefix=0,
+            results={},
+            available_tools=V2_TOOLS,
+        )
+
+    if select_optional:
+        with pytest.raises(ValueError, match="conflicting output"):
+            check()
+    else:
+        check()
 
 
 def test_final_output_cannot_reuse_an_early_success_when_later_instance_is_planned():

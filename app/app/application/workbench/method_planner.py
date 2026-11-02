@@ -18,6 +18,7 @@ from app.application.workbench.execution_plan import (
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.plan_receipts import catalog_for_task, read_plan
 from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver, TurnResult
+from app.domain.workbench.deliverables import HANDBACK_FILE
 from app.domain.workbench.errors import BudgetExhausted, MethodPlanInvalid
 from app.domain.workbench.method_catalog import MethodCatalog
 from app.domain.workbench.method_plan import PLAN_STEP, MethodPlan
@@ -315,6 +316,10 @@ def compose_plan(catalog: MethodCatalog, context: dict[str, Any]) -> str:
             "Plan this task using only the author's frozen methods below. Do not execute methods, call tools or edit files in this turn. Return one JSON object only, without markdown fences.",
             "Author's planning method:\n" + catalog.planning.method_text,
             "Choose and order existing method IDs; never invent or edit methods, checks, budgets or permissions. Each input slot must bind to an earlier instance. Preserve the completed prefix exactly. In the remaining protected prefix only replace an invalidated explicit input version with that same upstream instance's current accepted version; preserve all other fields. For a completed input use its accepted version; for a future output omit the version. Tools must be a subset of that method's allowed_tools. final_outputs maps required final method IDs to their selected instances.",
+            "Deliverable files share one run folder and retain only the basename of output_file. "
+            "Selected methods must have distinct basenames, ignoring case; "
+            f"{HANDBACK_FILE} is reserved for the run handback. "
+            "Do not rename author files to resolve a conflict.",
             "Limits:\n"
             + json.dumps(
                 {
