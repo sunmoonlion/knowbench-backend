@@ -54,6 +54,11 @@ class BudgetExhausted(WorkbenchError):
     http_status = 409
 
 
+class MethodPlanInvalid(WorkbenchError):
+    code = "method_plan_invalid"
+    http_status = 409
+
+
 class RootOutsideWhitelist(WorkbenchError):
     code = "root_outside_whitelist"
     http_status = 400

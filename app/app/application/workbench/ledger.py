@@ -26,6 +26,7 @@ from app.domain.workbench.errors import (
     WheelHeldByOther,
 )
 from app.domain.workbench.knowbots import is_knowbot
+from app.domain.workbench.method_plan import MethodPlan
 from app.domain.workbench.models import Budget, HandoverRequest, InteractionPrompt
 from app.domain.workbench.packs import current_pack_version
 from app.domain.workbench.states import (
@@ -59,7 +60,11 @@ def _budget(row: dict[str, Any]) -> Budget:
 
 def writes_files(task: dict[str, Any]) -> bool:
     """这件委托的专家会不会往项目里写成稿文件（0015 §3.3）。认不出专家包时按会写算，照旧指向底稿。"""
-    pack = pack_for_task(task)
+    try:
+        pack = pack_for_task(task)
+    except ValueError:
+        # Cancellation must not depend on a newer/unknown pack's view parser.
+        return True
     return pack is None or bool(pack.deliverable_files())
 
 
@@ -78,6 +83,31 @@ def _turn_open(task: dict[str, Any], attempt_id: Any) -> dict[str, Any]:
 class Ledger:
     def __init__(self, repo: WorkbenchStore):
         self.repo = repo
+
+    async def open_method_plan(
+        self, task_id: str, *, expected_version: int
+    ) -> dict[str, Any]:
+        from app.application.workbench.method_plans import open_plan
+
+        return await open_plan(self, task_id, expected_version=expected_version)
+
+    async def accept_method_plan(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str,
+        expected_version: int,
+        proposal: MethodPlan,
+    ) -> dict[str, Any]:
+        from app.application.workbench.method_plans import accept_plan
+
+        return await accept_plan(
+            self,
+            task_id,
+            attempt_id=attempt_id,
+            expected_version=expected_version,
+            proposal=proposal,
+        )
 
     # ---------------- 建单 = 交出方向盘 ----------------
     async def handover(

@@ -90,3 +90,15 @@ qwen/sunmoonun 的未提交 entrypoint 改动曾把 `web_search_mode = "never"` 
 完整 PostgreSQL 回归 1244 passed / 92 skipped（/tmp/luna-wp10-bench-full.txt）；全量启动后的最终动态计数边界与孵化契约更新，完整重跑受影响 6 文件 81 passed（/tmp/luna-wp10-bench-final-affected.txt）。最终全仓 ruff/pyright 通过。不能把 1244 当作最后每一行代码都重跑全量；最终差异由 81 项覆盖。无迁移、无生产操作、无 Wind 调用。
 
 下一单元是有界线性任务计划、确定性校验、Artifact 版本与 Task 接受指针/CAS，随后接现有 Attempt 预算、取消/恢复、有效计划视图、输入槽绑定实例和成果版本、必经/最终验收。不要直接把 catalog 转成缓存的 ExpertPack.workflow，不要把可变计划写入 pack_snapshot/digest。所有者要求重新孵化财务专家新版本，作者确认方法库；旧保底巨潮专家继续保留。
+
+
+## 2026-11-02 WP-10 单元 2：任务计划、事务接受与恢复（本地验证完成，未发布）
+
+基线 cbb6cd40e93a3819cca2fb5839caa1df09d77441，继续 feat/dynamic-methods；生产、Jenkins、sources 与 qwen 发布分支未改。Ledger 增加 open_method_plan / accept_method_plan，application/workbench/method_plans.py 只是账房内部实现，不创建第二个任务状态机或模型客户端。
+
+- domain/workbench/method_plan.py 校验有界线性组合，区分方法目录别名、调用实例、成果版本。工具只缩小作者/平台交集；拒绝缺必需方法、超轮次/步骤/调用上限、前向引用、未验成果、旧版本与冲突成稿路径。新计划保留已开始前缀；模型不得提交方法正文、验收或预算。
+- 复用 Attempt 预留/结算与 Artifact 版本；Task 接受指针、计划成果和事件单事务。Task 行锁/CAS 串行化重复回执与取消，历史回执只读重放，不能回退已接受指针或复活任务。规划失败计轮次/实际费用，缺预算不建 Attempt；重启读取确切版本，损坏收据拒绝。
+- 迁移 20261102_0035（前版 20261030_0034）仅加可空正整数 accepted_plan_version，并同步迁移文件清单。无固定任务回填；空指针可 downgrade/upgrade，有接受记录拒绝删指针。应用回退保留扩展 schema，不能删业务历史。
+- 合成目录、无模型/网络调用；独立 PostgreSQL schema 定向最终 54 passed（/tmp/luna-method-plan-tests-final.txt），包括实际并发接受/取消两种锁顺序、同包两任务、故障回滚、失效成果、收据损坏和迁移保护。首次失败是测试 fixture 两会话复用幂等键，已改按会话生成键，未放松业务校验。初始输出 /tmp/luna-method-plan-tests-first.txt 保留。完整 PostgreSQL 回归 1289 passed / 92 skipped / 2 个既有 collection warnings（/tmp/luna-method-plan-full.txt，420.91 秒）。全量启动后仅补了恢复故障测试与说明性注释，相关三个文件最终另跑 54 项通过；不把该全量数声称为新补四例也在其中。最终 app 目录内 uv run --locked pyright 为 0 errors，ruff check app tests alembic/versions/20261102_0035_method_plans.py 通过；输出 /tmp/luna-method-plan-{pyright-final,ruff-final}.txt。一次在仓根运行 pyright 未使用 app 目录配置，产生 3 个错误，原输出保留于 /tmp/luna-method-plan-pyright-wrong-cwd.txt；正式检查按项目目录重跑通过。
+
+所有者追加确认三层：方法单元独立版本、专家精确引用、任务动态组合。当前目录仍是专家内方法，尚未实现独立主档。详见 sunmoonun 的 methods.md 与 decisions.md；WP-10 新增单元 1a，先补 knowlab 作者主档、输入槽/专家连接分离和跨应用引用契约，再开放运行。计划 method_id 只是冻结目录内的别名，不能用它在运行时挑选全局方法新版。此单元仍拒绝 v3 执行；未接 advisor 派发、有效视图、运行鉴权、返工失效传播、页面和最终验收。接续时不得把任务计划塞入共享 ExpertPack 缓存。

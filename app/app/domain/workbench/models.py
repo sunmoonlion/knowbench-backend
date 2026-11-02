@@ -95,6 +95,7 @@ class Task(Strict):
     state: TaskState
     state_version: int
     current_step: int
+    accepted_plan_version: int | None = Field(default=None, ge=1)
     waiting_reason: str | None
     active_attempt_id: str | None
     active_interaction_id: str | None
