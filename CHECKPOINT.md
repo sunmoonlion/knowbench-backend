@@ -522,3 +522,9 @@ G7仍未隐藏knowbench测试列表，停止/归档等入口未全部迁完，�
 
 ### 合入已发布 #66 的历史记录
 
+
+## 2026-11-03 本人专家列表移除（隔离发布补丁）
+
+基于已发布#67的da89249。新增0036迁移workbench_hidden_experts保存owner/profile列表偏好；DELETE /packs/{id}校验本人可读专家，幂等隐藏；GET /packs过滤隐藏项；重新pin同版恢复。不可变pin和任务快照不删除，不停止活动任务，不影响其他用户或商城公开状态。
+
+隔离PostgreSQL回归56 passed，含跨用户拒绝、重复删除、历史任务仍读、重新请回；Ruff/Pyright通过。顺带修正既有data-needs断言遗漏#67已返回scope_check_required，断言其固定专家值为false，未改变生产契约。API与网页同批，先迁移后部署；发布交qwen，不混入撤回候选。

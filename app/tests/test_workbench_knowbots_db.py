@@ -68,6 +68,35 @@ async def test_pinning_checks_with_knowmart_as_the_session_owner(
         assert (await http.get(f"/api/workbench/packs/{PROFILE}")).status_code == 404
 
 
+async def test_removing_expert_only_hides_own_listing_and_repin_restores(
+    make_client, db, knowmart
+):  # noqa: F811
+    async with make_client(A) as http:
+        assert (await pin(http)).status_code == 200
+    async with make_client(B) as other:
+        assert (
+            await other.delete(f"/api/workbench/packs/{PROFILE}")
+        ).status_code == 404
+    async with make_client(A) as http:
+        assert (await http.delete(f"/api/workbench/packs/{PROFILE}")).status_code == 200
+        assert (await http.delete(f"/api/workbench/packs/{PROFILE}")).status_code == 200
+        assert PROFILE not in [
+            p["id"] for p in (await http.get("/api/workbench/packs")).json()["packs"]
+        ]
+        assert (await http.get(f"/api/workbench/packs/{PROFILE}")).status_code == 200
+        assert (await pin(http)).status_code == 200
+        assert PROFILE in [
+            p["id"] for p in (await http.get("/api/workbench/packs")).json()["packs"]
+        ]
+    async with db() as s:
+        assert (
+            await s.execute(text("SELECT count(*) FROM workbench_knowbot_pins"))
+        ).scalar() == 1
+        assert (
+            await s.execute(text("SELECT count(*) FROM workbench_hidden_experts"))
+        ).scalar() == 0
+
+
 async def test_bad_or_tampered_manifests_are_not_pinned(
     make_client,  # noqa: F811
     db,  # noqa: F811
@@ -133,6 +162,9 @@ async def test_asking_a_pinned_knowbot_snapshots_it_on_the_task(
         task_id = made.json()["task_id"]
         steps = (await http.get(f"/api/workbench/tasks/{task_id}/steps")).json()
         assert steps["steps"], steps
+        # 移除后正在进行的任务仍可查看；不删除或改写快照。
+        assert (await http.delete(f"/api/workbench/packs/{PROFILE}")).status_code == 200
+        assert (await http.get(f"/api/workbench/tasks/{task_id}/steps")).json() == steps
     async with db() as s:
         row = (
             (

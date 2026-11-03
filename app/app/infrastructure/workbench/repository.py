@@ -1295,6 +1295,12 @@ class WorkbenchRepository:
             raise KnowbotInvalid(
                 "this knowbot version changed after it was pinned", knowbot=knowbot_id
             )
+        await self.session.execute(
+            text(
+                "DELETE FROM workbench_hidden_experts WHERE owner_actor_id=:o AND profile_id=:p"
+            ),
+            {"o": owner_actor_id, "p": f"knowbot:{knowbot_id}@{version}"},
+        )
         return pin
 
     async def get_knowbot_pin(
@@ -1309,6 +1315,23 @@ class WorkbenchRepository:
         )
         row = r.mappings().first()
         return dict(row) if row else None
+
+    async def hidden_experts(self, *, owner_actor_id: str) -> set[str]:
+        rows = await self.session.execute(
+            text(
+                "SELECT profile_id FROM workbench_hidden_experts WHERE owner_actor_id=:o"
+            ),
+            {"o": owner_actor_id},
+        )
+        return set(rows.scalars().all())
+
+    async def hide_expert(self, *, owner_actor_id: str, profile_id: str) -> None:
+        await self.session.execute(
+            text(
+                "INSERT INTO workbench_hidden_experts (owner_actor_id,profile_id) VALUES (:o,:p) ON CONFLICT DO NOTHING"
+            ),
+            {"o": owner_actor_id, "p": profile_id},
+        )
 
     async def list_knowbot_pins(self, *, owner_actor_id: str) -> list[dict[str, Any]]:
         r = await self.session.execute(
