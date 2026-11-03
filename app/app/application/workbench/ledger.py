@@ -50,7 +50,7 @@ from app.domain.workbench.states import (
     wheel_after_task_state,
 )
 from app.domain.workbench.step_view import reason_text
-from app.domain.workbench.task_requirements import TaskRequirements
+from app.domain.workbench.task_requirements import TaskRequirements, from_manual
 from app.domain.workbench.tokens import token_hash
 
 INTERACTION_TTL = timedelta(hours=72)
@@ -164,7 +164,8 @@ class Ledger:
                 prior_input = prior.get("original_input") or {}
                 author_scope = (
                     prior.get("pack_source") == "knowlab-test"
-                    and prior_input.get("task_requirements_origin") == "author_scope"
+                    and prior_input.get("task_requirements_origin")
+                    in {"author_scope", "author_request"}
                     and task_requirements is None
                 )
                 if prior["request_digest"] != digest or (
@@ -232,14 +233,26 @@ class Ledger:
                 if pinned
                 else None
             )
+            author_request = False
             if pinned is not None and isinstance(
                 pinned_catalog, CapabilityMethodCatalog
             ):
+                if task_requirements is None and isinstance(pinned, PinnedTestCatalog):
+                    # New author tests already designate their draft. Preserve the
+                    # question without inventing a marketplace coverage proof.
+                    task_requirements = from_manual(
+                        question=str(req.original_input.get("text") or ""),
+                        expert_digest=pinned.task_columns()["pack_digest"],
+                        capabilities=tuple(
+                            c.id for c in pinned_catalog.public_capabilities
+                        ),
+                    )
+                    author_request = True
                 if task_requirements is None and not isinstance(
                     pinned, PinnedTestCatalog
                 ):
                     raise DataChoiceInvalid(
-                        "scope matching is required before asking this expert"
+                        "a server-pinned task request is required before asking this expert"
                     )
                 if task_requirements is not None:
                     task_requirements.verify(
@@ -286,6 +299,11 @@ class Ledger:
                         "input": req.original_input,
                         "attachments": req.attachments,
                         "client_context": client_context,
+                        **(
+                            {"task_requirements_origin": "author_request"}
+                            if author_request
+                            else {}
+                        ),
                         **(
                             {
                                 "task_requirements": task_requirements.model_dump(

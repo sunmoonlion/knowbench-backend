@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from knowbot_fixtures import KNOWBOT, FakeSummoner
 from test_capability_method_plan import proposal
+from test_declaration_match import declaration_result
 from test_expert_match import QUESTION, directory, result
 from test_knowbot_test_runs_db import (
     AUTHOR,
@@ -49,7 +50,7 @@ class Directory:
         return DirectorySnapshot.model_validate(self.document)
 
 
-@pytest.mark.parametrize("match_version", ["2", "3"])
+@pytest.mark.parametrize("match_version", ["2", "3", "4"])
 @pytest.mark.parametrize("review", [False, True])
 @pytest.mark.parametrize("existing_conversation", [False, True])
 async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
@@ -71,11 +72,20 @@ async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
         public_capabilities=doc["pack"]["public_capabilities"],
     )
     port = Directory(entries)
-    choice = demand_result() if match_version == "3" else result()
+    choice = (
+        declaration_result()
+        if match_version == "4"
+        else demand_result()
+        if match_version == "3"
+        else result()
+    )
     cap = "double_check" if review else "check"
     choice["picks"][0]["knowbot_id"] = KNOWBOT
-    for row in choice["picks"][0]["coverage"]:
-        row.update(capability_id=cap, declaration_quote=cap)
+    if match_version == "4":
+        choice["picks"][0]["declarations"] = [{"capability_id": cap, "quote": cap}]
+    else:
+        for row in choice["picks"][0]["coverage"]:
+            row.update(capability_id=cap, declaration_quote=cap)
     question = QUESTION if review else "核对文件，交付报告。"
     if not review:
         choice["requirements"][0].update(
@@ -244,4 +254,68 @@ async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
         assert len(fake.turn_inputs) == (6 if review else 5)
     finally:
         await close(runner)
+        await fake.close()
+
+
+async def test_manual_expert_enters_delegation_without_directory_or_model_matching(db):
+    doc = json.loads(
+        (
+            Path(__file__).parent / "fixtures/capability-methods-manifest.json"
+        ).read_text()
+    )
+    doc["rule_sources"] = [
+        {"rule": "合成核对", "source": "user_confirmed", "ref": "synthetic:test"}
+    ]
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            project = await ProjectService(repo).create(
+                owner_actor_id=OWNER,
+                environment_id=ENV,
+                workspace_root=WORKSPACE,
+                path="manual-declaration",
+            )
+            summoner = FakeSummoner()
+            summoner.give(AUTHOR, doc)
+            pinned = await pin_knowbot(
+                repo,
+                summoner,
+                owner_actor_id=OWNER,
+                owner_subject=AUTHOR,
+                ref=f"{KNOWBOT}@1",
+                dynamic_method_owners=frozenset({AUTHOR}),
+            )
+
+            async def token():
+                return "synthetic-token"
+
+            svc = DelegationService(
+                repo, dynamic_method_owners=frozenset({AUTHOR}), directory=None
+            )
+            assert (
+                await svc.data_needs(owner_actor_id=OWNER, profile_id=pinned.profile_id)
+            )["scope_check_required"] is False
+            args = dict(
+                owner_actor_id=OWNER,
+                project_id=project["id"],
+                profile_id=pinned.profile_id,
+                question=QUESTION,
+                idempotency_key="manual-without-ai",
+                user_token=token,
+                expert_data=ExpertData(
+                    FakeKnowbase(), FakeSupply(), supply_enabled=False
+                ),
+            )
+            made = await svc.from_expert_entry(**args)
+            assert (await svc.from_expert_entry(**args))["task_id"] == made["task_id"]
+            task = await repo.get_task(made["task_id"])
+            brief = task["original_input"]["task_requirements"]
+            assert brief["selection_basis"] == "manual"
+            assert brief["match_task_id"] is None
+            assert brief["requirements"][0]["statement"] == QUESTION
+            assert not fake.turn_inputs
+    finally:
         await fake.close()

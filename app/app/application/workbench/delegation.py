@@ -41,7 +41,7 @@ from app.domain.workbench.knowbots import (
 from app.domain.workbench.method_catalog import CapabilityMethodCatalog
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.projects import default_title
-from app.domain.workbench.task_requirements import TaskRequirements
+from app.domain.workbench.task_requirements import TaskRequirements, from_manual
 
 # 只看内置专家的老入口（同步、不认分身），保留给已有的调用方
 expert_on_view = builtin_on_view
@@ -201,7 +201,7 @@ class DelegationService:
         idempotency_key: str,
         tenant: str,
     ) -> TaskRequirements | None:
-        if match is None:
+        if match is None and not is_knowbot(profile_id):
             return None
         prior = await self.repo.find_task_by_idempotency(
             tenant=tenant,
@@ -217,6 +217,14 @@ class DelegationService:
         pinned = await pinned_pack(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
+        if match is None:
+            if not isinstance(pinned.catalog, CapabilityMethodCatalog):
+                return None
+            return from_manual(
+                question=question,
+                expert_digest=pinned.digest,
+                capabilities=tuple(c.id for c in pinned.catalog.public_capabilities),
+            )
         return await resolve_selection(
             self.repo,
             self.directory,
@@ -242,7 +250,7 @@ class DelegationService:
         return {
             "contract": MANIFEST_SCHEMA_V3 if pinned.catalog else MANIFEST_SCHEMA_V2,
             "bound": len(pinned.bindings),
-            "scope_check_required": isinstance(pinned.catalog, CapabilityMethodCatalog),
+            "scope_check_required": False,
         }
 
     async def _prepare(

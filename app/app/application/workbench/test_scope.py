@@ -1,4 +1,6 @@
-"""Initial scope check for an unpublished author test, in its existing planner turn.
+"""Legacy scope check for author tests created before declaration selection.
+
+New tests carry an author_request brief at intake and never enter this path.
 
 Only the frozen draft's public declarations are used. No marketplace publication,
 extra task, database mutation outside the ledger, or backend model client.

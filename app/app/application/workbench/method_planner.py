@@ -349,7 +349,7 @@ class MethodPlanner:
                             expected_version=task["state_version"],
                             original_input={
                                 **task["original_input"],
-                                    "task_requirements_origin": "author_scope",
+                                "task_requirements_origin": "author_scope",
                                 "task_requirements": requirements.model_dump(
                                     mode="json"
                                 ),
@@ -400,7 +400,9 @@ def compose_plan(catalog: MethodCatalog, context: dict[str, Any]) -> str:
     capability_instructions = (
         "For each input bind it or explicitly omit an optional slot with not_selected. "
         "If its upstream method is selected, it must be bound. Every selected output must reach a final output. "
-        "Cover every necessary task_requirements ID using only its capability_mapping; never invent requirements. "
+        "Account for the original question and every necessary task_requirements ID using only its capability_mapping; never invent requirements. "
+        "When selection_basis is manual or declaration, that mapping is only the author-allowed choice range, NOT proof of applicability or permission to omit user goals. "
+        "Select the appropriate capabilities and their frozen methods for this question; disclose actual mismatch through the existing execution/approval flow, never claim unperformed work succeeded. "
         "When task_requirements includes method_proposals or a solution, these describe suggested approaches, "
         "not additional mandatory requirements or permission to invent methods. Preserve user_explicit methods; "
         "choose among the author's compatible methods to meet the actual requirements. Data conditions must be "

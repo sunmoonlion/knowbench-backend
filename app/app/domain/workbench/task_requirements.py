@@ -6,12 +6,13 @@ rewrite the requirement list or use a browser-supplied coverage claim.
 
 from __future__ import annotations
 
-from typing import Self
+from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
 from app.domain.workbench.expert_match import (
     AnyMatchReceipt,
+    DeclarationMatch,
     Digest,
     ExpertMatchV3,
     Identifier,
@@ -25,14 +26,26 @@ from app.domain.workbench.expert_match import (
 from app.domain.workbench.packs import Strict
 
 
+class ManualRequirement(Requirement):
+    id: Literal["request"]
+    kind: Literal["result"]
+    required: Literal[True]
+    statement: str = Field(min_length=1, max_length=4000)
+    question_quote: str = Field(min_length=1, max_length=4000)
+
+
 class TaskRequirements(Strict):
     question_digest: Digest
     expert_digest: Digest
     question_revision: int = Field(ge=1, strict=True)
-    match_task_id: str = Field(min_length=1, max_length=128)
-    match_artifact_version: int = Field(ge=1, strict=True)
-    requirements: tuple[MethodRequirement | Requirement, ...] = Field(
-        min_length=1, max_length=100
+    selection_basis: Literal["coverage", "declaration", "manual"] = Field(
+        default="coverage", exclude_if=lambda value: value == "coverage"
+    )
+    limitations: tuple[str, ...] = Field(default=(), exclude_if=lambda value: not value)
+    match_task_id: str | None = Field(min_length=1, max_length=128)
+    match_artifact_version: int | None = Field(ge=1, strict=True)
+    requirements: tuple[MethodRequirement | Requirement | ManualRequirement, ...] = (
+        Field(min_length=1, max_length=100)
     )
     capability_mapping: dict[Identifier, tuple[Identifier, ...]] = Field(
         min_length=1, max_length=100
@@ -47,6 +60,12 @@ class TaskRequirements(Strict):
 
     @model_validator(mode="after")
     def _coverage(self) -> Self:
+        if (self.selection_basis == "manual") != (self.match_task_id is None) or (
+            self.selection_basis == "manual"
+        ) != (self.match_artifact_version is None):
+            raise ValueError(
+                "manual selection has no match task; AI selection requires one"
+            )
         ids = {req.id for req in self.requirements if req.required}
         if len({req.id for req in self.requirements}) != len(self.requirements):
             raise ValueError("task requirements must be unique")
@@ -106,6 +125,19 @@ def from_match(
         question_revision=receipt.question_revision,
         match_task_id=match_task_id,
         match_artifact_version=match_artifact_version,
+        selection_basis="declaration"
+        if isinstance(receipt.result, DeclarationMatch)
+        else "coverage",
+        limitations=next(
+            (
+                p.limitations
+                for p in receipt.result.picks
+                if (p.knowbot_id, p.version) == (knowbot_id, version)
+            ),
+            (),
+        )
+        if isinstance(receipt.result, DeclarationMatch)
+        else (),
         requirements=receipt.result.requirements,
         capability_mapping={key: tuple(sorted(caps)) for key, caps in mapping.items()},
         **(
@@ -120,4 +152,28 @@ def from_match(
             if isinstance(receipt.result, ExpertMatchV3)
             else {}
         ),
+    )
+
+
+def from_manual(
+    *, question: str, expert_digest: str, capabilities: tuple[str, ...]
+) -> TaskRequirements:
+    """Keep the user's whole request; choosing an expert is not a coverage proof."""
+    return TaskRequirements(
+        question_digest=digest(question),
+        expert_digest=expert_digest,
+        question_revision=1,
+        match_task_id=None,
+        match_artifact_version=None,
+        selection_basis="manual",
+        requirements=(
+            ManualRequirement(
+                id="request",
+                kind="result",
+                statement=question,
+                question_quote=question,
+                required=True,
+            ),
+        ),
+        capability_mapping={"request": capabilities},
     )

@@ -495,6 +495,7 @@ class FindExpertIn(BaseModel):
         "knowbench/expert-match/v1",
         "knowbench/expert-match/v2",
         "knowbench/expert-match/v3",
+        "knowbench/expert-match/v4",
     ] = "knowbench/expert-match/v1"
     expert: str | None = Field(default=None, max_length=128)
 

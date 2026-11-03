@@ -10,6 +10,7 @@ import pytest
 
 from app.application.workbench.find_expert import FindExpertRefused, FindExpertService
 from app.domain.workbench.expert_match import digest
+from tests.test_declaration_match import declaration_result
 from tests.test_expert_match import QUESTION, directory
 from tests.test_method_demand_match import demand_result
 
@@ -84,3 +85,26 @@ async def test_invalid_match_never_becomes_an_incubation_request(damage):
     with pytest.raises(FindExpertRefused):
         await svc.ask_incubation("actor", "task")
     desk.submit.assert_not_called()
+
+
+async def test_declaration_selection_transfers_question_without_invented_methods():
+    svc, repo, desk = setup()
+    repo.get_task.return_value["profile_version"] = "4"
+    doc = declaration_result()
+    doc.update(
+        outcome="none",
+        picks=[],
+        recommend={"action": "incubate", "reason": "公开声明没有适合的专家"},
+    )
+    repo.get_artifact.return_value["content"] = doc
+    await svc.ask_incubation("actor", "task")
+    payload = desk.submit.call_args.args[0]
+    assert payload["question"] == QUESTION
+    demand = payload["method_demand"]
+    assert demand["method_proposals"] == []
+    assert demand["gaps"] == []
+    assert all(
+        r["origin"] == "user_explicit" and r["question_quote"] in QUESTION
+        for r in demand["requirements"]
+    )
+    validate_provider_payload(payload)

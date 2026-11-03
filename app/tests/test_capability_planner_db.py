@@ -44,7 +44,7 @@ def requirements():
     )
 
 
-async def create(db, *, claim=True):
+async def create(db, *, claim=True, legacy=False):
     _, _, sid = await seed(db)
     req = handover(sid, key=f"capability-{sid}", text=QUESTION)
     async with db() as session:
@@ -57,6 +57,16 @@ async def create(db, *, claim=True):
             task_requirements=requirements() if claim else None,
         )
         tid = made["task_id"]
+        if legacy:
+            # Reconstruct a historical stored task, never alter production history.
+            async with repo.transaction():
+                task = await repo.get_task(tid)
+                original = dict(task["original_input"])
+                original.pop("task_requirements", None)
+                original.pop("task_requirements_origin", None)
+                await repo.cas_task(
+                    tid, expected_version=task["state_version"], original_input=original
+                )
         await led.transition(tid, TaskState.VALIDATING)
         await led.transition(tid, TaskState.QUEUED)
     return tid, req
@@ -116,8 +126,8 @@ async def test_plan_cannot_drop_one_matching_requirement_even_on_retry(db):
         assert task["budget"]["used"] == "0.04"
 
 
-async def test_unpublished_author_test_checks_scope_in_the_existing_planner_turn(db):
-    tid, request = await create(db, claim=False)
+async def test_legacy_author_test_keeps_its_original_scope_contract(db):
+    tid, request = await create(db, claim=False, legacy=True)
     scope = scope_result()
     scope["picks"][0]["knowbot_id"] = tid
     for row in scope["picks"][0]["coverage"]:
@@ -145,7 +155,7 @@ async def test_unpublished_author_test_checks_scope_in_the_existing_planner_turn
 
 
 async def test_uncovered_author_question_never_executes_a_method(db):
-    tid, _ = await create(db, claim=False)
+    tid, _ = await create(db, claim=False, legacy=True)
     scope = scope_result()
     scope.update(
         outcome="none",
@@ -171,7 +181,7 @@ async def test_uncovered_author_question_never_executes_a_method(db):
 
 
 async def test_missing_author_requirements_cannot_bypass_execution_validation(db):
-    tid, _ = await create(db, claim=False)
+    tid, _ = await create(db, claim=False, legacy=True)
     async with db() as session:
         task = await WorkbenchRepository(session).get_task(tid)
         with pytest.raises(MethodPlanInvalid, match="server-pinned"):
@@ -191,3 +201,32 @@ async def test_same_request_cannot_replay_with_a_different_matching_receipt(db):
         different = requirements().model_copy(update={"match_artifact_version": 2})
         with pytest.raises(IdempotencyConflict):
             await led.handover(req, owner_actor_id=OWNER, task_requirements=different)
+
+
+async def test_new_author_test_plans_from_author_question_without_coverage_proof(db):
+    tid, request = await create(db, claim=False)
+    plan = proposal(review=True)
+    plan["requirement_coverage"] = {"request": "double_check"}
+    driver = Driver(
+        TurnResult("author-plan", json.dumps(plan), {}, cost=Decimal("0.02"))
+    )
+    assert (
+        await MethodPlanner(SqlWorkbenchStores(db), driver).run(tid) == TaskState.QUEUED
+    )
+    assert len(driver.calls) == 1
+    assert "Unknown or partial coverage must not run a plan" not in driver.calls[0][1]
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        task = await repo.get_task(tid)
+        brief = for_task(task, parse_catalog(document()))
+        assert brief.selection_basis == "manual"
+        assert brief.match_task_id is None
+        assert brief.match_artifact_version is None
+        assert brief.requirements[0].question_quote == QUESTION
+        assert task["original_input"]["task_requirements_origin"] == "author_request"
+        assert (await read_plan(repo, task)).proposal.requirement_coverage == {
+            "request": "double_check"
+        }
+        assert (await Ledger(repo).handover(request, owner_actor_id=OWNER))[
+            "task_id"
+        ] == tid

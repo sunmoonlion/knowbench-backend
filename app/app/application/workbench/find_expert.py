@@ -28,6 +28,7 @@ from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, WorkbenchError
 from app.domain.workbench.expert_match import (
     AnyMatchReceipt,
+    DeclarationMatch,
     DirectorySnapshot,
     ExpertMatchV3,
     digest,
@@ -118,7 +119,7 @@ async def find_expert(
     """工具 `find_expert`：这个用户请得动的专家的公开信息（不排序，按名称）。"""
     if working.get("profile_id") == FIND_EXPERT.profile_id and str(
         working.get("profile_version")
-    ) in {"2", "3"}:
+    ) in {"2", "3", "4"}:
         return await _directory_snapshot(repo, directory, working)
     if directory is None or not directory.configured():
         return {"experts": [], "note": "the expert directory is not available now"}
@@ -199,7 +200,7 @@ async def match_receipt(
         )
     except (ValueError, KeyError):
         raise FindExpertRefused(
-            "matching result does not establish complete question coverage"
+            "matching result does not match its contract or public directory"
         ) from None
 
 
@@ -253,6 +254,7 @@ class FindExpertService:
             "knowbench/expert-match/v1",
             "knowbench/expert-match/v2",
             "knowbench/expert-match/v3",
+            "knowbench/expert-match/v4",
         ] = "knowbench/expert-match/v1",
         expert: str | None = None,
     ) -> dict[str, Any]:
@@ -264,7 +266,11 @@ class FindExpertService:
             raise FindExpertRefused("the budget limit is more than zero")
         if expert is not None and (
             match_contract
-            not in {"knowbench/expert-match/v2", "knowbench/expert-match/v3"}
+            not in {
+                "knowbench/expert-match/v2",
+                "knowbench/expert-match/v3",
+                "knowbench/expert-match/v4",
+            }
             or parse_profile(expert) is None
         ):
             raise FindExpertRefused(
@@ -356,7 +362,7 @@ class FindExpertService:
         found = await self.repo.get_artifact(
             task_id=str(task["id"]), name=step.output_artifact
         )
-        if str(task.get("profile_version")) in {"2", "3"}:
+        if str(task.get("profile_version")) in {"2", "3", "4"}:
             if found is None:
                 return base | {"error": "matching result is missing"}
             receipt = await match_receipt(self.repo, task, found)
@@ -505,7 +511,7 @@ class FindExpertService:
         if conversation_id is not None:
             reference = await self._last_answer(owner_actor_id, conversation_id)
         method_demand = {}
-        if str(task.get("profile_version")) == "3":
+        if str(task.get("profile_version")) in {"3", "4"}:
             if task["state"] != TaskState.SUCCEEDED:
                 raise FindExpertRefused(
                     "finish matching before transferring method demand"
@@ -517,23 +523,29 @@ class FindExpertService:
                 raise FindExpertRefused("matching result is missing")
             receipt = await match_receipt(self.repo, task, artifact)
             result = receipt.result
-            if not isinstance(result, ExpertMatchV3) or result.outcome not in {
+            if not isinstance(
+                result, (ExpertMatchV3, DeclarationMatch)
+            ) or result.outcome not in {
                 "none",
                 "clarify",
             }:
                 raise FindExpertRefused(
                     "matching has not established an incubation need"
                 )
-            gaps = [
-                {
-                    "requirement_id": row.requirement_id,
-                    "status": row.status,
-                    "reason": row.reason,
-                }
-                for pick in result.picks
-                for row in pick.coverage
-                if row.status != "covered"
-            ]
+            gaps = (
+                [
+                    {
+                        "requirement_id": row.requirement_id,
+                        "status": row.status,
+                        "reason": row.reason,
+                    }
+                    for pick in result.picks
+                    for row in pick.coverage
+                    if row.status != "covered"
+                ]
+                if isinstance(result, ExpertMatchV3)
+                else []
+            )
             method_demand = {
                 "contract": "knowlab/runtime-incubation/v2",
                 "method_demand": {
@@ -541,10 +553,22 @@ class FindExpertService:
                     "question_revision": receipt.question_revision,
                     "outcome": result.outcome,
                     "requirements": [
-                        r.model_dump(mode="json") for r in result.requirements
+                        r.model_dump(mode="json")
+                        if isinstance(result, ExpertMatchV3)
+                        else {
+                            **r.model_dump(mode="json"),
+                            "origin": "user_explicit",
+                            "rationale": "用户原问题中的目标或约束；尚未经作者定型",
+                        }
+                        for r in result.requirements
                     ],
                     "method_proposals": [
-                        p.model_dump(mode="json") for p in result.method_proposals
+                        p.model_dump(mode="json")
+                        for p in (
+                            result.method_proposals
+                            if isinstance(result, ExpertMatchV3)
+                            else ()
+                        )
                     ],
                     "gaps": gaps,
                     "clarification": result.clarification,

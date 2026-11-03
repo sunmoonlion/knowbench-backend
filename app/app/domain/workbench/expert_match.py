@@ -246,8 +246,106 @@ class MatchReceiptV3(MatchReceipt):
     result: ExpertMatchV3
 
 
-AnyExpertMatch = ExpertMatch | ExpertMatchV3
-AnyMatchReceipt = MatchReceipt | MatchReceiptV3
+class DeclarationEvidence(Strict):
+    capability_id: Identifier | None
+    quote: Text
+
+
+class DeclarationPick(Strict):
+    knowbot_id: str = Field(min_length=1, max_length=64)
+    version: str = Field(pattern=r"^[1-9][0-9]{0,5}$")
+    reason: Text
+    fit: Literal["suitable", "unsuitable", "clarify"]
+    declarations: tuple[DeclarationEvidence, ...] = Field(min_length=1, max_length=30)
+    limitations: tuple[Text, ...] = Field(max_length=30)
+
+
+class DeclarationMatch(Strict):
+    """Reasoned selection from declarations, not a proof of method coverage."""
+
+    contract: Literal["knowbench/expert-match/v4"]
+    requirements: tuple[Requirement, ...] = Field(min_length=1, max_length=100)
+    outcome: Literal["summon", "candidates", "none", "clarify"]
+    picks: tuple[DeclarationPick, ...] = Field(max_length=3)
+    clarification: Text | None
+    recommend: Recommendation | None
+    demand: DemandDraft | None
+
+    @model_validator(mode="after")
+    def _shape(self) -> Self:
+        if len({r.id for r in self.requirements}) != len(self.requirements):
+            raise ValueError("duplicate question requirement")
+        if any(
+            r.kind == "explicit_method" and not r.required for r in self.requirements
+        ):
+            raise ValueError("explicitly requested methods cannot become optional")
+        if not any(r.required for r in self.requirements):
+            raise ValueError("the original request must remain required")
+        if len({(p.knowbot_id, p.version) for p in self.picks}) != len(self.picks):
+            raise ValueError("duplicate expert pick")
+        if self.outcome == "summon" and len(self.picks) != 1:
+            raise ValueError("summon needs exactly one expert")
+        if self.outcome == "candidates" and not self.picks:
+            raise ValueError("candidates needs at least one expert")
+        if self.outcome in {"summon", "candidates"} and any(
+            p.fit != "suitable" for p in self.picks
+        ):
+            raise ValueError("known mismatch or material ambiguity cannot invite")
+        if self.outcome == "none" and (
+            self.recommend is None or any(p.fit == "suitable" for p in self.picks)
+        ):
+            raise ValueError("no match requires a remedy and no suitable picks")
+        if (self.outcome == "clarify") != bool(
+            self.clarification and self.clarification.strip()
+        ):
+            raise ValueError("only clarify has a nonblank clarification")
+        return self
+
+
+class DeclarationReceipt(Strict):
+    contract: Literal["knowbench/expert-match-receipt/v4"]
+    question_digest: Digest
+    directory_digest: Digest
+    question_revision: int = Field(ge=1, strict=True)
+    result: DeclarationMatch
+    directory: DirectorySnapshot
+
+
+def _validate_declaration_match(
+    question: str, result: DeclarationMatch, directory: DirectorySnapshot, revision: int
+) -> DeclarationReceipt:
+    entries = {(e.knowbot_id, e.version): e for e in directory.experts}
+    for pick in result.picks:
+        entry = entries.get((pick.knowbot_id, pick.version))
+        if entry is None:
+            raise ValueError("expert version is not in this directory snapshot")
+        capabilities = {c.id: c for c in entry.public_capabilities}
+        for evidence in pick.declarations:
+            if evidence.capability_id is None:
+                texts = [entry.scope.does, entry.scope.does_not, entry.scope.elsewhere]
+            else:
+                cap = capabilities.get(evidence.capability_id)
+                if cap is None:
+                    raise ValueError("unknown public capability")
+                texts = [cap.statement, *cap.conditions, *cap.exclusions, *cap.delivers]
+            if not evidence.quote.strip() or not any(
+                evidence.quote in text for text in texts
+            ):
+                raise ValueError("selection must cite an actual public declaration")
+        if result.outcome == "summon" and not entry.free:
+            raise ValueError("paid experts require explicit user selection")
+    return DeclarationReceipt(
+        contract="knowbench/expert-match-receipt/v4",
+        question_digest=digest(question),
+        directory_digest=digest(directory.model_dump(mode="json")),
+        question_revision=revision,
+        result=result,
+        directory=directory,
+    )
+
+
+AnyExpertMatch = ExpertMatch | ExpertMatchV3 | DeclarationMatch
+AnyMatchReceipt = MatchReceipt | MatchReceiptV3 | DeclarationReceipt
 _matches = TypeAdapter(AnyExpertMatch)
 
 
@@ -277,6 +375,8 @@ def validate_match(
     for requirement in result.requirements:
         if requirement.question_quote not in question:
             raise ValueError("requirement quote is not in the original question")
+    if isinstance(result, DeclarationMatch):
+        return _validate_declaration_match(question, result, directory, revision)
     entries = {(e.knowbot_id, e.version): e for e in directory.experts}
     necessary = {r.id for r in result.requirements if r.required}
     fully_covered: set[tuple[str, str]] = set()
@@ -370,7 +470,16 @@ def requirement_capabilities(
     )
     if entry is None or pick is None or entry.digest != pack_digest:
         raise ValueError("matching receipt pins a different expert version")
+    if isinstance(receipt.result, DeclarationMatch):
+        # Execution may choose from the author's declared capabilities. This is
+        # an allowed range, NOT a precomputed claim that each capability fits.
+        return {
+            r.id: {cap.id for cap in entry.public_capabilities}
+            for r in receipt.result.requirements
+            if r.required
+        }
     wanted = {req.id for req in receipt.result.requirements if req.required}
+    assert isinstance(pick, MatchedExpert)
     answer = {
         row.requirement_id: {row.capability_id}
         for row in pick.coverage

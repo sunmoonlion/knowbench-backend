@@ -528,3 +528,13 @@ G7仍未隐藏knowbench测试列表，停止/归档等入口未全部迁完，�
 基于已发布#67的da89249。新增0036迁移workbench_hidden_experts保存owner/profile列表偏好；DELETE /packs/{id}校验本人可读专家，幂等隐藏；GET /packs过滤隐藏项；重新pin同版恢复。不可变pin和任务快照不删除，不停止活动任务，不影响其他用户或商城公开状态。
 
 隔离PostgreSQL回归56 passed，含跨用户拒绝、重复删除、历史任务仍读、重新请回；Ruff/Pyright通过。顺带修正既有data-needs断言遗漏#67已返回scope_check_required，断言其固定专家值为false，未改变生产契约。API与网页同批，先迁移后部署；发布交qwen，不混入撤回候选。
+
+## 2026-11-04 撤回候选的代码纠正：按声明选择、手选与作者测试
+
+本批在 feat/dynamic-author-intake 开发，先合入已独立交 qwen 的入口/列表删除后端补丁，未移动发布候选。
+新增 expert-match/v4：依据原题目标/明确约束和真实公开声明给选择理由、已知限制，不要求方法供需全覆盖或联合可行性证明；仍核目录完整性、版本/摘要、引用原文、费用、身份、原题和幂等。v1/v2/v3历史解析不改。
+TaskRequirements 明确 selection_basis；v4允许范围不是覆盖证明，旧字段仅为既有执行器所需的目标到作者能力约束。手选与新建作者测试直接钉原题和作者允许范围，没有伪造匹配任务/收据；旧作者测试无请求摘要时继续按原合同解释。测试原题不被匹配器改成另一个方法方案。
+无匹配转孵化沿原入口显式提交，仅传用户原题目标，无推导方法/假缺口；工具权限、数据确认、预算和结果验收保持。
+
+验证：领域/旧契约78 passed；真实隔离PostgreSQL定向81 passed，随后新增作者测试边界和最终手选空匹配标识的规划/执行回归20 passed；孵化提供方契约8 passed。各范围有重叠，不合计。Ruff通过、全仓Pyright 0 errors。真实runner测试用合成模型响应，不冒充真实模型或财务语义验收。无生产写入、付费模型/Wind调用或发布。
+日志 /tmp/luna-declaration-domain-final.txt、luna-declaration-db-final.txt、luna-author-request-db.txt、luna-author-request-types.txt。下一步仍需真实作者加工/孵化、匹配质量和业务执行验收；不宣称成熟方法准入或第二轨全完。
