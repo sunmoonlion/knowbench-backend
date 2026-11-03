@@ -22,9 +22,11 @@ _POSITIONING = re.compile(
 )
 # Only a complete, explicit non-advice declaration is exempt. Do not exempt a
 # sentence merely because a negation occurs somewhere before a forbidden term.
+# A declaration may begin a comma-separated clause, but its end stays strict:
+# "不提供目标价，但可参考1800元" must not be stripped as a harmless disclaimer.
 _DISCLAIMER_ITEM = r"(?:买卖建议|投资建议|买入评级|卖出评级|投资评级|评级|目标价)"
 _POSITIONING_DISCLAIMER = re.compile(
-    r"(?:^|(?<=[。；;！!？?\n]))[ \t]*(?:[-*][ \t]+)?"
+    r"(?:^|(?<=[。；;！!？?，,\n]))[ \t]*(?:[-*][ \t]+)?"
     r"(?:(?:本文|本报告|本分析|本次分析|本体检|我们|我)[ \t]*)?"
     r"(?:不提供|不给出|不给|不涉及|不作|不含)[ \t]*(?:任何[ \t]*)?"
     + _DISCLAIMER_ITEM

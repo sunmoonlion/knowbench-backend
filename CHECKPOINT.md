@@ -616,3 +616,11 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 隔离对照共14次HTTP200、6次参数校验HTTP400（未返回用量），所有真实请求max_output_tokens=768、无自动重试。按返回usage和应用价目表估算0.461396元，额外保守计缓存写入0.492116元，低于2元；供应商账单为准。证据在sunmoonun/docs/总纲/发版/证据/2026-11-04-compute参数对照.json，保留请求、仅工具参数SSE事件、usage与虚拟服务回放；无Key、业务数据和模型推理正文。
 
 发布仍交Qwen，统一交接《2026-11-04-AI选专家结果验收修复交接.md》。发布后旧线程工具缓存要在无活动turn时刷新，真实tools/list和mcpServerStatus/list需核完整anyOf字段。新财务任务须用户显式发起；已取消14a8eba0不恢复。该证据不等于完整财务委托验收，2023H1缺项补提被拒仍另查。
+
+## 2026-11-04 范围说明中逗号后否定措辞误判
+
+基于f240415（#72候选），仅修改确定性no_positioning_advice判定。现场733b21b5的scope首轮37919c3a验收失败；用户原文r8.scope_reason为“共同前提明确：最终交付财务分析报告.md，含出处与局限，不含评级、目标价或买卖建议”。原规则只允许完整否定声明从句首/句号/分号等处开始，逗号后的明确否定未豁免，误命中目标价。用原句离线回放旧版False/命中目标价，新版True，原JSON与正文均未修改。
+
+修复允许完整否定声明从中英文逗号后的分句开始；结尾约束不放宽，不把“……不提供目标价，但可参考1800元”当作免责声明。仍逐文本叶子检查，不能遮住同句其余内容、其他行/其他字段的实际建议；不删除规则、不改专家包、不把失败历史改成通过。新增10项正反例；相关148项回归通过（acceptance_disclaimers/workbench_acceptance/acceptance_extensions/acceptance_json_feedback/acceptance_precision/advisor_acceptance_prompt），Ruff/Pyright/diff通过，无模型费用。
+
+只读核验时scope第二次840ba372已COMPLETED，任务进入inventory；未替用户重试、取消或改状态。发布交Qwen另排增量，不能覆盖#72在建钉版，不能滚动中断当前付费任务。统一交接索引链接到《2026-11-04-范围说明否定措辞误判修复交接.md》。本确定性规则不是完整自然语言合规判定，未宣称覆盖任意否定句式。
