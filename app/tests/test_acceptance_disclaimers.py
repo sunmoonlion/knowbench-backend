@@ -24,6 +24,9 @@ DECLARATION = "本文只描述数据，不评价好坏；不给买卖建议、�
         "# 局限\n- " + DECLARATION + "\n\n## 出处\n年报第5页。",
         "数据范围有限。我们不提供目标价。其他数字均来自年报。",
         "不提供目标价。不给出买入评级。",
+        "共同前提明确：最终交付财务分析报告.md，含出处与局限，不含评级、目标价或买卖建议",
+        "最终交付Markdown报告，不提供评级、目标价或买卖建议。",
+        "仅列历史指标, 不给出买入评级和目标价。",
     ],
 )
 def test_complete_explicit_declarations_pass_without_changing_report(report):
@@ -49,6 +52,12 @@ def test_complete_explicit_declarations_pass_without_changing_report(report):
         "不提供目标价，但可参考1800元。",
         "并非不提供目标价。",
         "不能不给目标价。",
+        "最终交付报告，不含目标价1800元。",
+        "最终交付报告，不提供目标价，但可参考1800元。",
+        "最终交付报告，并非不提供目标价。",
+        "最终交付报告，不能不给目标价。",
+        "最终交付报告，不含评级、目标价或买卖建议。建议买入。",
+        "目标价1800元，最终交付报告，不含评级、目标价或买卖建议。",
         "建议买入。",
         "不提供建议买入评级。",
         DECLARATION + "目标价1800元。",
@@ -88,3 +97,17 @@ def test_scoped_rule_and_other_acceptance_checks_keep_their_meaning():
     assert not result.ok
     assert result.checks[0]["pass"] is True
     assert result.checks[1]["pass"] is False
+
+
+def test_scope_reason_inline_disclaimer_does_not_exempt_other_request_items():
+    safe = {
+        "id": "r8",
+        "scope_reason": "共同前提明确：最终交付财务分析报告.md，含出处与局限，不含评级、目标价或买卖建议",
+    }
+    content = {"request_items": [safe]}
+    result = judge(json.dumps(content, ensure_ascii=False), (RULE,))
+    assert result.ok and result.parsed == content
+    content["request_items"].append(
+        {"id": "r9", "scope_reason": "建议买入，目标价1800元"}
+    )
+    assert not judge(json.dumps(content, ensure_ascii=False), (RULE,)).ok
