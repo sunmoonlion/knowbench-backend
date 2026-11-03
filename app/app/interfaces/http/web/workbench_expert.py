@@ -102,13 +102,17 @@ async def packs(
 
     内置的在前，然后是这个人请过的分身（只有他自己的）。
     """
-    mine = await my_knowbots(workbench_store(session), owner_actor_id=_actor(principal))
+    store = workbench_store(session)
+    mine = await my_knowbots(store, owner_actor_id=_actor(principal))
+    hidden = await store.hidden_experts(owner_actor_id=_actor(principal))
     return {
         "contract_version": CONTRACT_VERSION,
         # 默认预算与币种所有者还没定（W4）：先不给默认值，页面让用户自己填
         "budget": {"currency": "CNY", "default": None},
-        "packs": [_view(p, "builtin") for p in listed_packs()]
-        + [_view(p, "knowbot") for p in mine],
+        "packs": [
+            _view(p, "builtin") for p in listed_packs() if p.profile_id not in hidden
+        ]
+        + [_view(p, "knowbot") for p in mine if p.profile_id not in hidden],
     }
 
 
@@ -128,6 +132,27 @@ async def one_pack(
         raise _http(exc) from exc
     source = "knowbot" if pack_id.startswith("knowbot:") else "builtin"
     return {"contract_version": CONTRACT_VERSION, "pack": _view(pack, source)}
+
+
+@router.delete("/packs/{pack_id}")
+async def remove_expert(
+    pack_id: str,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, Any]:
+    """只移除本人列表项；运行中/历史任务的快照与读取保持可用。再次请回即恢复。"""
+    store = workbench_store(session)
+    try:
+        await viewable_expert(
+            store, owner_actor_id=_actor(principal), profile_id=pack_id
+        )
+        async with store.transaction():
+            await store.hide_expert(
+                owner_actor_id=_actor(principal), profile_id=pack_id
+            )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    return {"contract_version": CONTRACT_VERSION}
 
 
 @router.get("/packs/{pack_id}/data-needs")
