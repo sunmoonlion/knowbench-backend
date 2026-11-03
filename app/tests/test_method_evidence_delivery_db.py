@@ -132,11 +132,12 @@ class Files:
         return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
 
 
+@pytest.mark.parametrize("batch_mode", [False, True])
 @pytest.mark.parametrize(
     "fault", [None, "number", "fact", "quote", "empty_quotes", "file"]
 )
 async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
-    db, tmp_path, fault
+    db, tmp_path, fault, batch_mode
 ):
     tid, sid = await task(db)
     await patch_catalog(db, tid, evidence_contracts)
@@ -178,19 +179,36 @@ async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
                 answer = plan
             elif n == 2:
                 async with db() as session:
+                    inputs = {
+                        "name": "synthetic double",
+                        "expression": "x * 2",
+                        "inputs": {"x": FACT},
+                    }
+                    args = {"task": tid, **inputs}
+                    if batch_mode:
+                        args = {
+                            "task": tid,
+                            "batch": [
+                                dict(inputs, key="double"),
+                                {
+                                    "key": "triple",
+                                    "name": "synthetic triple",
+                                    "expression": "d + x",
+                                    "inputs": {"d": "batch:double", "x": FACT},
+                                },
+                            ],
+                        }
                     computed = await call(
                         ProjectRecords(
                             WorkbenchRepository(session), owner_actor_id=OWNER
                         ),
                         "compute",
-                        {
-                            "task": tid,
-                            "name": "synthetic double",
-                            "expression": "x * 2",
-                            "inputs": {"x": FACT},
-                        },
+                        args,
                         reader,
                     )
+                if batch_mode:
+                    assert computed["results"][1]["value"] == "4500.75"
+                    computed = computed["results"][0]
                 assert computed["value"] == "3000.5"
                 self.output = {
                     "rows": [
@@ -255,7 +273,8 @@ async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
         repo = WorkbenchRepository(session)
         row = await repo.get_task(tid)
         events = await repo.list_task_events(tid, types=(COMPUTE_EVENT,))
-        assert len(events) == 1 and events[0]["payload"]["value"] == "3000.5"
+        assert len(events) == (2 if batch_mode else 1)
+        assert events[0]["payload"]["value"] == "3000.5"
         final = await repo.get_artifact(task_id=tid, name=output_name("report_1"))
         handback = await repo.get_artifact(task_id=tid, name="handback")
         if fault is None:

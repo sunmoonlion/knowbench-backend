@@ -42,7 +42,7 @@ from app.bootstrap.workbench import (
 )
 from app.domain.workbench.compute import NAME as COMPUTE_NAME
 from app.domain.workbench.data_request import DataRequest
-from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.errors import ComputeRefused, WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -60,6 +60,24 @@ _TASK = {
     "type": "string",
     "description": "The task id given in the step instructions.",
 }
+_COMPUTE_FIELDS = {
+    "name": {"type": "string", "maxLength": 200},
+    "expression": {"type": "string", "maxLength": 500},
+    "inputs": {
+        "type": "object",
+        "minProperties": 1,
+        "maxProperties": 50,
+        "propertyNames": {"pattern": COMPUTE_NAME.pattern},
+        "additionalProperties": {
+            "anyOf": [
+                {"type": "string"},
+                {"type": "array", "items": {"type": "string"}},
+            ]
+        },
+    },
+    "round": {"type": "integer", "minimum": 0, "maximum": 10},
+}
+
 # Reuse the locked data-request/v1 contract instead of hiding its vocabulary and
 # period fields behind unconstrained strings/objects in the model-facing tool.
 _DATA_REQUEST_SCHEMA = DataRequest.model_json_schema()
@@ -202,7 +220,15 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "compute": {
         "description": (
-            "Compute one number exactly (decimal) and record it. `inputs` maps short "
+            "Compute exact decimal results and record them. Use either the single "
+            "name/expression/inputs form, or {task, batch: [{key, name, expression, "
+            "inputs, round?}, ...]} for up to 50 related calculations and 500 total "
+            "input references. Prefer a batch when facts are already available. "
+            "Batch inputs may use batch:key to reference an earlier row; forward "
+            "references are refused. Returns {results: [{key, id, value, formula, "
+            "inputs}, ...]}; receipts are ordinary compute ids. The entire batch "
+            "is refused if any row fails; split unrelated calculations if needed. "
+            "Single-call `inputs` maps short "
             "names to fact refs (fact:… or raw:… from query_facts), to the id of an "
             "earlier computation of this task (e.g. c17), or to a list of them. "
             "Input names are case-sensitive ASCII identifiers, 1–32 characters: "
@@ -221,23 +247,33 @@ TOOLS: dict[str, dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "task": _TASK,
-                "name": {"type": "string", "maxLength": 200},
-                "expression": {"type": "string", "maxLength": 500},
-                "inputs": {
-                    "type": "object",
-                    "minProperties": 1,
-                    "maxProperties": 50,
-                    "propertyNames": {"pattern": COMPUTE_NAME.pattern},
-                    "additionalProperties": {
-                        "anyOf": [
-                            {"type": "string"},
-                            {"type": "array", "items": {"type": "string"}},
-                        ]
+                **_COMPUTE_FIELDS,
+                "batch": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 50,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "key": {"type": "string", "pattern": COMPUTE_NAME.pattern},
+                            **_COMPUTE_FIELDS,
+                        },
+                        "required": ["key", "name", "expression", "inputs"],
+                        "additionalProperties": False,
                     },
                 },
-                "round": {"type": "integer", "minimum": 0, "maximum": 10},
             },
-            "required": ["task", "name", "expression", "inputs"],
+            "required": ["task"],
+            "oneOf": [
+                {
+                    "required": ["name", "expression", "inputs"],
+                    "not": {"required": ["batch"]},
+                },
+                {
+                    "required": ["batch"],
+                    "not": {"anyOf": [{"required": [key]} for key in _COMPUTE_FIELDS]},
+                },
+            ],
             "additionalProperties": False,
         },
     },
@@ -308,6 +344,14 @@ async def call(
         working = await records._working(args.get("task"))
         return await find_expert(records.repo, knowmart_catalog(), working)
     if name == "compute":
+        if "batch" in args:
+            if set(args) - {"task", "batch"}:
+                raise ComputeRefused(
+                    "use either a single calculation or a batch, not both"
+                )
+            return await KnowbotCompute(records, reader).compute_batch(
+                args.get("task"), args["batch"]
+            )
         return await KnowbotCompute(records, reader).compute(
             args.get("task"),
             args.get("name"),

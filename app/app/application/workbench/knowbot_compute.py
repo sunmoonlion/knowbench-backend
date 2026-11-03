@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
 
@@ -16,6 +18,7 @@ from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader, is_fact_ref
 from app.domain.workbench import compute as calc
 from app.domain.workbench.errors import ComputeRefused
+from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 
 COMPUTE_EVENT = "knowbot/compute"
 MAX_NAMES = 50
@@ -26,6 +29,54 @@ async def computations(repo: WorkbenchStore, task_id: str) -> dict[str, dict[str
     """这件委托的计算记录：编号 → 记录。"""
     events = await repo.list_task_events(task_id, types=(COMPUTE_EVENT,))
     return {f"c{e['cursor']}": e["payload"] for e in events}
+
+
+MAX_BATCH = 50
+
+
+@dataclass
+class _Calculation:
+    name: str
+    expression: str
+    places: int | None
+    refs: dict[str, list[str]]
+    lists: set[str]
+    key: str | None = None
+
+
+def _prepare(name: Any, expression: Any, inputs: Any, places: Any) -> _Calculation:
+    if not isinstance(name, str) or not name.strip() or len(name) > MAX_NAME_CHARS:
+        raise ComputeRefused("give the computation a name (at most 200 characters)")
+    if not isinstance(expression, str):
+        raise ComputeRefused("the expression is empty")
+    if not isinstance(inputs, dict) or not inputs or len(inputs) > MAX_NAMES:
+        raise ComputeRefused(f"inputs must be an object of 1 to {MAX_NAMES} names")
+    if places is not None and (
+        isinstance(places, bool)
+        or not isinstance(places, int)
+        or not 0 <= places <= calc.MAX_ROUND
+    ):
+        raise ComputeRefused(f"round must be a whole number from 0 to {calc.MAX_ROUND}")
+    refs: dict[str, list[str]] = {}
+    lists: set[str] = set()
+    for key, value in inputs.items():
+        if not isinstance(key, str) or not calc.NAME.fullmatch(key):
+            raise ComputeRefused(
+                f"input name {str(key)[:40]!r} must start with an ASCII letter or _, "
+                "followed by ASCII letters, digits or _ (1–32 characters, case-sensitive)"
+            )
+        if isinstance(value, list):
+            lists.add(key)
+            items = value
+        else:
+            items = [value]
+        if not items or not all(isinstance(i, str) for i in items):
+            raise ComputeRefused(
+                f"input {key!r} must be a fact ref like fact:…, "
+                "an earlier id like c17, or a list of them"
+            )
+        refs[key] = items
+    return _Calculation(name.strip(), expression.strip(), places, refs, lists)
 
 
 class KnowbotCompute:
@@ -45,55 +96,85 @@ class KnowbotCompute:
         places: Any = None,
     ) -> dict[str, Any]:
         working = await self.records._working(task)
-        if not isinstance(name, str) or not name.strip() or len(name) > MAX_NAME_CHARS:
-            raise ComputeRefused("give the computation a name (at most 200 characters)")
-        if not isinstance(expression, str):
-            raise ComputeRefused("the expression is empty")
-        if not isinstance(inputs, dict) or not inputs or len(inputs) > MAX_NAMES:
-            raise ComputeRefused(f"inputs must be an object of 1 to {MAX_NAMES} names")
-        if places is not None and (
-            isinstance(places, bool)
-            or not isinstance(places, int)
-            or not 0 <= places <= calc.MAX_ROUND
-        ):
-            raise ComputeRefused(
-                f"round must be a whole number from 0 to {calc.MAX_ROUND}"
-            )
-        refs: dict[str, list[str]] = {}
-        lists: set[str] = set()
-        for key, value in inputs.items():
-            if not isinstance(key, str) or not calc.NAME.fullmatch(key):
-                raise ComputeRefused(
-                    f"input name {str(key)[:40]!r} must start with an ASCII letter or _, "
-                    "followed by ASCII letters, digits or _ (1–32 characters, case-sensitive)"
-                )
-            if isinstance(value, list):
-                lists.add(key)
-                items = value
-            else:
-                items = [value]
-            if not items or not all(isinstance(i, str) for i in items):
-                raise ComputeRefused(
-                    f"input {key!r} must be a fact ref like fact:…, "
-                    "an earlier id like c17, or a list of them"
-                )
-            refs[key] = items
-        total = sum(len(v) for v in refs.values())
-        if total > calc.MAX_INPUTS:
-            raise ComputeRefused(f"at most {calc.MAX_INPUTS} inputs in one computation")
+        return (
+            await self._execute(working, [_prepare(name, expression, inputs, places)])
+        )[0]
 
-        flat = [i for v in refs.values() for i in v]
-        earlier_ids = [i for i in flat if calc.COMPUTE_ID.match(i)]
-        fact_refs = [i for i in flat if is_fact_ref(i)]
-        for item in flat:
-            if not calc.COMPUTE_ID.match(item) and not is_fact_ref(item):
+    async def compute_batch(self, task: Any, batch: Any) -> dict[str, Any]:
+        """One fact read, bounded pure evaluation, then atomic ordinary receipts.
+
+        batch:key can only name an earlier row. Stored provenance always replaces
+        those request-local names with real c<cursor> ids, so existing acceptance
+        and subsequent compute calls consume exactly the same evidence format.
+        """
+        working = await self.records._working(task)
+        if not isinstance(batch, list) or not 1 <= len(batch) <= MAX_BATCH:
+            raise ComputeRefused(f"batch must contain 1 to {MAX_BATCH} calculations")
+        prepared = []
+        seen: set[str] = set()
+        for row in batch:
+            if not isinstance(row, dict) or set(row) - {
+                "key",
+                "name",
+                "expression",
+                "inputs",
+                "round",
+            }:
                 raise ComputeRefused(
-                    f"not a fact ref or an earlier id: {item[:80]!r} "
-                    "(write fact:… from query_facts, or c17)"
+                    "batch rows accept only key, name, expression, inputs and round"
+                )
+            key = row.get("key")
+            if not isinstance(key, str) or not calc.NAME.fullmatch(key) or key in seen:
+                raise ComputeRefused(
+                    "batch keys must be unique ASCII identifiers (1–32 characters)"
+                )
+            item = _prepare(
+                row.get("name"),
+                row.get("expression"),
+                row.get("inputs"),
+                row.get("round"),
+            )
+            item.key = key
+            for refs in item.refs.values():
+                for ref in refs:
+                    if ref.startswith("batch:") and ref[6:] not in seen:
+                        raise ComputeRefused(
+                            f"batch {key}: input must name an earlier batch key"
+                        )
+            prepared.append(item)
+            seen.add(key)
+        results = await self._execute(working, prepared)
+        return {
+            "results": [
+                dict(result, key=item.key)
+                for item, result in zip(prepared, results, strict=True)
+            ]
+        }
+
+    async def _execute(
+        self, working: dict[str, Any], items: list[_Calculation]
+    ) -> list[dict[str, Any]]:
+        flat = [ref for item in items for refs in item.refs.values() for ref in refs]
+        if len(flat) > calc.MAX_INPUTS:
+            raise ComputeRefused(
+                f"at most {calc.MAX_INPUTS} inputs in one computation or batch"
+            )
+        batch_mode = items[0].key is not None
+        for ref in flat:
+            if (
+                not calc.COMPUTE_ID.fullmatch(ref)
+                and not is_fact_ref(ref)
+                and not (batch_mode and ref.startswith("batch:"))
+            ):
+                raise ComputeRefused(
+                    f"not a fact ref or an earlier id: {ref[:80]!r} (write fact:… from query_facts, or c17)"
                 )
         earlier = (
-            await computations(self.repo, str(working["id"])) if earlier_ids else {}
+            await computations(self.repo, str(working["id"]))
+            if any(calc.COMPUTE_ID.fullmatch(ref) for ref in flat)
+            else {}
         )
+        fact_refs = list(dict.fromkeys(ref for ref in flat if is_fact_ref(ref)))
         if fact_refs and self.reader is None:
             raise ComputeRefused("facts cannot be read here")
         facts = (
@@ -101,50 +182,108 @@ class KnowbotCompute:
             if fact_refs and self.reader is not None
             else {}
         )
+        calculated: dict[str, Decimal] = {}
 
-        def value_of(item: str) -> Decimal:
-            if calc.COMPUTE_ID.match(item):
-                record = earlier.get(item)
+        def value_of(ref: str) -> Decimal:
+            if ref.startswith("batch:"):
+                return calculated[ref[6:]]
+            if calc.COMPUTE_ID.fullmatch(ref):
+                record = earlier.get(ref)
                 if record is None:
-                    raise ComputeRefused(f"no earlier computation {item} in this task")
+                    raise ComputeRefused(f"no earlier computation {ref} in this task")
                 found = calc.decimal_of(record.get("value"))
                 if found is None:
-                    raise ComputeRefused(f"computation {item} has no value")
+                    raise ComputeRefused(f"computation {ref} has no value")
                 return found
-            return facts[item]
+            return facts[ref]
 
-        values: dict[str, calc.Value] = {}
-        recorded = []
-        for key, items in refs.items():
-            numbers = [value_of(i) for i in items]
-            values[key] = numbers if key in lists else numbers[0]
-            entry: dict[str, Any] = {"name": key}
-            if key in lists:
-                entry |= {"refs": items, "values": [calc.text_of(n) for n in numbers]}
-            else:
-                entry |= {"ref": items[0], "value": calc.text_of(numbers[0])}
-            recorded.append(entry)
-        result = calc.text_of(calc.rounded(calc.evaluate(expression, values), places))
-
-        payload = {
-            "name": name.strip(),
-            "expression": expression.strip(),
-            "inputs": recorded,
-            "round": places,
-            "value": result,
-        }
-        async with self.repo.transaction():
-            event = await self.repo.append_event(
-                session_id=str(working["session_id"]),
-                kind="records",
-                event_type=COMPUTE_EVENT,
-                payload=payload,
-                task_id=str(working["id"]),
+        payloads = []
+        for item in items:
+            values: dict[str, calc.Value] = {}
+            recorded = []
+            for key, refs in item.refs.items():
+                numbers = [value_of(ref) for ref in refs]
+                values[key] = numbers if key in item.lists else numbers[0]
+                entry: dict[str, Any] = {"name": key}
+                if key in item.lists:
+                    entry |= {
+                        "refs": refs,
+                        "values": [calc.text_of(n) for n in numbers],
+                    }
+                else:
+                    entry |= {"ref": refs[0], "value": calc.text_of(numbers[0])}
+                recorded.append(entry)
+            try:
+                number = calc.rounded(
+                    calc.evaluate(item.expression, values), item.places
+                )
+            except ComputeRefused as exc:
+                if item.key is None:
+                    raise
+                raise ComputeRefused(f"batch {item.key}: {exc}") from exc
+            if item.key is not None:
+                calculated[item.key] = number
+            payloads.append(
+                {
+                    "name": item.name,
+                    "expression": item.expression,
+                    "inputs": recorded,
+                    "round": item.places,
+                    "value": calc.text_of(number),
+                }
             )
-        return {
-            "id": f"c{event['cursor']}",
-            "name": payload["name"],
-            "value": result,
-            "formula": payload["expression"],
-            "inputs": recorded,
-        }
+
+        result = []
+        ids: dict[str, str] = {}
+        async with self.repo.transaction():
+            # A provider read may have yielded while the task was stopped.
+            await self.records._working(str(working["id"]))
+            for item, payload in zip(items, payloads, strict=True):
+
+                def resolve(ref: str) -> str:
+                    return ids[ref[6:]] if ref.startswith("batch:") else ref
+
+                for entry in payload["inputs"]:
+                    if "refs" in entry:
+                        entry["refs"] = [resolve(ref) for ref in entry["refs"]]
+                    else:
+                        entry["ref"] = resolve(entry["ref"])
+                event = await self.repo.append_event(
+                    session_id=str(working["session_id"]),
+                    kind="records",
+                    event_type=COMPUTE_EVENT,
+                    payload=payload,
+                    task_id=str(working["id"]),
+                )
+                identifier = f"c{event['cursor']}"
+                if item.key is not None:
+                    ids[item.key] = identifier
+                result.append(
+                    {
+                        "id": identifier,
+                        "name": item.name,
+                        "value": payload["value"],
+                        "formula": item.expression,
+                        "inputs": payload["inputs"],
+                    }
+                )
+            response = (
+                {
+                    "results": [
+                        dict(row, key=item.key)
+                        for item, row in zip(items, result, strict=True)
+                    ]
+                }
+                if batch_mode
+                else result[0]
+            )
+            if (
+                len(json.dumps(response, ensure_ascii=False).encode("utf-8"))
+                > TOOL_RESULT_MAX_BYTES
+            ):
+                # Refuse inside the transaction: no receipts survive for a result
+                # that the MCP transport cannot deliver to the model.
+                raise ComputeRefused(
+                    "computation result is too large; use a smaller batch or fewer inputs"
+                )
+        return result
