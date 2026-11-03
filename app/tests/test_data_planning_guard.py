@@ -48,8 +48,7 @@ def test_normal_discovery_and_proposal_do_not_trigger_guard():
 
 def test_varied_searches_and_unbounded_tool_calls_have_independent_limits():
     search = DataPlanningGuard()
-    for i in range(3):
-        search.observe({"id": str(i), "type": "webSearch", "query": str(i)})
+    search.observe({"id": "first", "type": "webSearch", "query": "provider search"})
     assert search.failure == "web_search_limit"
     guard = DataPlanningGuard()
     for i in range(MAX_TOOL_CALLS):

@@ -171,6 +171,9 @@ class SandboxLink:
         # 当前这条连接对面的 app-server 进程已经装载的线程。沙箱回收再拉起是新进程，盘上的 rollout 还在、
         # 内存里没有：turn/start 前要先 thread/resume（KIND 2026-09-26 第 13 轮：401 修好后改报 thread not found）
         self.live_threads: set[str] = set()
+        # Applied runtime configuration, not business state. Cleared on reconnect:
+        # a live app-server can otherwise retain the previous stage's search mode.
+        self.search_scopes: dict[str, bool] = {}
         # 每条线上一次向模型说明的情形。进程重启后会再说一次，多说一次无妨
         self.announced: dict[str, str] = {}
         # 每条线用的是哪个模型（起线、重新装载线时对面告诉我们的）：算钱要按它的单价
@@ -212,6 +215,7 @@ class SandboxLink:
             await client.connect()
             self.client = client
             self.live_threads.clear()
+            self.search_scopes.clear()
             log.info(
                 "sandbox link up sandbox=%s url=%s",
                 self.sandbox_id,
@@ -245,6 +249,54 @@ class SandboxLink:
                 self.active_turns[thread_id] = str(turn["id"])
         self.live_threads.add(thread_id)
         log.info("thread resumed sandbox=%s thread=%s", self.sandbox_id, thread_id)
+
+    async def configure_search_scope(self, thread_id: str, *, restricted: bool) -> None:
+        """Apply stage-only native search settings before spending a model turn.
+
+        Codex 0.155.1 ignores config overrides when resuming a loaded thread.
+        Detach this runner from an idle thread, then resume the same durable
+        history with overrides. The runner owns the sandbox connection lease.
+        Never archive, delete, fork, interrupt a turn or edit global config.
+        This sequence is probed against the pinned binary with a real MCP server.
+        """
+        if self.search_scopes.get(thread_id) is restricted:
+            return
+        client = await self.ensure_connected()
+        state = await client.request(
+            "thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=10
+        )
+        thread = (state or {}).get("thread")
+        if not isinstance(thread, dict) or not isinstance(thread.get("turns"), list):
+            raise RuntimeError("cannot verify idle thread for stage tools")
+        if thread_id in self.active_turns or any(
+            turn.get("status") == "inProgress" for turn in thread["turns"]
+        ):
+            raise RuntimeError("cannot change stage tools during an active turn")
+        self.search_scopes.pop(thread_id, None)
+        detached = await client.request(
+            "thread/unsubscribe", {"threadId": thread_id}, timeout=10
+        )
+        self.live_threads.discard(thread_id)
+        if (detached or {}).get("status") not in ("unsubscribed", "notLoaded"):
+            raise RuntimeError("stage tool subscription could not be released")
+        # Resume serializes the transition on this thread. Do not poll the
+        # loaded-thread cache: with MCP it can retain IDs after unsubscribe.
+        async with self.runner.stores() as repo:
+            session = await repo.get_session_by_thread(thread_id)
+        config = {
+            **((session or {}).get("thread_settings") or {}).get("config", {}),
+            **THREAD_CONFIG,
+        }
+        if restricted:
+            config["web_search"] = "disabled"
+        resumed = await client.request(
+            "thread/resume", {"threadId": thread_id, "config": config}, timeout=60
+        )
+        if ((resumed or {}).get("thread") or {}).get("id") != thread_id:
+            raise RuntimeError("stage tools resumed an unexpected thread")
+        self.remember_model(thread_id, resumed)
+        self.live_threads.add(thread_id)
+        self.search_scopes[thread_id] = restricted
 
     def remember_model(self, thread_id: str, answer: Any) -> str | None:
         """起线、重新装载线的答复里有这条线用的模型。"""
@@ -541,6 +593,18 @@ class SandboxLink:
                         sandboxPolicy={"type": "readOnly", "networkAccess": False},
                         approvalPolicy="never",
                     )
+        try:
+            await self.configure_search_scope(thread_id, restricted=planning or lookup)
+        except Exception:
+            log.warning("stage tool configuration failed thread=%s", thread_id)
+            return TurnResult(
+                turn_id=None,
+                final_text=None,
+                tokens={},
+                cost=Decimal("0"),
+                error="本阶段工具配置未生效，已停止，尚未调用模型；请修复运行环境后重试。",
+                platform_failure=True,
+            )
         tool_error = await unavailable_data_tools(client, thread_id, required_data)
         if tool_error:
             return TurnResult(
@@ -1851,6 +1915,7 @@ class Runner:
                     f"wheel is held by {session['wheel']}; turn by {payload.get('by', 'user')} refused"
                 )
             plan = await self.turn_plan(session=session, expert=False)
+            await link.configure_search_scope(session["thread_id"], restricted=False)
             await link.announce(session["thread_id"], plan)
             result = await client.request(
                 "turn/start",
@@ -2181,6 +2246,7 @@ class Runner:
             raise RuntimeError(f"thread/start returned no thread id: {result}")
         link.threads[thread_id] = str(session["id"])
         link.live_threads.add(thread_id)
+        link.search_scopes[thread_id] = False
         payload: dict[str, Any] = {
             "thread_id": thread_id,
             "environment": env_key

@@ -62,6 +62,18 @@ class ScriptedAppServer:
         elif m == "thread/start":
             tid = f"thread-{uuid.uuid4().hex[:8]}"
             await send({"id": rid, "result": {"thread": {"id": tid}, "model": MODEL}})
+        elif m in ("thread/read", "thread/resume"):
+            await send(
+                {
+                    "id": rid,
+                    "result": {
+                        "thread": {"id": p["threadId"], "turns": []},
+                        "model": MODEL,
+                    },
+                }
+            )
+        elif m == "thread/unsubscribe":
+            await send({"id": rid, "result": {"status": "unsubscribed"}})
         elif m == "mcpServerStatus/list":
             from app.domain.workbench.knowbots import DATA_MCP_TOOLS
 
