@@ -57,6 +57,11 @@ class LookupServer(PlanningServer):
                 ],
             },
         }
+        if self.mode == "approval":
+            item["result"] = None
+            item["error"] = {
+                "message": "MCP tool call requires approval, but approval policy is never"
+            }
         await ws.send(
             json.dumps(
                 {
@@ -71,6 +76,7 @@ class LookupServer(PlanningServer):
     "mode,code",
     [
         ("failure", "directory_unavailable"),
+        ("approval", "tool_approval_required"),
         ("quiet", "time_limit"),
         ("budget", "budget_limit"),
         ("unconfirmed", None),

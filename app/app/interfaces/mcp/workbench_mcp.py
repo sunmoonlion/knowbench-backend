@@ -204,6 +204,9 @@ TOOLS: dict[str, dict[str, Any]] = {
         },
     },
     "find_expert": {
+        # Business read only: the immutable directory receipt is audit evidence,
+        # not an expert selection, delegation, purchase, or permission change.
+        "annotations": {"readOnlyHint": True},
         "description": (
             "List the experts this user can ask on knowmart: knowbot_id, name, "
             "tagline, version, scope {does, does_not, elsewhere} exactly as each "

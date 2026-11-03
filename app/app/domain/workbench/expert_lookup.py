@@ -7,6 +7,7 @@ from typing import Any
 LOOKUP_SECONDS = 120
 STOP_REASONS = {
     "directory_unavailable": "专家目录读取失败，已停止查找；这不代表没有合适专家",
+    "tool_approval_required": "平台的目录工具权限配置冲突，已停止查找；这不代表没有合适专家，请等待平台修复",
     "repeated_lookup": "重复读取专家目录仍未交回选择，已停止查找",
     "unexpected_tool": "查找偏离专家目录，已停止额外操作",
     "time_limit": "查找超过2分钟，已停止；未自动重新查找",
@@ -35,7 +36,14 @@ class LookupGuard:
             or item.get("error")
             or (isinstance(result, dict) and result.get("isError"))
         ):
-            self.failure = "directory_unavailable"
+            error = item.get("error")
+            message = error.get("message") if isinstance(error, dict) else None
+            self.failure = (
+                "tool_approval_required"
+                if message
+                == "MCP tool call requires approval, but approval policy is never"
+                else "directory_unavailable"
+            )
             return
         identity = item.get("id")
         if not isinstance(identity, str) or identity in self.seen:
