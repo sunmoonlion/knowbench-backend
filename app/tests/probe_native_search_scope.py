@@ -16,6 +16,7 @@ import threading
 import time
 from pathlib import Path
 
+import jsonschema
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
@@ -48,8 +49,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "id": "fc_" + str(len(requests)),
                 "type": "function_call",
                 "call_id": "call_" + str(len(requests)),
-                **next_tool,
                 "arguments": json.dumps({"task": "offline-task"}),
+                **next_tool,
             }
             next_tool = None
         for event in [
@@ -82,7 +83,8 @@ with tempfile.TemporaryDirectory(prefix="luna-stage-config-") as root:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     mcp = Path(root, "mcp.py")
     definitions = [
-        {"name": n, **TOOLS[n]} for n in ("find_subject", "request_data", "find_expert")
+        {"name": n, **TOOLS[n]}
+        for n in ("find_subject", "request_data", "find_expert", "compute")
     ]
     definitions.append(
         {
@@ -180,6 +182,7 @@ for line in sys.stdin:
             "request_data",
             "find_expert",
             "legacy_find_expert",
+            "compute",
         }
         count = len(requests)
         call(
@@ -193,7 +196,7 @@ for line in sys.stdin:
         assert len(requests) == count + 1
         return [x["type"] for x in requests[-1]["tools"]]
 
-    def run_tool(name, succeeds):
+    def run_tool(name, succeeds, arguments=None):
         global next_tool
         thread = call(
             "thread/start",
@@ -201,7 +204,7 @@ for line in sys.stdin:
                 "cwd": root,
                 "environments": [],
                 "approvalPolicy": "never",
-                "sandbox": "read-only",
+                "sandbox": "danger-full-access" if name == "compute" else "read-only",
             },
         )["thread"]["id"]
         # Wait for tool discovery using the same protocol as normal execution.
@@ -226,6 +229,20 @@ for line in sys.stdin:
             None,
         )
         assert next_tool is not None, offered
+        if arguments is not None:
+            next_tool["arguments"] = json.dumps(arguments)
+            wire = next(
+                tool["parameters"]
+                for spec in requests[-1]["tools"]
+                for tool in spec.get("tools", [spec])
+                if tool.get("name") == "compute"
+            )
+            assert "oneOf" not in wire and "anyOf" in wire
+            for branch in wire["anyOf"]:
+                assert set(branch["required"]) <= branch["properties"].keys()
+            jsonschema.validate(arguments, wire)
+            if len(sys.argv) > 2:
+                Path(sys.argv[2]).write_text(json.dumps(wire))
         receipts = []
         call(
             "turn/start",
@@ -246,7 +263,10 @@ for line in sys.stdin:
         receipt = receipts[0]
         if succeeds:
             assert receipt["status"] == "completed", receipt
-            assert receipt["readOnlyHint"] is True, receipt
+            if name != "compute":
+                assert receipt["readOnlyHint"] is True, receipt
+            if arguments is not None:
+                assert receipt["arguments"] == arguments, receipt
         else:
             assert receipt["status"] == "failed", receipt
             assert (
@@ -260,8 +280,18 @@ for line in sys.stdin:
             else []
         )
         assert (name in calls) == succeeds, calls
+        if succeeds and arguments is not None:
+            assert (
+                json.loads(executed.read_text().splitlines()[-1])["arguments"]
+                == arguments
+            )
+            assert any(
+                item.get("type") == "function_call_output"
+                and "offline-only" in str(item.get("output"))
+                for item in requests[-1]["input"]
+            ), "MCP result must return to the provider"
         print(
-            f"PASS: {name} {'executed' if succeeds else 'refused before execution'} under read-only/never",
+            f"PASS: {name} {'executed' if succeeds else 'refused before execution'} with expected policy",
             flush=True,
         )
 
@@ -318,6 +348,27 @@ for line in sys.stdin:
         run_tool("legacy_find_expert", False)
         run_tool("find_expert", True)
         run_tool("request_data", False)
+        single = {
+            "task": "offline-task",
+            "name": "sum",
+            "expression": "a+b",
+            "inputs": {"a": "fact:probe-a", "b": "fact:probe-b"},
+        }
+        run_tool("compute", True, single)
+        run_tool(
+            "compute",
+            True,
+            {
+                "task": "offline-task",
+                "batch": [
+                    {"key": "sum", **{k: v for k, v in single.items() if k != "task"}}
+                ],
+            },
+        )
+        print(
+            "PASS: compute schema and both complete payloads survive Codex/MCP round-trip",
+            flush=True,
+        )
     finally:
         if connection is not None:
             connection.close()

@@ -154,3 +154,48 @@ async def test_batch_matches_single_calculations_including_rounded_dependency():
         ids["batch:" + row["key"]] = result["id"]
         singles.append(result["value"])
     assert singles == [r["value"] for r in batched["results"]]
+
+
+@pytest.mark.parametrize(
+    "args", [{}, {"task": "probe-task"}, {"task": "probe-task", "batch": []}]
+)
+async def test_incomplete_compute_payloads_remain_invalid_in_schema_and_service(args):
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(args, TOOLS["compute"]["inputSchema"])
+    records, _ = world()
+    # Use an owned task so this exercises validation rather than authorization.
+    if "task" in args:
+        args = args | {"task": records.task["id"]}
+    with pytest.raises(ComputeRefused):
+        await call(records, "compute", args, Reader())
+    assert records.repo.events == []
+
+
+def test_compute_tool_union_branches_are_self_contained_for_model_clients():
+    schema = TOOLS["compute"]["inputSchema"]
+
+    def check(node):
+        if isinstance(node, list):
+            for child in node:
+                check(child)
+        elif isinstance(node, dict):
+            assert "oneOf" not in node and "not" not in node
+            if "required" in node:
+                assert node.get("type") == "object"
+                assert set(node["required"]) <= node.get("properties", {}).keys()
+            for child in node.values():
+                check(child)
+
+    check(schema)
+    assert len(schema["anyOf"]) == 2
+    # Each mode validates on its own, without borrowing sibling/root fields.
+    jsonschema.validate(
+        {
+            "task": "probe-task",
+            "name": "sum",
+            "expression": "a",
+            "inputs": {"a": fact(1)},
+        },
+        schema["anyOf"][0],
+    )
+    jsonschema.validate({"task": "probe-task", "batch": batch()}, schema["anyOf"][1])
