@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore
+from app.application.workbench.task_requirements import for_task as task_requirements
 from app.domain.workbench.errors import MethodPlanInvalid
 from app.domain.workbench.method_catalog import MethodCatalog, parse_catalog
 from app.domain.workbench.method_plan import PLAN_ARTIFACT, AcceptedMethodPlan
@@ -67,4 +68,7 @@ def validate_receipt(
         raise MethodPlanInvalid(
             "accepted plan does not match its task and author version"
         )
+    requirements = task_requirements(task, catalog_for_task(task))
+    if plan.requirements_digest != (requirements.digest() if requirements else None):
+        raise MethodPlanInvalid("accepted plan refers to different task requirements")
     return plan

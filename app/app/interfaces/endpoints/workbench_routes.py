@@ -58,6 +58,7 @@ from app.bootstrap.workbench import (
 )
 from app.domain.security import Principal
 from app.domain.workbench.errors import MachineNotConnected, WorkbenchError
+from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.provider_url import (
     normalize_mcp_sources,
@@ -150,6 +151,7 @@ class Handover(Strict):
     budget_currency: str = "CNY"
     requested_deadline: str | None = None
     client_context: dict[str, Any] = Field(default_factory=dict)
+    match: MatchSelection | None = None
 
 
 class RespondInteraction(Strict):

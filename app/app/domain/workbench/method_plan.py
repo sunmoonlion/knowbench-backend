@@ -121,6 +121,11 @@ class AcceptedMethodPlan(Strict):
     pack_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     version: int = Field(ge=1, strict=True)
     proposal: AnyMethodPlan
+    requirements_digest: str | None = Field(
+        default=None,
+        pattern=r"^sha256:[0-9a-f]{64}$",
+        exclude_if=lambda value: value is None,
+    )
 
 
 def validate_plan(

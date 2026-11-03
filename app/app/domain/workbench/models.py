@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.states import AttemptRole, TaskState, Wheel
 
 
@@ -54,6 +55,9 @@ class HandoverRequest(Strict):
     budget_currency: str = "CNY"
     requested_deadline: str | None = None
     client_context: dict[str, Any] = Field(default_factory=dict)
+    match: MatchSelection | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     def digest(self) -> str:
         body = {
@@ -65,6 +69,8 @@ class HandoverRequest(Strict):
             "budget_limit": str(self.budget_limit),
             "budget_currency": self.budget_currency,
         }
+        if self.match is not None:
+            body["match"] = self.match.model_dump(mode="json")
         return hashlib.sha256(
             json.dumps(body, sort_keys=True, ensure_ascii=False).encode()
         ).hexdigest()

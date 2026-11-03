@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 from app.application.errors.exceptions import BadGatewayError, ServiceUnavailableError
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.expert_match import DirectorySnapshot
 from app.infrastructure.external.service_client import ServiceClient, service_relation
 
 
@@ -76,6 +77,20 @@ class KnowmartCatalog(_Relation):
         if not isinstance(experts, list):
             raise AiSummonUnavailable("knowmart answered outside the contract")
         return [e for e in experts if isinstance(e, dict) and e.get("knowbot_id")]
+
+    async def snapshot(self, owner_subject: str) -> DirectorySnapshot:
+        body = await self._call(
+            "GET",
+            f"/owners/{quote(owner_subject, safe='')}/catalog",
+            params={"directory_version": "2"},
+        )
+        try:
+            snapshot = DirectorySnapshot.model_validate(body)
+        except ValueError:
+            raise AiSummonUnavailable("knowmart public directory is invalid") from None
+        if not snapshot.complete:
+            raise AiSummonUnavailable("knowmart public directory is incomplete")
+        return snapshot
 
 
 class KnowmartDemands(_Relation):

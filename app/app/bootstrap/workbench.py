@@ -337,7 +337,9 @@ def dynamic_market_owners() -> frozenset[str]:
 
 def delegation_service(session: AsyncSession) -> DelegationService:
     return DelegationService(
-        workbench_store(session), dynamic_method_owners=dynamic_market_owners()
+        workbench_store(session),
+        dynamic_method_owners=dynamic_market_owners(),
+        directory=knowmart_catalog(),
     )
 
 

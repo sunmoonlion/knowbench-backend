@@ -281,3 +281,22 @@ def test_plan_acceptance_requires_external_requirement_evidence():
             results={},
             available_tools={"read_input"},
         )
+
+
+@pytest.mark.parametrize("review", [False, True])
+def test_independent_optional_method_definition_uses_the_same_planner(review):
+    path = Path(__file__).parent / "fixtures/capability-referenced-manifest.json"
+    manifest = json.loads(path.read_text())
+    plan = validate(proposal(review=review), cat=manifest["pack"])
+    view = project_plan(
+        parse_catalog(manifest["pack"]),
+        AcceptedMethodPlan(
+            task_id="synthetic",
+            attempt_id="plan",
+            pack_digest="sha256:" + "a" * 64,
+            version=1,
+            proposal=plan,
+        ),
+        profile_id="synthetic",
+    )
+    assert len(view.pack.workflow) == (3 if review else 2)

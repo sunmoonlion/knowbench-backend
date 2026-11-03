@@ -32,7 +32,8 @@ from app.domain.workbench.errors import (
     WheelHeldByOther,
 )
 from app.domain.workbench.knowbots import is_knowbot
-from app.domain.workbench.method_plan import MethodPlan
+from app.domain.workbench.method_catalog import CapabilityMethodCatalog
+from app.domain.workbench.method_plan import AnyMethodPlan
 from app.domain.workbench.models import Budget, HandoverRequest, InteractionPrompt
 from app.domain.workbench.packs import current_pack_version
 from app.domain.workbench.states import (
@@ -49,6 +50,7 @@ from app.domain.workbench.states import (
     wheel_after_task_state,
 )
 from app.domain.workbench.step_view import reason_text
+from app.domain.workbench.task_requirements import TaskRequirements
 from app.domain.workbench.tokens import token_hash
 
 INTERACTION_TTL = timedelta(hours=72)
@@ -116,7 +118,7 @@ class Ledger:
         *,
         attempt_id: str,
         expected_version: int,
-        proposal: MethodPlan,
+        proposal: AnyMethodPlan,
     ) -> dict[str, Any]:
         from app.application.workbench.method_plans import accept_plan
 
@@ -140,6 +142,7 @@ class Ledger:
         snapshot: PinnedPack | PinnedTestCatalog | None = None,
         pins: list[dict[str, Any]] | None = None,
         resolution: dict[str, Any] | None = None,
+        task_requirements: TaskRequirements | None = None,
     ) -> dict[str, Any]:
         """F-INTAKE-01/02、F-ADMIT-01、F-WHEEL-01：幂等建单、首事件、wheel=advisor，同一提交。
 
@@ -158,7 +161,21 @@ class Ledger:
                 idempotency_key=req.idempotency_key,
             )
             if prior is not None:
-                if prior["request_digest"] != digest:
+                prior_input = prior.get("original_input") or {}
+                author_scope = (
+                    prior.get("pack_source") == "knowlab-test"
+                    and prior_input.get("task_requirements_origin") == "author_scope"
+                    and task_requirements is None
+                )
+                if prior["request_digest"] != digest or (
+                    not author_scope
+                    and prior_input.get("task_requirements")
+                    != (
+                        task_requirements.model_dump(mode="json")
+                        if task_requirements
+                        else None
+                    )
+                ):
                     raise IdempotencyConflict(
                         "same idempotency key with a different request",
                         task_id=str(prior["id"]),
@@ -208,6 +225,31 @@ class Ledger:
                     subject=await self.repo.subject_of_actor(owner_actor_id),
                     allowed=self.dynamic_method_owners,
                 )
+            pinned_catalog = (
+                pinned.pack
+                if isinstance(pinned, PinnedTestCatalog)
+                else pinned.catalog
+                if pinned
+                else None
+            )
+            if pinned is not None and isinstance(
+                pinned_catalog, CapabilityMethodCatalog
+            ):
+                if task_requirements is None and not isinstance(
+                    pinned, PinnedTestCatalog
+                ):
+                    raise DataChoiceInvalid(
+                        "scope matching is required before asking this expert"
+                    )
+                if task_requirements is not None:
+                    task_requirements.verify(
+                        question=str(req.original_input.get("text") or ""),
+                        expert_digest=pinned.task_columns()["pack_digest"],
+                    )
+            elif task_requirements is not None:
+                raise DataChoiceInvalid(
+                    "capability requirements need a capability expert"
+                )
             # 测试的委托（snapshot）钉的是这条用例的测试集（knowlab 核过）
             if snapshot is None and pinned is not None:
                 # 分身：请专家时建好了空清单，要什么数据由第 0 步提（decisions ⑭）
@@ -218,6 +260,8 @@ class Ledger:
             task_id = str(uuid.uuid4())
             budget = Budget(currency=req.budget_currency, limit=req.budget_limit)
             client_context = dict(req.client_context)
+            if req.match is not None:
+                client_context["match_selection"] = req.match.model_dump(mode="json")
             if queued_behind:
                 client_context["queued_behind"] = queued_behind
             await self.repo.insert_task(
@@ -242,6 +286,15 @@ class Ledger:
                         "input": req.original_input,
                         "attachments": req.attachments,
                         "client_context": client_context,
+                        **(
+                            {
+                                "task_requirements": task_requirements.model_dump(
+                                    mode="json"
+                                )
+                            }
+                            if task_requirements
+                            else {}
+                        ),
                     },
                     "thread_id": session["thread_id"],
                     "environment_id": str(session["environment_id"]),

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Path, Query
 from pydantic import BaseModel, ConfigDict, Field
@@ -32,6 +32,7 @@ from app.bootstrap.workbench import (
 )
 from app.domain.security import Principal
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
 from app.domain.workbench.supply_prematch import eta_of
@@ -69,6 +70,7 @@ class Delegate(Strict):
     # 上限可以不给：不给就没有上限。页面上实时显示花了多少，用户随时可以停
     budget_limit: Decimal | None = Field(default=None, gt=0, le=Decimal("100000"))
     budget_currency: str = Field(default="CNY", pattern=r"^CNY$")
+    match: MatchSelection | None = None
 
 
 class ConfirmData(Strict):
@@ -227,6 +229,7 @@ async def delegate(
             idempotency_key=body.idempotency_key,
             user_token=user_token,
             expert_data=expert_data(),
+            match=body.match,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -463,6 +466,10 @@ class FindExpertIn(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     budget_limit: Decimal = Field(default=Decimal("2"), gt=0, le=Decimal("100"))
+    match_contract: Literal[
+        "knowbench/expert-match/v1", "knowbench/expert-match/v2"
+    ] = "knowbench/expert-match/v1"
+    expert: str | None = Field(default=None, max_length=128)
 
 
 class DemandIn(BaseModel):
@@ -496,6 +503,8 @@ async def start_find_expert(
             question=body.question,
             idempotency_key=body.idempotency_key,
             budget_limit=body.budget_limit,
+            match_contract=body.match_contract,
+            expert=body.expert,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc

@@ -9,6 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from app.application.workbench import test_scope
 from app.application.workbench.execution_plan import (
     accepted_results,
     execution_for_task,
@@ -17,6 +18,7 @@ from app.application.workbench.plan_receipts import catalog_for_task, validate_r
 
 # Existing callers keep this read API; ownership is the shared read-only module.
 from app.application.workbench.plan_receipts import read_plan as read_plan
+from app.application.workbench.task_requirements import for_task as task_requirements
 from app.domain.workbench.errors import (
     IdempotencyConflict,
     MethodPlanInvalid,
@@ -27,7 +29,7 @@ from app.domain.workbench.method_plan import (
     PLAN_ARTIFACT,
     PLAN_STEP,
     AcceptedMethodPlan,
-    MethodPlan,
+    AnyMethodPlan,
     validate_plan,
 )
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState
@@ -68,6 +70,8 @@ async def open_plan(
         task = await repo.get_task(task_id, for_update=True)
         await _ready(repo, task, expected_version)
         catalog = catalog_for_task(task)
+        if not test_scope.pending(task, catalog):
+            task_requirements(task, catalog)
         previous = await read_plan(repo, task)
         attempts = await repo.list_attempts(task_id)
         if any(a["status"] not in ATTEMPT_TERMINAL for a in attempts):
@@ -97,7 +101,7 @@ async def accept_plan(
     *,
     attempt_id: str,
     expected_version: int,
-    proposal: MethodPlan,
+    proposal: AnyMethodPlan,
 ) -> dict[str, Any]:
     repo = ledger.repo
     async with repo.transaction():
@@ -105,6 +109,7 @@ async def accept_plan(
         # are one commit, serialized with cancellation and competing acceptors.
         task = await repo.get_task(task_id, for_update=True)
         catalog = catalog_for_task(task)
+        requirements = task_requirements(task, catalog)
         attempt = await repo.get_attempt(attempt_id)
         if str(attempt["task_id"]) != task_id or attempt.get("step_id") != PLAN_STEP:
             raise MethodPlanInvalid("not this task's planning attempt")
@@ -184,6 +189,12 @@ async def accept_plan(
                 completed_prefix=completed,
                 results=results,
                 available_tools=V2_TOOLS,
+                requirement_capabilities={
+                    key: set(caps)
+                    for key, caps in requirements.capability_mapping.items()
+                }
+                if requirements
+                else None,
             )
         except ValueError as exc:
             raise MethodPlanInvalid(str(exc)) from None
@@ -193,6 +204,7 @@ async def accept_plan(
             pack_digest=task["pack_digest"],
             version=parent + 1,
             proposal=proposal,
+            requirements_digest=requirements.digest() if requirements else None,
         )
         artifact = await repo.put_artifact(
             task_id=task_id,

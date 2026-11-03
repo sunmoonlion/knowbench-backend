@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -25,6 +26,14 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, WorkbenchError
+from app.domain.workbench.expert_match import (
+    DirectorySnapshot,
+    ExpertMatch,
+    MatchReceipt,
+    digest,
+    validate_match,
+)
+from app.domain.workbench.knowbots import parse_profile
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.packs import FIND_EXPERT
 from app.domain.workbench.states import TASK_TERMINAL, TaskState
@@ -45,6 +54,13 @@ class ExpertDirectory(Protocol):
     def configured(self) -> bool: ...
 
     async def experts(self, owner_subject: str) -> list[dict[str, Any]]: ...
+
+    async def snapshot(self, owner_subject: str) -> DirectorySnapshot: ...
+
+
+class ExpertDirectoryUnavailable(WorkbenchError):
+    code = "expert_directory_unavailable"
+    http_status = 503
 
 
 class DemandBoard(Protocol):
@@ -99,12 +115,85 @@ async def find_expert(
     repo: WorkbenchStore, directory: ExpertDirectory | None, working: dict[str, Any]
 ) -> dict[str, Any]:
     """工具 `find_expert`：这个用户请得动的专家的公开信息（不排序，按名称）。"""
+    if (
+        working.get("profile_id") == FIND_EXPERT.profile_id
+        and str(working.get("profile_version")) == "2"
+    ):
+        return await _directory_snapshot(repo, directory, working)
     if directory is None or not directory.configured():
         return {"experts": [], "note": "the expert directory is not available now"}
     subject = await repo.subject_of_actor(str(working["owner_actor_id"]))
     if subject is None:
         return {"experts": [], "note": "the user is unknown to the directory"}
     return {"experts": [_public(e) for e in await directory.experts(subject)]}
+
+
+async def _directory_snapshot(
+    repo: WorkbenchStore, directory: ExpertDirectory | None, working: dict[str, Any]
+) -> dict[str, Any]:
+    if directory is None or not directory.configured():
+        raise ExpertDirectoryUnavailable("the expert directory is unavailable")
+    subject = await repo.subject_of_actor(str(working["owner_actor_id"]))
+    if subject is None:
+        raise ExpertDirectoryUnavailable("the directory owner cannot be established")
+    task_id = str(working["id"])
+    prior = await repo.list_task_events(task_id, types=("task/expert_directory",))
+    if prior:
+        return dict(prior[0]["payload"])
+    snapshot = await directory.snapshot(subject)
+    if not snapshot.complete:
+        raise ExpertDirectoryUnavailable("the expert directory is incomplete")
+    selected = ((working.get("original_input") or {}).get("input") or {}).get("expert")
+    if selected is not None:
+        key = parse_profile(selected)
+        experts = tuple(e for e in snapshot.experts if (e.knowbot_id, e.version) == key)
+        if not experts:
+            raise FindExpertRefused("the specified expert is no longer available")
+        snapshot = snapshot.model_copy(update={"experts": experts})
+    document = snapshot.model_dump(mode="json")
+    if len(json.dumps(document, ensure_ascii=False)) > 100_000:
+        raise ExpertDirectoryUnavailable(
+            "the directory exceeds the matching context; narrow the request or select an expert"
+        )
+    payload = {**document, "directory_digest": digest(document)}
+    async with repo.transaction():
+        await repo.get_task(task_id, for_update=True)
+        prior = await repo.list_task_events(task_id, types=("task/expert_directory",))
+        if prior:
+            return dict(prior[0]["payload"])
+        await repo.append_event(
+            session_id=str(working["session_id"]),
+            kind="task",
+            event_type="task/expert_directory",
+            task_id=task_id,
+            payload=payload,
+        )
+    return payload
+
+
+async def match_receipt(
+    repo: WorkbenchStore, task: dict[str, Any], artifact: dict[str, Any]
+) -> MatchReceipt:
+    """Read-only verification of persisted model output and tool snapshot."""
+    events = await repo.list_task_events(
+        str(task["id"]), types=("task/expert_directory",)
+    )
+    if len(events) != 1:
+        raise FindExpertRefused("matching has no unique directory snapshot")
+    payload = dict(events[0]["payload"])
+    stored_digest = payload.pop("directory_digest", None)
+    if digest(payload) != stored_digest:
+        raise FindExpertRefused("matching directory snapshot failed integrity checks")
+    try:
+        return validate_match(
+            _question(task),
+            ExpertMatch.model_validate(artifact["content"]),
+            DirectorySnapshot.model_validate(payload),
+        )
+    except (ValueError, KeyError):
+        raise FindExpertRefused(
+            "matching result does not establish complete question coverage"
+        ) from None
 
 
 def _public(entry: dict[str, Any]) -> dict[str, Any]:
@@ -153,6 +242,10 @@ class FindExpertService:
         question: str,
         idempotency_key: str,
         budget_limit: Decimal = DEFAULT_BUDGET,
+        match_contract: Literal[
+            "knowbench/expert-match/v1", "knowbench/expert-match/v2"
+        ] = "knowbench/expert-match/v1",
+        expert: str | None = None,
     ) -> dict[str, Any]:
         """开「找专家」那一轮：用户项目里一段专家对话、一件内部委托，排上去跑。"""
         text = question.strip()
@@ -160,6 +253,13 @@ class FindExpertService:
             raise FindExpertRefused(f"the question is 1 to {QUESTION_CHARS} characters")
         if budget_limit <= 0:
             raise FindExpertRefused("the budget limit is more than zero")
+        if expert is not None and (
+            match_contract != "knowbench/expert-match/v2"
+            or parse_profile(expert) is None
+        ):
+            raise FindExpertRefused(
+                "scope checking needs a versioned marketplace expert"
+            )
         key = task_key(project_id, text, idempotency_key)
 
         def request(session_id: str) -> HandoverRequest:
@@ -167,7 +267,8 @@ class FindExpertService:
                 idempotency_key=key,
                 session_id=session_id,
                 profile_id=FIND_EXPERT.profile_id,
-                original_input={"text": text},
+                profile_version="2" if match_contract.endswith("/v2") else None,
+                original_input={"text": text, **({"expert": expert} if expert else {})},
                 budget_limit=budget_limit,
                 client_context={"entry": "find-expert"},
             )
@@ -241,6 +342,50 @@ class FindExpertService:
         found = await self.repo.get_artifact(
             task_id=str(task["id"]), name=step.output_artifact
         )
+        if str(task.get("profile_version")) == "2":
+            if found is None:
+                return base | {"error": "matching result is missing"}
+            receipt = await match_receipt(self.repo, task, found)
+            # Returning a result is read-only. The raw artifact and public
+            # directory event already retain all evidence used in this check.
+            current = (
+                await self.directory.snapshot(await self._subject(owner_actor_id))
+                if self.directory and self.directory.configured()
+                else None
+            )
+            if current is None or not current.complete:
+                raise ExpertDirectoryUnavailable("the expert directory is unavailable")
+            live = {
+                (entry.knowbot_id, entry.version): entry for entry in current.experts
+            }
+            pinned = {
+                (entry.knowbot_id, entry.version): entry
+                for entry in receipt.directory.experts
+            }
+            picks = []
+            for pick in receipt.result.picks:
+                key = (pick.knowbot_id, pick.version)
+                entry = live.get(key)
+                if entry is None or entry != pinned[key]:
+                    raise FindExpertRefused(
+                        "expert availability, terms or declaration changed; match again"
+                    )
+                picks.append(
+                    {
+                        **pick.model_dump(mode="json"),
+                        "name": entry.name,
+                        "tagline": entry.tagline,
+                        "price": entry.price,
+                        "free": entry.free,
+                    }
+                )
+            return base | {
+                **receipt.result.model_dump(mode="json"),
+                "picks": picks,
+                "match_task_id": str(task["id"]),
+                "match_artifact_version": found["version"],
+                "question_revision": receipt.question_revision,
+            }
         try:
             parsed = FindResult.model_validate((found or {}).get("content"))
         except ValidationError:
@@ -291,6 +436,12 @@ class FindExpertService:
             (str(e["knowbot_id"]), str(e.get("version"))): _public(e)
             for e in await self.directory.experts(subject)
         }
+
+    async def _subject(self, owner_actor_id: str) -> str:
+        subject = await self.repo.subject_of_actor(owner_actor_id)
+        if subject is None:
+            raise NotFound("no such user")
+        return subject
 
     async def publish_demand(
         self,
