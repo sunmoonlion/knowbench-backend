@@ -461,7 +461,13 @@ class KnowbotTestService:
             "run_id": run_id,
             "status": status,
             "cases": [c["result"] for c in cases if c.get("result")],
-            "cost": {"spent": str(Decimal(run["spent"]).quantize(Decimal("0.000001")))},
+            "cost": {
+                "spent": str(
+                    (await self.repo.test_run_spent(run_id)).quantize(
+                        Decimal("0.000001")
+                    )
+                )
+            },
             "started_at": _iso(run.get("started_at")),
             "finished_at": _iso(run.get("finished_at")),
             "questions": questions,
@@ -500,7 +506,9 @@ class KnowbotTestService:
             int(steps[at["step"] - 1]["times"]) if 0 < at["step"] <= len(steps) else 0
         )
         used = Decimal(str((task.get("budget") or {}).get("used") or "0"))
-        spent = (Decimal(run["spent"]) + used).quantize(Decimal("0.000001"))
+        spent = ((await self.repo.test_run_spent(run["run_id"])) + used).quantize(
+            Decimal("0.000001")
+        )
         behind = queued_behind(task)
         return {
             "case_id": current["case_id"],

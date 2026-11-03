@@ -92,6 +92,17 @@ async def test_finished_and_interrupted_case_costs_include_late_settlement(db, e
         again = await status(db, run_id)
         assert again["cases"] == done["cases"]
         assert Decimal(again["cost"]["spent"]) == first_cost + Decimal("3.375")
+        # Reproduce the pre-fix stored total: GET must project all known task
+        # charges without changing the run record or its immutable case results.
+        async with db() as s, s.begin():
+            await s.execute(
+                text("update workbench_test_runs set spent = :v where run_id = :r"),
+                {"v": first_cost, "r": run_id},
+            )
+        assert (await status(db, run_id))["cost"] == again["cost"]
+        async with db() as s:
+            stored = await WorkbenchRepository(s).get_test_run(run_id)
+            assert stored["spent"] == first_cost
         clock.at += timedelta(days=8)
         await conductor.cleanup()
         assert (await status(db, run_id))["cost"] == again["cost"]
