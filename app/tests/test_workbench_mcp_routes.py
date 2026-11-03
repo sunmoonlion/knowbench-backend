@@ -149,6 +149,13 @@ async def test_who_is_let_in(served):
         assert got.status_code == 404
 
 
+async def test_empty_compute_args_explain_missing_parameters_not_missing_task(served):
+    async with client(served) as http:
+        reply = (await http.post(URL, json=tool("compute"), headers=bearer())).json()
+    assert reply["result"]["isError"] is True
+    assert "requires a non-empty task argument" in reply["result"]["content"][0]["text"]
+
+
 async def test_calling_the_tools(served, db):  # noqa: F811
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:

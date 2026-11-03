@@ -39,6 +39,10 @@ from app.application.workbench.runtime_tools import (
     declared_data_tools,
     unavailable_data_tools,
 )
+from app.domain.workbench.compute_progress import (
+    MISSING_TASK_MESSAGE,
+    ComputeProgressGuard,
+)
 from app.domain.workbench.data_planning import (
     DATA_PLAN_SECONDS,
     DATA_STEP_ID,
@@ -529,6 +533,8 @@ class SandboxLink:
                 guard.observe(item)
             if guard := w.get("lookup_guard"):
                 guard.observe(item)
+            if guard := w.get("compute_guard"):
+                guard.observe(item)
         elif method.startswith("thread/tokenUsage"):
             w["reported"] = True
             if guard := w.get("lookup_guard"):
@@ -648,6 +654,11 @@ class SandboxLink:
             "lookup_guard": LookupGuard(remaining) if lookup else None,
             "lookup_failure": None,
             "lookup_stop_unconfirmed": False,
+            "compute_guard": ComputeProgressGuard()
+            if active and not planning and not lookup and active["step_id"] != PLAN_STEP
+            else None,
+            "tool_failure": None,
+            "tool_stop_unconfirmed": False,
         }
         self.turn_waiters[turn_id] = waiter
         self.active_turns[thread_id] = turn_id
@@ -680,8 +691,10 @@ class SandboxLink:
             # 这一步的时限不算等人答的时间：专家停下来问人时，钟停着（2026-10-19 K19 第 2 稿：
             # 所有者思考作答的时间算进了 15 分钟，这一步超时判失败，问题还挂着、测试卡死）
             while True:
-                if (planning and waiter["planning_guard"].failure) or (
-                    lookup and waiter["lookup_guard"].failure
+                if (
+                    (planning and waiter["planning_guard"].failure)
+                    or (lookup and waiter["lookup_guard"].failure)
+                    or (waiter["compute_guard"] and waiter["compute_guard"].failure)
                 ):
                     break
                 left = (
@@ -694,7 +707,12 @@ class SandboxLink:
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(waiter["future"]),
-                        min(left, 0.25 if planning or lookup else 5.0),
+                        min(
+                            left,
+                            0.25
+                            if planning or lookup or waiter["compute_guard"]
+                            else 5.0,
+                        ),
                     )
                     break
                 except TimeoutError:
@@ -717,6 +735,17 @@ class SandboxLink:
                     waiter["lookup_guard"].failure,
                     stage="lookup",
                 )
+            elif waiter["compute_guard"] and waiter["compute_guard"].failure:
+                await self._stop_guarded_turn(
+                    client,
+                    thread_id,
+                    turn_id,
+                    waiter,
+                    waiter["compute_guard"].failure,
+                    stage="tool",
+                )
+                if waiter["tool_failure"]:
+                    waiter["error"] = MISSING_TASK_MESSAGE
             # 真 app-server 的 thread/tokenUsage 可能晚于 turn/completed 到达：留一小段宽限期再撤 waiter
             for _ in range(20):
                 if waiter["reported"]:
@@ -771,6 +800,10 @@ class SandboxLink:
             planning_stop_unconfirmed=waiter["planning_stop_unconfirmed"],
             lookup_failure=waiter["lookup_failure"],
             lookup_stop_unconfirmed=waiter["lookup_stop_unconfirmed"],
+            tool_stop_unconfirmed=waiter["tool_stop_unconfirmed"],
+            platform_failure=bool(
+                waiter["tool_failure"] or waiter["tool_stop_unconfirmed"]
+            ),
         )
 
     async def _stop_guarded_turn(
@@ -799,7 +832,11 @@ class SandboxLink:
                     confirmed = await self.turn_running(thread_id, turn_id) is False
             except Exception:  # noqa: BLE001
                 confirmed = False
-        prefix = "data_planning" if stage == "planning" else "expert_lookup"
+        prefix = {
+            "planning": "data_planning",
+            "lookup": "expert_lookup",
+            "tool": "tool_execution",
+        }[stage]
         waiter["error"] = f"{prefix}_{reason}"
         if confirmed:
             waiter[f"{stage}_failure"] = reason
