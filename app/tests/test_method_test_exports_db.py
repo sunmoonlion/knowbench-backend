@@ -14,7 +14,12 @@ from test_workbench_ledger_db import db as db  # noqa: F401
 
 from app.application.workbench.advisor import Advisor
 from app.application.workbench.deliverable_check import ReadFile
-from app.application.workbench.execution_plan import final_results
+from app.application.workbench.execution_plan import (
+    final_results,
+)
+from app.application.workbench.execution_plan import (
+    test_method_results as method_assertion_results,
+)
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.test_runs import Account, KnowbotTestConductor
 from app.domain.workbench.method_plan import output_name
@@ -162,6 +167,7 @@ async def test_rewind_keeps_historical_output_but_invalidates_assertions_and_fin
         repo = WorkbenchRepository(session)
         row = await repo.get_task(tid)
         assert await final_results(repo, row) == {}
+        assert await method_assertion_results(repo, row) == {}
         out, view = await exported(db, repo, row)
         assert out["steps"][0]["outcome"] == "accepted"
         assert out["steps"][0]["artifact"] == json.loads(ROWS)
@@ -245,3 +251,70 @@ async def test_unplanned_task_exports_no_invented_final_result(db):
         out, _ = await exported(db, repo, row)
         assert out["steps"] == [] and "final_outputs" not in out
         assert "plan_version" not in out
+
+
+async def test_v2_collector_checks_current_intermediate_output_without_promoting_it_to_final(
+    db,
+):
+    tid, _ = await task(db)
+    plan = proposal().model_dump(mode="json")
+    assert (
+        await Advisor(
+            SqlWorkbenchStores(db), Driver([json.dumps(plan), ROWS, ROWS])
+        ).drive(tid)
+        == TaskState.SUCCEEDED
+    )
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        row = await repo.get_task(tid)
+        async with repo.transaction():
+            await repo.put_artifact(
+                task_id=tid,
+                attempt_id=None,
+                name=output_name("inspect_1"),
+                kind="step",
+                content=json.loads(OTHER_ROWS),
+            )
+            await repo.insert_test_run(
+                {
+                    "run_id": "v2-intermediate-case",
+                    "caller": "knowlab",
+                    "owner_subject": "synthetic-author",
+                    "digest": "b" * 64,
+                    "request": {"contract": "knowbot-test-run/v2"},
+                    "budget_limit": "1",
+                    "timeout_seconds": 600,
+                    "max_wait_seconds": 600,
+                },
+                [{"case_id": "c1", "position": 0}],
+            )
+        selected = await method_assertion_results(repo, row)
+        assert set(selected) == {"inspect", "report"}
+        assert selected["inspect"]["content"] == json.loads(ROWS)
+        assert set(await final_results(repo, row)) == {"report"}
+        case = run_case().model_dump(mode="json")
+        for e in case["expectations"]:
+            e["value"] = "one"
+        # An assertion cannot force the optional review to run or pass by absence.
+        case["expectations"].append(
+            {
+                "artifact": "review",
+                "path": "notes",
+                "kind": "contains",
+                "value": "checked",
+            }
+        )
+        run = await repo.get_test_run("v2-intermediate-case")
+        await KnowbotTestConductor(SqlWorkbenchStores(db))._record(
+            repo,
+            run,
+            RunCase.model_validate(case),
+            {},
+            row,
+            Account(OWNER, "unused", "unused"),
+        )
+        result = (await repo.list_test_cases(run["run_id"]))[0]["result"]
+        assert result["expectations"] == [True, True, False]
+        assert result["status"] == "failed"
+        saved = await repo.get_test_case_outputs(run["run_id"], "c1")
+        assert [x["method_id"] for x in saved["final_outputs"]] == ["report"]

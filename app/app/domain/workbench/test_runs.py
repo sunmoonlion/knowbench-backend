@@ -141,7 +141,7 @@ class Budget(Strict):
 
 
 class RunRequest(Strict):
-    contract: Literal["knowbot-test-run/v1"]
+    contract: Literal["knowbot-test-run/v1", "knowbot-test-run/v2"]
     run_id: str = Field(pattern=RUN_ID)
     owner_subject: str = Field(pattern=r"^[A-Za-z0-9._:@-]{1,512}$")
     manifest: dict[str, Any]
@@ -169,12 +169,37 @@ class RunRequest(Strict):
                 raise ValueError(
                     "dynamic test manifests require declared final methods"
                 )
+            targets = set(finals)
+            if self.contract == "knowbot-test-run/v2":
+                if not isinstance(pack, dict):
+                    raise ValueError("invalid method catalog")
+                for unit in pack.get("method_units", []):
+                    if not isinstance(unit, dict):
+                        raise ValueError("invalid method unit")
+                    contract = unit.get("contract", {})
+                    selection = unit.get("selection", {})
+                    if not isinstance(contract, dict) or not isinstance(
+                        selection, dict
+                    ):
+                        raise ValueError("invalid method contract or selection")
+                    if selection.get("max_calls") == 1 and isinstance(
+                        contract.get("step_id"), str
+                    ):
+                        targets.add(contract["step_id"])
             if any(
-                e.artifact not in finals for c in self.cases for e in c.expectations
+                e.artifact not in targets for c in self.cases for e in c.expectations
             ):
                 raise ValueError(
                     "dynamic expectations must name a declared final method"
                 )
+        if self.contract == "knowbot-test-run/v2":
+            pack = self.manifest.get("pack")
+            if (
+                self.manifest.get("schema") != "knowbot-manifest/v3"
+                or not isinstance(pack, dict)
+                or pack.get("runtime_contract") != "knowbench/dynamic-methods/v3"
+            ):
+                raise ValueError("v2 test requests require a v3 capability catalog")
         return self
 
     def digest(self) -> str:

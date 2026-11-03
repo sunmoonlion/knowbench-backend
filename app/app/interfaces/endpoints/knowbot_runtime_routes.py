@@ -10,13 +10,14 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path
+from fastapi import APIRouter, Depends, Path, Query
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.errors.exceptions import AppException
 from app.application.workbench.incubations import IncubationService
+from app.application.workbench.test_execution import execution_view
 from app.application.workbench.test_runs import KnowbotTestService
 from app.bootstrap.workbench import incubation_service, test_run_service
 from app.domain.workbench.errors import WorkbenchError
@@ -77,7 +78,7 @@ async def submit(caller: Caller, body: dict[str, Any], svc: Service) -> JSONResp
         request = RunRequest.model_validate(body)
     except ValidationError as exc:
         raise AppException(
-            code="test_run_invalid", status_code=422, msg="not knowbot-test-run/v1"
+            code="test_run_invalid", status_code=422, msg="unsupported test-run request"
         ) from exc
     try:
         result = await svc.accept(request, caller=caller.caller)
@@ -101,6 +102,29 @@ async def outputs(
     """一条用例跑完时取好的成稿与各步交回物（SDD 0037）；还没有就 404。"""
     try:
         return _out(await svc.outputs(run_id, case_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/test-runs/{run_id}/execution")
+async def execution(
+    _: Caller,
+    svc: Service,
+    run_id: RunId,
+    owner_subject: Annotated[str, Query(min_length=1, max_length=512)],
+    case_id: Annotated[str | None, Query(pattern=CASE_ID)] = None,
+) -> JSONResponse:
+    """knowlab authorizes the viewer; runtime also checks owner/run/case binding."""
+    try:
+        from fastapi.encoders import jsonable_encoder
+
+        return _out(
+            jsonable_encoder(
+                await execution_view(
+                    svc.repo, run_id, owner_subject=owner_subject, case_id=case_id
+                )
+            )
+        )
     except WorkbenchError as exc:
         raise _http(exc) from exc
 

@@ -49,6 +49,7 @@ from app.application.workbench.execution_plan import (
     execution_for_task,
     final_results,
     is_dynamic,
+    test_method_results,
 )
 from app.application.workbench.expert_data import (
     new_pins,
@@ -1198,11 +1199,14 @@ class KnowbotTestConductor:
         view = await ExpertDesk(repo).steps(
             str(task["id"]), owner_actor_id=account.actor_id
         )
-        selected = (
-            await final_results(repo, task)
-            if is_dynamic(task)
-            else await current_artifacts(repo, task)
-        )
+        if is_dynamic(task):
+            selected = (
+                await test_method_results(repo, task)
+                if run["request"].get("contract") == "knowbot-test-run/v2"
+                else await final_results(repo, task)
+            )
+        else:
+            selected = await current_artifacts(repo, task)
         artifacts = {name: a["content"] for name, a in selected.items()}
         result = case_result(
             case=case,

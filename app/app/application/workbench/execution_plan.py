@@ -104,6 +104,31 @@ async def final_results(repo: WorkbenchStore, task: dict[str, Any]):
     }
 
 
+async def test_method_results(repo: WorkbenchStore, task: dict[str, Any]):
+    """v2 test projection. Only unique selected instances with current lineage.
+
+    Missing, unselected or ambiguous methods remain absent and fail assertions;
+    final methods retain their explicit final_outputs binding.
+    """
+    if not is_dynamic(task) or task.get("accepted_plan_version") is None:
+        return {}
+    view = await execution_for_task(repo, task)
+    assert view is not None and view.receipt is not None
+    results = await accepted_results(repo, task, view)
+    instances: dict[str, list[str]] = {}
+    for step in view.receipt.proposal.steps:
+        instances.setdefault(step.method_id, []).append(step.instance_id)
+    selected = {
+        method: results[ids[0]]
+        for method, ids in instances.items()
+        if len(ids) == 1 and ids[0] in results
+    }
+    for method, instance in view.receipt.proposal.final_outputs.items():
+        if instance in results:
+            selected[method] = results[instance]
+    return selected
+
+
 def _inputs(
     view: ExecutionPlan,
     index: int,
