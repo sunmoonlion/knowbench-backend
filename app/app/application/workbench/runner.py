@@ -65,6 +65,7 @@ from app.domain.workbench.projects import (
     thread_settings,
     turn_settings,
 )
+from app.domain.workbench.scheduling import LOOKUP_PROFILE
 from app.domain.workbench.states import (
     TASK_TERMINAL,
     InvalidTransition,
@@ -1887,6 +1888,27 @@ class Runner:
             if session is None:
                 return TurnPlan()
             prefs = await repo.get_prefs(str(session["owner_actor_id"]))
+            task = (
+                await repo.get_task(str(session["active_task_id"]))
+                if session.get("active_task_id")
+                else None
+            )
+            if task and task["profile_id"] == LOOKUP_PROFILE:
+                # Independent read-only thread: no local machine, project files or memory.
+                return TurnPlan(
+                    settings=turn_settings(
+                        "chat",
+                        directory=None,
+                        environment_key=None,
+                        environment_online=False,
+                        expert=False,
+                        approval="never",
+                    ),
+                    mode="chat",
+                    directory=None,
+                    session_id=str(session["id"]),
+                    facts="[workbench] Select an expert using only the user's question and the public expert directory. Do not read project files or run analysis.",
+                )
             test_round = await repo.is_test_session(str(session["id"]))
             online = True
             if session.get("environment_id") is not None:
@@ -2069,7 +2091,24 @@ class Runner:
     ) -> None:
         settings = dict(session.get("thread_settings") or {})
         env_key = settings.pop("environmentId", self.environment_key)
-        if settings:  # 旧入口建的会话：沿用它记下的设置
+        async with self.stores() as repo:
+            task = (
+                await repo.get_task(str(session["active_task_id"]))
+                if session.get("active_task_id")
+                else None
+            )
+            lookup = bool(task and task["profile_id"] == LOOKUP_PROFILE)
+        if lookup:
+            async with self.stores() as repo:
+                prefs = await repo.get_prefs(str(session["owner_actor_id"]))
+            params = thread_settings(
+                "chat",
+                directory=None,
+                environment_key=None,
+                approval="never",
+                model=prefs.get("model"),
+            )
+        elif settings:  # 旧入口建的会话：沿用它记下的设置
             top = orchestrator_cwd(session["project_root"])
             params = {
                 **({"cwd": top} if top else {}),
@@ -2100,7 +2139,9 @@ class Runner:
         link.live_threads.add(thread_id)
         payload: dict[str, Any] = {
             "thread_id": thread_id,
-            "environment": env_key if session.get("project_root") else None,
+            "environment": env_key
+            if session.get("project_root") and not lookup
+            else None,
             "model": link.remember_model(thread_id, result),
         }
         if replaced:

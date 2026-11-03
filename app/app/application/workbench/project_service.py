@@ -196,7 +196,9 @@ class ProjectService:
         """一个项目，连同它的对话与委托的摘要。"""
         project = await self.repo.get_project(project_id, owner_actor_id=owner_actor_id)
         env = await self.repo.get_environment(str(project["environment_id"]))
-        active = await self.repo.active_task_of_project(str(project["id"]))
+        active = await self.repo.active_task_of_project(
+            str(project["id"]), lane="execution"
+        )
         sessions = await self.repo.list_sessions(
             owner_actor_id=owner_actor_id, project_id=str(project["id"])
         )

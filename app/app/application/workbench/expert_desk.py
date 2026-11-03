@@ -344,7 +344,9 @@ class ExpertDesk:
             "task": await self._sheet(task, pack, steps),
             "now": await self._now(task, steps, preparing=preparing),
             "position": None
-            if preparing or task["state"] == TaskState.REJECTED or not pack.workflow
+            if preparing
+            or task["state"] in (TaskState.RECEIVED, TaskState.REJECTED)
+            or not pack.workflow
             else position(pack, task),
             "steps": steps,
         }

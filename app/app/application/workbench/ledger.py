@@ -36,6 +36,7 @@ from app.domain.workbench.method_catalog import CapabilityMethodCatalog
 from app.domain.workbench.method_plan import AnyMethodPlan
 from app.domain.workbench.models import Budget, HandoverRequest, InteractionPrompt
 from app.domain.workbench.packs import current_pack_version
+from app.domain.workbench.scheduling import ProjectLane, lane_of
 from app.domain.workbench.states import (
     ATTEMPT_TERMINAL,
     PLATFORM_FAILURE,
@@ -207,9 +208,11 @@ class Ledger:
                     "the machine of this project is offline; the expert works on it",
                     environment_id=str(session["environment_id"]),
                 )
-            # 先锁住项目：同一个项目同一时刻只跑一位专家，后到的排队（0017，所有者 2026-10-11）
+            # 项目内分析串行；只读目录查找用独立队列，同队列后到者等待。
             await self.repo.get_project(str(session["project_id"]), for_update=True)
-            busy = await self.repo.active_task_of_project(str(session["project_id"]))
+            busy = await self.repo.active_task_of_project(
+                str(session["project_id"]), lane=lane_of(req.profile_id)
+            )
             queued_behind = str(busy["id"]) if busy is not None else None
             # 分身：按这个人钉住的那一版建委托，专家包快照与清单摘要写进委托（SDD 0027 P4）。
             # 别人的、没钉过的分身在这里就是「没有这位专家」
@@ -389,9 +392,12 @@ class Ledger:
     async def start_next_queued(self, project_id: str) -> str | None:
         """对账用：项目里没有活跃委托却有排队的，放行最早的一件（0034 §三.2）。"""
         async with self.repo.transaction():
-            if await self.repo.active_task_of_project(project_id) is not None:
-                return None
-            return await self._start_next_queued(project_id)
+            first = None
+            lanes: tuple[ProjectLane, ...] = ("execution", "lookup")
+            for lane in lanes:
+                started = await self._start_next_queued(project_id, lane=lane)
+                first = first or started
+            return first
 
     async def settle_unattended(
         self,
@@ -451,16 +457,18 @@ class Ledger:
             )
             return done["state"]
 
-    async def _start_next_queued(self, project_id: str) -> str | None:
+    async def _start_next_queued(
+        self, project_id: str, *, lane: ProjectLane
+    ) -> str | None:
         """前一位专家到终态：排在后面的下一位开始（0017 专家团：一次一位）。调用方持有事务。
 
         锁住项目、确认没有委托占着（同提交时的判法，含 Codex 里那一轮还没确认停下的），再选下一位、交接、
         排命令：取消一件排着的委托不会把再后面的一件放进来和在跑的同跑（0034 评审）。
         """
         await self.repo.get_project(project_id, for_update=True)
-        if await self.repo.active_task_of_project(project_id) is not None:
+        if await self.repo.active_task_of_project(project_id, lane=lane) is not None:
             return None
-        nxt = await self.repo.next_queued_task(project_id)
+        nxt = await self.repo.next_queued_task(project_id, lane=lane)
         if nxt is None:
             return None
         session = await self.repo.get_session(str(nxt["session_id"]), for_update=True)
@@ -586,7 +594,9 @@ class Ledger:
                     task_id=task_id, reason=f"task {target}"
                 )
             if target in TASK_TERMINAL and task.get("project_id"):
-                await self._start_next_queued(str(task["project_id"]))
+                await self._start_next_queued(
+                    str(task["project_id"]), lane=lane_of(task["profile_id"])
+                )
             return {"task_id": task_id, "state": target, "state_version": new_version}
 
     async def resume_environment(
@@ -816,7 +826,9 @@ class Ledger:
                     task_id=task_id,
                 )
             if task.get("project_id"):
-                await self._start_next_queued(str(task["project_id"]))
+                await self._start_next_queued(
+                    str(task["project_id"]), lane=lane_of(task["profile_id"])
+                )
             return True
 
     async def record_late_cost(

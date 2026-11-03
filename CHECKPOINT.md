@@ -562,3 +562,12 @@ TaskRequirements 明确 selection_basis；v4允许范围不是覆盖证明，旧
 
 验证：领域/旧契约78 passed；真实隔离PostgreSQL定向81 passed，随后新增作者测试边界和最终手选空匹配标识的规划/执行回归20 passed；孵化提供方契约8 passed。各范围有重叠，不合计。Ruff通过、全仓Pyright 0 errors。真实runner测试用合成模型响应，不冒充真实模型或财务语义验收。无生产写入、付费模型/Wind调用或发布。
 日志 /tmp/luna-declaration-domain-final.txt、luna-declaration-db-final.txt、luna-author-request-db.txt、luna-author-request-types.txt。下一步仍需真实作者加工/孵化、匹配质量和业务执行验收；不宣称成熟方法准入或第二轨全完。
+
+
+## 2026-11-04 AI找专家独立调度（隔离发布补丁）
+
+基于083b2c4定数据守卫补丁。项目内执行与FIND_EXPERT目录查找各一项活动任务：按受信profile分道，项目锁与唯一索引共同约束；终态/turn释放只推进同道，对账可恢复旧跨道queued_behind。0038迁移基于0036，仅调整活动任务唯一索引，不改历史或预算。回退需先排空并行活动任务，旧索引禁止带冲突回退。K29未发布的0037测试项目迁移不在本候选。
+
+查找仍有独立会话、原2元默认预算、原每步900秒时限和取消记账；线程和turn不挂本地目录/环境，沿用read-only/never与封闭目录工具策略。找回只选定，显式委托才排执行队列。RECEIVED正式方法投影为pending，无正在执行的步骤号。项目归档仍核全部任务；普通工作只受执行道占用约束。
+
+隔离DB/受控app-server回归104 passed；步骤/审查/定数据追加32 passed（其中7项与前套重叠）。覆盖RUNNING及WAITING DATA不挡查找、两道各自串行、并发提交、旧队列正常恢复、伪client_context不能选道、同一连接两条线程独立完成和记账、排队无虚假步骤。Ruff/Pyright通过。无真实模型调用、生产改写或专家修改；发布后真实模型匹配仍待核验。
