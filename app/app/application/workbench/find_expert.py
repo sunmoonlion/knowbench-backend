@@ -172,25 +172,32 @@ async def _directory_snapshot(
     return payload
 
 
-async def match_receipt(
-    repo: WorkbenchStore, task: dict[str, Any], artifact: dict[str, Any]
+async def validate_match_content(
+    repo: WorkbenchStore, task: dict[str, Any], content: Any
 ) -> MatchReceipt:
-    """Read-only verification of persisted model output and tool snapshot."""
+    """One read-only check for completion, result retrieval and delegation."""
     events = await repo.list_task_events(
         str(task["id"]), types=("task/expert_directory",)
     )
     if len(events) != 1:
-        raise FindExpertRefused("matching has no unique directory snapshot")
+        raise ValueError("matching has no unique directory snapshot")
     payload = dict(events[0]["payload"])
     stored_digest = payload.pop("directory_digest", None)
     if digest(payload) != stored_digest:
-        raise FindExpertRefused("matching directory snapshot failed integrity checks")
+        raise ValueError("matching directory snapshot failed integrity checks")
+    return validate_match(
+        _question(task),
+        ExpertMatch.model_validate(content),
+        DirectorySnapshot.model_validate(payload),
+    )
+
+
+async def match_receipt(
+    repo: WorkbenchStore, task: dict[str, Any], artifact: dict[str, Any]
+) -> MatchReceipt:
+    """Read-only verification of persisted model output and tool snapshot."""
     try:
-        return validate_match(
-            _question(task),
-            ExpertMatch.model_validate(artifact["content"]),
-            DirectorySnapshot.model_validate(payload),
-        )
+        return await validate_match_content(repo, task, artifact["content"])
     except (ValueError, KeyError):
         raise FindExpertRefused(
             "matching result does not establish complete question coverage"
@@ -355,7 +362,14 @@ class FindExpertService:
         if str(task.get("profile_version")) == "2":
             if found is None:
                 return base | {"error": "matching result is missing"}
-            receipt = await match_receipt(self.repo, task, found)
+            try:
+                receipt = await match_receipt(self.repo, task, found)
+            except FindExpertRefused:
+                # Older rounds could finish with schema-only acceptance. Preserve
+                # their history, but expose an unusable result, never a selection.
+                return base | {
+                    "error": "本轮匹配依据未通过核验，不能据此请专家。可核对问题后重新查找，或自己去 knowmart 选择；不会自动重试或追加费用。"
+                }
             # Returning a result is read-only. The raw artifact and public
             # directory event already retain all evidence used in this check.
             current = (
