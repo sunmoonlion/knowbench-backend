@@ -24,7 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
-from app.domain.workbench.errors import NotFound, WorkbenchError
+from app.domain.workbench.errors import IdempotencyConflict, NotFound, WorkbenchError
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.packs import FIND_EXPERT
 from app.domain.workbench.states import TASK_TERMINAL, TaskState
@@ -160,25 +160,53 @@ class FindExpertService:
             raise FindExpertRefused(f"the question is 1 to {QUESTION_CHARS} characters")
         if budget_limit <= 0:
             raise FindExpertRefused("the budget limit is more than zero")
-        started = await SessionService(self.repo).start(
-            owner_actor_id=owner_actor_id,
-            kind="expert",
-            project_id=project_id,
-            title=f"找专家：{text}"[:200],
-        )
-        made = await Ledger(self.repo).handover(
-            HandoverRequest(
-                idempotency_key=task_key(project_id, text, idempotency_key),
-                session_id=started["session_id"],
+        key = task_key(project_id, text, idempotency_key)
+
+        def request(session_id: str) -> HandoverRequest:
+            return HandoverRequest(
+                idempotency_key=key,
+                session_id=session_id,
                 profile_id=FIND_EXPERT.profile_id,
                 original_input={"text": text},
                 budget_limit=budget_limit,
                 client_context={"entry": "find-expert"},
-            ),
-            owner_actor_id=owner_actor_id,
-        )
-        session = await self.repo.get_session(started["session_id"])
+            )
+
         async with self.repo.transaction():
+            # 同项目的重复请求串行核幂等，再建新会话；会话、委托与派发命令同提交。
+            # 不能先建会话：session_id 参与摘要，重发会冲突并遗留空会话。
+            await self.repo.get_project(
+                project_id, owner_actor_id=owner_actor_id, for_update=True
+            )
+            prior = await self.repo.find_task_by_idempotency(
+                tenant="default",
+                owner_actor_id=owner_actor_id,
+                profile_id=FIND_EXPERT.profile_id,
+                idempotency_key=key,
+            )
+            if prior is not None:
+                if (
+                    prior["request_digest"]
+                    != request(str(prior["session_id"])).digest()
+                ):
+                    raise IdempotencyConflict(
+                        "same idempotency key with a different request",
+                        task_id=str(prior["id"]),
+                    )
+                return {
+                    "task_id": str(prior["id"]),
+                    "session_id": str(prior["session_id"]),
+                }
+            started = await SessionService(self.repo).start(
+                owner_actor_id=owner_actor_id,
+                kind="expert",
+                project_id=project_id,
+                title=f"找专家：{text}"[:200],
+            )
+            made = await Ledger(self.repo).handover(
+                request(started["session_id"]), owner_actor_id=owner_actor_id
+            )
+            session = await self.repo.get_session(started["session_id"])
             if not made.get("queued_behind"):
                 await self.repo.enqueue_command(
                     session_id=started["session_id"],
@@ -186,7 +214,7 @@ class FindExpertService:
                     kind="task.drive",
                     payload={"task_id": made["task_id"]},
                 )
-        return {"task_id": made["task_id"], "session_id": started["session_id"]}
+            return {"task_id": made["task_id"], "session_id": started["session_id"]}
 
     async def _task(self, owner_actor_id: str, task_id: str) -> dict[str, Any]:
         task = await self.repo.get_task(task_id, owner_actor_id=owner_actor_id)
