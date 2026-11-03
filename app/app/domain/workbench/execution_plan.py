@@ -12,6 +12,7 @@ from app.domain.workbench.knowbots import V2_TOOLS
 from app.domain.workbench.method_catalog import MethodCatalog
 from app.domain.workbench.method_plan import (
     AcceptedMethodPlan,
+    SlottedPlannedStep,
     output_name,
     validate_composition,
 )
@@ -51,14 +52,28 @@ def project_plan(
         data.update(
             step_id=planned.instance_id,
             output_artifact=output_name(planned.instance_id),
-            input_refs=[output_name(bound[slot]) for slot in author.input_refs],
+            input_refs=[
+                output_name(bound[slot]) for slot in author.input_refs if slot in bound
+            ],
             tools=list(planned.tools),
             back_to=bound[author.back_to] if author.back_to else None,
         )
+        data.pop("input_slots", None)
+        checks = []
         for rule in data["acceptance"]:
+            guard = rule.pop("when_input_present", None)
+            if guard is not None and guard not in bound:
+                continue  # Only the frozen author's explicit guard permits this.
             if rule["source"]:
                 slot, path = rule["source"].split(".", 1)
                 rule["source"] = output_name(bound[slot]) + "." + path
+            checks.append(rule)
+        data["acceptance"] = checks
+        if isinstance(planned, SlottedPlannedStep) and planned.omitted_inputs:
+            data["method_text"] += (
+                "\n本题未选的输入槽（没有可读成果，不得从历史补造）："
+                + ", ".join(planned.omitted_inputs)
+            )
         workflow.append(StepContract.model_validate(data))
     pack = catalog_header(catalog, profile_id=profile_id).model_copy(
         update={"workflow": tuple(workflow)}

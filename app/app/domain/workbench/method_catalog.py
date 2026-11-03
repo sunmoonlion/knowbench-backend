@@ -11,12 +11,12 @@ import hashlib
 import json
 import re
 from decimal import Decimal
-from typing import Any, Generic, Literal, Self, TypeVar
+from typing import Annotated, Any, Generic, Literal, Self, TypeVar
 from uuid import UUID
 
 from pydantic import Field, TypeAdapter, model_validator
 
-from app.domain.workbench.packs import Scope, StepContract, Strict
+from app.domain.workbench.packs import AcceptanceRule, Scope, StepContract, Strict
 
 RUNTIME_CONTRACT = "knowbench/dynamic-methods/v1"
 METHOD_ID = r"^[A-Za-z][A-Za-z0-9_-]{0,47}$"
@@ -105,6 +105,127 @@ class MethodUnit(Strict):
         return self
 
 
+Identifier = Annotated[str, Field(pattern=METHOD_ID)]
+CapabilityText = Annotated[str, Field(min_length=1, max_length=2000)]
+
+
+class PublicCapability(Strict):
+    """Author-confirmed public claims, never private method definitions."""
+
+    id: Identifier
+    statement: CapabilityText
+    conditions: tuple[CapabilityText, ...] = Field(max_length=30)
+    exclusions: tuple[CapabilityText, ...] = Field(max_length=30)
+    delivers: tuple[CapabilityText, ...] = Field(min_length=1, max_length=30)
+
+    @model_validator(mode="after")
+    def _text(self) -> Self:
+        if any(
+            not value.strip()
+            for value in (
+                self.statement,
+                *self.conditions,
+                *self.exclusions,
+                *self.delivers,
+            )
+        ):
+            raise ValueError("capability text must not be blank")
+        return self
+
+
+class CapabilityOutput(Strict):
+    method: Identifier
+    field: str = Field(min_length=1, max_length=64)
+
+
+class CapabilityBinding(Strict):
+    required_units: tuple[Identifier, ...] = Field(min_length=1, max_length=30)
+    evidence_outputs: tuple[CapabilityOutput, ...] = Field(min_length=1, max_length=30)
+
+    @model_validator(mode="after")
+    def _unique(self) -> Self:
+        if len(set(self.required_units)) != len(self.required_units):
+            raise ValueError("capability methods must be unique")
+        pairs = [(out.method, out.field) for out in self.evidence_outputs]
+        if len(set(pairs)) != len(pairs):
+            raise ValueError("capability outputs must be unique")
+        if not {out.method for out in self.evidence_outputs} <= set(
+            self.required_units
+        ):
+            raise ValueError("capability evidence must come from its required methods")
+        return self
+
+
+class CapabilityPlanning(PlanningContract):
+    capability_bindings: dict[Identifier, CapabilityBinding] = Field(
+        min_length=1, max_length=30
+    )
+
+
+class MethodInputSlot(Strict):
+    method_id: Identifier
+    required: bool = Field(strict=True)
+
+
+class ConditionalAcceptanceRule(AcceptanceRule):
+    when_input_present: Identifier | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def _guard(self) -> Self:
+        if self.when_input_present and self.kind in (
+            "json_object",
+            "required_keys",
+            "no_positioning_advice",
+        ):
+            raise ValueError("mandatory output and safety checks cannot be conditional")
+        return self
+
+
+class SlottedMethodContract(MethodContract):
+    """v3 input_refs are neutral slots; bindings belong to the expert version."""
+
+    input_slots: dict[Identifier, MethodInputSlot] = Field(max_length=30)
+    acceptance: tuple[ConditionalAcceptanceRule, ...] = ()
+
+    @model_validator(mode="after")
+    def _slots(self) -> Self:
+        if set(self.input_refs) != set(self.input_slots):
+            raise ValueError("every method input must have an explicit slot binding")
+        optional = {key for key, slot in self.input_slots.items() if not slot.required}
+        for rule in self.acceptance:
+            if rule.when_input_present and rule.when_input_present not in optional:
+                raise ValueError("conditional checks must name an optional input")
+            if rule.source:
+                source = rule.source.split(".", 1)[0]
+                if source in optional and rule.when_input_present != source:
+                    raise ValueError(
+                        "optional coverage requires its explicit input guard"
+                    )
+                if rule.when_input_present and rule.when_input_present != source:
+                    raise ValueError("coverage guard must name its own source")
+        if self.back_to in optional:
+            raise ValueError("a back target must be a required input")
+        return self
+
+
+class SlottedMethodUnit(MethodUnit):
+    contract: SlottedMethodContract
+
+
+def input_methods(
+    step: MethodContract, *, required_only: bool = False
+) -> tuple[str, ...]:
+    if isinstance(step, SlottedMethodContract):
+        return tuple(
+            step.input_slots[slot].method_id
+            for slot in step.input_refs
+            if not required_only or step.input_slots[slot].required
+        )
+    return step.input_refs
+
+
 Runtime = TypeVar("Runtime", bound=str)
 
 
@@ -137,7 +258,7 @@ class _Catalog(Strict, Generic[Runtime]):
             if key in visited:
                 return
             visiting.add(key)
-            for ref in units[key].contract.input_refs:
+            for ref in input_methods(units[key].contract):
                 visit(ref)
             visiting.remove(key)
             visited.add(key)
@@ -145,12 +266,21 @@ class _Catalog(Strict, Generic[Runtime]):
         required = set(self.planning.final_units) | {
             key for key, unit in units.items() if unit.selection.required
         }
-        for key in required:
-            visit(key)
-        if len(visited) > self.planning.max_steps:
-            raise ValueError("step limit cannot cover required methods and inputs")
         for key in units:
             visit(key)
+        needed: set[str] = set()
+
+        def require(key: str) -> None:
+            if key in needed:
+                return
+            needed.add(key)
+            for ref in input_methods(units[key].contract, required_only=True):
+                require(ref)
+
+        for key in required:
+            require(key)
+        if len(needed) > self.planning.max_steps:
+            raise ValueError("step limit cannot cover required methods and inputs")
         return self
 
 
@@ -253,7 +383,130 @@ class ReferencedMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v2"]])
         return self
 
 
-MethodCatalog = DynamicMethodCatalog | ReferencedMethodCatalog
+class SlottedMethodSource(MethodSource):
+    @model_validator(mode="after")
+    def _integrity(self) -> Self:
+        encoded = json.dumps(
+            self.definition, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        )
+        if (
+            self.reference.digest
+            != "sha256:" + hashlib.sha256(encoded.encode()).hexdigest()
+        ):
+            raise ValueError("method definition digest differs")
+        version = self.definition.get("schema")
+        if version not in (
+            "knowlab/method-definition/v1",
+            "knowlab/method-definition/v2",
+        ):
+            raise ValueError("unsupported author method definition")
+        keys = {"schema", "step", "input_schemas"}
+        if version.endswith("/v2"):
+            keys.add("input_required")
+        if set(self.definition) != keys:
+            raise ValueError("invalid method definition envelope")
+        if not isinstance(self.definition["step"], dict) or not isinstance(
+            self.definition["input_schemas"], dict
+        ):
+            raise ValueError("invalid method definition body")
+        return self
+
+
+class CapabilityMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v3"]]):
+    """Author-bound capabilities and optional inputs; legacy schemas stay strict."""
+
+    planning: CapabilityPlanning
+    public_capabilities: tuple[PublicCapability, ...] = Field(
+        min_length=1, max_length=30
+    )
+    method_units: tuple[SlottedMethodUnit, ...] = Field(min_length=1, max_length=30)
+    method_compiler: Literal["knowlab/workdraft-compiler/v2"]
+    method_sources: dict[Identifier, SlottedMethodSource] = Field(max_length=30)
+
+    @model_validator(mode="after")
+    def _capabilities_and_sources(self) -> Self:
+        units = {unit.contract.step_id: unit for unit in self.method_units}
+        caps = {cap.id for cap in self.public_capabilities}
+        if len(caps) != len(self.public_capabilities):
+            raise ValueError("public capability ids must be unique")
+        if caps != self.planning.capability_bindings.keys():
+            raise ValueError("every public capability needs its exact private binding")
+        for binding in self.planning.capability_bindings.values():
+            if not set(binding.required_units) <= units.keys():
+                raise ValueError("capability names an unknown method")
+            for out in binding.evidence_outputs:
+                if out.field not in units[out.method].contract.output_schema:
+                    raise ValueError("capability names an unknown output field")
+            needed = (
+                set(self.planning.final_units)
+                | set(binding.required_units)
+                | {alias for alias, unit in units.items() if unit.selection.required}
+            )
+            pending = list(needed)
+            while pending:
+                for upstream in input_methods(
+                    units[pending.pop()].contract, required_only=True
+                ):
+                    if upstream not in needed:
+                        needed.add(upstream)
+                        pending.append(upstream)
+            if len(needed) > self.planning.max_steps:
+                raise ValueError("step limit cannot deliver the declared capability")
+        if not self.method_sources.keys() <= units.keys():
+            raise ValueError("method source must name a catalog alias")
+        for alias, source in self.method_sources.items():
+            original = source.definition["step"]
+            schemas = source.definition["input_schemas"]
+            slots = original.get("uses")
+            selection = original.get("selection")
+            unit = units[alias]
+            ref = source.reference
+            if (
+                original.get("id") != "method"
+                or not isinstance(slots, list)
+                or any(not isinstance(slot, str) for slot in slots)
+                or not isinstance(selection, dict)
+                or len(set(slots)) != len(slots)
+                or set(slots) != set(schemas)
+                or set(slots) != set(ref.inputs)
+                or tuple(slots) != unit.contract.input_refs
+            ):
+                raise ValueError("method slots differ from the immutable definition")
+            required = source.definition.get(
+                "input_required", dict.fromkeys(slots, True)
+            )
+            if (
+                not isinstance(required, dict)
+                or set(required) != set(slots)
+                or any(type(value) is not bool for value in required.values())
+            ):
+                raise ValueError("method input requirements are invalid")
+            if (
+                selection.get("required") is not False
+                or type(selection.get("max_calls")) is not int
+                or unit.selection.max_calls > selection["max_calls"]
+                or unit.selection.applies_when != selection.get("applies_when")
+                or unit.contract.step_version != str(ref.version)
+            ):
+                raise ValueError("expert selection differs from the frozen method")
+            for slot, upstream in ref.inputs.items():
+                binding = unit.contract.input_slots[slot]
+                if binding.method_id != upstream or binding.required != required[slot]:
+                    raise ValueError(
+                        "expert cannot change the method input requirements"
+                    )
+                if upstream not in units or not isinstance(schemas[slot], dict):
+                    raise ValueError("method input has no compatible upstream")
+                provided = units[upstream].contract.output_schema
+                if any(
+                    key not in provided or provided[key] != value
+                    for key, value in schemas[slot].items()
+                ):
+                    raise ValueError("method input schema differs from upstream output")
+        return self
+
+
+MethodCatalog = DynamicMethodCatalog | ReferencedMethodCatalog | CapabilityMethodCatalog
 _CATALOG = TypeAdapter(MethodCatalog)
 
 
@@ -261,9 +514,15 @@ def parse_catalog(document: object) -> MethodCatalog:
     return _CATALOG.validate_python(document)
 
 
-def render(*, referenced: bool = False) -> str:
-    version = "v2" if referenced else "v1"
-    model = ReferencedMethodCatalog if referenced else DynamicMethodCatalog
+def render(*, referenced: bool = False, capabilities: bool = False) -> str:
+    version = "v3" if capabilities else "v2" if referenced else "v1"
+    model = (
+        CapabilityMethodCatalog
+        if capabilities
+        else ReferencedMethodCatalog
+        if referenced
+        else DynamicMethodCatalog
+    )
     return (
         json.dumps(
             {
