@@ -147,7 +147,9 @@ def review_view(
         "kind": kind,
         "status": status,
         "where": where,
-        "why": why(
+        "why": prompt.get("question", "")
+        if subject.get("planning_failure")
+        else why(
             kind,
             step,
             len([a for a in last if a["outcome"] == "rejected"]),

@@ -27,6 +27,9 @@ class TurnResult:
     files: list[str] = field(default_factory=list)
     # 这一步到了时限还没做完，被工作台停下：最后一句只是进度说明，不是交回物，不拿去验
     timed_out: bool = False
+    # Confirmed interruption by the platform data-planning progress guard.
+    planning_failure: str | None = None
+    planning_stop_unconfirmed: bool = False
 
 
 class TurnDriver(Protocol):
