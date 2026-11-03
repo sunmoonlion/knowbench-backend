@@ -85,6 +85,12 @@ async def test_the_handshake_and_the_list_of_tools(served):
         assert noted.status_code == 202
         listed = (await http.post(URL, json=rpc("tools/list"), headers=bearer())).json()
         names = [t["name"] for t in listed["result"]["tools"]]
+        specs = {t["name"]: t for t in listed["result"]["tools"]}
+        assert specs["find_expert"]["annotations"]["readOnlyHint"] is True
+        # Proposing data and recording calculations must not inherit the
+        # directory's read-only exemption from runtime approval.
+        for name in ("request_data", "compute"):
+            assert specs[name].get("annotations", {}).get("readOnlyHint") is not True
         # knowbase 没配：数据工具不列，项目、要数据、查主体与计算照常；v1 的三个读数据
         # 工具（list_my_data、read_my_data、read_my_table）没了（decisions ⑰）
         assert names == [

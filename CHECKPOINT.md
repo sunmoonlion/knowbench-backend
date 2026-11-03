@@ -580,3 +580,15 @@ TaskRequirements 明确 selection_basis；v4允许范围不是覆盖证明，旧
 只读在线核验修正后的GET，真实knowmart返回complete=true，一位免费财务分析与预测第3版；未调用模型、未写线上任务。新增查找专属120秒有效执行时限、目录工具失败即停、重复三次/额外命令与联网即停、已上报估算费用达到剩余预算即停。供应商延迟报量或在途请求可能造成金额超限，不承诺绝对硬金额上限。失败不自动重试/追加预算/伪装无匹配。中断确认复用已有保护，未确认保留turn_open等待对账，不放下一项查找。普通作者方法不受此新时限影响。
 
 增量客户端/真实WS隔离DB/既有数据准备与匹配回归28 passed，含确认/不确认中断、费用留存、预算与超时、成功查找。Ruff/Pyright通过。错误原因从既有task/state事件读取，未挪用仅供REJECTED的rejection列。前端不再将连接存在解释成正常思考。候选仍需Qwen发布；不要求改专家包。
+
+## 2026-11-04 查找工具只读声明修复（合入待发布候选）
+
+基线 f065961，包含前一轮阶段搜索配置修复。现场任务 9dc12117-8eb9-411c-960f-5d06a78402d9 与 10762dad-0f03-4d7f-b564-f7492ee8c244 均在 find_expert 调用前被 Codex 拒绝：`MCP tool call requires approval, but approval policy is never`，readOnlyHint=null、durationMs=0、result=null。不是市场返回无匹配，也不是目录请求耗尽2元预算。
+
+find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目录审计快照；不创建委托、不购买、不变更授权。request_data/compute 不继承只读豁免，lookup 的 read-only/never 不放宽。守卫区分该审批冲突与目录服务故障；仍停下记费用，不自动重试。
+
+增量回归47项通过（MCP HTTP鉴权/工具清单、失败结算与并行、查找/委托/能力匹配及提供方契约），Ruff/Pyright通过。两个契约测试最初因独立子仓worktree不是父子目录布局而失败，随后以精确父仓锁文件、提供方schema及候选测试在临时标准目录复跑，2 passed；没有改契约以求通过。
+
+真实 Codex 0.155.1 离线协议探针新增实际工具调用（不止 tools/list）：旧无注解声明在 never 下拒绝且MCP零执行；生产 find_expert 声明在同策略下真实执行；request_data 仍拒绝且零执行。连同前一轮搜索范围6项共9项通过；本地模拟HTTP模型与stdio MCP，不用真实Key、不产生付费模型或Wind调用。运行：`PYTHONPATH=. uv run --locked python tests/probe_native_search_scope.py /path/to/codex-0.155.1`（app目录）。
+
+发布仍交Qwen，同批backend/API/runner和既有登录修复web；不重孵化专家、不复活已停止任务。发布后须查真实 tools/list 与新线程mcpServerStatus/list的find_expert注解；旧线程缓存须在无活动turn时按原正式协议刷新。真实模型匹配尚未重试，不宣称线上成功。
