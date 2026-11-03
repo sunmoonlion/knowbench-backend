@@ -120,7 +120,7 @@ async def test_only_active_snapshot_step_declares_data_tools(monkeypatch):
 async def test_missing_tools_prevents_turn_start_and_token_spend(monkeypatch):
     @asynccontextmanager
     async def stores():
-        yield SimpleNamespace()
+        yield SimpleNamespace(get_session_by_thread=AsyncMock(return_value=None))
 
     client = SimpleNamespace(request=AsyncMock(return_value=catalog([])))
     link = runtime.SandboxLink(
@@ -133,6 +133,7 @@ async def test_missing_tools_prevents_turn_start_and_token_spend(monkeypatch):
     monkeypatch.setattr(link, "ensure_connected", AsyncMock(return_value=client))
     monkeypatch.setattr(link, "ensure_thread", AsyncMock())
     monkeypatch.setattr(link, "announce", AsyncMock())
+    monkeypatch.setattr(link, "configure_search_scope", AsyncMock())
     monkeypatch.setattr(runtime, "capture_attempt", AsyncMock(return_value=None))
     monkeypatch.setattr(
         runtime,

@@ -435,8 +435,9 @@ async def test_a_resumed_thread_keeps_side_threads_off(db):
         await client.close()
         fake.restart()
         await say(db, runner, sandbox, sid, "接着做")
-        (resumed,) = sent(fake, "thread/resume")
-        assert resumed["config"] == NO_SIDE_THREADS
+        resumed = sent(fake, "thread/resume")
+        assert resumed
+        assert all(item["config"] == NO_SIDE_THREADS for item in resumed)
         await closing(runner)
     finally:
         await fake.close()

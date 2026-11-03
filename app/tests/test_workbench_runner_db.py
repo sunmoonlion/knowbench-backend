@@ -113,6 +113,11 @@ class FakeAppServer:
                         },
                     }
                 )
+        elif m == "thread/unsubscribe":
+            self.live.discard(p["threadId"])
+            await send({"id": rid, "result": {"status": "unsubscribed"}})
+        elif m == "thread/loaded/list":
+            await send({"id": rid, "result": {"data": sorted(self.live)}})
         elif (
             m == "turn/start" and self.strict_threads and p["threadId"] not in self.live
         ):
