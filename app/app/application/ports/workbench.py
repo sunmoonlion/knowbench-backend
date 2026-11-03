@@ -12,6 +12,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Protocol
 
+from app.domain.workbench.scheduling import ProjectLane
+
 NotificationHandler = Callable[[str, dict[str, Any]], Awaitable[None]]
 ServerRequestHandler = Callable[[Any, str, dict[str, Any]], Awaitable[None]]
 
@@ -288,11 +290,15 @@ class WorkbenchStore(Protocol):
 
     async def set_session_title_if_empty(self, session_id: str, title: str) -> None: ...
 
-    async def active_task_of_project(self, project_id: str) -> dict[str, Any] | None:
+    async def active_task_of_project(
+        self, project_id: str, *, lane: ProjectLane | None = None
+    ) -> dict[str, Any] | None:
         """这个项目里专家还在做的那件事；没有就是 None。"""
         ...
 
-    async def next_queued_task(self, project_id: str) -> dict[str, Any] | None: ...
+    async def next_queued_task(
+        self, project_id: str, *, lane: ProjectLane = "execution"
+    ) -> dict[str, Any] | None: ...
     async def get_session(
         self,
         session_id: str,

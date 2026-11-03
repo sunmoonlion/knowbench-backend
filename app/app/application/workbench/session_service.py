@@ -213,6 +213,8 @@ class SessionService:
             session = await self.repo.get_session(
                 session_id, owner_actor_id=owner_actor_id, for_update=True
             )
+            if archived and session.get("active_task_id") is not None:
+                raise ProjectBusy("the advisor is still working in this conversation")
             if archived and session["project_id"] is not None:
                 active = await self.repo.active_task_of_project(
                     str(session["project_id"])
@@ -235,7 +237,9 @@ class SessionService:
             return
         if session["kind"] not in HANDS_ON and not becoming_work:
             return
-        active = await self.repo.active_task_of_project(str(session["project_id"]))
+        active = await self.repo.active_task_of_project(
+            str(session["project_id"]), lane="execution"
+        )
         if active is not None and str(active["session_id"]) != str(session["id"]):
             raise ProjectHeldByExpert(
                 "the expert is working in this project; you can chat, and work again "

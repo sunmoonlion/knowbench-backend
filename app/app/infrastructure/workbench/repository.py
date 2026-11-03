@@ -34,6 +34,7 @@ from app.domain.workbench.errors import (
     RelayIdentityBusy,
     StaleStateVersion,
 )
+from app.domain.workbench.scheduling import LOOKUP_PROFILE, ProjectLane
 from app.domain.workbench.states import TURN_HOLD_SECONDS
 from app.domain.workbench.tokens import token_hash
 from app.infrastructure.repositories.outbox import SqlOutboxRepository
@@ -890,27 +891,42 @@ class WorkbenchRepository:
         )
         return [dict(m) for m in r.mappings().all()]
 
-    async def active_task_of_project(self, project_id: str) -> dict[str, Any] | None:
+    async def active_task_of_project(
+        self, project_id: str, *, lane: ProjectLane | None = None
+    ) -> dict[str, Any] | None:
         """这个项目里专家还在做的那件事；没有就是 None。"""
         r = await self.session.execute(
             text(
                 f"""select * from workbench_tasks a where project_id = :p and {_OCCUPYING}
+                   {"and (a.profile_id = :lookup_profile) = :lookup" if lane is not None else ""}
                    order by created_at limit 1"""
             ),
-            {"p": project_id, "hold": TURN_HOLD_SECONDS},
+            {
+                "p": project_id,
+                "hold": TURN_HOLD_SECONDS,
+                "lookup_profile": LOOKUP_PROFILE,
+                "lookup": lane == "lookup",
+            },
         )
         row = r.mappings().first()
         return dict(row) if row else None
 
-    async def next_queued_task(self, project_id: str) -> dict[str, Any] | None:
+    async def next_queued_task(
+        self, project_id: str, *, lane: ProjectLane = "execution"
+    ) -> dict[str, Any] | None:
         """这个项目里排在后面还没开始的专家委托，最早的那一件（0017：同一项目一次一位）。"""
         r = await self.session.execute(
             text(
                 """select * from workbench_tasks where project_id = :p and state = 'RECEIVED'
+                   and (profile_id = :lookup_profile) = :lookup
                    and coalesce(original_input->'client_context'->>'queued_behind', '') <> ''
                    order by created_at limit 1 for update skip locked"""
             ),
-            {"p": project_id},
+            {
+                "p": project_id,
+                "lookup_profile": LOOKUP_PROFILE,
+                "lookup": lane == "lookup",
+            },
         )
         row = r.mappings().first()
         return dict(row) if row else None
@@ -2895,9 +2911,11 @@ class WorkbenchRepository:
                    where q.project_id is not null and q.state = 'RECEIVED'
                      and coalesce(q.original_input->'client_context'->>'queued_behind', '') <> ''
                      and not exists (
-                       select 1 from workbench_tasks a where a.project_id = q.project_id and {_OCCUPYING})"""
+                       select 1 from workbench_tasks a where a.project_id = q.project_id
+                       and (a.profile_id = :lookup_profile) = (q.profile_id = :lookup_profile)
+                       and {_OCCUPYING})"""
             ),
-            {"hold": TURN_HOLD_SECONDS},
+            {"hold": TURN_HOLD_SECONDS, "lookup_profile": LOOKUP_PROFILE},
         )
         return [str(x[0]) for x in r.all()]
 

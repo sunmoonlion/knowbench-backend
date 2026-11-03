@@ -263,6 +263,8 @@ def step_status(
     state = task["state"]
     current = int(task["current_step"])
     last = attempt_outcome(attempts[-1]) if attempts else None
+    if state == TaskState.RECEIVED:
+        return PENDING
     if state in TASK_TERMINAL:
         if last == "accepted" and (state == TaskState.SUCCEEDED or index < current):
             return ACCEPTED
