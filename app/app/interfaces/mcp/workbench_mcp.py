@@ -78,6 +78,41 @@ _COMPUTE_FIELDS = {
     "round": {"type": "integer", "minimum": 0, "maximum": 10},
 }
 
+
+# Model-facing alternatives must carry their own fields and required lists.
+# Required-only oneOf/not fragments survive Codex lowering as empty objects;
+# Kimi Responses reproduced {} for single calls. Self-contained anyOf branches
+# preserve both existing call shapes and keep mixed calls invalid. The service
+# independently validates inputs, ownership, batch limits and evidence refs.
+_COMPUTE_SINGLE_SCHEMA = {
+    "type": "object",
+    "properties": {"task": _TASK, **_COMPUTE_FIELDS},
+    "required": ["task", "name", "expression", "inputs"],
+    "additionalProperties": False,
+}
+_COMPUTE_BATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "task": _TASK,
+        "batch": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 50,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "pattern": COMPUTE_NAME.pattern},
+                    **_COMPUTE_FIELDS,
+                },
+                "required": ["key", "name", "expression", "inputs"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["task", "batch"],
+    "additionalProperties": False,
+}
+
 # Reuse the locked data-request/v1 contract instead of hiding its vocabulary and
 # period fields behind unconstrained strings/objects in the model-facing tool.
 _DATA_REQUEST_SCHEMA = DataRequest.model_json_schema()
@@ -251,35 +286,12 @@ TOOLS: dict[str, dict[str, Any]] = {
         "inputSchema": {
             "type": "object",
             "properties": {
-                "task": _TASK,
-                **_COMPUTE_FIELDS,
-                "batch": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 50,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "key": {"type": "string", "pattern": COMPUTE_NAME.pattern},
-                            **_COMPUTE_FIELDS,
-                        },
-                        "required": ["key", "name", "expression", "inputs"],
-                        "additionalProperties": False,
-                    },
-                },
+                **_COMPUTE_SINGLE_SCHEMA["properties"],
+                **_COMPUTE_BATCH_SCHEMA["properties"],
             },
             "required": ["task"],
-            "oneOf": [
-                {
-                    "required": ["name", "expression", "inputs"],
-                    "not": {"required": ["batch"]},
-                },
-                {
-                    "required": ["batch"],
-                    "not": {"anyOf": [{"required": [key]} for key in _COMPUTE_FIELDS]},
-                },
-            ],
             "additionalProperties": False,
+            "anyOf": [_COMPUTE_SINGLE_SCHEMA, _COMPUTE_BATCH_SCHEMA],
         },
     },
 }

@@ -602,3 +602,17 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 增量48项通过：缺参提示、守卫去重/恢复、正式运行确认与未确认中断、原批量计算、MCP鉴权、数据规划和查找守卫、顾问回归。Ruff/Pyright通过。原匹配修复52项另计，不声称全部不重复。
 
 根因边界：Codex0.155.1离线捕获的供应商请求schema仍有task/expression/inputs/batch，不能据此断言Kimi或转译网关为何持续发{}。未凭猜测删除oneOf或放宽计算验收；本增量是明确报错及限制浪费，不宣称已根治空参生成。2023H1补提被拒也尚未定位，不能宣称后续预测窗口数据齐全。下一步需在发布后按用户授权验证真实模型的完整计算参数及compute_id，不自动新增付费调用。
+
+## 2026-11-04 compute 参数定义兼容修复与真实供应商对照
+
+基线1619028（同一待发布候选）。用户授权仅虚拟数据/模拟工具、真实模型总额最多2元，未重开已取消财务委托。现场Codex rollout中17次compute的function_call.arguments已是{}；直接请求同一kimi-k3 Responses接口也复现旧schema单笔{}，SSE delta/done均为空，排除必须由Codex或工作台转发丢参才能解释该现象。旧schema后一次更换合成ref格式也成功，不能宣称必现或把所有历史问题归于此。
+
+旧oneOf/not分支只列required，Codex0.155.1转成properties={}的分支并丢not。只去掉oneOf仍复现仅task、漏公式与inputs；根部不带object的anyOf会被供应商400拒绝。最终保留根部object/字段/必需task，单笔与批量改为自包含anyOf分支，各自明确字段、必需项与additionalProperties=false。工具名、单笔/批量入参形状、混用拒绝、所有权、公式、证据、容差均不变，不改专家包。参考Moonshot官方MFJS规范（支持anyOf）与真实接口实测，不将模型/供应商内部转译的具体责任作未经证实的判断。
+
+工程验证：真实Codex0.155.1离线探针新增计算工具出站schema校验、单笔与批量完整参数到stdio MCP、结果回模型；在隔离临时目录的full-access策略验证compute（不把compute标成readOnly，不改变生产权限），原read-only/never三项拒绝/放行测试保留。12个PASS检查均通过。最终精确出站schema真实模型2次单笔、1次批量全部完整；此前等价完整分支两种调用也通过。最终三份模型参数原样交真实compute应用服务＋内存事实/事件替身，均得350.35与有效c编号，无生产记录写入。
+
+回归168 passed（56.19s）：compute_batch、compute_batch_db、knowbot_compute、workbench_mcp_routes、compute_progress_guard_db、method_evidence_delivery_db、workbench_advisor_db；Ruff/Pyright/diff通过。新负例覆盖{}、仅task、空batch仍不合法且零计算记录，既有混合模式拒绝与批量原子性仍过。测试最初从父目录误跑uv提示缺项目，已在app目录正式运行，不掩盖该执行错误。
+
+隔离对照共14次HTTP200、6次参数校验HTTP400（未返回用量），所有真实请求max_output_tokens=768、无自动重试。按返回usage和应用价目表估算0.461396元，额外保守计缓存写入0.492116元，低于2元；供应商账单为准。证据在sunmoonun/docs/总纲/发版/证据/2026-11-04-compute参数对照.json，保留请求、仅工具参数SSE事件、usage与虚拟服务回放；无Key、业务数据和模型推理正文。
+
+发布仍交Qwen，统一交接《2026-11-04-AI选专家结果验收修复交接.md》。发布后旧线程工具缓存要在无活动turn时刷新，真实tools/list和mcpServerStatus/list需核完整anyOf字段。新财务任务须用户显式发起；已取消14a8eba0不恢复。该证据不等于完整财务委托验收，2023H1缺项补提被拒仍另查。
