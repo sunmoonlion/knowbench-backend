@@ -322,14 +322,9 @@ class KnowbotTestService:
                 return await self.status(run_id)
             cases = await self.repo.list_test_cases(run_id)
             request = _request(run)
-            spent = Decimal(str(run["spent"]))
             for row in cases:
                 if row.get("result"):
                     continue
-                if row.get("task_id"):
-                    # 在跑的那条已经花的钱记进这次测试（推进器收结果时才加，取消了就不会再收）
-                    task = await self.repo.get_task(str(row["task_id"]))
-                    spent += Decimal(str((task.get("budget") or {}).get("used") or "0"))
                 case = next(c for c in request.cases if c.case_id == row["case_id"])
                 await self.repo.update_test_case(
                     run_id,
@@ -346,10 +341,10 @@ class KnowbotTestService:
             await self.repo.update_test_run(
                 run_id,
                 status="cancelled",
-                spent=spent,
                 finished_at=now,
                 cleanup_after=now + KEEP,
             )
+            await self.repo.reconcile_test_run_spent(run_id)
         tasks = [str(c["task_id"]) for c in cases if c.get("task_id")]
         for task_id in tasks:
             await _stop_case_task(self.repo, task_id, self.release_grant)
@@ -869,11 +864,11 @@ class KnowbotTestConductor:
                 + int(run["waited_seconds"] or 0)
                 + waited_now
             )
-            if now > deadline:
-                await self._time_out(repo, run, request, cases, account)
-                return
             if current is None:
                 await self._conclude(repo, run, request, cases)
+                return
+            if now > deadline:
+                await self._time_out(repo, run, request, cases, account)
                 return
             case = next(c for c in request.cases if c.case_id == current["case_id"])
             if not current.get("task_id"):
@@ -1229,14 +1224,11 @@ class KnowbotTestConductor:
         outputs = await self._outputs(
             repo, run, case, task, account, steps=len(view["steps"])
         )
-        spent = Decimal(str((task.get("budget") or {}).get("used") or "0"))
         async with repo.transaction():
             await repo.update_test_case(
                 run["run_id"], case.case_id, result=result, outputs=outputs
             )
-            await repo.update_test_run(
-                run["run_id"], spent=Decimal(str(run["spent"])) + spent
-            )
+            await repo.reconcile_test_run_spent(run["run_id"])
 
     async def _outputs(
         self,
@@ -1469,6 +1461,7 @@ class KnowbotTestConductor:
                 cleanup_after=now + KEEP,
             ):
                 return  # knowlab 已经取消了：不改回别的状态（目录由取消那头删）
+            await repo.reconcile_test_run_spent(run["run_id"])
         # 排查不用翻库：测试怎么结束的（qwen-007 走查：出错结束时 runner 一行日志都没有）
         log.info(
             "knowbot test run finished run=%s status=%s error=%s",

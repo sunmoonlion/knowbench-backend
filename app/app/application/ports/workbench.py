@@ -900,6 +900,10 @@ class WorkbenchStore(Protocol):
 
     async def update_test_run(self, run_id: str, **changes: Any) -> None: ...
 
+    async def reconcile_test_run_spent(self, run_id: str) -> None:
+        """Refresh recorded-case costs from task budgets, including late charges."""
+        ...
+
     async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
         """按顺序。不带 outputs（大，要的用 get_test_case_outputs）。"""
         ...

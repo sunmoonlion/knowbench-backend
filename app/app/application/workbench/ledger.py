@@ -789,6 +789,9 @@ class Ledger:
                 expected_version=int(task["state_version"]),
                 budget=budget.as_json(),
             )
+            test_run = await self.repo.test_run_for_task(task_id)
+            if test_run is not None:
+                await self.repo.reconcile_test_run_spent(test_run["run_id"])
             await self.repo.ledger_append(
                 task_id=task_id,
                 attempt_id=attempt_id,

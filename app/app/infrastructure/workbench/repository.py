@@ -1409,6 +1409,23 @@ class WorkbenchRepository:
             {**changes, "run_id": run_id},
         )
 
+    async def reconcile_test_run_spent(self, run_id: str) -> None:
+        # Serialize competing snapshots before summing. Only recorded cases are
+        # included: progress adds the active case separately. Costs are monotonic;
+        # keep the durable total after task retention deletes the source rows.
+        await self.get_test_run(run_id, for_update=True)
+        await self.session.execute(
+            text(
+                """update workbench_test_runs set spent = greatest(spent, (
+                     select coalesce(sum((t.budget->>'used')::numeric), 0)
+                     from workbench_test_cases c
+                     join workbench_tasks t on t.id = c.task_id
+                     where c.run_id = :r and c.result is not null
+                   )) where run_id = :r"""
+            ),
+            {"r": run_id},
+        )
+
     async def update_test_run_if_active(self, run_id: str, **changes: Any) -> bool:
         """只在测试还在跑（accepted、running、waiting）时改：knowlab 已经取消的不改回别的
         状态（推进器与取消同时到时不互相盖）。回改没改成。"""
