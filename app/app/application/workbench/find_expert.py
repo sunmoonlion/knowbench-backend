@@ -27,10 +27,11 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, WorkbenchError
 from app.domain.workbench.expert_match import (
+    AnyMatchReceipt,
     DirectorySnapshot,
-    ExpertMatch,
-    MatchReceipt,
+    ExpertMatchV3,
     digest,
+    parse_match,
     validate_match,
 )
 from app.domain.workbench.knowbots import parse_profile
@@ -115,10 +116,9 @@ async def find_expert(
     repo: WorkbenchStore, directory: ExpertDirectory | None, working: dict[str, Any]
 ) -> dict[str, Any]:
     """工具 `find_expert`：这个用户请得动的专家的公开信息（不排序，按名称）。"""
-    if (
-        working.get("profile_id") == FIND_EXPERT.profile_id
-        and str(working.get("profile_version")) == "2"
-    ):
+    if working.get("profile_id") == FIND_EXPERT.profile_id and str(
+        working.get("profile_version")
+    ) in {"2", "3"}:
         return await _directory_snapshot(repo, directory, working)
     if directory is None or not directory.configured():
         return {"experts": [], "note": "the expert directory is not available now"}
@@ -173,7 +173,7 @@ async def _directory_snapshot(
 
 async def match_receipt(
     repo: WorkbenchStore, task: dict[str, Any], artifact: dict[str, Any]
-) -> MatchReceipt:
+) -> AnyMatchReceipt:
     """Read-only verification of persisted model output and tool snapshot."""
     events = await repo.list_task_events(
         str(task["id"]), types=("task/expert_directory",)
@@ -185,9 +185,16 @@ async def match_receipt(
     if digest(payload) != stored_digest:
         raise FindExpertRefused("matching directory snapshot failed integrity checks")
     try:
+        if not isinstance(artifact["content"], dict):
+            raise ValueError("matching output must be an object")
+        if (
+            artifact["content"].get("contract")
+            != f"knowbench/expert-match/v{task['profile_version']}"
+        ):
+            raise ValueError("matching output contract differs from the pinned finder")
         return validate_match(
             _question(task),
-            ExpertMatch.model_validate(artifact["content"]),
+            parse_match(artifact["content"]),
             DirectorySnapshot.model_validate(payload),
         )
     except (ValueError, KeyError):
@@ -243,7 +250,9 @@ class FindExpertService:
         idempotency_key: str,
         budget_limit: Decimal = DEFAULT_BUDGET,
         match_contract: Literal[
-            "knowbench/expert-match/v1", "knowbench/expert-match/v2"
+            "knowbench/expert-match/v1",
+            "knowbench/expert-match/v2",
+            "knowbench/expert-match/v3",
         ] = "knowbench/expert-match/v1",
         expert: str | None = None,
     ) -> dict[str, Any]:
@@ -254,7 +263,8 @@ class FindExpertService:
         if budget_limit <= 0:
             raise FindExpertRefused("the budget limit is more than zero")
         if expert is not None and (
-            match_contract != "knowbench/expert-match/v2"
+            match_contract
+            not in {"knowbench/expert-match/v2", "knowbench/expert-match/v3"}
             or parse_profile(expert) is None
         ):
             raise FindExpertRefused(
@@ -267,7 +277,11 @@ class FindExpertService:
                 idempotency_key=key,
                 session_id=session_id,
                 profile_id=FIND_EXPERT.profile_id,
-                profile_version="2" if match_contract.endswith("/v2") else None,
+                profile_version=(
+                    None
+                    if match_contract.endswith("/v1")
+                    else match_contract.rsplit("/v", 1)[-1]
+                ),
                 original_input={"text": text, **({"expert": expert} if expert else {})},
                 budget_limit=budget_limit,
                 client_context={"entry": "find-expert"},
@@ -342,7 +356,7 @@ class FindExpertService:
         found = await self.repo.get_artifact(
             task_id=str(task["id"]), name=step.output_artifact
         )
-        if str(task.get("profile_version")) == "2":
+        if str(task.get("profile_version")) in {"2", "3"}:
             if found is None:
                 return base | {"error": "matching result is missing"}
             receipt = await match_receipt(self.repo, task, found)
@@ -490,8 +504,55 @@ class FindExpertService:
         reference = None
         if conversation_id is not None:
             reference = await self._last_answer(owner_actor_id, conversation_id)
+        method_demand = {}
+        if str(task.get("profile_version")) == "3":
+            if task["state"] != TaskState.SUCCEEDED:
+                raise FindExpertRefused(
+                    "finish matching before transferring method demand"
+                )
+            artifact = await self.repo.get_artifact(
+                task_id=str(task["id"]), name="find_expert"
+            )
+            if artifact is None:
+                raise FindExpertRefused("matching result is missing")
+            receipt = await match_receipt(self.repo, task, artifact)
+            result = receipt.result
+            if not isinstance(result, ExpertMatchV3) or result.outcome not in {
+                "none",
+                "clarify",
+            }:
+                raise FindExpertRefused(
+                    "matching has not established an incubation need"
+                )
+            gaps = [
+                {
+                    "requirement_id": row.requirement_id,
+                    "status": row.status,
+                    "reason": row.reason,
+                }
+                for pick in result.picks
+                for row in pick.coverage
+                if row.status != "covered"
+            ]
+            method_demand = {
+                "contract": "knowlab/runtime-incubation/v2",
+                "method_demand": {
+                    "match_artifact_version": artifact["version"],
+                    "question_revision": receipt.question_revision,
+                    "outcome": result.outcome,
+                    "requirements": [
+                        r.model_dump(mode="json") for r in result.requirements
+                    ],
+                    "method_proposals": [
+                        p.model_dump(mode="json") for p in result.method_proposals
+                    ],
+                    "gaps": gaps,
+                    "clarification": result.clarification,
+                },
+            }
         return await self.incubations.submit(
             {
+                **method_demand,
                 "owner_subject": subject,
                 "question": question[:QUESTION_CHARS],
                 "project_id": str(task.get("project_id") or ""),

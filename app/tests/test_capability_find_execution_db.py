@@ -18,6 +18,7 @@ from test_knowbot_test_runs_db import (
     setup_test_computer,
 )
 from test_method_advisor_db import ROWS
+from test_method_demand_match import demand_result
 from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_expert_data_db import FakeKnowbase, FakeSupply
 from test_workbench_ledger_db import OWNER
@@ -48,10 +49,11 @@ class Directory:
         return DirectorySnapshot.model_validate(self.document)
 
 
+@pytest.mark.parametrize("match_version", ["2", "3"])
 @pytest.mark.parametrize("review", [False, True])
 @pytest.mark.parametrize("existing_conversation", [False, True])
 async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
-    db, review, existing_conversation
+    db, review, existing_conversation, match_version
 ):
     doc = json.loads(
         (
@@ -69,7 +71,7 @@ async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
         public_capabilities=doc["pack"]["public_capabilities"],
     )
     port = Directory(entries)
-    choice = result()
+    choice = demand_result() if match_version == "3" else result()
     cap = "double_check" if review else "check"
     choice["picks"][0]["knowbot_id"] = KNOWBOT
     for row in choice["picks"][0]["coverage"]:
@@ -111,11 +113,11 @@ async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
                 project_id=project["id"],
                 question=question,
                 idempotency_key="synthetic-capability-match",
-                match_contract="knowbench/expert-match/v2",
+                match_contract=f"knowbench/expert-match/v{match_version}",
                 expert=f"knowbot:{KNOWBOT}@1" if existing_conversation else None,
             )
             task = await repo.get_task(found["task_id"])
-            assert task["profile_version"] == "2"
+            assert task["profile_version"] == match_version
             first = await find_expert(repo, port, task)
             assert first["complete"] and "method_sources" not in json.dumps(first)
             assert await find_expert(repo, port, task) == first
@@ -134,6 +136,9 @@ async def test_new_matching_receipt_is_used_by_the_real_dynamic_runner(
                 OWNER, found["task_id"]
             )
             assert matched["outcome"] == "summon"
+            if match_version == "3":
+                assert matched["method_proposals"][0]["id"] == "compare"
+                assert matched["picks"][0]["solution"]["data_conditions"]
             summoner = FakeSummoner()
             summoner.give(AUTHOR, doc)
             pinned = await pin_knowbot(

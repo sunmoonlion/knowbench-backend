@@ -657,11 +657,12 @@ FIND_EXPERT = ExpertPack(
 )
 
 
-def _capability_finder() -> ExpertPack:
+def _capability_finder(version: str = "2") -> ExpertPack:
     import json
 
-    from app.domain.workbench.expert_match import ExpertMatch
+    from app.domain.workbench.expert_match import ExpertMatch, ExpertMatchV3
 
+    model = ExpertMatchV3 if version == "3" else ExpertMatch
     step = FIND_EXPERT.workflow[0].model_copy(
         update={
             "method_text": (
@@ -679,10 +680,11 @@ def _capability_finder() -> ExpertPack:
                 "clarification, return clarify with a concrete question. Directory failure/incompleteness is an error, not none. "
                 "Do not answer the financial/business question or publish a demand. Return exactly this JSON shape; "
                 "use the user's language for explanations:\n"
-                + json.dumps(ExpertMatch.model_json_schema(), ensure_ascii=False)
+                + json.dumps(model.model_json_schema(), ensure_ascii=False)
             ),
             "output_schema": {
-                "contract": "knowbench/expert-match/v2",
+                "contract": f"knowbench/expert-match/v{version}",
+                **({"method_proposals": "array"} if version == "3" else {}),
                 "requirements": "array",
                 "outcome": "string",
                 "picks": "array",
@@ -697,6 +699,7 @@ def _capability_finder() -> ExpertPack:
                     keys=(
                         "contract",
                         "requirements",
+                        *(("method_proposals",) if version == "3" else ()),
                         "outcome",
                         "picks",
                         "clarification",
@@ -707,7 +710,25 @@ def _capability_finder() -> ExpertPack:
             ),
         }
     )
-    return FIND_EXPERT.model_copy(update={"version": "2", "workflow": (step,)})
+    if version == "3":
+        step = step.model_copy(
+            update={
+                "method_text": step.method_text
+                + (
+                    "\nMethod supply and demand: classify each requirement origin as user_explicit "
+                    "or goal_inferred and explain its rationale. Explicitly requested algorithms must "
+                    "remain required. Put your alternative approaches in method_proposals, NOT mandatory "
+                    "requirements. Link each proposal to the goals it serves; never require a library ID. "
+                    "Each candidate solution must explain how its public capability satisfies this problem, "
+                    "which proposals (if any) it can use and the data conditions to resolve later. "
+                    "Do not confuse missing data with missing method capability. Check that the required "
+                    "capabilities can be used together; if unknown, state unresolved_conditions rather than "
+                    "summoning. An AI proposal is not user approval or evidence of author support. "
+                    "A solution is an approach to this question, not merely an expert name."
+                )
+            }
+        )
+    return FIND_EXPERT.model_copy(update={"version": version, "workflow": (step,)})
 
 
 BUILTIN_PACKS: dict[str, ExpertPack] = {
@@ -723,8 +744,8 @@ def listed_packs() -> list[ExpertPack]:
 
 
 def find_pack(profile_id: str, version: str | None = None) -> ExpertPack | None:
-    if profile_id == FIND_EXPERT.profile_id and version == "2":
-        return _capability_finder()
+    if profile_id == FIND_EXPERT.profile_id and version in {"2", "3"}:
+        return _capability_finder(version)
     pack = BUILTIN_PACKS.get(profile_id)
     if pack is None or (version not in (None, "", pack.version)):
         return None

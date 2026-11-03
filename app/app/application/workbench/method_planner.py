@@ -401,6 +401,10 @@ def compose_plan(catalog: MethodCatalog, context: dict[str, Any]) -> str:
         "For each input bind it or explicitly omit an optional slot with not_selected. "
         "If its upstream method is selected, it must be bound. Every selected output must reach a final output. "
         "Cover every necessary task_requirements ID using only its capability_mapping; never invent requirements. "
+        "When task_requirements includes method_proposals or a solution, these describe suggested approaches, "
+        "not additional mandatory requirements or permission to invent methods. Preserve user_explicit methods; "
+        "choose among the author's compatible methods to meet the actual requirements. Data conditions must be "
+        "checked through the existing data preparation flow, never treated as confirmed inputs. "
         "Explain each unselected method. Author capability bindings:\n"
         + json.dumps(
             catalog.planning.capability_bindings,

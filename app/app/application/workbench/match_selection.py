@@ -32,7 +32,7 @@ async def resolve_selection(
     original = (task.get("original_input") or {}).get("input") or {}
     if (
         task["profile_id"] != FIND_EXPERT.profile_id
-        or str(task["profile_version"]) != "2"
+        or str(task["profile_version"]) not in {"2", "3"}
         or task["state"] != TaskState.SUCCEEDED
         or str(task.get("project_id")) != project_id
         or original.get("text") != question

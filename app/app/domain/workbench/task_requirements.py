@@ -11,10 +11,14 @@ from typing import Self
 from pydantic import Field, model_validator
 
 from app.domain.workbench.expert_match import (
+    AnyMatchReceipt,
     Digest,
+    ExpertMatchV3,
     Identifier,
-    MatchReceipt,
+    MethodProposal,
+    MethodRequirement,
     Requirement,
+    Solution,
     digest,
     requirement_capabilities,
 )
@@ -27,9 +31,18 @@ class TaskRequirements(Strict):
     question_revision: int = Field(ge=1, strict=True)
     match_task_id: str = Field(min_length=1, max_length=128)
     match_artifact_version: int = Field(ge=1, strict=True)
-    requirements: tuple[Requirement, ...] = Field(min_length=1, max_length=100)
+    requirements: tuple[MethodRequirement | Requirement, ...] = Field(
+        min_length=1, max_length=100
+    )
     capability_mapping: dict[Identifier, tuple[Identifier, ...]] = Field(
         min_length=1, max_length=100
+    )
+
+    method_proposals: tuple[MethodProposal, ...] = Field(
+        default=(), max_length=30, exclude_if=lambda value: not value
+    )
+    solution: Solution | None = Field(
+        default=None, exclude_if=lambda value: value is None
     )
 
     @model_validator(mode="after")
@@ -44,6 +57,17 @@ class TaskRequirements(Strict):
             raise ValueError(
                 "every necessary requirement needs its exact allowed capabilities"
             )
+        proposals = {p.id: p for p in self.method_proposals}
+        all_ids = {r.id for r in self.requirements}
+        if len(proposals) != len(self.method_proposals) or proposals.keys() & all_ids:
+            raise ValueError("duplicate or conflicting method proposal ids")
+        if any(not set(p.requirement_ids) <= all_ids for p in proposals.values()):
+            raise ValueError("unknown proposal requirement")
+        if (
+            self.solution
+            and not set(self.solution.method_proposal_ids) <= proposals.keys()
+        ):
+            raise ValueError("solution refers to an unknown proposal")
         return self
 
     def digest(self) -> str:
@@ -60,7 +84,7 @@ class TaskRequirements(Strict):
 
 
 def from_match(
-    receipt: MatchReceipt,
+    receipt: AnyMatchReceipt,
     *,
     match_task_id: str,
     match_artifact_version: int,
@@ -84,4 +108,16 @@ def from_match(
         match_artifact_version=match_artifact_version,
         requirements=receipt.result.requirements,
         capability_mapping={key: tuple(sorted(caps)) for key, caps in mapping.items()},
+        **(
+            {
+                "method_proposals": receipt.result.method_proposals,
+                "solution": next(
+                    p.solution
+                    for p in receipt.result.picks
+                    if (p.knowbot_id, p.version) == (knowbot_id, version)
+                ),
+            }
+            if isinstance(receipt.result, ExpertMatchV3)
+            else {}
+        ),
     )

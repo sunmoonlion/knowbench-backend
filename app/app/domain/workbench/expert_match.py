@@ -10,7 +10,7 @@ import hashlib
 import json
 from typing import Annotated, Any, Literal, Self
 
-from pydantic import Field, model_validator
+from pydantic import Field, TypeAdapter, model_validator
 
 from app.domain.workbench.method_catalog import PublicCapability
 from app.domain.workbench.packs import Scope, Strict
@@ -163,6 +163,98 @@ class MatchReceipt(Strict):
     directory: DirectorySnapshot
 
 
+class MethodRequirement(Requirement):
+    """A necessary capability is distinct from a proposed way to satisfy it."""
+
+    origin: Literal["user_explicit", "goal_inferred"]
+    rationale: Text
+
+    @model_validator(mode="after")
+    def _origin(self) -> Self:
+        if not self.rationale.strip():
+            raise ValueError("requirement rationale cannot be blank")
+        if self.kind == "explicit_method" and (
+            self.origin != "user_explicit" or not self.required
+        ):
+            raise ValueError("an explicitly requested method must remain mandatory")
+        return self
+
+
+class MethodProposal(Strict):
+    id: Identifier
+    requirement_ids: tuple[Identifier, ...] = Field(min_length=1, max_length=100)
+    approach: Text
+    reason: Text
+    data_requirements: tuple[Text, ...] = Field(max_length=30)
+
+    @model_validator(mode="after")
+    def _proposal(self) -> Self:
+        if len(set(self.requirement_ids)) != len(self.requirement_ids):
+            raise ValueError("proposal requirement references must be unique")
+        if not self.approach.strip() or not self.reason.strip():
+            raise ValueError("method proposals need a nonblank approach and reason")
+        return self
+
+
+class Solution(Strict):
+    """Question-specific public approach, not a private execution DAG or consent."""
+
+    approach: Text
+    method_proposal_ids: tuple[Identifier, ...] = Field(max_length=30)
+    data_conditions: tuple[Text, ...] = Field(max_length=30)
+
+    @model_validator(mode="after")
+    def _solution(self) -> Self:
+        if not self.approach.strip() or len(set(self.method_proposal_ids)) != len(
+            self.method_proposal_ids
+        ):
+            raise ValueError("solution needs an approach and unique proposals")
+        return self
+
+
+class SolutionExpert(MatchedExpert):
+    solution: Solution
+
+
+class ExpertMatchV3(ExpertMatch):
+    contract: Literal["knowbench/expert-match/v3"]  # type: ignore[assignment]
+    requirements: tuple[MethodRequirement, ...] = Field(min_length=1, max_length=100)
+    method_proposals: tuple[MethodProposal, ...] = Field(max_length=30)
+    picks: tuple[SolutionExpert, ...] = Field(max_length=3)
+
+    @model_validator(mode="after")
+    def _proposals(self) -> Self:
+        requirements = {r.id for r in self.requirements}
+        proposals = {p.id: p for p in self.method_proposals}
+        if (
+            len(proposals) != len(self.method_proposals)
+            or requirements & proposals.keys()
+        ):
+            raise ValueError(
+                "proposal ids must be unique and distinct from requirements"
+            )
+        if any(not set(p.requirement_ids) <= requirements for p in proposals.values()):
+            raise ValueError("proposal refers to an unknown requirement")
+        for pick in self.picks:
+            if not set(pick.solution.method_proposal_ids) <= proposals.keys():
+                raise ValueError("solution refers to an unknown method proposal")
+        return self
+
+
+class MatchReceiptV3(MatchReceipt):
+    contract: Literal["knowbench/expert-match-receipt/v3"]  # type: ignore[assignment]
+    result: ExpertMatchV3
+
+
+AnyExpertMatch = ExpertMatch | ExpertMatchV3
+AnyMatchReceipt = MatchReceipt | MatchReceiptV3
+_matches = TypeAdapter(AnyExpertMatch)
+
+
+def parse_match(document: Any) -> AnyExpertMatch:
+    return _matches.validate_python(document)
+
+
 class MatchSelection(Strict):
     match_task_id: str = Field(min_length=1, max_length=128)
     match_artifact_version: int = Field(ge=1, strict=True)
@@ -173,11 +265,11 @@ class MatchSelection(Strict):
 
 def validate_match(
     question: str,
-    result: ExpertMatch,
+    result: AnyExpertMatch,
     directory: DirectorySnapshot,
     *,
     revision: int = 1,
-) -> MatchReceipt:
+) -> AnyMatchReceipt:
     if not directory.complete:
         raise ValueError("incomplete directory cannot establish a matching outcome")
     if not question.strip():
@@ -225,17 +317,22 @@ def validate_match(
             raise ValueError("paid experts require explicit user selection")
     if result.outcome == "none" and fully_covered:
         raise ValueError("fully covered picks cannot be reported as no match")
-    return MatchReceipt(
-        contract="knowbench/expert-match-receipt/v2",
-        question_digest=digest(question),
-        directory_digest=digest(directory.model_dump(mode="json")),
-        question_revision=revision,
-        result=result,
-        directory=directory,
+    receipt_type = MatchReceiptV3 if isinstance(result, ExpertMatchV3) else MatchReceipt
+    return receipt_type.model_validate(
+        {
+            "contract": "knowbench/expert-match-receipt/v3"
+            if isinstance(result, ExpertMatchV3)
+            else "knowbench/expert-match-receipt/v2",
+            "question_digest": digest(question),
+            "directory_digest": digest(directory.model_dump(mode="json")),
+            "question_revision": revision,
+            "result": result.model_dump(mode="json"),
+            "directory": directory.model_dump(mode="json"),
+        }
     )
 
 
-def verify_receipt(receipt: MatchReceipt, question: str) -> None:
+def verify_receipt(receipt: AnyMatchReceipt, question: str) -> None:
     rebuilt = validate_match(
         question, receipt.result, receipt.directory, revision=receipt.question_revision
     )
@@ -244,7 +341,7 @@ def verify_receipt(receipt: MatchReceipt, question: str) -> None:
 
 
 def requirement_capabilities(
-    receipt: MatchReceipt,
+    receipt: AnyMatchReceipt,
     *,
     knowbot_id: str,
     version: str,

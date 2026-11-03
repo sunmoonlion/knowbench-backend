@@ -467,7 +467,9 @@ class FindExpertIn(BaseModel):
     question: str = Field(min_length=1, max_length=2000)
     budget_limit: Decimal = Field(default=Decimal("2"), gt=0, le=Decimal("100"))
     match_contract: Literal[
-        "knowbench/expert-match/v1", "knowbench/expert-match/v2"
+        "knowbench/expert-match/v1",
+        "knowbench/expert-match/v2",
+        "knowbench/expert-match/v3",
     ] = "knowbench/expert-match/v1"
     expert: str | None = Field(default=None, max_length=128)
 
