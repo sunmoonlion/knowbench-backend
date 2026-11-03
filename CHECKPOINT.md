@@ -18,6 +18,9 @@ Pyright通过。测试模型与数据供应端为合成替身，不是Kimi/Wind�
 本轮不改Qwen当前sources、不部署、不启动新的付费测试。后续发布需固定专家旧调用
 回归和真实tools/list确认；工具定义缓存需按既有新线程/刷新流程更新。
 
+
+### 合入已发布 #66 的历史记录
+
 # 2026-11-03 测试10收尾修复（本地回归，待Qwen发布）
 
 读取状态时依据尚保留的任务账只读重建已收尾用例花费，修正旧超时轮漏计显示；到期清理前存妥汇总。新增回归模拟旧run.spent漏计，GET不改历史行、清理后金额仍保留。最终DB34项及Pyright/Ruff再次通过。
@@ -384,6 +387,9 @@ text_of 不再 normalize 导致输出受外部 Decimal context 精度截断。
 通过，pyright 0 errors。日志 /tmp/luna-wp1-all.log、/tmp/luna-wp1-pyright.log。
 没有生产 DB、采单、任务或方法版本操作。qwen 当前发布候选不变；本提交待后续整合。
 
+### 合入已发布 #66 的历史记录
+
+
 ## 2026-11-03 旧 waiting 不能默认缺数续跑
 
 旧解析 waiting 没有可证的当前采集执行状态时，确认路径拒绝推进并要求重新核对。
@@ -409,6 +415,10 @@ sourced/computed/quoted/covers验收→实际临时Markdown文件→底稿投影
 ruff和pyright通过。原始输出 /tmp/luna-second-track-evidence-final.log 与
 /tmp/luna-second-track-evidence-chain.log。初期测试夹具必需字段/状态断言纠正不计产品修复。
 只加测试，生产代码/契约不变；qwen本次发布候选不动。专家v2仍待编译修复发布后测试交付。
+
+### 合入已发布 #66 的历史记录
+
+独立热修复以 #58 为基线，仅移植上述修复；原开发提交 6ef1211。
 
 ## 2026-11-03 成稿读取完整性修复
 
@@ -445,6 +455,9 @@ ruff和pyright通过。原始输出 /tmp/luna-second-track-evidence-final.log �
 本轮未部署/调用模型或Wind；Qwen的fix/test-row-selector候选不变，后续第二轨集成。
 
 
+### 合入已发布 #66 的历史记录
+
+
 ## 2026-11-03 真实测试勾稽 compute 变量拒绝修复
 
 准专家2.5测试4第一题：20次compute均因A/L/E/TLE等大写变量被拒，工具声明未告知小写限制。
@@ -452,6 +465,11 @@ ruff和pyright通过。原始输出 /tmp/luna-second-track-evidence-final.log �
 支持1–32位大小写敏感ASCII变量（不改写表达式/引用），MCP声明与校验共用正则，保留AST白名单。
 1项失败复现；修复后124项计算/数值验收/契约通过，6项真实隔离DB HTTP通过，Pyright通过。
 线上仍#60，未重跑或改预算；第二题等待作者数据确认。此修复不代表权益抽取缺项/响应耗时已解决。
+
+
+### 合入已发布 #66 的历史记录
+
+独立候选基于已发布#60，仅移植计算符号修复；候选验证另记回执。
 
 
 ## 2026-11-03 测试6指标精度验收修复
@@ -501,3 +519,6 @@ FindExpertService.start 原先先提交新会话，再交账房；同请求重�
 基线dbb3887。内部testrun execution接口从原ExpertDesk投影步骤/工具计数/费用/交回物，核owner、run、case、test profile绑定；优先读测试归档文件，不重读共用路径。knowlab provider schema与consumer lock同批。
 v2测试请求保留原c1指标/预测断言：仅从当前计划及成功Attempt/输入血缘解析单实例中间方法；未选/重复/失效失败，显式final_outputs仍管最终成果。v1保持只核最终方法。隔离DB13项通过（含原动态intake、重做失效、伪新artifact不能冒充、缺方法断言失败、跨作者拒绝）；单元4项通过；Ruff/Pyright通过。未调用付费模型。
 G7仍未隐藏knowbench测试列表，停止/归档等入口未全部迁完，不伪称页面隔离已完成。新准专家待knowlab部署后正式生成；不自动开启市场准入、测试或上架。
+
+### 合入已发布 #66 的历史记录
+
