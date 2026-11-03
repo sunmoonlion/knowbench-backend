@@ -20,6 +20,18 @@ _POSITIONING = re.compile(
     r"(强烈?(买入|卖出|增持|减持|推荐)|目标价|建议(买入|卖出|建仓|清仓|加仓|减仓)|(买入|卖出)评级|必涨|必跌|稳赚|保本收益|strong (buy|sell)|price target|buy rating|sell rating)",
     re.I,
 )
+# Only a complete, explicit non-advice declaration is exempt. Do not exempt a
+# sentence merely because a negation occurs somewhere before a forbidden term.
+_DISCLAIMER_ITEM = r"(?:买卖建议|投资建议|买入评级|卖出评级|投资评级|评级|目标价)"
+_POSITIONING_DISCLAIMER = re.compile(
+    r"(?:^|(?<=[。；;！!？?\n]))[ \t]*(?:[-*][ \t]+)?"
+    r"(?:(?:本文|本报告|本分析|本次分析|本体检|我们|我)[ \t]*)?"
+    r"(?:不提供|不给出|不给|不涉及|不作)[ \t]*(?:任何[ \t]*)?"
+    + _DISCLAIMER_ITEM
+    + r"(?:[ \t]*(?:、|，|,|和|或|及)[ \t]*"
+    + _DISCLAIMER_ITEM
+    + r")*(?:[，,][ \t]*结论留给用户)?[ \t]*(?=[。；;！!？?\n]|\Z)"
+)
 
 
 @dataclass
@@ -134,6 +146,20 @@ def _text_of(value: Any) -> str:
     if isinstance(value, list):
         return "\n".join(_text_of(v) for v in value)
     return ""
+
+
+def _positioning_hit(value: Any) -> str | None:
+    """Check every text leaf; a disclaimer cannot exempt a different field."""
+    if isinstance(value, str):
+        hit = _POSITIONING.search(_POSITIONING_DISCLAIMER.sub("", value))
+        return hit.group(0) if hit else None
+    if isinstance(value, dict):
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            if (hit := _positioning_hit(item)) is not None:
+                return hit
+    return None
 
 
 def _same(left: Any, right: Any) -> bool:
@@ -312,8 +338,8 @@ def judge(text: str | None, rules: tuple[AcceptanceRule, ...]) -> Verdict:
             detail = f"len={len(val) if isinstance(val, list) else 'n/a'}"
         elif r.kind == "no_positioning_advice":
             val = value_at(parsed, r.path)
-            hit = _POSITIONING.search(_text_of(val))
-            ok, detail = hit is None, (hit.group(0) if hit else "")
+            hit = _positioning_hit(val)
+            ok, detail = hit is None, hit or ""
         elif r.kind == "max_chars":
             ok = len(text or "") <= r.max_chars
         elif r.kind == "all_equal":
