@@ -10,6 +10,7 @@ from collections import Counter
 from decimal import Decimal
 from typing import Any
 
+from app.domain.workbench.expert_lookup import STOP_REASONS as LOOKUP_STOP_REASONS
 from app.domain.workbench.field_words import labels_of
 from app.domain.workbench.pack_view import step_view
 from app.domain.workbench.packs import ExpertPack
@@ -40,6 +41,10 @@ def reason_text(state: str, reason: dict[str, Any] | None) -> str:
     reason = reason or {}
     if state == TaskState.SUCCEEDED:
         return ""
+    if reason.get("code") == "expert_lookup_failed":
+        return LOOKUP_STOP_REASONS.get(str(reason.get("error") or ""), "查找未完成")
+    if reason.get("code") == "expert_lookup_stop_unconfirmed":
+        return "查找中断尚未确认，平台正在核对；请勿重复提交"
     if reason.get("code") == "no_expert_pack":
         return "这个问题不在专家的范围里，可以自己在对话里接着做"
     if reason.get("code") == "pack_version_gone":

@@ -112,3 +112,57 @@ async def test_not_configured_or_off_contract_is_unavailable() -> None:
     )
     with pytest.raises(AiSummonUnavailable):
         await down.experts("u")
+
+
+async def test_snapshot_uses_the_real_service_client_query_contract():
+    """Do not mock _call: that hid the unsupported params keyword in production."""
+    seen = []
+    document = {
+        "contract": "knowmart/expert-directory/v2",
+        "complete": True,
+        "experts": [],
+    }
+
+    def handler(request):
+        seen.append(request)
+        assert request.method == "GET"
+        assert dict(request.url.params) == {"directory_version": "2"}
+        assert (
+            request.url.raw_path.decode()
+            == "/api/internal/v1/knowmart/owners/user%2F1/catalog?directory_version=2"
+        )
+        assert request.headers["authorization"] == "Bearer service-token"
+        return httpx.Response(200, json=document)
+
+    catalog = KnowmartCatalog(
+        env("knowmart", "catalog", MART),
+        oidc_client=FakeOidc("knowmart:catalog"),
+        transport=httpx.MockTransport(handler),
+    )
+    assert (await catalog.snapshot("user/1")).model_dump(mode="json") == document
+    assert len(seen) == 1
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [
+        (503, {}),
+        (
+            200,
+            {
+                "contract": "knowmart/expert-directory/v2",
+                "complete": False,
+                "experts": [],
+            },
+        ),
+        (200, {"experts": []}),
+    ],
+)
+async def test_snapshot_failure_is_never_an_empty_success(status, body):
+    catalog = KnowmartCatalog(
+        env("knowmart", "catalog", MART),
+        oidc_client=FakeOidc("knowmart:catalog"),
+        transport=httpx.MockTransport(lambda _: httpx.Response(status, json=body)),
+    )
+    with pytest.raises(AiSummonUnavailable):
+        await catalog.snapshot("user/1")

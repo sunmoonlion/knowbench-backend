@@ -81,8 +81,7 @@ class KnowmartCatalog(_Relation):
     async def snapshot(self, owner_subject: str) -> DirectorySnapshot:
         body = await self._call(
             "GET",
-            f"/owners/{quote(owner_subject, safe='')}/catalog",
-            params={"directory_version": "2"},
+            f"/owners/{quote(owner_subject, safe='')}/catalog?directory_version=2",
         )
         try:
             snapshot = DirectorySnapshot.model_validate(body)
