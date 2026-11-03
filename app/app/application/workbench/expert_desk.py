@@ -18,6 +18,7 @@ from app.application.workbench.execution_plan import (
 )
 from app.application.workbench.expert_data import pending_requests
 from app.application.workbench.plan_receipts import read_plan_version
+from app.domain.workbench.data_planning import DATA_STEP_ID
 from app.domain.workbench.dossier_view import dossier_markdown, dossier_view
 from app.domain.workbench.errors import NotFound
 from app.domain.workbench.method_plan import PLAN_STEP
@@ -78,6 +79,21 @@ class ExpertDesk:
         attempts = await self.repo.list_attempts(task_id)
         return task, pack, attempts
 
+    async def _preparing_data(
+        self,
+        task: dict[str, Any],
+        attempts: list[dict[str, Any]],
+    ) -> bool:
+        # Once analysis starts, supplemental data waits belong to that real step.
+        if task["current_step"] != 0 or any(
+            a["step_id"] not in (DATA_STEP_ID, PLAN_STEP) for a in attempts
+        ):
+            return False
+        if any(a["step_id"] == DATA_STEP_ID for a in attempts):
+            return True
+        row = await self.repo.get_task_resolution(str(task["id"]))
+        return bool(row and row["status"] == "planning")
+
     async def _steps(
         self,
         task: dict[str, Any],
@@ -128,6 +144,11 @@ class ExpertDesk:
                     row["data"] = None  # Old accepted history is not current evidence.
                 if planning and index == int(task["current_step"]):
                     row["status"] = "pending"
+        if await self._preparing_data(task, attempts):
+            for row in shown:
+                row["status"] = (
+                    "not_reached" if task["state"] in TASK_TERMINAL else "pending"
+                )
         return shown
 
     async def _plan(self, task: dict[str, Any]) -> dict[str, Any] | None:
@@ -177,7 +198,11 @@ class ExpertDesk:
         return None if seen is None else str(seen)
 
     async def _now(
-        self, task: dict[str, Any], steps: list[dict[str, Any]]
+        self,
+        task: dict[str, Any],
+        steps: list[dict[str, Any]],
+        *,
+        preparing: bool = False,
     ) -> dict[str, Any] | None:
         """现在在干什么。看的是正在做的这一次开做之后的事件。"""
         task_id = str(task["id"])
@@ -233,7 +258,7 @@ class ExpertDesk:
                 "last_event_at": events[-1]["created_at"] if events else since,
                 "held": held,
             }
-        return now_view(
+        view = now_view(
             task,
             steps,
             events=events,
@@ -243,6 +268,20 @@ class ExpertDesk:
                 row and waiting and waiting["who"] == "data_service"
             ),
         )
+
+        if view and preparing:
+            view["step"].update(
+                index=0,
+                title="定数据",
+                summary="先提出本次问题需要的数据",
+                why="先列出数据需求供你确认，获准的数据准备好后才开始正式分析",
+            )
+            if task["state"] == TaskState.RUNNING:
+                view["doing"] = {
+                    "code": "planning",
+                    "text": "正在整理数据需求，正式分析尚未开始",
+                }
+        return view
 
     async def _sheet(
         self,
@@ -300,11 +339,12 @@ class ExpertDesk:
                 "steps": [],
             }
         steps = await self._steps(task, pack, attempts, only=None)
+        preparing = await self._preparing_data(task, attempts)
         return {
             "task": await self._sheet(task, pack, steps),
-            "now": await self._now(task, steps),
+            "now": await self._now(task, steps, preparing=preparing),
             "position": None
-            if task["state"] == TaskState.REJECTED or not pack.workflow
+            if preparing or task["state"] == TaskState.REJECTED or not pack.workflow
             else position(pack, task),
             "steps": steps,
         }
@@ -392,6 +432,7 @@ class ExpertDesk:
             )
             if (
                 method_phase
+                and not await self._preparing_data(task, attempts)
                 and pack is not None
                 and int(task["current_step"]) < len(pack.workflow)
             ):

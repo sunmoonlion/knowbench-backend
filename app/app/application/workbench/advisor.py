@@ -31,6 +31,7 @@ from app.application.workbench.plan_receipts import catalog_for_task
 from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver
 from app.application.workbench.turn import TurnResult as TurnResult
 from app.domain.workbench import knowbots
+from app.domain.workbench.data_planning import STOP_REASONS
 from app.domain.workbench.deliverables import (
     DELIVERABLE_RULES,
     HANDBACK_FILE,
@@ -976,6 +977,25 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
+            if result.planning_stop_unconfirmed:
+                # Do not requeue or release the project while the provider may still run.
+                await led.settle_unattended(
+                    task_id,
+                    expected_version=int(task["state_version"]),
+                    reason={
+                        "error": result.error,
+                        "code": "data_planning_stop_unconfirmed",
+                    },
+                    stopped=False,
+                )
+                await led.record_late_cost(
+                    task_id,
+                    attempt_id=attempt_id,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                )
+                return (await repo.get_task(task_id))["state"]
             # 进度文字或已经提出的部分需求都不是“定数据成功”。
             # 失败、超时和中断不得把解析状态改为 ready，更不能推进第 1 步。
             if (
@@ -1005,6 +1025,28 @@ class Advisor:
                     else "turn_error",
                     retryable=True,
                 )
+                if result.planning_failure:
+                    why = STOP_REASONS[result.planning_failure]
+                    await led.open_interaction(
+                        task_id,
+                        kind="input",
+                        prompt=InteractionPrompt(
+                            title="数据准备已暂停",
+                            question=why
+                            + "。本轮已结束并记录费用。请核对问题后选择重试或停止；不会自动追加预算或重新调用模型。",
+                            options=[
+                                {"id": "rework", "label": "重试数据准备"},
+                                {"id": "stop", "label": "停止委托"},
+                            ],
+                            subject={
+                                "step_id": DATA_STEP_ID,
+                                "planning_failure": result.planning_failure,
+                            },
+                        ),
+                        waiting_reason=WaitingReason.INPUT,
+                        attempt_id=attempt_id,
+                    )
+                    return TaskState.WAITING
                 if result.environment_lost:
                     return (
                         await led.transition(
@@ -1574,6 +1616,13 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         *method,
         "",
         "## What to do",
+        "- The steps above describe later analysis, not instructions to execute now. "
+        "In this turn only propose the data requirements. Do not perform analysis, "
+        "read report pages or use built-in web search to obtain financial values.",
+        "- list_inputs lists only data ALREADY AUTHORIZED for THIS TASK, not all "
+        "materials in knowbase. Before confirmation an empty inputs list is normal. "
+        "Do not poll it: user confirmation cannot occur until you submit request_data "
+        "and finish this turn. An empty list is NOT proof that the company has no data.",
         "- Work out which companies or institutions the question is about. Look up "
         f'each code with find_subject(task="{task_id}", name=…); never write a code '
         "from memory. Ask for data on other companies too when the steps compare "
@@ -1593,6 +1642,11 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         "Use a service's advertised schema for source_query in request_data. Supplier responses "
         "are other_text/text evidence; dates and requested fields go in query arguments. "
         "Do not substitute an excerpt or link for a required annual report PDF.",
+        "- If discover_source_tools returns no suppliers, still propose the required "
+        "public reports using request_data. The data service resolves existing materials "
+        "and only then identifies what needs collecting. Never repeatedly search for "
+        "values before submitting the requirements. Call each discovery for the same "
+        "arguments once; after request_data succeeds, end the turn immediately.",
         "- Match reading to downstream tools: original is the source file, pages is "
         "page-indexed text, text is body text, and table is extracted facts. A PDF or "
         "body-text reading does not imply that query_facts/raw fact refs exist. If a "

@@ -39,6 +39,11 @@ from app.application.workbench.runtime_tools import (
     declared_data_tools,
     unavailable_data_tools,
 )
+from app.domain.workbench.data_planning import (
+    DATA_PLAN_SECONDS,
+    DATA_STEP_ID,
+    DataPlanningGuard,
+)
 from app.domain.workbench.deliverables import changed_paths
 from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
 from app.domain.workbench.memory import memory_note
@@ -466,6 +471,8 @@ class SandboxLink:
                 w["text"] = item["text"]
             # 这一轮用补丁改到的文件：成稿有没有写出来就看它（0015 §3.3）
             w["files"].extend(changed_paths(item))
+            if guard := w.get("planning_guard"):
+                guard.observe(item)
         elif method.startswith("thread/tokenUsage"):
             w["reported"] = True
         elif method == "turn/completed":
@@ -496,6 +503,20 @@ class SandboxLink:
         async with self.runner.stores() as repo:
             required_data = await declared_data_tools(repo, thread_id)
             expected_attempt = await capture_attempt(repo, thread_id)
+            session = await repo.get_session_by_thread(thread_id)
+            task = (
+                await repo.get_task(str(session["active_task_id"]))
+                if session and session.get("active_task_id")
+                else None
+            )
+            active = (
+                await repo.get_attempt(str(task["active_attempt_id"]))
+                if task and task.get("active_attempt_id")
+                else None
+            )
+            planning = bool(active and active["step_id"] == DATA_STEP_ID)
+            if planning:
+                timeout = min(timeout, DATA_PLAN_SECONDS)
             if expected_attempt is not None:
                 attempt = await repo.get_attempt(expected_attempt[1])
                 if attempt["step_id"] == PLAN_STEP:
@@ -541,6 +562,9 @@ class SandboxLink:
             "interrupted": False,
             "files": [],
             "timed_out": False,
+            "planning_guard": DataPlanningGuard() if planning else None,
+            "planning_failure": None,
+            "planning_stop_unconfirmed": False,
         }
         self.turn_waiters[turn_id] = waiter
         self.active_turns[thread_id] = turn_id
@@ -573,6 +597,8 @@ class SandboxLink:
             # 这一步的时限不算等人答的时间：专家停下来问人时，钟停着（2026-10-19 K19 第 2 稿：
             # 所有者思考作答的时间算进了 15 分钟，这一步超时判失败，问题还挂着、测试卡死）
             while True:
+                if planning and waiter["planning_guard"].failure:
+                    break
                 left = (
                     timeout
                     + (self.waited(thread_id) - waited_before)
@@ -582,27 +608,37 @@ class SandboxLink:
                     raise TimeoutError
                 try:
                     await asyncio.wait_for(
-                        asyncio.shield(waiter["future"]), min(left, 5.0)
+                        asyncio.shield(waiter["future"]),
+                        min(left, 0.25 if planning else 5.0),
                     )
                     break
                 except TimeoutError:
                     continue
+            if planning and waiter["planning_guard"].failure:
+                await self._stop_data_planning(
+                    client, thread_id, turn_id, waiter, waiter["planning_guard"].failure
+                )
             # 真 app-server 的 thread/tokenUsage 可能晚于 turn/completed 到达：留一小段宽限期再撤 waiter
             for _ in range(20):
                 if waiter["reported"]:
                     break
                 await asyncio.sleep(0.1)
         except TimeoutError:
-            waiter["error"] = "turn timed out"
             waiter["timed_out"] = True
-            try:
-                await client.request(
-                    "turn/interrupt",
-                    {"threadId": thread_id, "turnId": turn_id},
-                    timeout=30,
+            if planning:
+                await self._stop_data_planning(
+                    client, thread_id, turn_id, waiter, "time_limit"
                 )
-            except Exception:  # noqa: BLE001
-                pass
+            else:
+                waiter["error"] = "turn timed out"
+                try:
+                    await client.request(
+                        "turn/interrupt",
+                        {"threadId": thread_id, "turnId": turn_id},
+                        timeout=30,
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
         except ConnectionError as exc:
             waiter["error"] = f"connection lost: {exc}"
         finally:
@@ -627,7 +663,45 @@ class SandboxLink:
             stop_note=(stop or {}).get("note"),
             files=list(waiter["files"]),
             timed_out=waiter["timed_out"],
+            planning_failure=waiter["planning_failure"],
+            planning_stop_unconfirmed=waiter["planning_stop_unconfirmed"],
         )
+
+    async def _stop_data_planning(
+        self,
+        client: AppServerConnection,
+        thread_id: str,
+        turn_id: str,
+        waiter: dict[str, Any],
+        reason: str,
+    ) -> None:
+        """Never offer a retry while the preceding provider turn might still run."""
+        confirmed = waiter["future"].done()
+        if not confirmed:
+            try:
+                await client.request(
+                    "turn/interrupt",
+                    {"threadId": thread_id, "turnId": turn_id},
+                    timeout=30,
+                )
+                try:
+                    await asyncio.wait_for(asyncio.shield(waiter["future"]), 5)
+                    confirmed = True
+                except TimeoutError:
+                    confirmed = await self.turn_running(thread_id, turn_id) is False
+            except Exception:  # noqa: BLE001
+                confirmed = False
+        waiter["error"] = f"data_planning_{reason}"
+        if confirmed:
+            waiter["planning_failure"] = reason
+            # Late usage still belongs to the interrupted turn.
+            for _ in range(20):
+                if waiter["reported"]:
+                    break
+                await asyncio.sleep(0.1)
+        else:
+            waiter["planning_stop_unconfirmed"] = True
+            waiter["error"] += ": stop not confirmed; execution requires recovery"
 
     async def stop_and_confirm(
         self, thread_id: str | None, within: float
