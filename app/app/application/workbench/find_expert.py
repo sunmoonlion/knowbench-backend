@@ -26,6 +26,7 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, WorkbenchError
+from app.domain.workbench.expert_lookup import STOP_REASONS as LOOKUP_STOP_REASONS
 from app.domain.workbench.expert_match import (
     AnyMatchReceipt,
     DeclarationMatch,
@@ -357,7 +358,16 @@ class FindExpertService:
         if state not in TASK_TERMINAL:
             return base
         if state != TaskState.SUCCEEDED:
-            return base | {"error": "the round did not finish"}
+            events = await self.repo.list_task_events(task_id, types=("task/state",))
+            reason = events[-1]["payload"].get("reason", {}) if events else {}
+            message = (
+                LOOKUP_STOP_REASONS.get(str(reason.get("error") or ""))
+                if reason.get("code") == "expert_lookup_failed"
+                else None
+            )
+            if reason.get("code") == "expert_lookup_stop_unconfirmed":
+                message = "查找中断尚未确认，平台正在核对；请勿重复提交"
+            return base | {"error": message or "the round did not finish"}
         step = FIND_EXPERT.workflow[0]
         found = await self.repo.get_artifact(
             task_id=str(task["id"]), name=step.output_artifact

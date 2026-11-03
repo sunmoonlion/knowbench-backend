@@ -47,6 +47,7 @@ from app.domain.workbench.errors import (
     MethodPlanInvalid,
 )
 from app.domain.workbench.execution_plan import ExecutionPlan
+from app.domain.workbench.expert_lookup import STOP_REASONS as LOOKUP_STOP_REASONS
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.packs import (
@@ -460,6 +461,8 @@ class Advisor:
                 return StepAssessment()
             if (
                 result.stopped_by_user
+                or result.lookup_failure
+                or result.lookup_stop_unconfirmed
                 or result.environment_lost
                 or ((result.error or result.interrupted) and not result.timed_out)
                 or (intake and out_of_scope(result.final_text))
@@ -562,6 +565,45 @@ class Advisor:
                 return (
                     await led.transition(
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
+                    )
+                )["state"]
+            if result.lookup_stop_unconfirmed:
+                await led.settle_unattended(
+                    task_id,
+                    expected_version=int(task["state_version"]),
+                    reason={
+                        "error": result.error,
+                        "code": "expert_lookup_stop_unconfirmed",
+                    },
+                    stopped=False,
+                )
+                await led.record_late_cost(
+                    task_id,
+                    attempt_id=attempt_id,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                )
+                return (await repo.get_task(task_id))["state"]
+            if result.lookup_failure:
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.FAILED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                    failure_code=PLATFORM_FAILURE,
+                    retryable=False,
+                )
+                return (
+                    await led.transition(
+                        task_id,
+                        TaskState.FAILED,
+                        reason={
+                            "code": "expert_lookup_failed",
+                            "error": result.lookup_failure,
+                            "message": LOOKUP_STOP_REASONS[result.lookup_failure],
+                        },
                     )
                 )["state"]
             check_error = assessment.error

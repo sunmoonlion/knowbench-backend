@@ -30,6 +30,8 @@ class TurnResult:
     # Confirmed interruption by the platform data-planning progress guard.
     planning_failure: str | None = None
     planning_stop_unconfirmed: bool = False
+    lookup_failure: str | None = None
+    lookup_stop_unconfirmed: bool = False
 
 
 class TurnDriver(Protocol):
