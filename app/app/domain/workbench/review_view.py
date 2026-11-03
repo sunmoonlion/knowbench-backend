@@ -36,7 +36,7 @@ def consequence(
     """选了会怎样。包括要不要再花钱。"""
     if out_of_scope:  # 受理关口（账 130）：还一步没做
         if option == "proceed":
-            return "专家不再判归不归它，照着它的步骤做。要花钱，花了多少顶部实时显示"
+            return "专家按你本次明确接受的范围继续，未承接部分仍会说明；不会因此获得新的方法或数据权限。费用实时显示"
         if option == "stop":
             return "委托取消，不再花钱。这个问题可以直接在对话里问"
     finished = "做完的部分" if done is None else f"做完的 {done} 步"

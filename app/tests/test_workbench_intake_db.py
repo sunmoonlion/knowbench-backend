@@ -33,8 +33,9 @@ INTAKE = "## First: is this question for this expert?"
 DECLINE = json.dumps(
     {
         "out_of_scope": True,
-        "reason": "这是在问天气，不是这位专家做的事",
+        "reason": "天气要求不在范围内，只能核对项目文件",
         "suggestion": "直接在对话里问",
+        "proposed_question": "只核对项目文件并生成报告",
     },
     ensure_ascii=False,
 )
@@ -164,8 +165,9 @@ async def test_internal_expert_has_no_intake(db):
 
 def test_out_of_scope_reply_is_read_only_when_it_says_so():
     assert out_of_scope(DECLINE) == {
-        "reason": "这是在问天气，不是这位专家做的事",
+        "reason": "天气要求不在范围内，只能核对项目文件",
         "suggestion": "直接在对话里问",
+        "proposed_question": "只核对项目文件并生成报告",
     }
     assert out_of_scope("```json\n" + DECLINE + "\n```") is not None
     assert out_of_scope(PLAN) is None
@@ -176,6 +178,7 @@ def test_out_of_scope_reply_is_read_only_when_it_says_so():
     assert out_of_scope(json.dumps({"out_of_scope": True})) == {
         "reason": "",
         "suggestion": "",
+        "proposed_question": "",
     }
 
 
@@ -217,7 +220,7 @@ def test_every_listed_expert_has_an_intake():
 
 def test_intake_words_for_the_user():
     assert "不归" in why("input", None, 0, out_of_scope=True)
-    assert "不再判" in consequence(
+    assert "明确接受的范围" in consequence(
         "proceed", "input", reserve=None, done=0, out_of_scope=True
     )
     assert "不再花钱" in consequence(
