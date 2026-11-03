@@ -25,6 +25,7 @@ from app.application.workbench.execution_plan import (
     is_dynamic,
 )
 from app.application.workbench.expert_data import holds_task, pending_requests
+from app.application.workbench.find_expert import validate_match_content
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
 from app.application.workbench.plan_receipts import catalog_for_task
@@ -51,6 +52,7 @@ from app.domain.workbench.expert_lookup import STOP_REASONS as LOOKUP_STOP_REASO
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.packs import (
+    FIND_EXPERT,
     SEALED_INPUT,
     ExpertPack,
     Scope,
@@ -479,6 +481,27 @@ class Advisor:
                     reader=self.reader,
                 )
             )
+            if (
+                verdict.ok
+                and task["profile_id"] == FIND_EXPERT.profile_id
+                and str(task.get("profile_version")) == "2"
+            ):
+                detail = ""
+                try:
+                    await validate_match_content(repo, task, verdict.parsed)
+                except (ValueError, KeyError) as exc:
+                    detail = str(exc)[:REWORK_FAILURE_CHARS]
+                    verdict.ok = False
+                    verdict.failures.append("expert_match: " + detail)
+                verdict.checks.append(
+                    {
+                        "rule": "expert_match",
+                        "pass": not detail,
+                        "detail": detail,
+                        "label": "匹配依据与原问题、目录声明一致",
+                        "message": "匹配依据未通过核验" if detail else "",
+                    }
+                )
             # 成稿文件写了没有：先认这一轮报过的 fileChange；没见到就经会合点问代理那个文件在不在
             # （0022 段 4）：在 → 认；明确不在 → 验收不过；问不到 → 只记事件、不填路径（软检查）
             written = None

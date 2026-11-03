@@ -173,32 +173,34 @@ async def _directory_snapshot(
     return payload
 
 
-async def match_receipt(
-    repo: WorkbenchStore, task: dict[str, Any], artifact: dict[str, Any]
+async def validate_match_content(
+    repo: WorkbenchStore, task: dict[str, Any], content: Any
 ) -> AnyMatchReceipt:
-    """Read-only verification of persisted model output and tool snapshot."""
+    """One read-only check for completion, result retrieval and delegation."""
     events = await repo.list_task_events(
         str(task["id"]), types=("task/expert_directory",)
     )
     if len(events) != 1:
-        raise FindExpertRefused("matching has no unique directory snapshot")
+        raise ValueError("matching has no unique directory snapshot")
     payload = dict(events[0]["payload"])
     stored_digest = payload.pop("directory_digest", None)
     if digest(payload) != stored_digest:
-        raise FindExpertRefused("matching directory snapshot failed integrity checks")
+        raise ValueError("matching directory snapshot failed integrity checks")
+    if not isinstance(content, dict):
+        raise ValueError("matching output must be an object")
+    if content.get("contract") != f"knowbench/expert-match/v{task['profile_version']}":
+        raise ValueError("matching output contract differs from the pinned finder")
+    return validate_match(
+        _question(task), parse_match(content), DirectorySnapshot.model_validate(payload)
+    )
+
+
+async def match_receipt(
+    repo: WorkbenchStore, task: dict[str, Any], artifact: dict[str, Any]
+) -> AnyMatchReceipt:
+    """Read-only verification of persisted model output and tool snapshot."""
     try:
-        if not isinstance(artifact["content"], dict):
-            raise ValueError("matching output must be an object")
-        if (
-            artifact["content"].get("contract")
-            != f"knowbench/expert-match/v{task['profile_version']}"
-        ):
-            raise ValueError("matching output contract differs from the pinned finder")
-        return validate_match(
-            _question(task),
-            parse_match(artifact["content"]),
-            DirectorySnapshot.model_validate(payload),
-        )
+        return await validate_match_content(repo, task, artifact["content"])
     except (ValueError, KeyError):
         raise FindExpertRefused(
             "matching result does not match its contract or public directory"
@@ -375,7 +377,14 @@ class FindExpertService:
         if str(task.get("profile_version")) in {"2", "3", "4"}:
             if found is None:
                 return base | {"error": "matching result is missing"}
-            receipt = await match_receipt(self.repo, task, found)
+            try:
+                receipt = await match_receipt(self.repo, task, found)
+            except FindExpertRefused:
+                # Older rounds could finish with schema-only acceptance. Preserve
+                # their history, but expose an unusable result, never a selection.
+                return base | {
+                    "error": "本轮匹配依据未通过核验，不能据此请专家。可核对问题后重新查找，或自己去 knowmart 选择；不会自动重试或追加费用。"
+                }
             # Returning a result is read-only. The raw artifact and public
             # directory event already retain all evidence used in this check.
             current = (

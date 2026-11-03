@@ -592,3 +592,13 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 真实 Codex 0.155.1 离线协议探针新增实际工具调用（不止 tools/list）：旧无注解声明在 never 下拒绝且MCP零执行；生产 find_expert 声明在同策略下真实执行；request_data 仍拒绝且零执行。连同前一轮搜索范围6项共9项通过；本地模拟HTTP模型与stdio MCP，不用真实Key、不产生付费模型或Wind调用。运行：`PYTHONPATH=. uv run --locked python tests/probe_native_search_scope.py /path/to/codex-0.155.1`（app目录）。
 
 发布仍交Qwen，同批backend/API/runner和既有登录修复web；不重孵化专家、不复活已停止任务。发布后须查真实 tools/list 与新线程mcpServerStatus/list的find_expert注解；旧线程缓存须在无活动turn时按原正式协议刷新。真实模型匹配尚未重试，不宣称线上成功。
+
+## 2026-11-04 #71 后匹配结果读取失败
+
+基线321b779（#71）。现场43431b70与decbc27b均已SUCCEEDED，但结果接口409：前者把scope/v1声明正文中的F4当作public_capabilities的ID（实际数组为空），后者question_quote含自行添加的省略号。859b20aa的none结果能正常读取。目录工具已实际执行；不是本轮登录故障或此前MCP审批阻断。
+
+缺陷是完成时只验JSON/必需键，到GET及委托才验匹配收据。现在完成前复用同一原题/目录快照/声明/费用覆盖校验；具体失败理由送原一次返工，再不通过按原流程等待处理，预算不扩大。提示词明确scope/v1用null能力ID、引文只能是连续原文，不能把正文编号当结构化ID。旧SUCCEEDED但证据不合法的轮次GET返回明确error，不给outcome/picks、不修改历史、不再返回笼统409；委托端仍拒绝。
+
+52项通过：新增5项隔离DB回归、既有动态匹配到执行/固定查找/领域匹配共34项，通用运行器与查找守卫18项。覆盖首次错误→说明返工→成功、两次失败无成果且无无限重试、旧错误结果可重复只读查看且仍不能委托。Ruff/Pyright/diff检查通过。使用模拟模型，不产生付费调用；未改生产任务、费用或专家版本。发版交Qwen，仅backend/API/runner；#71 web/admin沿用。待发布后的真实模型匹配核验，不宣称语义覆盖已通过。
+
+开发分支同步时保留未发布v3/v4的parse_match及按任务版本核契约；新增完成前检查仅作用v2，未把新架构带入#71发布补丁。冲突解决后新增验收及匹配领域25项通过，Ruff/Pyright通过；原K29未提交文件保留。
