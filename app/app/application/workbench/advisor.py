@@ -972,8 +972,21 @@ class Advisor:
                 for p in await repo.list_task_data(task_id)
                 if p.get("basis") == "frozen_binding"
             )
+            data_step = StepContract(
+                step_id=DATA_STEP_ID,
+                title=DATA_STEP_TITLE,
+                method_text="Propose authorized data needs",
+                output_artifact=DATA_STEP_ID,
+            )
+            answered = await self._answers_for_step(repo, task, data_step)
             text = compose_data_plan(
-                pack, task["original_input"].get("input", {}), task_id, bound
+                pack,
+                task["original_input"].get("input", {}),
+                task_id,
+                bound,
+                scope_change=answered["change_request"]
+                if answered["proceed"]
+                else None,
             )
             thread_id = task["thread_id"]
 
@@ -1117,6 +1130,11 @@ class Advisor:
                     turn_id=result.turn_id,
                 )
                 return TaskState.WAITING
+            declined = out_of_scope(result.final_text) if pack.intake_scope() else None
+            if declined:
+                return await self._out_of_scope(
+                    led, repo, task, pack, data_step, attempt_id, result, declined
+                )
             # 只有正常结束的轮次才接受数据计划；确实无需数据时允许空需求。
             await led.attempt_transition(
                 attempt_id,
@@ -1169,8 +1187,16 @@ class Advisor:
                 session_id=str(task["session_id"]), status="consumed"
             )
             if str(it.get("task_id") or "") == str(task["id"])
-            and ((it.get("prompt") or {}).get("subject") or {}).get("step_id")
-            == step.step_id
+            and (
+                ((it.get("prompt") or {}).get("subject") or {}).get("step_id")
+                == step.step_id
+                or (
+                    ((it.get("prompt") or {}).get("subject") or {}).get("out_of_scope")
+                    and ((it.get("prompt") or {}).get("subject") or {}).get(
+                        "proposed_question"
+                    )
+                )
+            )
         ]
         for it in consumed:
             subject = (it.get("prompt") or {}).get("subject") or {}
@@ -1195,8 +1221,20 @@ class Advisor:
                 note = note or subject.get("note")
                 if note and response.get("decision") in ("rework", "proceed"):
                     out["change_request"] = str(note)
-                if subject.get("out_of_scope") and response.get("decision") != "stop":
-                    out["proceed"] = True
+                if (
+                    subject.get("out_of_scope")
+                    and response.get("decision") == "proceed"
+                ):
+                    proposed = subject.get("proposed_question")
+                    if "proposed_question" not in subject or proposed:
+                        out["proceed"] = True
+                    if proposed:
+                        out["change_request"] = (
+                            "The user explicitly accepted this limited question: "
+                            + str(proposed)
+                            + "\nKeep the original question visible and disclose omitted results; "
+                            "this consent does not authorize unavailable methods, data or extra budget."
+                        )
         return out
 
     async def _out_of_scope(
@@ -1241,13 +1279,26 @@ class Advisor:
                         f"建议：{declined['suggestion']}"
                         if declined["suggestion"]
                         else "",
-                        "要专家照做，还是不做了？",
+                        f"可改为：{declined['proposed_question']}"
+                        if declined.get("proposed_question")
+                        else "",
+                        "仅在你明确接受上述缩小后的问题时继续。"
+                        if declined.get("proposed_question")
+                        else "请修改问题或改选专家；本委托不会自动改题。"
+                        if "proposed_question" in declined
+                        else "要专家照做，还是不做了？",
                     )
                     if line
                 ),
                 options=[
-                    {"id": "proceed", "label": "照做"},
-                    {"id": "stop", "label": "不做了"},
+                    *(
+                        [{"id": "proceed", "label": "接受上述范围继续"}]
+                        if declined.get("proposed_question")
+                        else [{"id": "proceed", "label": "照做"}]
+                        if "proposed_question" not in declined
+                        else []
+                    ),
+                    {"id": "stop", "label": "停止本委托"},
                 ],
                 subject={"step_id": step.step_id, "out_of_scope": True, **declined},
             ),
@@ -1466,20 +1517,7 @@ class Advisor:
             "",
         ]
         if intake:
-            parts += [
-                "## First: is this question for this expert?",
-                f"This expert does: {intake.does}",
-                *([f"It does not do: {intake.does_not}"] if intake.does_not else []),
-                *([f"Elsewhere: {intake.elsewhere}"] if intake.elsewhere else []),
-                "If the question is clearly unrelated to what this expert does (small "
-                "talk, general knowledge, coding, or a different kind of task), do not do "
-                "this step and call no tools: reply with ONE JSON object only, "
-                '{"out_of_scope": true, "reason": "<one sentence>", "suggestion": '
-                '"<where or how to ask instead>"}, written in the language of the '
-                "question. A vague, broad or partly covered question is NOT out of "
-                "scope: do the step and ask or state assumptions as the method says.",
-                "",
-            ]
+            parts += scope_instructions(intake)
         parts += [
             "## Method for this step",
             step.method_text,
@@ -1487,7 +1525,9 @@ class Advisor:
             "## Rules",
             NO_DETOUR,
             "If you need information you cannot obtain, ask the user with the request_user_input tool "
-            "when it is available; if you get no answer, state your assumption explicitly and continue.",
+            "when it is available. No answer, cancellation or timeout is not consent. "
+            "Never assume permission to drop a requested result, replace a specified method, "
+            "change scope, fetch data or spend more. Pause when that decision is necessary.",
         ]
         if user_facts:
             parts += ["", "## About the user", user_facts]
@@ -1632,7 +1672,38 @@ def _waiting_reason(row: dict[str, Any]) -> dict[str, Any]:
     return {"data": "waiting", "waiting_for": detail.get("waiting_for")}
 
 
-def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int) -> str:
+def scope_instructions(scope: Scope) -> list[str]:
+    return [
+        "## First: is this question for this expert?",
+        f"This expert does: {scope.does}",
+        f"It does not do: {scope.does_not}",
+        f"Elsewhere: {scope.elsewhere}",
+        "Compare ALL requested results, subjects, periods and explicitly specified methods "
+        "with the author's declared scope. Topic similarity, one available expert, a free "
+        "price or a previous AI selection is not sufficient. Reading a related number "
+        "does not establish the requested analytical method. Exclusions take precedence.",
+        "If any necessary result is outside scope or materially ambiguous, call no tools "
+        "and do not request data. Return only JSON: "
+        '{"out_of_scope":true,"reason":"specific unsupported or ambiguous requirement",'
+        '"suggestion":"clarify, choose another expert, use general chat or submit an idea",'
+        '"proposed_question":"a concrete smaller question fully within scope, or empty string"}. '
+        "A proposed smaller question is NOT accepted until the user explicitly agrees. "
+        "Never silently replace DCF with revenue forecasting, a causal explanation with "
+        "ratios, or a requested horizon with a different one. Do not invent a substitute "
+        "when none is useful. Unconfirmed data availability alone is not a method mismatch: "
+        "supported work may proceed to the normal user data confirmation process.",
+        "",
+    ]
+
+
+def compose_data_plan(
+    pack: ExpertPack,
+    question: Any,
+    task_id: str,
+    bound: int,
+    *,
+    scope_change: str | None = None,
+) -> str:
     """第 0 步「定数据」给模型的说明（decisions ⑭）：专家的做法、用户的问题、专家自带
     几份；用查主体、提出数据两个工具提要哪些，不开始做第 1 步。"""
     method: list[str] = []
@@ -1646,6 +1717,7 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         room -= len(chunk)
         method.append(chunk)
     asked = question.get("text") if isinstance(question, dict) else str(question or "")
+    scope = pack.intake_scope()
     parts = [
         f"# Step 0 of {pack.name or pack.title}: decide what data this task needs",
         "Before step 1 starts, decide which data the steps below need for this "
@@ -1654,6 +1726,12 @@ def compose_data_plan(pack: ExpertPack, question: Any, task_id: str, bound: int)
         "## The user's question",
         str(asked or "").strip()[:4000],
         "",
+        *(scope_instructions(scope) if scope and not scope_change else []),
+        *(
+            ["## Explicitly accepted scope change", scope_change]
+            if scope_change
+            else []
+        ),
         "## How this expert works (its steps)",
         *method,
         "",

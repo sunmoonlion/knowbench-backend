@@ -40,6 +40,8 @@ class Requirement(Strict):
             raise ValueError(
                 "requirements need nonblank statements and question quotes"
             )
+        if self.kind == "explicit_method" and not self.required:
+            raise ValueError("explicitly requested methods cannot become optional")
         return self
 
 

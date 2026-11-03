@@ -228,10 +228,15 @@ def out_of_scope(text: str | None) -> dict[str, str] | None:
         return None
     if not isinstance(reply, dict) or reply.get("out_of_scope") is not True:
         return None
-    return {
+    result = {
         "reason": _text_of(reply.get("reason")).strip()[:OUT_OF_SCOPE_CHARS],
         "suggestion": _text_of(reply.get("suggestion")).strip()[:OUT_OF_SCOPE_CHARS],
     }
+    proposed = reply.get("proposed_question")
+    result["proposed_question"] = (
+        proposed.strip() if isinstance(proposed, str) and len(proposed) <= 4000 else ""
+    )
+    return result
 
 
 def _each_has(val: Any, rule: AcceptanceRule) -> tuple[bool, str]:

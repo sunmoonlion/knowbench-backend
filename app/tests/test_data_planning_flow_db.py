@@ -129,3 +129,55 @@ async def test_unseeded_data_phase_never_looks_like_scope_or_retries_itself(
                     )
                 await Advisor(workbench_stores(db), driver, records=True).drive(task_id)
                 assert len(seen) == (2 if failure == "repeated_result" else 1)
+
+
+@pytest.mark.parametrize("proposal", ["", "只分析历史营收"])
+async def test_scope_mismatch_pauses_before_data_and_does_not_accept_empty_plan(
+    make_client,
+    db,
+    world,
+    monkeypatch,
+    proposal,
+):
+    import json
+
+    async def decline(self, thread_id, text_, *, timeout=0):  # noqa: ASYNC109
+        self.texts.append(text_)
+        return TurnResult(
+            turn_id="scope-review",
+            final_text=json.dumps(
+                {
+                    "out_of_scope": True,
+                    "reason": "所要求的DCF不在范围内",
+                    "suggestion": "可提交创意",
+                    "proposed_question": proposal,
+                }
+            ),
+            tokens={},
+            cost=Decimal("0.02"),
+        )
+
+    monkeypatch.setattr(StepZero, "run_turn", decline)
+    await known(db)
+    async with make_client(A) as http:
+        task_id, driver, state = await asked(
+            http, db, world, "scope-before-data", PROPOSED[:1]
+        )
+        assert state == "WAITING"
+        assert not world["supply"].submitted
+        async with db() as s:
+            repo = workbench_store(s)
+            task = await repo.get_task(task_id)
+            assert task["waiting_reason"] == "INPUT"
+            assert task["current_step"] == 0
+            assert Decimal(str(task["budget"]["used"])) == Decimal("0.02")
+            assert (await repo.get_task_resolution(task_id))["status"] == "planning"
+            item = await repo.get_interaction(str(task["active_interaction_id"]))
+            options = [o["id"] for o in item["prompt"]["options"]]
+            assert options == (["proceed", "stop"] if proposal else ["stop"])
+            assert item["prompt"]["subject"]["proposed_question"] == proposal
+            assert not await repo.list_artifacts_with_content(task_id)
+        await Advisor(workbench_stores(db), driver, records=True).drive(task_id)
+        assert (
+            len(driver.texts) == 1
+        )  # Waiting/polling is not consent or a new paid turn.
