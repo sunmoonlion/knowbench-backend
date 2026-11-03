@@ -32,6 +32,7 @@ class TurnResult:
     planning_stop_unconfirmed: bool = False
     lookup_failure: str | None = None
     lookup_stop_unconfirmed: bool = False
+    tool_stop_unconfirmed: bool = False
 
 
 class TurnDriver(Protocol):

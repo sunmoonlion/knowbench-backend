@@ -590,13 +590,15 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
-            if result.lookup_stop_unconfirmed:
+            if result.lookup_stop_unconfirmed or result.tool_stop_unconfirmed:
                 await led.settle_unattended(
                     task_id,
                     expected_version=int(task["state_version"]),
                     reason={
                         "error": result.error,
-                        "code": "expert_lookup_stop_unconfirmed",
+                        "code": "tool_execution_stop_unconfirmed"
+                        if result.tool_stop_unconfirmed
+                        else "expert_lookup_stop_unconfirmed",
                     },
                     stopped=False,
                 )

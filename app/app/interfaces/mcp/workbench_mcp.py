@@ -223,8 +223,10 @@ TOOLS: dict[str, dict[str, Any]] = {
     },
     "compute": {
         "description": (
-            "Compute exact decimal results and record them. Use either the single "
-            "name/expression/inputs form, or {task, batch: [{key, name, expression, "
+            "Compute exact decimal results and record them. Every call must include "
+            "task copied from the current step instructions; never call with {}. "
+            "Use either {task, name, expression, inputs, round?}, "
+            "or {task, batch: [{key, name, expression, "
             "inputs, round?}, ...]} for up to 50 related calculations and 500 total "
             "input references. Prefer a batch when facts are already available. "
             "Batch inputs may use batch:key to reference an earlier row; forward "
@@ -427,6 +429,16 @@ async def handle(
         return _err(mid, -32602, "arguments must be an object")
     if not limiter.allow(owner, per_minute):
         return _tool_error(mid, "rate limit exceeded; retry later")
+    if name == "compute" and (
+        not isinstance(args.get("task"), str) or not args["task"].strip()
+    ):
+        return _tool_error(
+            mid,
+            "compute requires a non-empty task argument. Copy the task id from "
+            "the current step instructions and send a JSON object with task plus "
+            "name/expression/inputs, or task plus batch. An empty object performs "
+            "no calculation; do not repeat it. This does not mean the task was deleted.",
+        )
     if guard is not None:
         try:
             await guard.check(name, args, params.get("_meta"))

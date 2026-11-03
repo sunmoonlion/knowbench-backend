@@ -602,3 +602,15 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 52项通过：新增5项隔离DB回归、既有动态匹配到执行/固定查找/领域匹配共34项，通用运行器与查找守卫18项。覆盖首次错误→说明返工→成功、两次失败无成果且无无限重试、旧错误结果可重复只读查看且仍不能委托。Ruff/Pyright/diff检查通过。使用模拟模型，不产生付费调用；未改生产任务、费用或专家版本。发版交Qwen，仅backend/API/runner；#71 web/admin沿用。待发布后的真实模型匹配核验，不宣称语义覆盖已通过。
 
 开发分支同步时保留未发布v3/v4的parse_match及按任务版本核契约；新增完成前检查仅作用v2，未把新架构带入#71发布补丁。冲突解决后新增验收及匹配领域25项通过，Ruff/Pyright通过；原K29未提交文件保留。
+
+## 2026-11-04 正式分析空参数计算循环止损
+
+现场委托14a8eba0-cda1-4531-9e4d-60f59c26483b，reconcile从04:58开始。14次compute全部arguments={}，返回task not found，每次10–123ms；此前query_facts/read_input/search_evidence成功。最终72项（16资产负债、16利润、16现金、24衔接）全列missing，未算成功；流程随后到indicators，仍有空参失败。不能因步骤打勾就宣称勾稽通过。
+
+用户明确批准停止后，05:17:28经正式cancel_task应用服务记录取消并排turn.interrupt。只读确认任务CANCELLED、当前attempt CANCELLED、turn interrupted、active_attempt_id=null、预留0，累计估算24.142204元。scope/inventory/reconcile/series交回物及钉住数据保留，无任务复活、重测或费用改写。
+
+新增compute缺task的明确错误（在任务查询前返回，不再误报任务不存在）；说明单项与批量均需task。正式执行的compute连续3次缺task且失败则经原interrupt/确认机制停止，保留费用；中断未确认沿用turn_open对账，不能放新执行。只计本工作台compute真实失败且去重通知，正确传参、正常批量、其它读工具和普通聊天不受该阈值影响。不改变财务公式、容差或作者验收。
+
+增量48项通过：缺参提示、守卫去重/恢复、正式运行确认与未确认中断、原批量计算、MCP鉴权、数据规划和查找守卫、顾问回归。Ruff/Pyright通过。原匹配修复52项另计，不声称全部不重复。
+
+根因边界：Codex0.155.1离线捕获的供应商请求schema仍有task/expression/inputs/batch，不能据此断言Kimi或转译网关为何持续发{}。未凭猜测删除oneOf或放宽计算验收；本增量是明确报错及限制浪费，不宣称已根治空参生成。2023H1补提被拒也尚未定位，不能宣称后续预测窗口数据齐全。下一步需在发布后按用户授权验证真实模型的完整计算参数及compute_id，不自动新增付费调用。
