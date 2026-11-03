@@ -1616,6 +1616,14 @@ class Advisor:
                 "never from memory. If the data does not contain what this step needs, "
                 "ask for it with request_data and say in this step what is missing; do not "
                 "guess.",
+                "Keep data retrieval bounded to this step's required fields and periods. "
+                "Reuse facts and exact source refs already returned for this pinned data; "
+                "do not repeat an unchanged lookup or broaden it merely because it was empty. "
+                "Query raw rows by labels, not standardized codes. If a printed value has "
+                "no usable fact/raw ref, identify that extraction gap explicitly. Follow the "
+                "author's missing-data rule (or ask the user when no rule applies); never "
+                "substitute another formula or mark an unchecked item as passed. Native "
+                "web search cannot repair a missing ref in this task's authorized inputs.",
             ]
             if "compute" in step.tools:
                 parts += [
@@ -1624,6 +1632,14 @@ class Advisor:
                     "id as compute_id next to the number. For a figure taken as is, write "
                     "its fact ref as the address. Quote passages as {material_id, page, "
                     "text} exactly as read.",
+                    "As soon as inputs for independent calculations are available, execute "
+                    "them with compute before investigating unrelated missing items. Use "
+                    "{task, batch: [{key, name, expression, inputs}, ...]} for independent "
+                    "calculations with complete refs (at most 50 rows and 500 input refs). "
+                    "Keep incomplete rows out of that batch and handle them under the "
+                    "author's missing-data rule. Preserve every required formula, source "
+                    "version, coverage check and tolerance; batching is not permission to "
+                    "omit checks. A page quotation alone is not a compute input ref.",
                 ]
         if step.output_file:
             # 成稿是项目里的文件，给用户看的唯一一份（0015 §3.3）；JSON 仍回正文做机器验收

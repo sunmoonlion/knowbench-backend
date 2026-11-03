@@ -600,7 +600,13 @@ class SandboxLink:
                         approvalPolicy="never",
                     )
         try:
-            await self.configure_search_scope(thread_id, restricted=planning or lookup)
+            # A data-backed expert reads its confirmed inputs through the declared
+            # MCP tools. Native web search cannot supply their pinned fact refs;
+            # reopening it after data planning causes fruitless off-source loops.
+            # Ordinary chat and experts without data tools retain their settings.
+            await self.configure_search_scope(
+                thread_id, restricted=planning or lookup or bool(required_data)
+            )
         except Exception:
             log.warning("stage tool configuration failed thread=%s", thread_id)
             return TurnResult(
