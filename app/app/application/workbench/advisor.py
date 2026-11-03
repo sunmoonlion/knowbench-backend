@@ -1497,6 +1497,25 @@ class Advisor:
             f"Produce the artifact `{step.output_artifact}` as ONE JSON object with this shape:",
             json.dumps(step.output_schema, ensure_ascii=False),
         ]
+        if step.acceptance:
+            parts += [
+                "",
+                "## Acceptance rules for this frozen step",
+                "These are the author's existing checks, not additional methods. "
+                "Use the exact field names and allowed values. A covers rule matches "
+                "each source entry exactly once: copy its identity into the specified "
+                "field without paraphrasing, splitting or combining entries. "
+                "Put your explanation in the other output fields. "
+                "Quoted evidence being present does not establish that it supports "
+                "a claim; follow the author's method for that judgment.",
+                json.dumps(
+                    [
+                        r.model_dump(mode="json", exclude_defaults=True)
+                        for r in step.acceptance
+                    ],
+                    ensure_ascii=False,
+                ),
+            ]
         if reworks:
             parts += [
                 "",

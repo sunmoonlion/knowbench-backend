@@ -30,8 +30,37 @@ class Verdict:
     checks: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _json_error(candidate: str, error: json.JSONDecodeError) -> str:
+    """Describe syntax errors without repairing evidence or echoing its content."""
+    closing: list[str] = []
+    quoted = escaped = False
+    for char in candidate:
+        if quoted:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = False
+        elif char == '"':
+            quoted = True
+        elif char in "{[":
+            closing.append("}" if char == "{" else "]")
+        elif char in "}]":
+            if not closing or closing.pop() != char:
+                break
+    detail = f"invalid JSON at line {error.lineno}, column {error.colno}: {error.msg}"
+    if quoted:
+        detail += "; unterminated string"
+    elif closing:
+        detail += f"; unclosed containers, expected closing delimiters: {''.join(reversed(closing))[:32]}"
+    return (
+        detail + ". Return one complete JSON object; preserve the data and citations."
+    )
+
+
 def _extract_json(text: str, *, exact_numbers: bool = False) -> Any:
-    """容忍 ```json 围栏与前后闲话：取第一个平衡的 {...}。"""
+    """容忍围栏与前后闲话；由 JSON 解码器处理字符串中的括号和转义。"""
     t = text.strip()
     if t.startswith("```"):
         t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
@@ -41,21 +70,16 @@ def _extract_json(text: str, *, exact_numbers: bool = False) -> Any:
     except json.JSONDecodeError:
         pass
     start = t.find("{")
-    depth = 0
-    for i in range(start, len(t)) if start >= 0 else []:
-        if t[i] == "{":
-            depth += 1
-        elif t[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(
-                        t[start : i + 1],
-                        parse_float=Decimal if exact_numbers else float,
-                    )
-                except json.JSONDecodeError:
-                    break
-    raise ValueError("no JSON object found")
+    if start < 0:
+        raise ValueError("no JSON object found; return one complete JSON object")
+    candidate = t[start:]
+    try:
+        parsed, _ = json.JSONDecoder(
+            parse_float=Decimal if exact_numbers else float
+        ).raw_decode(candidate)
+        return parsed
+    except json.JSONDecodeError as exc:
+        raise ValueError(_json_error(candidate, exc)) from None
 
 
 def value_at(obj: Any, path: str | None) -> Any:
