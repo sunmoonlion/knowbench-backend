@@ -60,3 +60,25 @@ def test_missing_brace_feedback_reaches_rework_and_coverage_still_enforced():
     assert not _covers(
         coverage, {"comparisons": [{"conclusion": "original claim"}]}, upstream
     )
+
+
+def test_data_execution_batches_complete_inputs_without_weakening_author_rules():
+    step = StepContract(
+        step_id="check",
+        title="Check",
+        method_text="A-(L+E); missing inputs remain unverified; tolerance 1 yuan",
+        output_artifact="result",
+        tools=("query_facts", "read_input", "compute"),
+        acceptance=(AcceptanceRule(kind="json_object"),),
+    )
+    before = step.model_dump_json()
+    prompt = Advisor.compose(step, {}, {}, 0, listed_data_task="task-1")
+    assert "do not repeat an unchanged lookup" in prompt
+    assert "Query raw rows by labels" in prompt
+    assert "batch: [{key, name, expression, inputs}" in prompt
+    assert "before investigating unrelated missing items" in prompt
+    assert "never substitute another formula" in prompt
+    assert step.method_text in prompt
+    assert step.model_dump_json() == before
+    ordinary = Advisor.compose(step, {}, {}, 0)
+    assert "Keep data retrieval bounded" not in ordinary

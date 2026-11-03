@@ -624,3 +624,11 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 修复允许完整否定声明从中英文逗号后的分句开始；结尾约束不放宽，不把“……不提供目标价，但可参考1800元”当作免责声明。仍逐文本叶子检查，不能遮住同句其余内容、其他行/其他字段的实际建议；不删除规则、不改专家包、不把失败历史改成通过。新增10项正反例；相关148项回归通过（acceptance_disclaimers/workbench_acceptance/acceptance_extensions/acceptance_json_feedback/acceptance_precision/advisor_acceptance_prompt），Ruff/Pyright/diff通过，无模型费用。
 
 只读核验时scope第二次840ba372已COMPLETED，任务进入inventory；未替用户重试、取消或改状态。发布交Qwen另排增量，不能覆盖#72在建钉版，不能滚动中断当前付费任务。统一交接索引链接到《2026-11-04-范围说明否定措辞误判修复交接.md》。本确定性规则不是完整自然语言合规判定，未宣称覆盖任意否定句式。
+
+## 2026-11-04 勾稽取数收敛与数据步骤搜索范围
+
+基线 a9e1618（含范围否定措辞修复）。73081dc1首轮勾稽238秒，query_facts完成15/失败3，compute零调用，最终agentMessage仅“标签”，Codex task_complete标为completed；最后请求输入208250tokens，输出1687tokens。只读证据只能证明缺项反复检索、上下文累积与异常终止并存，不能证明token上限截断或具体供应商转译根因。没有伪造JSON、放宽验收或增加重试。
+
+数据工具已声明的专家执行步骤继续关闭native web_search（复用钉版Codex已验证的idle unsubscribe/resume机制），避免数据规划后恢复native搜索，导致模型拿网页找库内fact ref；普通聊天/无数据工具专家保持原设置。compose补充复用已返回引用、raw按label查询、完整数据先执行compute.batch、缺项按作者既定规则处理或提问；不能替换原式、改变来源/覆盖/容差。提示指导不等于硬性保证模型收敛，没有宣称根治提前交回。
+
+验证：78项 prompt/runtime-tools/compute/免责声明回归；25项真实WebSocket+隔离DB（data-planning runner、advisor、compute_batch）；Ruff/Pyright无错。未付费调用模型。相关knowfeed修复与原件回放见 fix/statement-label-continuations。新代码未部署，旧任务不重启/不改记录。后续发布需等所有活动turn结束；处理旧读法后用户发起任务，核真正compute回执及最终JSON，不把离线通过当财务验收通过。

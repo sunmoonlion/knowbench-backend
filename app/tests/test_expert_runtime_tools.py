@@ -141,6 +141,7 @@ async def test_missing_tools_prevents_turn_start_and_token_spend(monkeypatch):
         AsyncMock(return_value=frozenset({"query_facts"})),
     )
     result = await link.run_turn("t", "read actual data")
+    link.configure_search_scope.assert_awaited_once_with("t", restricted=True)
     assert result.platform_failure and result.error
     assert result.turn_id is None and result.final_text is None
     assert result.cost == Decimal("0") and result.tokens == {}
