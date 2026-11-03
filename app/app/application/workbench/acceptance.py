@@ -10,6 +10,7 @@ import json
 import math
 import re
 from dataclasses import dataclass, field
+from decimal import Decimal
 from typing import Any
 
 from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
@@ -29,14 +30,14 @@ class Verdict:
     checks: list[dict[str, Any]] = field(default_factory=list)
 
 
-def _extract_json(text: str) -> Any:
+def _extract_json(text: str, *, exact_numbers: bool = False) -> Any:
     """容忍 ```json 围栏与前后闲话：取第一个平衡的 {...}。"""
     t = text.strip()
     if t.startswith("```"):
         t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
         t = re.sub(r"\s*```$", "", t)
     try:
-        return json.loads(t)
+        return json.loads(t, parse_float=Decimal if exact_numbers else float)
     except json.JSONDecodeError:
         pass
     start = t.find("{")
@@ -48,7 +49,10 @@ def _extract_json(text: str) -> Any:
             depth -= 1
             if depth == 0:
                 try:
-                    return json.loads(t[start : i + 1])
+                    return json.loads(
+                        t[start : i + 1],
+                        parse_float=Decimal if exact_numbers else float,
+                    )
                 except json.JSONDecodeError:
                     break
     raise ValueError("no JSON object found")
@@ -64,6 +68,37 @@ def value_at(obj: Any, path: str | None) -> Any:
         else:
             return None
     return cur
+
+
+def _preserve_numeric_evidence(
+    parsed: dict[str, Any], text: str, rules: tuple[AcceptanceRule, ...]
+) -> None:
+    """Keep checked decimal operands/results lossless through JSON persistence.
+
+    Numeric checks already accept decimal strings (the compute tool's format).
+    Only replace checked numeric fields when float decoding changed their value;
+    ordinary numbers, row identities and unrelated output keep their JSON types.
+    Never infer a reported value from a compute record or increase tolerance.
+    """
+    numeric = [r for r in rules if r.kind in {"computed", "sourced"}]
+    if not numeric:
+        return
+    exact = _extract_json(text, exact_numbers=True)
+    for rule in numeric:
+        rows, originals = value_at(parsed, rule.path), value_at(exact, rule.path)
+        if isinstance(rows, dict):
+            rows, originals = [rows], [originals]
+        if not isinstance(rows, list):
+            continue
+        for row, original in zip(rows, originals, strict=True):
+            if not isinstance(row, dict):
+                continue
+            for key in ("value", *rule.input_keys):
+                value = original.get(key)
+                if isinstance(value, Decimal) and value.is_finite():
+                    decoded = row.get(key)
+                    if isinstance(decoded, float) and Decimal(str(decoded)) != value:
+                        row[key] = str(value)
 
 
 def _text_of(value: Any) -> str:
@@ -204,6 +239,7 @@ def judge(text: str | None, rules: tuple[AcceptanceRule, ...]) -> Verdict:
             parsed = _extract_json(text or "")
             if not isinstance(parsed, dict):
                 raise ValueError("top level is not an object")
+            _preserve_numeric_evidence(parsed, text or "", rules)
         except ValueError as exc:
             v.ok = False
             v.failures.append(f"json_object: {exc}")
