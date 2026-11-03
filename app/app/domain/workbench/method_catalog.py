@@ -383,7 +383,15 @@ class ReferencedMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v2"]])
         return self
 
 
+class SlottedMethodReference(MethodReference):
+    execution: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+
 class SlottedMethodSource(MethodSource):
+    reference: SlottedMethodReference
+
     @model_validator(mode="after")
     def _integrity(self) -> Self:
         encoded = json.dumps(
@@ -395,6 +403,25 @@ class SlottedMethodSource(MethodSource):
         ):
             raise ValueError("method definition digest differs")
         version = self.definition.get("schema")
+        if version == "knowlab/method-definition/v3":
+            if set(self.definition) != {
+                "schema",
+                "title",
+                "purpose",
+                "procedure",
+                "applies_when",
+                "inputs",
+                "rules",
+                "outputs",
+                "output_schema",
+                "checks",
+            } or not isinstance(self.definition.get("inputs"), dict):
+                raise ValueError("invalid atomic method definition envelope")
+            if not isinstance(self.reference.execution, dict):
+                raise ValueError("atomic method needs expert execution policy")
+            return self
+        if self.reference.execution is not None:
+            raise ValueError("legacy method execution cannot be overridden")
         if version not in (
             "knowlab/method-definition/v1",
             "knowlab/method-definition/v2",
@@ -455,6 +482,9 @@ class CapabilityMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v3"]])
         if not self.method_sources.keys() <= units.keys():
             raise ValueError("method source must name a catalog alias")
         for alias, source in self.method_sources.items():
+            if source.definition.get("schema") == "knowlab/method-definition/v3":
+                _validate_atomic_binding(units[alias], source, units)
+                continue
             original = source.definition["step"]
             schemas = source.definition["input_schemas"]
             slots = original.get("uses")
@@ -504,6 +534,109 @@ class CapabilityMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v3"]])
                 ):
                     raise ValueError("method input schema differs from upstream output")
         return self
+
+
+def _validate_atomic_binding(
+    unit: SlottedMethodUnit,
+    source: SlottedMethodSource,
+    units: dict[str, SlottedMethodUnit],
+) -> None:
+    """Verify the provider's method/slot meaning and the expert's execution policy.
+
+    The complete frozen pack still owns execution; this is not another author
+    compiler or a route for the runtime planner to modify a method definition.
+    """
+    method = source.definition
+    ref = source.reference
+    inputs = method["inputs"]
+    if (
+        set(inputs) != set(ref.inputs)
+        or tuple(sorted(inputs)) != unit.contract.input_refs
+    ):
+        raise ValueError("atomic method slots differ from the pinned definition")
+    if (
+        unit.contract.step_version != str(ref.version)
+        or unit.selection.applies_when != method["applies_when"]
+        or unit.contract.output_schema != method["output_schema"]
+    ):
+        raise ValueError("atomic method semantics differ from the compiled contract")
+    for slot, expected in inputs.items():
+        if not isinstance(expected, dict) or set(expected) != {
+            "schema",
+            "required",
+            "description",
+        }:
+            raise ValueError("invalid atomic method input")
+        upstream = ref.inputs[slot]
+        binding = unit.contract.input_slots[slot]
+        if (
+            upstream not in units
+            or binding.method_id != upstream
+            or type(expected["required"]) is not bool
+            or binding.required != expected["required"]
+            or not isinstance(expected["schema"], dict)
+        ):
+            raise ValueError("atomic input binding differs from the author input")
+        provided = units[upstream].contract.output_schema
+        if any(
+            key not in provided or provided[key] != value
+            for key, value in expected["schema"].items()
+        ):
+            raise ValueError("upstream output is incompatible with the atomic input")
+    policy = ref.execution
+    assert policy is not None
+    if set(policy) != {"ask_before", "on_fail", "advanced"}:
+        raise ValueError("invalid expert execution policy")
+    failure = policy["on_fail"]
+    if not isinstance(failure, dict) or failure.get("kind") not in {
+        "ask",
+        "back",
+        "rework",
+    }:
+        raise ValueError("invalid expert failure handling")
+    if (
+        unit.contract.on_reject
+        != {"ask": "human", "back": "back", "rework": "rework"}[failure["kind"]]
+    ):
+        raise ValueError("failure handling differs from the expert policy")
+    target = failure.get("back_to")
+    inverse = {alias: slot for slot, alias in ref.inputs.items()}
+    if failure["kind"] == "back" and (
+        target not in inverse or unit.contract.back_to != inverse[target]
+    ):
+        raise ValueError("back target differs from the expert composition")
+    if not isinstance(policy["ask_before"], list) or any(
+        not isinstance(question, dict)
+        or set(question) != {"id", "question", "options"}
+        or not isinstance(question["options"], list)
+        for question in policy["ask_before"]
+    ):
+        raise ValueError("invalid expert questions")
+    expected_questions = [
+        {
+            "id": question["id"],
+            "question": question["question"],
+            "allow_other": True,
+            "options": [
+                {"id": f"o{i}", "label": label}
+                for i, label in enumerate(question["options"], 1)
+            ],
+        }
+        for question in policy["ask_before"]
+    ]
+    if [
+        question.model_dump(mode="json") for question in unit.contract.ask_before
+    ] != expected_questions:
+        raise ValueError("questions differ from the expert policy")
+    advanced = policy["advanced"]
+    if not isinstance(advanced, dict) or advanced.get("output_schema") is not None:
+        raise ValueError("execution policy cannot override method output semantics")
+    for name in ("tools", "reserve", "input_max_chars", "output_file"):
+        compiled = getattr(unit.contract, name)
+        if name == "tools":
+            compiled = list(compiled)
+        if compiled != advanced.get(name):
+            raise ValueError("compiled execution differs from the expert policy")
 
 
 MethodCatalog = DynamicMethodCatalog | ReferencedMethodCatalog | CapabilityMethodCatalog

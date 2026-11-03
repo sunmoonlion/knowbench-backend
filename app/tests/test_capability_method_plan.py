@@ -57,6 +57,29 @@ def test_actual_knowlab_compiler_output_runs_both_task_plans(review):
     assert len(view.pack.workflow) == (3 if review else 2)
 
 
+@pytest.mark.parametrize("review", [False, True])
+def test_atomic_methods_use_the_same_plan_and_execution_engine(review):
+    path = Path(__file__).parent / "fixtures/atomic-methods-manifest.json"
+    manifest = json.loads(path.read_text())
+    doc = proposal(review=review)
+    if not review:
+        doc["steps"][-1]["omitted_inputs"] = {"verification": "not_selected"}
+    plan = validate(doc, cat=manifest["pack"])
+    view = project_plan(
+        parse_catalog(manifest["pack"]),
+        AcceptedMethodPlan(
+            task_id="synthetic",
+            attempt_id="plan",
+            pack_digest="sha256:" + "a" * 64,
+            version=1,
+            proposal=plan,
+        ),
+        profile_id="synthetic",
+    )
+    assert len(view.pack.workflow) == (3 if review else 2)
+    assert view.pack.workflow[-1].on_reject == "human"
+
+
 def document():
     doc = legacy_catalog().model_dump(mode="json")
     doc.update(
