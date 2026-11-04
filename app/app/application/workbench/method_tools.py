@@ -17,6 +17,7 @@ from app.application.workbench.execution_plan import (
     execution_for_task,
     is_dynamic,
 )
+from app.application.workbench.ledger import Ledger
 from app.application.workbench.records import as_id
 from app.domain.workbench.errors import RecordsRefused
 from app.domain.workbench.states import AttemptState, TaskState, Wheel
@@ -34,15 +35,13 @@ async def capture_attempt(repo: WorkbenchStore, thread_id: str):
     if not session or not session.get("active_task_id"):
         return None
     task = await repo.get_task(str(session["active_task_id"]))
-    if not is_dynamic(task):
-        return None
     if (
         session["wheel"] != Wheel.advisor
         or task["state"] != TaskState.RUNNING
         or task.get("cancel_requested_at")
         or not task.get("active_attempt_id")
     ):
-        raise RecordsRefused("no active dynamic execution")
+        raise RecordsRefused("no active expert execution")
     return str(task["id"]), str(task["active_attempt_id"])
 
 
@@ -71,6 +70,8 @@ async def bind_turn(
             or refs.get("runtime_turn_id") not in (None, turn_id)
         ):
             return False
+        if attempt["status"] == AttemptState.CREATED:
+            await Ledger(repo).attempt_transition(attempt_id, AttemptState.RUNNING)
         refs["runtime_turn_id"] = turn_id
         await repo.update_attempt(attempt_id, refs=refs)
         return True

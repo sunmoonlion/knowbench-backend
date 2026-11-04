@@ -78,6 +78,7 @@ from app.domain.workbench.states import (
     WaitingReason,
     Wheel,
 )
+from app.domain.workbench.step_progress import StepProgressGuard
 from app.domain.workbench.tool_policy import (
     DECISION_ACCEPT,
     DECISION_ACCEPT_TASK,
@@ -517,6 +518,12 @@ class SandboxLink:
         w = self.turn_waiters.get(turn_id) if turn_id else None
         if w is None or thread_id_of(params) != w["thread_id"]:
             return
+        if guard := w.get("idle_guard"):
+            guard.observe(
+                method,
+                params.get("item") or {},
+                asyncio.get_running_loop().time() - self.waited(w["thread_id"]),
+            )
         if method == "error":
             # 0.155.1 的错误通知带 threadId/turnId/error/willRetry。
             # 重试中的错误仍落事件账，但不污染最终成功，也不波及同沙箱的其他会话。
@@ -663,6 +670,13 @@ class SandboxLink:
             "compute_guard": ComputeProgressGuard()
             if active and not planning and not lookup and active["step_id"] != PLAN_STEP
             else None,
+            "idle_guard": StepProgressGuard(
+                asyncio.get_running_loop().time() - self.waited(thread_id)
+            )
+            if active and not planning and not lookup and active["step_id"] != PLAN_STEP
+            else None,
+            "idle_failure": None,
+            "idle_stop_unconfirmed": False,
             "tool_failure": None,
             "tool_stop_unconfirmed": False,
         }
@@ -697,10 +711,15 @@ class SandboxLink:
             # 这一步的时限不算等人答的时间：专家停下来问人时，钟停着（2026-10-19 K19 第 2 稿：
             # 所有者思考作答的时间算进了 15 分钟，这一步超时判失败，问题还挂着、测试卡死）
             while True:
+                if waiter["future"].done():
+                    break
+                if guard := waiter["idle_guard"]:
+                    guard.tick(loop.time() - self.waited(thread_id))
                 if (
                     (planning and waiter["planning_guard"].failure)
                     or (lookup and waiter["lookup_guard"].failure)
                     or (waiter["compute_guard"] and waiter["compute_guard"].failure)
+                    or (waiter["idle_guard"] and waiter["idle_guard"].failure)
                 ):
                     break
                 left = (
@@ -752,6 +771,15 @@ class SandboxLink:
                 )
                 if waiter["tool_failure"]:
                     waiter["error"] = MISSING_TASK_MESSAGE
+            elif waiter["idle_guard"] and waiter["idle_guard"].failure:
+                await self._stop_guarded_turn(
+                    client,
+                    thread_id,
+                    turn_id,
+                    waiter,
+                    waiter["idle_guard"].failure,
+                    stage="idle",
+                )
             # 真 app-server 的 thread/tokenUsage 可能晚于 turn/completed 到达：留一小段宽限期再撤 waiter
             for _ in range(20):
                 if waiter["reported"]:
@@ -767,6 +795,10 @@ class SandboxLink:
                     waiter,
                     "time_limit",
                     stage="planning" if planning else "lookup",
+                )
+            elif waiter["idle_guard"]:
+                await self._stop_guarded_turn(
+                    client, thread_id, turn_id, waiter, "time_limit", stage="idle"
                 )
             else:
                 waiter["error"] = "turn timed out"
@@ -807,6 +839,8 @@ class SandboxLink:
             lookup_failure=waiter["lookup_failure"],
             lookup_stop_unconfirmed=waiter["lookup_stop_unconfirmed"],
             tool_stop_unconfirmed=waiter["tool_stop_unconfirmed"],
+            idle_failure=waiter["idle_failure"],
+            idle_stop_unconfirmed=waiter["idle_stop_unconfirmed"],
             platform_failure=bool(
                 waiter["tool_failure"] or waiter["tool_stop_unconfirmed"]
             ),
@@ -842,6 +876,7 @@ class SandboxLink:
             "planning": "data_planning",
             "lookup": "expert_lookup",
             "tool": "tool_execution",
+            "idle": "step_progress",
         }[stage]
         waiter["error"] = f"{prefix}_{reason}"
         if confirmed:

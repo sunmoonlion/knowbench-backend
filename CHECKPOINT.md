@@ -644,3 +644,18 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 数据工具已声明的专家执行步骤继续关闭native web_search（复用钉版Codex已验证的idle unsubscribe/resume机制），避免数据规划后恢复native搜索，导致模型拿网页找库内fact ref；普通聊天/无数据工具专家保持原设置。compose补充复用已返回引用、raw按label查询、完整数据先执行compute.batch、缺项按作者既定规则处理或提问；不能替换原式、改变来源/覆盖/容差。提示指导不等于硬性保证模型收敛，没有宣称根治提前交回。
 
 验证：78项 prompt/runtime-tools/compute/免责声明回归；25项真实WebSocket+隔离DB（data-planning runner、advisor、compute_batch）；Ruff/Pyright无错。未付费调用模型。相关knowfeed修复与原件回放见 fix/statement-label-continuations。新代码未部署，旧任务不重启/不改记录。后续发布需等所有活动turn结束；处理旧读法后用户发起任务，核真正compute回执及最终JSON，不把离线通过当财务验收通过。
+
+# 2026-11-04：正式步骤无进展保护（独立发布候选）
+
+基线 8a662f1（已发布 #73），分支 fix/step-idle-guard；K29 未提交保持原工位不动。
+正式固定/动态步骤共用 StepProgressGuard：180秒无新成功工具结果、同参数同结果累计3次、
+工具执行300秒、步骤总900秒分别记原因。agentMessage/reasoning只记活动，不延长时限；
+started/completed分开去重，工具运行不计模型空闲，等人从两种时钟扣除。
+确认 turn 停止后结算真实费用并进 WAITING(INPUT)，不走专家验收失败的自动返工；
+停止未确认保留 turn_open，不提供重做。 data-plan/找专家/动态选方法沿用原控制。
+绑定固定和动态尝试到 RUNNING/started_at/runtime_turn_id，turn_ids仍只用于费用结算；
+取消后的迟到费用回归只记一次。没有新增迁移、环境变量或专家包变化。
+同时补齐既有0038迁移的静态测试清单遗漏（该迁移早已存在并发布，不是本次新增）。
+规则：C-D11账房真源、C-A9不新增模型客户、C-A10预算不追加、C-R10离线通过不当线上通过。
+最终合并回归84 passed（含真实隔离PostgreSQL/WebSocket）；日志 /tmp/luna-step-guard-final-tests.log；Ruff、Pyright通过。发布授权为所有者本轮
+“你修好直接发版”，使用既有Make/Jenkins；不启动真实模型委托。

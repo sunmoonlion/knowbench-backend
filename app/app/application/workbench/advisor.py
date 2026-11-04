@@ -69,6 +69,7 @@ from app.domain.workbench.states import (
     TaskState,
     WaitingReason,
 )
+from app.domain.workbench.step_progress import STOP_REASONS as STEP_STOP_REASONS
 from app.domain.workbench.step_view import RAW_CHARS
 
 log = logging.getLogger(__name__)
@@ -590,13 +591,19 @@ class Advisor:
                         task_id, TaskState.CANCELLED, reason={"by": "user"}
                     )
                 )["state"]
-            if result.lookup_stop_unconfirmed or result.tool_stop_unconfirmed:
+            if (
+                result.lookup_stop_unconfirmed
+                or result.tool_stop_unconfirmed
+                or result.idle_stop_unconfirmed
+            ):
                 await led.settle_unattended(
                     task_id,
                     expected_version=int(task["state_version"]),
                     reason={
                         "error": result.error,
-                        "code": "tool_execution_stop_unconfirmed"
+                        "code": "step_progress_stop_unconfirmed"
+                        if result.idle_stop_unconfirmed
+                        else "tool_execution_stop_unconfirmed"
                         if result.tool_stop_unconfirmed
                         else "expert_lookup_stop_unconfirmed",
                     },
@@ -610,6 +617,54 @@ class Advisor:
                     turn_id=result.turn_id,
                 )
                 return (await repo.get_task(task_id))["state"]
+            if result.idle_failure:
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.FAILED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                    failure_code="step_progress",
+                    retryable=True,
+                )
+                note = (
+                    STEP_STOP_REASONS[result.idle_failure]
+                    + "本轮费用已记录；由你决定重做或停止，不会自动重试或追加预算。"
+                )
+                await repo.append_event(
+                    session_id=str(task["session_id"]),
+                    kind="task",
+                    event_type="step/stopped",
+                    payload={
+                        "step_id": step.step_id,
+                        "note": note,
+                        "by": "progress_guard",
+                        "reason": result.idle_failure,
+                    },
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                )
+                await led.open_interaction(
+                    task_id,
+                    kind="input",
+                    prompt=InteractionPrompt(
+                        title=f"第「{step.title}」步已暂停",
+                        question=note,
+                        options=[
+                            {"id": "rework", "label": "重做这一步"},
+                            {"id": "stop", "label": "停止"},
+                        ],
+                        subject={
+                            "step_id": step.step_id,
+                            "stopped": True,
+                            "note": note,
+                            "last_output": (result.final_text or "")[:2000],
+                        },
+                    ),
+                    waiting_reason=WaitingReason.INPUT,
+                    attempt_id=attempt_id,
+                )
+                return TaskState.WAITING
             if result.lookup_failure:
                 await led.attempt_transition(
                     attempt_id,

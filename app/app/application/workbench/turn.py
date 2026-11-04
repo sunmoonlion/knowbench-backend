@@ -33,6 +33,8 @@ class TurnResult:
     lookup_failure: str | None = None
     lookup_stop_unconfirmed: bool = False
     tool_stop_unconfirmed: bool = False
+    idle_failure: str | None = None
+    idle_stop_unconfirmed: bool = False
 
 
 class TurnDriver(Protocol):
