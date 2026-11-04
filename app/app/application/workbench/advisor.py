@@ -1240,8 +1240,12 @@ class Advisor:
                 attempt_id=attempt_id,
             )
             async with repo.transaction():
-                await repo.update_task_resolution(task_id, status="ready")
                 row = await repo.get_task_resolution(task_id, for_update=True)
+                # Confirmation can arrive while the model is finishing this turn.
+                # It owns the transition to waiting; do not erase its supply poll.
+                if row is not None and row["status"] == "planning":
+                    await repo.update_task_resolution(task_id, status="ready")
+                    row = await repo.get_task_resolution(task_id)
                 if holds_task(row):
                     await led.transition(
                         task_id,

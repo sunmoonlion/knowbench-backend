@@ -1129,6 +1129,14 @@ class DataWaiter:
             "supply_progress": supply_progress(demand, self.now()),
         }
         if status in OPEN_DEMAND:
+            # Existing materials may have become readable independently of this
+            # demand. Recheck the exact confirmed needs before waiting on jobs.
+            if await self._resume(row, detail, require_complete=True):
+                try:
+                    await self.supply.cancel(str(row["demand_id"]))
+                except Exception:  # noqa: BLE001 — shared jobs remain independent
+                    log.warning("could not release fulfilled demand task=%s", task_id)
+                return
             deadline = row.get("deadline")
             if deadline is not None and self.now() >= deadline:
                 await self._fail(row, "确认已过 7 天，数据还没取到", detail)
@@ -1144,7 +1152,13 @@ class DataWaiter:
             return
         await self._resume(row, detail)
 
-    async def _resume(self, row: dict[str, Any], detail: dict[str, Any]) -> None:
+    async def _resume(
+        self,
+        row: dict[str, Any],
+        detail: dict[str, Any],
+        *,
+        require_complete: bool = False,
+    ) -> bool:
         """补采办完了：重解析，凭本人那次确认续签、钉住已到的；都到了接着跑，有没到的
         停下问用户（照现有的接着做，还是取消）。"""
         task_id = str(row["task_id"])
@@ -1153,7 +1167,7 @@ class DataWaiter:
             subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
         if subject is None:
             await self._fail(row, "找不到委托人的账号", detail)
-            return
+            return False
         fresh = await self.knowbase.refresh(subject, str(row["resolution_id"]))
         ids = set(((row.get("detail") or {}).get("phase") or {}).get("requests") or [])
         asked = [
@@ -1171,6 +1185,18 @@ class DataWaiter:
             dropped=dropped,
             after_supply=True,
         )
+        fresh_items = _scoped(fresh, needs).get("items", [])
+        if require_complete and (
+            done.missing
+            or done.problems
+            or {n.key for n in needs} - {i.get("need_key") for i in fresh_items}
+            or any(
+                item_ref(i) not in dropped
+                and (i.get("status") != "resolved" or not i.get("chosen"))
+                for i in fresh_items
+            )
+        ):
+            return False
         async with self.stores() as repo:
             done.pins = await new_pins(repo, task_id, done.pins)
         known = set((row.get("detail") or {}).get("incomplete") or [])
@@ -1198,6 +1224,14 @@ class DataWaiter:
                 if g["item"] not in done.missing and g["item"] not in known
             ],
         }
+        if require_complete:
+            detail = {
+                **detail,
+                "fulfilled_from": "knowbase",
+                "supply_progress_before_reuse": detail.get("supply_progress"),
+                "supply_progress": None,
+                "demand_status": None,
+            }
         revision = int(fresh["revision"])
         pins: list[dict[str, Any]] = []
         grant_id = None
@@ -1225,7 +1259,7 @@ class DataWaiter:
                     await self._fail(
                         row, f"数据服务拒绝了：{REF_RELEASED}", row.get("detail") or {}
                     )
-                return
+                return False
             grant_id = str(grant["grant_id"])
             pins = _with_grant(done.pins, grant_id)
         from app.application.workbench.ledger import Ledger
@@ -1262,6 +1296,7 @@ class DataWaiter:
                 await self.knowbase.release_run_grant(grant_id)
             except Exception:  # noqa: BLE001 — 交还不成，到期也自己失效
                 log.warning("could not hand back an unused grant task=%s", task_id)
+        return kept
 
     async def _fail(self, row: dict[str, Any], reason: str, detail: dict[str, Any]):
         """取不来了（确认过了 7 天、数据服务明说不行）：停下问用户，照现有的接着做

@@ -663,3 +663,14 @@ started/completed分开去重，工具运行不计模型空闲，等人从两种
 所有者询问“那时间改长点不行吗”，已明确告知并采用6分钟：DATA_PLAN_SECONDS=6*60；提示分钟数由常量生成，避免代码/文案漂移。仅定数据；找专家120秒、正式步骤无进展180秒/总限900秒、费用/重复工具守卫均不变。没有修改模型effort，没有重启已暂停的委托，旧提示/历史费用原样保留。后续若重做，按新时限运行，不自动追加预算或重试。
 
 回归覆盖 data_planning_guard、真实WebSocket/隔离DB的data_planning_runner和flow；结果见本轮发版回执。C-D11保持任务真源；C-A9继续仅app-server驱动；C-A10不加预算；C-R10不把时限调整等同财务验收或性能保证。
+
+## 2026-11-04 确认与定数据结束竞态、已有资料续跑
+
+在d4b4e2c六分钟候选上补修。生产委托b435c1e9用户于02:16:59Z确认，模型02:17:04Z结束，旧Advisor把已确认的waiting覆盖ready；Task仍WAITING(DATA)，poller不再领走。confirmation63b51968、demand410d2726仍存在，非用户没确认。
+
+- Advisor仅把自己仍拥有的planning改ready，保留确认方waiting。
+- 原轮询/回调领用时，只对ready+WAITING(DATA)+confirmation+demand+next_check+同phase supplying请求的历史竞态恢复waiting；不复活终态，不推断未确认请求。
+- 供给单尚在fetching也按已确认范围重解析；全部条目与读法resolved且可续签才钉住、正常resume_data，并撤掉本需求单（共享作业不取消）。未齐继续等待，不默认缺数照做。保留先前供给快照供审计，清除已无意义的处理中显示。
+- 无生产DB直改、无代点确认、无新付费测试。既有确认恢复执行仍遵守原费用和任务规则。
+
+验证：68 passed（隔离PostgreSQL+HTTP/WebSocket，/tmp/luna-confirmation-race-tests.log），包括确认先于turn完成、旧竞态恢复、库齐但fetch未结束、未齐仍等、重复poll不重复授权、缺确认/终态不恢复；Ruff通过，Pyright0errors。初轮65passed/1failed源于旧替身在fetching时已经返回库齐，修正该测试的到货时序后全部通过。待既有Jenkins与knowbase匹配修复同版发布并核真实23项续签/钉住/任务续跑。
