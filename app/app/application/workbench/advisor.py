@@ -473,7 +473,12 @@ class Advisor:
             ):
                 return StepAssessment()
             verdict = (
-                timed_out(STEP_TIMEOUT_SECONDS // 60, step.acceptance)
+                timed_out(
+                    int(STEP_TIMEOUT_SECONDS // 60)
+                    if STEP_TIMEOUT_SECONDS is not None
+                    else None,
+                    step.acceptance,
+                )
                 if result.timed_out
                 else await judge_numbers(
                     judge(result.final_text, step.acceptance),

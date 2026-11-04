@@ -10,8 +10,9 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-STEP_IDLE_SECONDS = 180.0
-STEP_TOOL_SECONDS = 300.0
+# No wall/idle/tool duration cutoff. Repeated-result protection still applies.
+STEP_IDLE_SECONDS: float | None = None
+STEP_TOOL_SECONDS: float | None = None
 MAX_IDENTICAL_RESULTS = 3
 STOP_REASONS = {
     "no_progress": "超过180秒无可见进展时限，已中止本轮。",
@@ -46,13 +47,13 @@ class StepProgressGuard:
         if self.failure:
             return
         if self.active:
-            if any(
+            if STEP_TOOL_SECONDS is not None and any(
                 now - started >= STEP_TOOL_SECONDS for started in self.active.values()
             ):
                 self.failure = "tool_time_limit"
         else:
             self.idle_seconds += elapsed
-            if self.idle_seconds >= STEP_IDLE_SECONDS:
+            if STEP_IDLE_SECONDS is not None and self.idle_seconds >= STEP_IDLE_SECONDS:
                 self.failure = "no_progress"
 
     def observe(self, method: str, item: dict[str, Any], now: float) -> None:
