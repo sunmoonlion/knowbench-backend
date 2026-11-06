@@ -96,11 +96,13 @@ _OCCUPYING = """(
 
 
 def _test_task(alias: str) -> str:
-    return f"(coalesce({alias}.pack_source, '') = 'knowlab-test' or exists (select 1 from workbench_test_cases tc where tc.task_id = {alias}.id))"
+    # K29 只认存下来的列（SDD 0052 第二节）：建测试委托时就写 pack_source，迁移 0039 回填，
+    # #85 后线上对账与现算一致（11-06）。不再现算 workbench_test_cases
+    return f"(coalesce({alias}.pack_source, '') = 'knowlab-test')"
 
 
 def _test_session(alias: str) -> str:
-    return f"(coalesce({alias}.origin, '') = 'knowlab-test' or exists (select 1 from workbench_tasks tt where tt.session_id = {alias}.id and {_test_task('tt')}))"
+    return f"(coalesce({alias}.origin, '') = 'knowlab-test')"
 
 
 class WorkbenchRepository:

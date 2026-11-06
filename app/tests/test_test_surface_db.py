@@ -23,9 +23,9 @@ from app.domain.workbench.errors import TestManagedInKnowlab as ManagedInKnowlab
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("mismatched", [False, True])
 async def test_test_history_hidden_from_browser_but_available_to_author_runtime(
-    db, legacy
+    db, mismatched
 ):
     fake = ScriptedAppServer([])
     await fake.start()
@@ -41,8 +41,11 @@ async def test_test_history_hidden_from_browser_but_available_to_author_runtime(
             tid, sid, pid = map(
                 str, (task["id"], task["session_id"], task["project_id"])
             )
-            if legacy:
-                # Formal case binding identifies old tests even without source tags.
+            # K29 只认存下来的列（SDD 0052 第二节）：建出来就带标记
+            assert task["pack_source"] == "knowlab-test"
+            assert (await internal.get_session(sid))["origin"] == "knowlab-test"
+            if mismatched:
+                # 标记被改掉的委托（线上 #85 后对账为 0）：浏览只看列，不再按用例绑定现算。
                 await session.execute(
                     text("update workbench_sessions set origin = null where id = :id"),
                     {"id": sid},
@@ -52,6 +55,29 @@ async def test_test_history_hidden_from_browser_but_available_to_author_runtime(
                         "update workbench_tasks set pack_source = 'knowmart' where id = :id"
                     ),
                     {"id": tid},
+                )
+                await session.commit()
+                assert [
+                    str(t["id"]) for t in await browser.list_tasks(owner_actor_id=OWNER)
+                ] == [tid]
+                assert [
+                    str(c["id"])
+                    for c in await browser.list_sessions(owner_actor_id=OWNER)
+                ] == [sid]
+                # A mismatched binding must not become executable.
+                with pytest.raises(NotFound):
+                    await execution_view(internal, run, owner_subject=AUTHOR)
+                await session.execute(
+                    text(
+                        "update workbench_tasks set pack_source = 'knowlab-test' where id = :id"
+                    ),
+                    {"id": tid},
+                )
+                await session.execute(
+                    text(
+                        "update workbench_sessions set origin = 'knowlab-test' where id = :id"
+                    ),
+                    {"id": sid},
                 )
                 await session.commit()
             assert await browser.list_projects(owner_actor_id=OWNER) == []
@@ -67,17 +93,6 @@ async def test_test_history_hidden_from_browser_but_available_to_author_runtime(
                 with pytest.raises(NotFound):
                     await read(key, owner_actor_id=OTHER)
             assert (await internal.get_task(tid))["id"] == task["id"]
-            if legacy:
-                # A mismatched binding is hidden, but must not become executable.
-                with pytest.raises(NotFound):
-                    await execution_view(internal, run, owner_subject=AUTHOR)
-                await session.execute(
-                    text(
-                        "update workbench_tasks set pack_source = 'knowlab-test' where id = :id"
-                    ),
-                    {"id": tid},
-                )
-                await session.commit()
             view = await execution_view(internal, run, owner_subject=AUTHOR)
             assert view["cases"][0]["case_id"] == "c1"
             async with internal.transaction():
