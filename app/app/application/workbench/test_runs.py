@@ -744,6 +744,7 @@ class KnowbotTestConductor:
                     workspace_root=root,
                     path=folder,
                     title="分身测试",
+                    purpose="knowlab-test",
                 )
         else:
             project_id = str(project["id"])
@@ -907,6 +908,7 @@ class KnowbotTestConductor:
             kind="expert",
             project_id=account.project_id,
             title=f"分身测试 {case.case_id}",
+            origin="knowlab-test",
         )
         session_id = started["session_id"]
         made = await Ledger(repo).handover(

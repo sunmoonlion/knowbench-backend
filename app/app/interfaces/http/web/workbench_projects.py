@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.application.workbench.agent_service import AgentService
 from app.application.workbench.project_service import ProjectService, plain
 from app.application.workbench.session_service import SessionService
-from app.bootstrap.workbench import workbench_store
+from app.bootstrap.workbench import web_workbench_store as workbench_store
 from app.domain.security import Principal
 from app.domain.workbench.errors import WorkbenchError
 from app.infrastructure.storage.postgres import get_db_session

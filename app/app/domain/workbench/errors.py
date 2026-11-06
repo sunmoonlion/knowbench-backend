@@ -16,6 +16,11 @@ class NotFound(WorkbenchError):
     http_status = 404
 
 
+class TestManagedInKnowlab(WorkbenchError):
+    code = "test_managed_in_knowlab"
+    http_status = 409
+
+
 class Forbidden(WorkbenchError):
     code = "forbidden"
     http_status = 403

@@ -190,6 +190,11 @@ def workbench_store(session: AsyncSession) -> WorkbenchStore:
     return WorkbenchRepository(session)
 
 
+def web_workbench_store(session: AsyncSession) -> WorkbenchStore:
+    """Browser surface excludes knowlab test objects; runtime keeps the full ledger."""
+    return WorkbenchRepository(session, browser_view=True)
+
+
 def workbench_stores(
     session_factory: async_sessionmaker[AsyncSession],
 ) -> WorkbenchStores:
@@ -337,7 +342,7 @@ def dynamic_market_owners() -> frozenset[str]:
 
 def delegation_service(session: AsyncSession) -> DelegationService:
     return DelegationService(
-        workbench_store(session),
+        web_workbench_store(session),
         dynamic_method_owners=dynamic_market_owners(),
         directory=knowmart_catalog(),
     )

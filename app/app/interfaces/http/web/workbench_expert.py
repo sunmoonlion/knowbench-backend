@@ -28,7 +28,9 @@ from app.bootstrap.workbench import (
     expert_data,
     find_expert_service,
     knowmart_summoner,
-    workbench_store,
+)
+from app.bootstrap.workbench import (
+    web_workbench_store as workbench_store,
 )
 from app.domain.security import Principal
 from app.domain.workbench.errors import WorkbenchError

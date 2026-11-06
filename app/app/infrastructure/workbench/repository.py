@@ -33,6 +33,7 @@ from app.domain.workbench.errors import (
     ProjectExists,
     RelayIdentityBusy,
     StaleStateVersion,
+    TestManagedInKnowlab,
 )
 from app.domain.workbench.scheduling import LOOKUP_PROFILE, ProjectLane
 from app.domain.workbench.states import TURN_HOLD_SECONDS
@@ -94,9 +95,18 @@ _OCCUPYING = """(
             > now() - make_interval(secs => :hold)))"""
 
 
+def _test_task(alias: str) -> str:
+    return f"(coalesce({alias}.pack_source, '') = 'knowlab-test' or exists (select 1 from workbench_test_cases tc where tc.task_id = {alias}.id))"
+
+
+def _test_session(alias: str) -> str:
+    return f"(coalesce({alias}.origin, '') = 'knowlab-test' or exists (select 1 from workbench_tasks tt where tt.session_id = {alias}.id and {_test_task('tt')}))"
+
+
 class WorkbenchRepository:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, *, browser_view: bool = False):
         self.session = session
+        self.browser_view = browser_view
         self._depth = 0
 
     @asynccontextmanager
@@ -388,6 +398,7 @@ class WorkbenchRepository:
         workspace_root: str,
         path: str,
         title: str,
+        purpose: str = "user",
     ) -> str:
         project_id = str(uuid.uuid4())
         try:
@@ -395,8 +406,8 @@ class WorkbenchRepository:
             async with self.session.begin_nested():
                 await self.session.execute(
                     text(
-                        """insert into workbench_projects (id, owner_actor_id, environment_id, workspace_root, path, title)
-                           values (:id, :o, :e, :r, :p, :t)"""
+                        """insert into workbench_projects (id, owner_actor_id, environment_id, workspace_root, path, title, purpose)
+                           values (:id, :o, :e, :r, :p, :t, :purpose)"""
                     ),
                     {
                         "id": project_id,
@@ -405,6 +416,7 @@ class WorkbenchRepository:
                         "r": workspace_root,
                         "p": path,
                         "t": title,
+                        "purpose": purpose,
                     },
                 )
         except IntegrityError as exc:
@@ -434,6 +446,8 @@ class WorkbenchRepository:
             owner_actor_id is not None and str(row["owner_actor_id"]) != owner_actor_id
         ):
             raise NotFound("project not found", project_id=project_id)
+        if self.browser_view and row["purpose"] == "knowlab-test":
+            raise TestManagedInKnowlab("Manage this test in knowlab")
         return dict(row)
 
     async def find_project(
@@ -459,10 +473,11 @@ class WorkbenchRepository:
     ) -> list[dict[str, Any]]:
         r = await self.session.execute(
             text(
-                """select p.*,
-                          (select count(*) from workbench_sessions s where s.project_id = p.id and s.archived_at is null) as conversations,
-                          (select max(s.last_active_at) from workbench_sessions s where s.project_id = p.id and s.archived_at is null) as last_active_at
+                f"""select p.*,
+                          (select count(*) from workbench_sessions s where s.project_id = p.id and s.archived_at is null {"and not " + _test_session("s") if self.browser_view else ""}) as conversations,
+                          (select max(s.last_active_at) from workbench_sessions s where s.project_id = p.id and s.archived_at is null {"and not " + _test_session("s") if self.browser_view else ""}) as last_active_at
                    from workbench_projects p where p.owner_actor_id = :o"""
+                + (" and p.purpose <> 'knowlab-test'" if self.browser_view else "")
                 + ("" if include_archived else " and p.archived_at is null")
                 + " order by p.workspace_root, p.path"
             ),
@@ -592,6 +607,15 @@ class WorkbenchRepository:
             owner_actor_id is not None and str(row["owner_actor_id"]) != owner_actor_id
         ):
             raise NotFound("session not found", session_id=session_id)
+        if self.browser_view:
+            hidden = await self.session.scalar(
+                text(
+                    f"select {_test_session('s')} from workbench_sessions s where s.id = :id"
+                ),
+                {"id": session_id},
+            )
+            if hidden:
+                raise TestManagedInKnowlab("Manage this test in knowlab")
         return dict(row)
 
     async def list_sessions(
@@ -602,7 +626,9 @@ class WorkbenchRepository:
         without_project: bool = False,
         include_archived: bool = False,
     ) -> list[dict[str, Any]]:
-        sql = "select * from workbench_sessions where owner_actor_id = :o"
+        sql = "select s.* from workbench_sessions s where owner_actor_id = :o"
+        if self.browser_view:
+            sql += " and not " + _test_session("s")
         if project_id is not None:
             sql += " and project_id = :p"
         if without_project:
@@ -887,6 +913,15 @@ class WorkbenchRepository:
             owner_actor_id is not None and str(row["owner_actor_id"]) != owner_actor_id
         ):
             raise NotFound("task not found", task_id=task_id)
+        if self.browser_view:
+            hidden = await self.session.scalar(
+                text(
+                    f"select {_test_task('t')} from workbench_tasks t where t.id = :id"
+                ),
+                {"id": task_id},
+            )
+            if hidden:
+                raise TestManagedInKnowlab("Manage this test in knowlab")
         return dict(row)
 
     async def list_tasks(
@@ -897,7 +932,8 @@ class WorkbenchRepository:
         project_id: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = (
-            "select * from workbench_tasks where owner_actor_id = :o"
+            "select t.* from workbench_tasks t where owner_actor_id = :o"
+            + (" and not " + _test_task("t") if self.browser_view else "")
             + (" and session_id = :s" if session_id else "")
             + (" and project_id = :p" if project_id else "")
             + " order by created_at desc"
@@ -1159,6 +1195,7 @@ class WorkbenchRepository:
             """select i.* from workbench_interactions i
                join workbench_sessions s on s.id = i.session_id
                where s.owner_actor_id = :o"""
+            + (" and not " + _test_session("s") if self.browser_view else "")
             + (" and i.status = :st" if status else "")
             + (
                 " and (i.expires_at is null or i.expires_at > now())"

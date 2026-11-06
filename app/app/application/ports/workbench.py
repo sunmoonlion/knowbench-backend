@@ -228,6 +228,7 @@ class WorkbenchStore(Protocol):
         workspace_root: str,
         path: str,
         title: str,
+        purpose: str = "user",
     ) -> str:
         """同一个人、同一台机器、同一个目录已有没归档的项目时抛 `ProjectExists`。"""
         ...

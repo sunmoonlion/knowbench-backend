@@ -54,7 +54,9 @@ from app.bootstrap.workbench import (
     delegation_service,
     expert_data,
     knowbase_v2,
-    workbench_store,
+)
+from app.bootstrap.workbench import (
+    web_workbench_store as workbench_store,
 )
 from app.domain.security import Principal
 from app.domain.workbench.errors import MachineNotConnected, WorkbenchError
