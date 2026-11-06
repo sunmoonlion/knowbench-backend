@@ -358,6 +358,11 @@ class Settings(BaseSettings):
     workbench_data_supply_enabled: bool = Field(
         default=False, validation_alias="WORKBENCH_DATA_SUPPLY_ENABLED"
     )
+    # 固定专家也按计划回执执行（SDD 0050）：开着时新受理的固定委托由平台按作者顺序写回执，
+    # 执行、验收、收尾和动态专家走一路；关着一切照旧。等价验收通过、测试环境跑过保底题再开
+    workbench_fixed_as_plan: bool = Field(
+        default=False, validation_alias="WORKBENCH_FIXED_AS_PLAN"
+    )
     # 委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）。默认关：knowbase 的
     # outputs 接口要认出处依据（grant_ref、委托起止、回显 provenance_basis）的那一版上线后
     # 再开（交 Fable 发版时开）；关着时待写的成稿留着，不推进、不计失败次数（独立审 10-30）

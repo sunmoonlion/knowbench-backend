@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 from app.domain.workbench.method_catalog import METHOD_ID
@@ -21,6 +23,20 @@ from app.domain.workbench.packs import ExpertPack
 
 FIXED_PLAN_CONTRACT = "knowbench/fixed-plan/v1"
 FIXED_PLAN_REASON = "作者指定的固定顺序（平台按专家包生成，不经模型规划）"
+_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
+
+
+def fixed_pack_digest(pinned: object, pack: ExpertPack) -> str:
+    """回执里记的包摘要：分身委托上钉着清单摘要就用它；内置包没有，按包的规范 JSON 现算。"""
+    if isinstance(pinned, str) and _DIGEST.fullmatch(pinned):
+        return pinned
+    body = json.dumps(
+        pack.model_dump(mode="json"),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(body).hexdigest()
 
 
 def fixed_plan(pack: ExpertPack) -> FixedMethodPlan | None:

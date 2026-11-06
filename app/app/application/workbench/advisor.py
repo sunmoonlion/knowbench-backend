@@ -26,6 +26,7 @@ from app.application.workbench.execution_plan import (
 )
 from app.application.workbench.expert_data import holds_task, pending_requests
 from app.application.workbench.find_expert import validate_match_content
+from app.application.workbench.fixed_plans import accept_fixed_plan
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
 from app.application.workbench.plan_receipts import catalog_for_task
@@ -105,8 +106,11 @@ class Advisor:
         records: bool = False,
         deliverables: DeliverableCheck | None = None,
         reader: Any = None,
+        fixed_as_plan: bool = False,
     ):
         self.stores = stores  # 每次调用开一个工作单元
+        # 固定专家受理时由平台写计划回执，之后按回执走（SDD 0050）；默认关，关着照旧路
+        self.fixed_as_plan = fixed_as_plan
         self.driver = driver
         # 沙箱里配好了读项目记录的工具：每一步的说明里告诉模型有这组工具、委托编号是什么
         self.records = records
@@ -177,6 +181,15 @@ class Advisor:
                 )
                 await repo.commit()
                 await led.transition(task_id, TaskState.QUEUED)
+                if self.fixed_as_plan and not is_dynamic(task):
+                    # SDD 0050：平台按作者顺序写计划回执，之后按回执走；写不了照旧路
+                    await accept_fixed_plan(
+                        repo,
+                        task_id,
+                        expected_version=(await repo.get_task(task_id))[
+                            "state_version"
+                        ],
+                    )
         while True:
             state = await self._step_once(task_id)
             if state != TaskState.QUEUED:
@@ -265,7 +278,7 @@ class Advisor:
                 and a["failure_code"] == "acceptance"
             )
             inputs = {}
-            for name in () if view.dynamic else step.input_refs:
+            for name in () if view.planned else step.input_refs:
                 art = await repo.get_artifact(task_id=task_id, name=name)
                 if art is None:
                     return (
@@ -281,10 +294,26 @@ class Advisor:
                     )["state"]
                 inputs[name] = {"version": art["version"], "content": art["content"]}
             try:
-                if view.dynamic:
-                    opened = await led.open_method_step(
-                        task_id, expected_version=task["state_version"]
-                    )
+                if view.planned:
+                    try:
+                        opened = await led.open_method_step(
+                            task_id, expected_version=task["state_version"]
+                        )
+                    except MethodPlanInvalid as exc:
+                        if view.planned_by_model:
+                            raise
+                        # 固定专家：前面的成果对不上，和旧路「缺输入」一样停下（SDD 0050）
+                        return (
+                            await led.transition(
+                                task_id,
+                                TaskState.FAILED,
+                                reason={
+                                    "code": "missing_input",
+                                    "step": step.step_id,
+                                    "detail": str(exc),
+                                },
+                            )
+                        )["state"]
                     step, inputs, view = (
                         opened["step"],
                         opened["inputs"],
@@ -693,7 +722,7 @@ class Advisor:
                     )
                 )["state"]
             check_error = assessment.error
-            if not check_error and view.dynamic:
+            if not check_error and view.planned:
                 try:
                     current = await execution_for_task(repo, task)
                     if (
@@ -1010,7 +1039,7 @@ class Advisor:
             assert view is not None
             pack = view.pack
             if not self.records:
-                if view.dynamic:
+                if view.planned_by_model:
                     return (
                         await led.transition(
                             task_id,
@@ -1467,7 +1496,7 @@ class Advisor:
         view = await execution_for_task(repo, task)
         assert view is not None
         finals = {}
-        if view.dynamic:
+        if view.planned:
             if int(task["current_step"]) != len(view.pack.workflow):
                 raise MethodPlanInvalid("not all planned instances have completed")
             results = await accepted_results(repo, task, view)
@@ -1477,7 +1506,12 @@ class Advisor:
                 for key, instance in view.receipt.proposal.final_outputs.items()
             }
             verified = list(results.values())
-            result_art = None  # The handback names every required final output.
+            # 动态：交回列出每个最终产出；固定（SDD 0050）：照旧指向最后一步的成果
+            result_art = (
+                None
+                if view.planned_by_model
+                else results[view.receipt.proposal.steps[-1].instance_id]
+            )
         else:
             result_art = await repo.get_artifact(
                 task_id=task_id, name=pack.workflow[-1].output_artifact
@@ -1506,7 +1540,7 @@ class Advisor:
                 or task["state"] not in (TaskState.QUEUED, TaskState.RUNNING)
             ):
                 return task["state"]
-            if view.dynamic:
+            if view.planned:
                 await accepted_results(repo, task, view)
             attempts = await repo.list_attempts(task_id)
             handback = {
@@ -1528,7 +1562,7 @@ class Advisor:
                 ),
                 "budget": task["budget"],
             }
-            if view.receipt:
+            if view.receipt is not None and view.planned_by_model:
                 handback.update(
                     plan_version=view.receipt.version,
                     final_outputs={

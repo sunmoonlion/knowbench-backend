@@ -12,6 +12,7 @@ from app.domain.workbench.knowbots import V2_TOOLS
 from app.domain.workbench.method_catalog import MethodCatalog
 from app.domain.workbench.method_plan import (
     AcceptedMethodPlan,
+    FixedMethodPlan,
     SlottedPlannedStep,
     output_name,
     validate_composition,
@@ -25,8 +26,26 @@ class ExecutionPlan:
     receipt: AcceptedMethodPlan | None = None
 
     @property
-    def dynamic(self) -> bool:
+    def planned(self) -> bool:
+        """有计划回执：输入按已接受的谱系取、按回执收尾。固定专家开了 SDD 0050 也是。"""
         return self.receipt is not None
+
+    @property
+    def planned_by_model(self) -> bool:
+        """回执是规划模型写的（动态专家）；固定专家的回执是平台按作者顺序写的。"""
+        return self.receipt is not None and not isinstance(
+            self.receipt.proposal, FixedMethodPlan
+        )
+
+    def output_of(self, instance_id: str) -> str:
+        """这一实例的产出名：动态是 `output_name(实例)`，固定仍是作者起的名字。"""
+        assert self.receipt is not None
+        for planned, step in zip(
+            self.receipt.proposal.steps, self.pack.workflow, strict=True
+        ):
+            if planned.instance_id == instance_id:
+                return step.output_artifact
+        raise ValueError("instance is not in the accepted plan")
 
     @property
     def final_artifacts(self) -> tuple[str, ...]:
@@ -35,7 +54,7 @@ class ExecutionPlan:
                 (self.pack.workflow[-1].output_artifact,) if self.pack.workflow else ()
             )
         return tuple(
-            output_name(i) for i in self.receipt.proposal.final_outputs.values()
+            self.output_of(i) for i in self.receipt.proposal.final_outputs.values()
         )
 
 

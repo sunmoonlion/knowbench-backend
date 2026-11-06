@@ -26,7 +26,8 @@ from app.domain.workbench.execution_plan import (
     catalog_header,
     project_plan,
 )
-from app.domain.workbench.method_plan import output_name
+from app.domain.workbench.fixed_plan import fixed_pack_digest
+from app.domain.workbench.method_plan import FixedMethodPlan
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState, Wheel
 
 if TYPE_CHECKING:
@@ -45,7 +46,13 @@ async def execution_for_task(
 ) -> ExecutionPlan | None:
     if not is_dynamic(task):
         pack = pack_for_task(task)
-        return ExecutionPlan(pack) if pack else None
+        if pack is None:
+            return None
+        if task.get("accepted_plan_version") is None:
+            return ExecutionPlan(pack)  # 旧路（SDD 0050 开关关着，或开之前受理的）
+        receipt = await read_plan(repo, task)
+        assert receipt is not None
+        return ExecutionPlan(pack, receipt)
     catalog = catalog_for_task(task)
     receipt = await read_plan(repo, task)
     if receipt is None:
@@ -154,7 +161,7 @@ def _inputs(
             {
                 "slot": binding.slot,
                 "instance_id": binding.instance_id,
-                "name": output_name(binding.instance_id),
+                "name": view.output_of(binding.instance_id),
                 "version": artifact["version"],
                 "id": str(artifact["id"]),
                 "digest": artifact["digest"],
@@ -192,9 +199,14 @@ async def accepted_results(
     """
     if view.receipt is None:
         raise MethodPlanInvalid("method results require a dynamic task plan")
+    pinned = (
+        fixed_pack_digest(task.get("pack_digest"), view.pack)
+        if isinstance(view.receipt.proposal, FixedMethodPlan)
+        else task.get("pack_digest")
+    )
     if (
         view.receipt.task_id != str(task["id"])
-        or view.receipt.pack_digest != task.get("pack_digest")
+        or view.receipt.pack_digest != pinned
         or view.receipt.version != task.get("accepted_plan_version")
     ):
         raise MethodPlanInvalid(
@@ -246,7 +258,7 @@ async def accepted_results(
             raise MethodPlanInvalid("method attempt must accept exactly one output")
         output = outputs[0]
         if (
-            output.get("name") != output_name(planned.instance_id)
+            output.get("name") != view.output_of(planned.instance_id)
             or type(output.get("version")) is not int
             or output["version"] < 1
         ):

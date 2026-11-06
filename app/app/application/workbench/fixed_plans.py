@@ -9,16 +9,14 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 import logging
-import re
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.catalog import pack_for_task
 from app.application.workbench.execution_plan import is_dynamic
 from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
+from app.domain.workbench.fixed_plan import fixed_pack_digest as _digest
 from app.domain.workbench.fixed_plan import fixed_plan, validate_fixed_plan
 from app.domain.workbench.method_plan import (
     PLAN_ARTIFACT,
@@ -31,21 +29,10 @@ from app.domain.workbench.packs import ExpertPack
 log = logging.getLogger(__name__)
 
 FIXED_PLAN_ATTEMPT = "author-order"
-_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 
 
 def fixed_pack_digest(task: dict[str, Any], pack: ExpertPack) -> str:
-    """分身委托上钉着清单摘要就用它；内置包的委托没有，按包的规范 JSON 算。"""
-    pinned = task.get("pack_digest")
-    if isinstance(pinned, str) and _DIGEST.fullmatch(pinned):
-        return pinned
-    body = json.dumps(
-        pack.model_dump(mode="json"),
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return "sha256:" + hashlib.sha256(body).hexdigest()
+    return _digest(task.get("pack_digest"), pack)
 
 
 async def accept_fixed_plan(
