@@ -49,7 +49,9 @@ from app.application.workbench.execution_plan import (
     execution_for_task,
     final_results,
     is_dynamic,
-    test_method_results,
+)
+from app.application.workbench.execution_plan import (
+    test_method_results as collect_method_results,
 )
 from app.application.workbench.expert_data import (
     new_pins,
@@ -1203,7 +1205,7 @@ class KnowbotTestConductor:
         )
         if is_dynamic(task):
             selected = (
-                await test_method_results(repo, task)
+                await collect_method_results(repo, task)
                 if run["request"].get("contract") == "knowbot-test-run/v2"
                 else await final_results(repo, task)
             )
