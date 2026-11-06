@@ -358,10 +358,13 @@ class Settings(BaseSettings):
     workbench_data_supply_enabled: bool = Field(
         default=False, validation_alias="WORKBENCH_DATA_SUPPLY_ENABLED"
     )
-    # 固定专家也按计划回执执行（SDD 0050）：开着时新受理的固定委托由平台按作者顺序写回执，
-    # 执行、验收、收尾和动态专家走一路；关着一切照旧。等价验收通过、测试环境跑过保底题再开
-    workbench_fixed_as_plan: bool = Field(
-        default=False, validation_alias="WORKBENCH_FIXED_AS_PLAN"
+    # 固定专家也按计划回执执行（SDD 0050）：名单里的账号（精确的登录 subject）新受理的固定
+    # 委托由平台按作者顺序写回执，执行、验收、收尾和动态专家走一路；不在名单里的照旧。
+    # 只有一个开发站点、没有单独测试环境，所有者 11-06 定先只放本人，跑通保底题再放开
+    workbench_fixed_as_plan_owners: tuple[str, ...] = Field(
+        default=(),
+        max_length=100,
+        validation_alias="WORKBENCH_FIXED_AS_PLAN_OWNERS",
     )
     # 委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）。默认关：knowbase 的
     # outputs 接口要认出处依据（grant_ref、委托起止、回显 provenance_basis）的那一版上线后
@@ -429,7 +432,11 @@ class Settings(BaseSettings):
             )
         )
 
-    @field_validator("knowbot_dynamic_test_owners", "knowbot_dynamic_market_owners")
+    @field_validator(
+        "knowbot_dynamic_test_owners",
+        "knowbot_dynamic_market_owners",
+        "workbench_fixed_as_plan_owners",
+    )
     @classmethod
     def dynamic_owners_are_exact(cls, value: tuple[str, ...]) -> tuple[str, ...]:
         if any(not re.fullmatch(r"[A-Za-z0-9._:@-]{1,512}", item) for item in value):

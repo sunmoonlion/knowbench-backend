@@ -106,11 +106,11 @@ class Advisor:
         records: bool = False,
         deliverables: DeliverableCheck | None = None,
         reader: Any = None,
-        fixed_as_plan: bool = False,
+        fixed_as_plan_owners: frozenset[str] = frozenset(),
     ):
         self.stores = stores  # 每次调用开一个工作单元
-        # 固定专家受理时由平台写计划回执，之后按回执走（SDD 0050）；默认关，关着照旧路
-        self.fixed_as_plan = fixed_as_plan
+        # 名单里的账号，固定专家受理时由平台写计划回执、之后按回执走（SDD 0050）；默认没人
+        self.fixed_as_plan_owners = fixed_as_plan_owners
         self.driver = driver
         # 沙箱里配好了读项目记录的工具：每一步的说明里告诉模型有这组工具、委托编号是什么
         self.records = records
@@ -181,7 +181,12 @@ class Advisor:
                 )
                 await repo.commit()
                 await led.transition(task_id, TaskState.QUEUED)
-                if self.fixed_as_plan and not is_dynamic(task):
+                if (
+                    self.fixed_as_plan_owners
+                    and not is_dynamic(task)
+                    and await repo.subject_of_actor(str(task["owner_actor_id"]))
+                    in self.fixed_as_plan_owners
+                ):
                     # SDD 0050：平台按作者顺序写计划回执，之后按回执走；写不了照旧路
                     await accept_fixed_plan(
                         repo,

@@ -54,7 +54,7 @@ async def main() -> None:
         records=settings.workbench_records_mcp_enabled,
         prices=settings.workbench_model_prices(),
         deliverables=deliverables,
-        fixed_as_plan=settings.workbench_fixed_as_plan,
+        fixed_as_plan_owners=frozenset(settings.workbench_fixed_as_plan_owners),
     )
     # 我的机器：同一个进程里另起一条线，隔一会儿和会合点对一遍谁在线（没配管理通道就没有这条线）
     machines = build_machine_sync(

@@ -1723,10 +1723,10 @@ class Runner:
         prices: PriceList | None = None,
         deliverables: DeliverableCheck | None = None,
         reader: Any = None,
-        fixed_as_plan: bool = False,
+        fixed_as_plan_owners: frozenset[str] = frozenset(),
     ):
         self.records = records
-        self.fixed_as_plan = fixed_as_plan  # SDD 0050；默认关
+        self.fixed_as_plan_owners = fixed_as_plan_owners  # SDD 0050；默认没人
         self.deliverables = deliverables
         # 第四版：数值验收回查事实编号、资料页码（run_reader.RunReader）
         self.reader = reader
@@ -2274,7 +2274,7 @@ class Runner:
             records=self.records,
             deliverables=self.deliverables,
             reader=self.reader,
-            fixed_as_plan=self.fixed_as_plan,
+            fixed_as_plan_owners=self.fixed_as_plan_owners,
         )
         try:
             state = await advisor.drive(task_id)

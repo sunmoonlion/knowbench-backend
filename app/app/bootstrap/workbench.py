@@ -243,7 +243,7 @@ def build_runner(
     records: bool = False,
     prices: PriceList | None = None,
     deliverables: DeliverableCheck | None = None,
-    fixed_as_plan: bool = False,
+    fixed_as_plan_owners: frozenset[str] = frozenset(),
 ) -> Runner:
     return Runner(
         workbench_stores(session_factory),
@@ -256,7 +256,7 @@ def build_runner(
         prices=prices,
         deliverables=deliverables,
         reader=_run_reader(),
-        fixed_as_plan=fixed_as_plan,
+        fixed_as_plan_owners=fixed_as_plan_owners,
     )
 
 

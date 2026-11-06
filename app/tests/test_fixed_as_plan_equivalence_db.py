@@ -197,16 +197,29 @@ async def _redrive(db, sid: str, sb: str, tid: str) -> None:
             )
 
 
-async def _run(db, monkeypatch, *, on: bool, replies, budget, answers, crash=None):
+SUBJECT = "owner-subject-0001"  # 测试库里委托所有者的登录 subject
+
+
+async def _run(
+    db, monkeypatch, *, on: bool, replies, budget, answers, crash=None, owners=None
+):
     """answers 里每一项在一次驾驶之后做：dict 是答复待答的问题，"cancel" 是用户叫停，
     "restart" 是换一个新进程接着驾驶。crash 是步骤 id：这一步刚开始时进程断掉一次。"""
     original = advisor_module.Advisor.__init__
 
     def init(self, *a, **kw):
-        kw["fixed_as_plan"] = on
+        kw["fixed_as_plan_owners"] = (
+            frozenset(owners)
+            if owners is not None
+            else frozenset({SUBJECT} if on else ())
+        )
         original(self, *a, **kw)
 
+    async def subject_of_actor(self, actor_id):
+        return SUBJECT
+
     monkeypatch.setattr(advisor_module.Advisor, "__init__", init)
+    monkeypatch.setattr(WorkbenchRepository, "subject_of_actor", subject_of_actor)
     append = WorkbenchRepository.append_event
     crashed: list[str] = []
     if crash is not None:
@@ -411,3 +424,22 @@ async def test_outputs_named_apart_from_their_steps_are_the_same(db, monkeypatch
     assert [a[0] for a in off["attempts"]] == ["plan", "answer", "plan", "answer"]
     assert off["attempts"][-1][4] == [("draft", 2)]  # 退回后读的是第一步新的那一版
     assert {name for name, _ in off["artifacts"]} == {"draft", "answer", "handback"}
+
+
+async def test_an_account_not_on_the_list_stays_on_the_old_path(db, monkeypatch):
+    """名单里只有别人：这个账号的固定委托不写回执，和关着一样（所有者 11-06：先只放本人）。"""
+    replies, budget, answers = SCENARIOS["happy"]
+    off = await _run(
+        db, monkeypatch, on=False, replies=replies, budget=budget, answers=answers
+    )
+    other = await _run(
+        db,
+        monkeypatch,
+        on=True,
+        replies=replies,
+        budget=budget,
+        answers=answers,
+        owners={"someone-else-0002"},
+    )
+    assert off.pop("planned") is None and other.pop("planned") is None
+    assert other == off
