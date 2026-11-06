@@ -39,6 +39,22 @@ from app.domain.workbench.states import TURN_HOLD_SECONDS
 from app.domain.workbench.tokens import token_hash
 from app.infrastructure.repositories.outbox import SqlOutboxRepository
 
+# Recover only the historical planner/confirmation race: a confirmed supply
+# phase was marked ready while its task still waits for data. Never revive a
+# terminal task or infer confirmation from a pending proposal.
+_SUPPLY_WAITING = """(
+    r.status = 'waiting' or (
+        r.status = 'ready' and t.state = 'WAITING' and t.waiting_reason = 'DATA'
+        and r.demand_id is not null and r.confirmation_id is not null
+        and r.next_check_at is not null
+        and exists (
+            select 1 from jsonb_array_elements(coalesce(r.detail->'requests', '[]'::jsonb)) req
+            where req->>'status' = 'supplying'
+              and coalesce(r.detail->'phase'->'requests', '[]'::jsonb) ? (req->>'id')
+        )
+    )
+)"""
+
 
 def atomic(method):
     @wraps(method)
@@ -1864,10 +1880,10 @@ class WorkbenchRepository:
         """等数据、到了该查的时候的那几件（含委托已经结束的：要取消需求单）。"""
         r = await self.session.execute(
             text(
-                """select r.*, t.state as task_state, t.owner_actor_id
+                f"""select r.*, t.state as task_state, t.owner_actor_id
                    from workbench_task_resolution r
                    join workbench_tasks t on t.id = r.task_id
-                   where r.status = 'waiting' and r.next_check_at <= :now
+                   where {_SUPPLY_WAITING} and r.next_check_at <= :now
                      and (r.checking_until is null or r.checking_until <= :now)
                    order by r.next_check_at limit :n"""
             ),
@@ -1881,11 +1897,11 @@ class WorkbenchRepository:
         """推送来了：把等这张单子、眼下没人在查的几件领下来（领用期限 checking_until）。"""
         r = await self.session.execute(
             text(
-                """update workbench_task_resolution r
-                   set checking_until = :until, updated_at = now()
+                f"""update workbench_task_resolution r
+                   set checking_until = :until, status = 'waiting', updated_at = now()
                    from workbench_tasks t, auth_user u
                    where t.id = r.task_id and u.id = t.owner_actor_id
-                     and r.demand_id = :d and r.status = 'waiting'
+                     and r.demand_id = :d and {_SUPPLY_WAITING}
                      and (r.checking_until is null or r.checking_until <= :now)
                      and u.subject = :owner
                    returning r.*, t.state as task_state, t.owner_actor_id"""
@@ -1925,10 +1941,10 @@ class WorkbenchRepository:
         """到点查的线领一件：还在等、眼下没人在查才领得到（推送那边领着就让开）。"""
         r = await self.session.execute(
             text(
-                """update workbench_task_resolution r
-                   set checking_until = :until, updated_at = now()
+                f"""update workbench_task_resolution r
+                   set checking_until = :until, status = 'waiting', updated_at = now()
                    from workbench_tasks t
-                   where t.id = r.task_id and r.task_id = :t and r.status = 'waiting'
+                   where t.id = r.task_id and r.task_id = :t and {_SUPPLY_WAITING}
                      and (r.checking_until is null or r.checking_until <= :now)
                    returning r.*, t.state as task_state, t.owner_actor_id"""
             ),

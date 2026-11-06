@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 DATA_STEP_ID = "data-plan"
-DATA_PLAN_SECONDS = 180
+DATA_PLAN_SECONDS: float | None = None
 MAX_IDENTICAL_RESULTS = 3
 MAX_TOOL_CALLS = 40
 # Native search is absent from this phase's tool configuration. A provider
@@ -23,7 +23,7 @@ STOP_REASONS = {
     "repeated_result": "准备数据时重复调用同一工具并得到相同结果，未形成新的数据需求",
     "tool_limit": "准备数据阶段工具调用过多，尚未结束数据需求规划",
     "web_search_limit": "模型调用了本阶段未开放的内置搜索，尚未形成数据需求",
-    "time_limit": "准备数据超过3分钟，尚未完成数据需求规划",
+    "time_limit": "准备数据达到本轮执行时限，尚未完成数据需求规划",
 }
 
 

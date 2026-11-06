@@ -81,7 +81,8 @@ REWORK_FAILURE_CHARS = 400
 DATA_STEP_ID = "data-plan"
 DATA_STEP_TITLE = "定数据"
 DATA_STEP_RESERVE = Decimal("0.05")
-# 给模型看的专家做法：每一步的说明最多这么多字，合起来最多这么多字
+# Preserve the existing method projection until authors provide explicit data hints.
+# A shorter arbitrary prefix is not a summary and can remove input requirements.
 DATA_STEP_METHOD_CHARS = 1200
 DATA_STEP_TOTAL_CHARS = 12000
 
@@ -472,7 +473,12 @@ class Advisor:
             ):
                 return StepAssessment()
             verdict = (
-                timed_out(STEP_TIMEOUT_SECONDS // 60, step.acceptance)
+                timed_out(
+                    int(STEP_TIMEOUT_SECONDS // 60)
+                    if STEP_TIMEOUT_SECONDS is not None
+                    else None,
+                    step.acceptance,
+                )
                 if result.timed_out
                 else await judge_numbers(
                     judge(result.final_text, step.acceptance),
@@ -1239,8 +1245,12 @@ class Advisor:
                 attempt_id=attempt_id,
             )
             async with repo.transaction():
-                await repo.update_task_resolution(task_id, status="ready")
                 row = await repo.get_task_resolution(task_id, for_update=True)
+                # Confirmation can arrive while the model is finishing this turn.
+                # It owns the transition to waiting; do not erase its supply poll.
+                if row is not None and row["status"] == "planning":
+                    await repo.update_task_resolution(task_id, status="ready")
+                    row = await repo.get_task_resolution(task_id)
                 if holds_task(row):
                     await led.transition(
                         task_id,
@@ -1806,7 +1816,7 @@ def compose_data_plan(
     room = DATA_STEP_TOTAL_CHARS
     for n, step in enumerate(pack.workflow, start=1):
         body = step.method_text.strip()[:DATA_STEP_METHOD_CHARS]
-        chunk = f"{n}. {step.title}\n{body}"
+        chunk = f"{n}. {step.title}\n{body}" if body else f"{n}. {step.title}"
         if len(chunk) > room:
             method.append(f"{n}. {step.title}")
             continue
@@ -1817,7 +1827,8 @@ def compose_data_plan(
     parts = [
         f"# Step 0 of {pack.name or pack.title}: decide what data this task needs",
         "Before step 1 starts, decide which data the steps below need for this "
-        "user's question, and propose it. Do not start step 1 in this turn.",
+        "user's question, and propose it with tools. Do not start step 1, do not "
+        "perform analysis, and do not restate the methods at length in this turn.",
         "",
         "## The user's question",
         str(asked or "").strip()[:4000],
@@ -1828,53 +1839,51 @@ def compose_data_plan(
             if scope_change
             else []
         ),
-        "## How this expert works (its steps)",
-        *method,
-        "",
-        "## What to do",
-        "- The steps above describe later analysis, not instructions to execute now. "
-        "In this turn only propose the data requirements. Do not perform analysis, "
-        "read report pages or use built-in web search to obtain financial values.",
-        "- list_inputs lists only data ALREADY AUTHORIZED for THIS TASK, not all "
-        "materials in knowbase. Before confirmation an empty inputs list is normal. "
-        "Do not poll it: user confirmation cannot occur until you submit request_data "
-        "and finish this turn. An empty list is NOT proof that the company has no data.",
-        "- Work out which companies or institutions the question is about. Look up "
-        f'each code with find_subject(task="{task_id}", name=…); never write a code '
-        "from memory. Ask for data on other companies too when the steps compare "
-        "with them.",
-        f'- Propose the data with request_data(task="{task_id}", needs=[…]): for each '
-        "item give subject (the code; leave it out for data about no particular "
-        "company, such as rules or statistics), doc_type, period, reading, "
-        "essential (true if the steps cannot be done without it) and reason (why "
-        "the steps need it). At most 20 items.",
-        "- The user confirms, changes or drops these items before anything is "
-        "fetched or read; you cannot read them in this turn.",
-        f'- Discover available suppliers with discover_source_tools(task="{task_id}"). '
-        "Missing data does not always require collecting a new document: an available "
-        "supplier API query (for example Wind) may satisfy the need. Choose the evidence "
-        "form the selected methods actually require; do not request report PDFs merely "
-        "because numeric or textual information is missing. "
-        "Use a service's advertised schema for source_query in request_data. Supplier responses "
-        "are other_text/text evidence; dates and requested fields go in query arguments. "
-        "Do not substitute an excerpt or link for a required annual report PDF.",
-        "- If discover_source_tools returns no suppliers, still propose the required "
-        "public reports using request_data. The data service resolves existing materials "
-        "and only then identifies what needs collecting. Never repeatedly search for "
-        "values before submitting the requirements. Call each discovery for the same "
-        "arguments once; after request_data succeeds, end the turn immediately.",
+        "## What to do now (tools first)",
+        "- Only after the scope check permits this question, and only if data is "
+        "needed, begin with the necessary discovery tools. Do not calculate "
+        "financial results or plan their execution before discovery. Call "
+        f'find_subject(task="{task_id}", name=…) for each company or institution '
+        "named in the question (never invent a code; skip subject lookup when no "
+        "company or institution is involved). Discover available suppliers with "
+        f'discover_source_tools(task="{task_id}"), then finish with '
+        f'request_data(task="{task_id}", needs=[…]). Do not write a long plan '
+        "before the first tool call.",
+        "- request_data needs: subject (code; omit for non-company items), doc_type, "
+        "period, reading, essential (true when required by the selected methods), "
+        "and reason (why the methods need it). At most 20 items. The user confirms "
+        "before anything is fetched; you cannot read the data in this turn.",
+        "- list_inputs lists only data ALREADY AUTHORIZED for THIS TASK. Before "
+        "confirmation an empty inputs list is normal—do not poll it. An empty list is NOT "
+        "proof that the company has no data.",
+        "- Use the advertised supplier schema for source_query; dates and requested "
+        "fields belong in its query arguments. Prefer an available supplier query "
+        "(for example Wind) via source_query "
+        "when it satisfies the need; do not request report PDFs merely because a "
+        "number is missing. Do not substitute an excerpt or link for an annual "
+        "report PDF required by the author. Supplier responses are other_text/text "
+        "evidence. If no "
+        "suppliers exist, still propose the required public reports with "
+        "request_data. The data service resolves existing materials before deciding "
+        "what needs collecting. Do not read report pages or use built-in web "
+        "search for financial values in this turn. Call each discovery for the "
+        "same arguments once; after "
+        "request_data succeeds, end the turn immediately.",
         "- Match reading to downstream tools: original is the source file, pages is "
-        "page-indexed text, text is body text, and table is extracted facts. A PDF or "
-        "body-text reading does not imply that query_facts/raw fact refs exist. If a "
-        "selected step uses compute, request the supported fact-producing reading "
-        "(table for report extraction) as well as any original/pages evidence it needs. "
-        "Check actual refs before calculating; supplier text is not automatically "
-        "numeric fact rows, and page numbers are not compute inputs.",
-        "- Respect the author's conditional scope: do not request forecast-only "
-        "inputs for a question that does not need forecasting unless the author's "
-        "method explicitly requires that analysis.",
-        "- If the question needs no data, propose nothing.",
-        "- End the turn with one sentence on what you proposed and why.",
+        "page-indexed text, text is body text, and table is extracted facts. If a "
+        "later step uses compute, also request a fact-producing reading (table) as "
+        "well as any original/pages evidence it needs. "
+        "A PDF or body-text reading does not imply query_facts/raw fact refs exist. "
+        "Supplier text is not automatically numeric fact rows; page numbers are "
+        "not compute inputs.",
+        "- Ask for peer companies when later steps compare with them. Respect "
+        "conditional scope: no forecast-only inputs unless the question needs "
+        "forecasting, unless the author explicitly requires that analysis. If no data "
+        "is needed, propose nothing and call no discovery tools.",
+        "- End with one sentence on what you proposed and why.",
+        "",
+        "## Later steps (reference only — do not execute)",
+        *method,
     ]
     if bound:
         parts += [

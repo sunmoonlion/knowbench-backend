@@ -1,4 +1,12 @@
+import pytest
+
 from app.domain.workbench.step_progress import StepProgressGuard
+
+
+@pytest.fixture(autouse=True)
+def finite_limits_for_legacy_guard_tests(monkeypatch):
+    monkeypatch.setattr("app.domain.workbench.step_progress.STEP_IDLE_SECONDS", 180.0)
+    monkeypatch.setattr("app.domain.workbench.step_progress.STEP_TOOL_SECONDS", 300.0)
 
 
 def tool(identity="one", result=None, **fields):

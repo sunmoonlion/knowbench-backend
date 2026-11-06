@@ -657,6 +657,7 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
             "receipt": {"private": "must-not-leak"},
         }
     ]
+    kb.arrives = False  # 采集未完成时，库里也确实还缺这一份
     assert await waiter.sweep() == 1  # 还在取：不动，但部分失败已可见
     async with make_client(A) as http:
         response = await http.get(f"/api/workbench/tasks/{task_id}/data")
@@ -667,6 +668,7 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         assert "receipt" not in progress["items"][0]
         assert "must-not-leak" not in response.text
     supply.status = "ready"
+    kb.arrives = True
     waiter.now = lambda: later + timedelta(hours=1)
     assert await waiter.sweep() == 1
     [granted] = [c for c in kb.calls if c[0] == "grant_by_confirmation"]
@@ -1510,3 +1512,125 @@ async def test_legacy_confirmation_waiting_cannot_resume_without_a_demand(
         )
         assert response.status_code == 200 and response.json()["status"] == "supplying"
         assert len(supply.submitted) == 1
+
+
+async def test_confirmation_before_planner_return_keeps_supply_waiting(
+    make_client,
+    db,
+    world,
+    monkeypatch,
+):
+    await known(db)
+    original = StepZero.run_turn
+    async with make_client(A) as http:
+
+        async def confirm_before_return(turn, thread_id, prompt, *, timeout=0):  # noqa: ASYNC109
+            result = await original(turn, thread_id, prompt, timeout=timeout)
+            task_id = prompt.split('task="', 1)[1].split('"', 1)[0]
+            response = await http.post(
+                f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+            )
+            assert response.status_code == 200, response.text
+            assert response.json()["status"] == "supplying"
+            return result
+
+        monkeypatch.setattr(StepZero, "run_turn", confirm_before_return)
+        task_id, _, _ = await asked(http, db, world, "confirm-before-return")
+    [row] = await rows(db, "select * from workbench_task_resolution")
+    assert row["status"] == "waiting"
+    assert row["confirmation_id"] == "conf-1"
+    assert row["demand_id"] == "d-1"
+    assert row["next_check_at"] is not None
+    [task] = await rows(
+        db, "select state, waiting_reason from workbench_tasks where id=:t", t=task_id
+    )
+    assert (task["state"], task["waiting_reason"]) == ("WAITING", "DATA")
+
+
+@pytest.mark.parametrize("legacy_race", [False, True])
+async def test_existing_confirmed_readings_resume_without_waiting_for_fetch_job(
+    make_client,
+    db,
+    world,
+    legacy_race,
+):
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "existing-readings")
+        response = await http.post(
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert response.status_code == 200
+    if legacy_race:
+        # Reproduce the state written by the old planner, in this test schema only.
+        async with db() as s, s.begin():
+            await s.execute(
+                text(
+                    "update workbench_task_resolution set status='ready' where task_id=:t"
+                ),
+                {"t": task_id},
+            )
+    kb, supply = world["kb"], world["supply"]
+    kb.arrives = False
+    later = datetime.now(UTC) + timedelta(minutes=10)
+    waiter = DataWaiter(workbench_stores(db), kb, supply, now=lambda: later)
+    assert await waiter.sweep() == 1
+    [row] = await rows(db, "select status from workbench_task_resolution")
+    assert row["status"] == "waiting"
+    assert not supply.cancelled
+    kb.arrives = True  # library now satisfies the exact confirmed request
+    waiter.now = lambda: later + timedelta(hours=1)
+    assert await waiter.sweep() == 1
+    assert supply.status == "fetching"  # fetch job itself did not finish
+    assert supply.cancelled == ["d-1"]
+    assert len(supply.submitted) == 1  # no second confirmation or demand
+    [task] = await rows(db, "select state from workbench_tasks where id=:t", t=task_id)
+    assert task["state"] == "VALIDATING"
+    assert await waiter.sweep() == 0
+    assert len([c for c in kb.calls if c[0] == "grant_by_confirmation"]) == 1
+
+
+@pytest.mark.parametrize("break_confirmation", [True, False])
+async def test_legacy_repair_never_invents_confirmation_or_revives_terminal_task(
+    make_client,
+    db,
+    world,
+    break_confirmation,
+):
+    await known(db)
+    async with make_client(A) as http:
+        task_id, _, _ = await asked(http, db, world, "no-revival")
+        assert (
+            await http.post(
+                f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+            )
+        ).status_code == 200
+    async with db() as s, s.begin():
+        await s.execute(
+            text(
+                "update workbench_task_resolution set status='ready' where task_id=:t"
+            ),
+            {"t": task_id},
+        )
+        if break_confirmation:
+            await s.execute(
+                text(
+                    "update workbench_task_resolution set confirmation_id=null where task_id=:t"
+                ),
+                {"t": task_id},
+            )
+        else:
+            await s.execute(
+                text(
+                    "update workbench_tasks set state='CANCELLED',waiting_reason=null where id=:t"
+                ),
+                {"t": task_id},
+            )
+    waiter = DataWaiter(
+        workbench_stores(db),
+        world["kb"],
+        world["supply"],
+        now=lambda: datetime.now(UTC) + timedelta(minutes=10),
+    )
+    assert await waiter.sweep() == 0
+    assert not [c for c in world["kb"].calls if c[0] == "grant_by_confirmation"]

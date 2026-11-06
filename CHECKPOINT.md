@@ -659,3 +659,39 @@ started/completed分开去重，工具运行不计模型空闲，等人从两种
 规则：C-D11账房真源、C-A9不新增模型客户、C-A10预算不追加、C-R10离线通过不当线上通过。
 最终合并回归84 passed（含真实隔离PostgreSQL/WebSocket）；日志 /tmp/luna-step-guard-final-tests.log；Ruff、Pyright通过。发布授权为所有者本轮
 “你修好直接发版”，使用既有Make/Jenkins；不启动真实模型委托。
+
+## 2026-11-04 定数据工具指令前置（#74 后继，独立候选）
+
+基线 b9b937a（#74），分支 fix/data-plan-discovery-order。审查原 240/2400 字截断候选后不采用：任意前缀不是摘要，会删除作者输入要求；无条件首动作调用工具亦与范围门冲突。本次保留 #74 的 1200/12000 投影上限，将作用域检查之后、方法参考之前放置条件化发现指令，仅需数据且问题在范围内才查主体/供应商并提交 request_data。保留供应商 schema、PDF 原件、table 事实、非公司题/无数据题及作者显式预测要求等边界。没有修改专家包、时限、模型或 effort，没有混入主工位 K29。
+
+新增超过240字之后的数据要求保留及工具顺序/数据边界回归。组合回归初跑88 passed/4 failed，四项均为旧提示固定措辞断言；恢复原“empty inputs list is normal”后 scope+flow 重跑16 passed，未放宽测试。其余规划守卫、runner、schema、专家数据及找专家用例均在初跑中通过。Ruff/Pyright/diff 检查通过，无真实模型调用。
+
+证据边界：现场 15KB 用户提示与180秒零完成工具并存，不能证明长度是唯一原因。Kimi K3 官方说明缺省 effort=max，现场请求未指定；隔离低 effort 亦有超时，故本版不擅自改 effort，不宣称根治供应商或网络问题。只发布提示结构修正，不自动新开付费委托、不更改旧失败/费用记录。
+
+## 2026-11-04 定数据时限改为六分钟（所有者指示）
+
+#76 后任务 b435c1e9 使用了新提示，02:07:31Z 开始；02:08:12Z 收到供应商 engine overloaded 自动重连；02:08:17Z 开始reasoning，02:10:26Z完成；02:10:27Z find_subject/discover_source_tools 均成功，02:10:31Z达到180秒总限被确认中断。报告7360输出token，其中7151推理token；记录费用0.776932元。不能解释为工具失败或新提示未上线。只查看事件类型/计数与公开工具结果，不读取/保存推理内容。
+
+所有者询问“那时间改长点不行吗”，已明确告知并采用6分钟：DATA_PLAN_SECONDS=6*60；提示分钟数由常量生成，避免代码/文案漂移。仅定数据；找专家120秒、正式步骤无进展180秒/总限900秒、费用/重复工具守卫均不变。没有修改模型effort，没有重启已暂停的委托，旧提示/历史费用原样保留。后续若重做，按新时限运行，不自动追加预算或重试。
+
+回归覆盖 data_planning_guard、真实WebSocket/隔离DB的data_planning_runner和flow；结果见本轮发版回执。C-D11保持任务真源；C-A9继续仅app-server驱动；C-A10不加预算；C-R10不把时限调整等同财务验收或性能保证。
+
+## 2026-11-04 确认与定数据结束竞态、已有资料续跑
+
+在d4b4e2c六分钟候选上补修。生产委托b435c1e9用户于02:16:59Z确认，模型02:17:04Z结束，旧Advisor把已确认的waiting覆盖ready；Task仍WAITING(DATA)，poller不再领走。confirmation63b51968、demand410d2726仍存在，非用户没确认。
+
+- Advisor仅把自己仍拥有的planning改ready，保留确认方waiting。
+- 原轮询/回调领用时，只对ready+WAITING(DATA)+confirmation+demand+next_check+同phase supplying请求的历史竞态恢复waiting；不复活终态，不推断未确认请求。
+- 供给单尚在fetching也按已确认范围重解析；全部条目与读法resolved且可续签才钉住、正常resume_data，并撤掉本需求单（共享作业不取消）。未齐继续等待，不默认缺数照做。保留先前供给快照供审计，清除已无意义的处理中显示。
+- 无生产DB直改、无代点确认、无新付费测试。既有确认恢复执行仍遵守原费用和任务规则。
+
+验证：68 passed（隔离PostgreSQL+HTTP/WebSocket，/tmp/luna-confirmation-race-tests.log），包括确认先于turn完成、旧竞态恢复、库齐但fetch未结束、未齐仍等、重复poll不重复授权、缺确认/终态不恢复；Ruff通过，Pyright0errors。初轮65passed/1failed源于旧替身在fetching时已经返回库齐，修正该测试的到货时序后全部通过。待既有Jenkins与knowbase匹配修复同版发布并核真实23项续签/钉住/任务续跑。
+
+
+## 2026-11-04 按所有者指令取消专家执行时限
+
+隔离基线 205b2a1；用户明确要求“取消所有时间限制”。专家查找、定数据、方法规划、正式步骤默认 duration=None；正式步骤无进展180s与工具5min守卫取消时间判定。保留重复结果/空参数/工具越界保护、原预算、用户停止及费用记账。常规网络连接/RPC超时、身份令牌有效期和作者测试所明确选择的整轮测试参数属于其它边界，本提交未改；没有自动重试失败任务或代确认数据。
+
+真实现场 ad01a782 勾稽三次（后续共五次）step_progress/no_progress，Codex HTTP200及reasoning item start后，180s内无完成工具/交回物被interrupt；不是财务验收失败。数据摸底已成功9次MCP调用，工具结果累计约344625字符；提示约34724字符。不能仅凭长度断言模型根因，也不把取消时间上限当作财务分析已通过。
+
+验证：41项通过（真实WebSocket/隔离Postgres含三个阶段无时限且可手动中断、费用留存、原有显式有限时测试、查找预算、循环保护、取消迟到费用）；ruff通过，pyright零错误。新增生产迁移：无。固定专家包及方法不变，无新模型付费测试。

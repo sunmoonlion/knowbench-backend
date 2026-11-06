@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
-LOOKUP_SECONDS = 120
+LOOKUP_SECONDS: float | None = None
 STOP_REASONS = {
     "directory_unavailable": "专家目录读取失败，已停止查找；这不代表没有合适专家",
     "tool_approval_required": "平台的目录工具权限配置冲突，已停止查找；这不代表没有合适专家，请等待平台修复",

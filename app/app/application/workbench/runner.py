@@ -564,7 +564,7 @@ class SandboxLink:
         thread_id: str,
         text: str,
         *,
-        timeout: float = 900,  # noqa: ASYNC109
+        timeout: float | None = None,  # noqa: ASYNC109
     ) -> TurnResult:  # noqa: ASYNC109
         """TurnDriver：顾问在用户的 thread 上发一个 turn 并等它结束。"""
         client = await self.ensure_connected()
@@ -590,14 +590,23 @@ class SandboxLink:
             remaining = None
             if lookup:
                 assert task is not None
-                timeout = min(timeout, LOOKUP_SECONDS)
+                if LOOKUP_SECONDS is not None:
+                    timeout = (
+                        min(timeout, LOOKUP_SECONDS)
+                        if timeout is not None
+                        else LOOKUP_SECONDS
+                    )
                 budget = task["budget"]
                 if budget.get("limit") is not None:
                     remaining = Decimal(str(budget["limit"])) - Decimal(
                         str(budget["used"])
                     )
-            if planning:
-                timeout = min(timeout, DATA_PLAN_SECONDS)
+            if planning and DATA_PLAN_SECONDS is not None:
+                timeout = (
+                    min(timeout, DATA_PLAN_SECONDS)
+                    if timeout is not None
+                    else DATA_PLAN_SECONDS
+                )
             if expected_attempt is not None:
                 attempt = await repo.get_attempt(expected_attempt[1])
                 if attempt["step_id"] == PLAN_STEP:
@@ -723,7 +732,7 @@ class SandboxLink:
                 ):
                     break
                 left = (
-                    timeout
+                    (timeout if timeout is not None else float("inf"))
                     + (self.waited(thread_id) - waited_before)
                     - (loop.time() - started)
                 )

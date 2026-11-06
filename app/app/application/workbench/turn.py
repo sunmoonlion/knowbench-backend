@@ -6,7 +6,9 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any, Protocol
 
-STEP_TIMEOUT_SECONDS = 900
+# Owner policy (2026-11-04): no elapsed-time limit on expert execution.
+# Explicit finite values remain supported for callers/tests that request one.
+STEP_TIMEOUT_SECONDS: float | None = None
 
 
 @dataclass
@@ -45,5 +47,5 @@ class TurnDriver(Protocol):
         thread_id: str,
         text: str,
         *,
-        timeout: float = STEP_TIMEOUT_SECONDS,  # noqa: ASYNC109
+        timeout: float | None = STEP_TIMEOUT_SECONDS,  # noqa: ASYNC109
     ) -> TurnResult: ...
