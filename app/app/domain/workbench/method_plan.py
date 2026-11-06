@@ -109,6 +109,18 @@ AnyMethodPlan = MethodPlan | CapabilityMethodPlan
 _PLAN = TypeAdapter(AnyMethodPlan)
 
 
+class FixedMethodPlan(MethodPlan):
+    """固定专家的计划（SDD 0050）：平台按作者顺序生成，见 `fixed_plan.py`。
+
+    只进服务端写的回执，不进 `parse_plan`：模型交不了这种计划。
+    """
+
+    contract: Literal["knowbench/fixed-plan/v1"]  # pyright: ignore[reportIncompatibleVariableOverride]
+
+
+ReceiptPlan = AnyMethodPlan | FixedMethodPlan
+
+
 def parse_plan(document: object) -> AnyMethodPlan:
     return _PLAN.validate_python(document)
 
@@ -120,7 +132,7 @@ class AcceptedMethodPlan(Strict):
     attempt_id: str
     pack_digest: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     version: int = Field(ge=1, strict=True)
-    proposal: AnyMethodPlan
+    proposal: ReceiptPlan
     requirements_digest: str | None = Field(
         default=None,
         pattern=r"^sha256:[0-9a-f]{64}$",

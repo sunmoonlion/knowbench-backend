@@ -13,7 +13,11 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.task_requirements import for_task as task_requirements
 from app.domain.workbench.errors import MethodPlanInvalid
 from app.domain.workbench.method_catalog import MethodCatalog, parse_catalog
-from app.domain.workbench.method_plan import PLAN_ARTIFACT, AcceptedMethodPlan
+from app.domain.workbench.method_plan import (
+    PLAN_ARTIFACT,
+    AcceptedMethodPlan,
+    FixedMethodPlan,
+)
 
 
 def catalog_for_task(task: dict[str, Any]) -> MethodCatalog:
@@ -56,6 +60,20 @@ def validate_receipt(
         plan = AcceptedMethodPlan.model_validate(artifact["content"])
     except ValidationError:
         raise MethodPlanInvalid("accepted plan receipt is invalid") from None
+    if isinstance(plan.proposal, FixedMethodPlan):
+        # 固定专家的回执（SDD 0050）：平台写的、没有规划尝试，按包核，不读目录
+        from app.application.workbench.fixed_plans import validate_fixed_receipt
+
+        if (
+            plan.task_id != str(task["id"])
+            or str(artifact["task_id"]) != str(task["id"])
+            or plan.version != version
+            or artifact["version"] != version
+            or plan.proposal.parent_version != version - 1
+        ):
+            raise MethodPlanInvalid("fixed plan receipt does not match its task")
+        validate_fixed_receipt(task, artifact, plan)
+        return plan
     if (
         plan.task_id != str(task["id"])
         or str(artifact["task_id"]) != str(task["id"])
