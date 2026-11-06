@@ -39,6 +39,7 @@ from app.application.workbench.runtime_tools import (
     declared_data_tools,
     unavailable_data_tools,
 )
+from app.domain.workbench import step_progress
 from app.domain.workbench.compute_progress import (
     MISSING_TASK_MESSAGE,
     ComputeProgressGuard,
@@ -686,6 +687,16 @@ class SandboxLink:
             else None,
             "idle_failure": None,
             "idle_stop_unconfirmed": False,
+            # 账 183：这一步久无进展时提醒（只提醒、不中断）；提醒记在这件委托这一步下
+            "stall_notices": 0,
+            "stall_context": {
+                "session_id": str(session["id"]),
+                "task_id": str(task["id"]),
+                "attempt_id": str(active["id"]),
+                "step_id": str(active["step_id"]),
+            }
+            if session and task and active
+            else None,
             "tool_failure": None,
             "tool_stop_unconfirmed": False,
         }
@@ -723,7 +734,9 @@ class SandboxLink:
                 if waiter["future"].done():
                     break
                 if guard := waiter["idle_guard"]:
-                    guard.tick(loop.time() - self.waited(thread_id))
+                    now = loop.time() - self.waited(thread_id)
+                    guard.tick(now)
+                    await self._notice_stall(waiter, guard, now)
                 if (
                     (planning and waiter["planning_guard"].failure)
                     or (lookup and waiter["lookup_guard"].failure)
@@ -924,6 +937,47 @@ class SandboxLink:
             if running is None or loop.time() >= deadline:
                 return turn_id, False
             await asyncio.sleep(min(2.0, within / 10))
+
+    async def _notice_stall(
+        self, waiter: dict[str, Any], guard: StepProgressGuard, now: float
+    ) -> None:
+        """这一步每满一段（默认 30 分钟）没有可见进展，记一条提醒（账 183）。
+
+        只提醒：不中断这一轮、不停委托、不改状态；有了新进展重新算。记不下来也不影响执行。
+        """
+        limit = step_progress.STALL_NOTICE_SECONDS
+        context = waiter.get("stall_context")
+        if limit is None or context is None or guard.failure:
+            return
+        level = int(guard.stalled_seconds(now) // limit)
+        if level == 0:
+            waiter["stall_notices"] = 0
+            return
+        if level <= waiter["stall_notices"]:
+            return
+        waiter["stall_notices"] = level
+        minutes = int(level * limit // 60)
+        try:
+            async with self.runner.stores() as repo:
+                async with repo.transaction():
+                    event = await repo.append_event(
+                        session_id=context["session_id"],
+                        kind="task",
+                        event_type="step/stalled",
+                        payload={
+                            "step_id": context["step_id"],
+                            "minutes": minutes,
+                            "note": f"这一步已经 {minutes} 分钟没有可见进展。不会自动停下："
+                            "可以接着等，也可以在页面上停下这次委托。",
+                        },
+                        task_id=context["task_id"],
+                        attempt_id=context["attempt_id"],
+                    )
+            await self.runner.publisher.publish(
+                self.runner.publisher.session_channel(context["session_id"]), event
+            )
+        except Exception:  # noqa: BLE001 — 提醒记不下来不影响这一步
+            log.warning("stall notice not recorded task=%s", context["task_id"])
 
     async def turn_running(self, thread_id: str, turn_id: str) -> bool | None:
         """那一轮还在跑吗：读线程（带各轮）看它的状态。读不到就是 None（不知道）。"""

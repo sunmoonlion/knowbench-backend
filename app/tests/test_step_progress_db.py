@@ -132,3 +132,31 @@ async def test_hard_timeout_waits_but_human_approval_does_not_consume_idle_time(
         if runner:
             await _close(runner)
         await fake.close()
+
+
+async def test_long_quiet_step_records_a_stall_notice_without_stopping_it(
+    db, monkeypatch
+):
+    # 账 183：久无进展只提醒、记在这一步下；停不停仍由原来的守卫决定（这里放一个
+    # 很短的守卫时限，只为让这一轮最后能结束）
+    monkeypatch.setattr("app.domain.workbench.step_progress.STALL_NOTICE_SECONDS", 0.2)
+    monkeypatch.setattr("app.domain.workbench.step_progress.STEP_IDLE_SECONDS", 1.0)
+    fake = PlanningServer(quiet=True)
+    await fake.start()
+    runner = None
+    try:
+        runner, _, _, tid = await seed(db, fake, budget="2")
+        await runner.run_once()
+        await runner.wait_drivers(timeout=15)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            stalled = await repo.list_task_events(tid, types=("step/stalled",))
+            stopped = await repo.list_task_events(tid, types=("step/stopped",))
+        assert stalled, "a quiet step must record a stall notice"
+        assert stalled[0]["payload"]["minutes"] == 0  # 0.2 秒折成分钟是 0
+        assert "不会自动停下" in stalled[0]["payload"]["note"]
+        assert stalled[0]["cursor"] < stopped[-1]["cursor"]
+    finally:
+        if runner:
+            await close(runner)
+        await fake.close()

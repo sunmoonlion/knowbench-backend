@@ -14,6 +14,9 @@ from typing import Any
 STEP_IDLE_SECONDS: float | None = None
 STEP_TOOL_SECONDS: float | None = None
 MAX_IDENTICAL_RESULTS = 3
+# 一步这么久没有可见进展时只提醒、不中断、不自动停（账 183，所有者 11-06「给个半小时」）。
+# 每再过这么久再提醒一次；None 关掉提醒。
+STALL_NOTICE_SECONDS: float | None = 1800.0
 STOP_REASONS = {
     "no_progress": "超过180秒无可见进展时限，已中止本轮。",
     "repeated_result": "同一工具以相同参数取得相同结果或错误累计3次，已中止本轮。",
@@ -55,6 +58,12 @@ class StepProgressGuard:
             self.idle_seconds += elapsed
             if STEP_IDLE_SECONDS is not None and self.idle_seconds >= STEP_IDLE_SECONDS:
                 self.failure = "no_progress"
+
+    def stalled_seconds(self, now: float) -> float:
+        """多久没有可见进展：模型静默的累计（拿到新结果清零），与跑得最久的那个工具两者取大。
+        先 `tick` 再问。只用来提醒，不判失败。"""
+        running = now - min(self.active.values()) if self.active else 0.0
+        return max(self.idle_seconds, running)
 
     def observe(self, method: str, item: dict[str, Any], now: float) -> None:
         self.tick(now)

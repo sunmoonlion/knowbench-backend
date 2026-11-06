@@ -78,3 +78,18 @@ def test_distinct_failures_do_not_refresh_but_new_success_does():
     assert g.idle_seconds == 90 and g.failure is None
     g.observe("item/completed", tool("ok"), 100)
     assert g.idle_seconds == 0
+
+
+def test_stalled_seconds_counts_quiet_time_and_a_running_tool(monkeypatch):
+    # 账 183：30 分钟没有进展只提醒；静默与一直跑着的工具都算「没有进展」。
+    # 现行默认不设时限（#83），这里照默认，不让旧用例的时限把工具判失败
+    monkeypatch.setattr("app.domain.workbench.step_progress.STEP_IDLE_SECONDS", None)
+    monkeypatch.setattr("app.domain.workbench.step_progress.STEP_TOOL_SECONDS", None)
+    g = StepProgressGuard(0)
+    g.tick(100)
+    assert g.stalled_seconds(100) == 100
+    g.observe("item/started", tool(), 120)
+    assert g.stalled_seconds(500) == 380  # 工具跑了 380 秒，比静默的 120 秒长
+    g.observe("item/completed", tool(), 501)
+    assert g.stalled_seconds(501) == 0  # 拿到新结果：重新算
+    assert g.failure is None
