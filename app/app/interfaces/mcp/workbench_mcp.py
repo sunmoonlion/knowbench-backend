@@ -202,10 +202,15 @@ TOOLS: dict[str, dict[str, Any]] = {
             "If a value is rejected, consult describe_items and correct that value; "
             "do not drop required data or substitute a different document type "
             "just to pass validation. State any additional baseline period separately. "
-            "For a discovered supplier tool, set source_query={channel,service,tool,arguments}, "
-            "doc_type=other_text, period={kind:none}, reading=text. Dates and exact data fields "
-            "belong in tool arguments. This asks for original supplier response evidence, not "
-            "an issuer PDF. Request report originals separately when page checks need them."
+            "For financial numbers (revenue, net profit attributable to the parent, "
+            "operating cash flow …) ask for the numbers, not a source: subject, "
+            "metrics (chart-of-accounts codes from describe_items, e.g. IS.REVENUE), "
+            "period {kind: fixed, start, end}, optional consolidation (consolidated or "
+            "parent), duration (year, half, quarter, ytd) and disclosure (first = as "
+            "originally disclosed, the default; latest = as later restated). Never name "
+            "a supplier or channel: the data service decides where and how to get the "
+            "numbers. Request report originals separately (doc_type, reading pages) when "
+            "the steps must check figures against report pages."
         ),
         "inputSchema": {
             "type": "object",
@@ -220,6 +225,19 @@ TOOLS: dict[str, dict[str, Any]] = {
                         "type": "object",
                         "properties": {
                             "subject": {"type": "string", "maxLength": 64},
+                            # 要哪些数（SDD 0051）：写了 metrics 就是这一种，不写 doc_type
+                            "metrics": {
+                                "type": "array",
+                                "minItems": 1,
+                                "maxItems": 30,
+                                "items": {
+                                    "type": "string",
+                                    "pattern": r"^[A-Z]{2}\.[A-Z0-9_]{1,60}$",
+                                },
+                            },
+                            "consolidation": {"enum": ["consolidated", "parent"]},
+                            "duration": {"enum": ["year", "half", "quarter", "ytd"]},
+                            "disclosure": {"enum": ["first", "latest"]},
                             "doc_type": copy.deepcopy(_DATA_FIELDS["doc_type"]),
                             "source_query": copy.deepcopy(_DATA_FIELDS["source_query"]),
                             "period": copy.deepcopy(_DATA_FIELDS["period"]),
@@ -230,7 +248,7 @@ TOOLS: dict[str, dict[str, Any]] = {
                             "essential": {"type": "boolean"},
                             "reason": {"type": "string", "maxLength": 500},
                         },
-                        "required": ["doc_type", "reason"],
+                        "required": ["reason"],
                     },
                 },
             },

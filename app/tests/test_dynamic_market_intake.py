@@ -219,8 +219,9 @@ async def test_marketplace_pin_to_runner_executes_selected_methods_and_data_stag
                 "status"
             ] == "ready"
             data_prompt = str(fake.turn_inputs[1])
-            assert "discover_source_tools" in data_prompt
-            assert "source_query" in data_prompt
+            # SDD 0051（所有者 11-07）：需求只说要什么，不叫模型先找供应商、不写渠道
+            assert "discover_source_tools" not in data_prompt
+            assert "metrics (chart-of-accounts codes" in data_prompt
     finally:
         await close(runner)
         await fake.close()

@@ -1884,26 +1884,25 @@ def compose_data_plan(
         "financial results or plan their execution before discovery. Call "
         f'find_subject(task="{task_id}", name=…) for each company or institution '
         "named in the question (never invent a code; skip subject lookup when no "
-        "company or institution is involved). Discover available suppliers with "
-        f'discover_source_tools(task="{task_id}"), then finish with '
+        "company or institution is involved), then finish with "
         f'request_data(task="{task_id}", needs=[…]). Do not write a long plan '
         "before the first tool call.",
-        "- request_data needs: subject (code; omit for non-company items), doc_type, "
-        "period, reading, essential (true when required by the selected methods), "
+        "- request_data needs: subject (code; omit for non-company items), either "
+        "metrics (for numbers) or doc_type (for a document), period, reading (for "
+        "documents), essential (true when required by the selected methods), "
         "and reason (why the methods need it). At most 20 items. The user confirms "
         "before anything is fetched; you cannot read the data in this turn.",
         "- list_inputs lists only data ALREADY AUTHORIZED for THIS TASK. Before "
         "confirmation an empty inputs list is normal—do not poll it. An empty list is NOT "
         "proof that the company has no data.",
-        "- Use the advertised supplier schema for source_query; dates and requested "
-        "fields belong in its query arguments. Prefer an available supplier query "
-        "(for example Wind) via source_query "
-        "when it satisfies the need; do not request report PDFs merely because a "
+        "- For financial numbers, request the numbers themselves: metrics "
+        "(chart-of-accounts codes from describe_items), subject, a fixed period and, "
+        "if needed, consolidation, duration and disclosure. Do not name a supplier or "
+        "write source_query: the data service chooses where and how to get them. "
+        "Do not request report PDFs merely because a "
         "number is missing. Do not substitute an excerpt or link for an annual "
-        "report PDF required by the author. Supplier responses are other_text/text "
-        "evidence. If no "
-        "suppliers exist, still propose the required public reports with "
-        "request_data. The data service resolves existing materials before deciding "
+        "report PDF required by the author. "
+        "The data service resolves existing materials before deciding "
         "what needs collecting. Do not read report pages or use built-in web "
         "search for financial values in this turn. Call each discovery for the "
         "same arguments once; after "
@@ -1912,9 +1911,8 @@ def compose_data_plan(
         "page-indexed text, text is body text, and table is extracted facts. If a "
         "later step uses compute, also request a fact-producing reading (table) as "
         "well as any original/pages evidence it needs. "
-        "A PDF or body-text reading does not imply query_facts/raw fact refs exist. "
-        "Supplier text is not automatically numeric fact rows; page numbers are "
-        "not compute inputs.",
+        "A PDF or body-text reading does not imply query_facts/raw fact refs exist; "
+        "page numbers are not compute inputs.",
         "- Ask for peer companies when later steps compare with them. Respect "
         "conditional scope: no forecast-only inputs unless the question needs "
         "forecasting, unless the author explicitly requires that analysis. If no data "

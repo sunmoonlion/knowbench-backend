@@ -200,3 +200,13 @@ class FactRequest(_Strict):
     disclosure: Literal["first", "latest"] = "first"
     required: bool = True
     description: str = Field(default="", max_length=500)
+
+
+AnyDataRequest = DataRequest | FactRequest
+
+
+def parse_need(raw: dict) -> AnyDataRequest:
+    """存下来的一样读回：带 `kind: facts` 的是要哪些数，其余是要哪份资料。"""
+    if isinstance(raw, dict) and raw.get("kind") == "facts":
+        return FactRequest.model_validate(raw)
+    return DataRequest.model_validate(raw)

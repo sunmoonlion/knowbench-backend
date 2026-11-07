@@ -53,9 +53,9 @@ def test_data_plan_keeps_late_input_requirements_and_source_contract():
     assert requirement in prompt
     assert prompt.index("## What to do now (tools first)") < prompt.index(requirement)
     assert 'find_subject(task="task-late"' in prompt
-    assert 'discover_source_tools(task="task-late")' in prompt
+    assert "discover_source_tools" not in prompt  # 需求不写渠道（SDD 0051）
     assert 'request_data(task="task-late"' in prompt
-    assert "Use the advertised supplier schema" in prompt
+    assert "request the numbers themselves" in prompt
     assert "Do not substitute an excerpt or link" in prompt
     assert "unless the author explicitly requires that analysis" in prompt
     assert "If no data is needed, propose nothing and call no discovery tools" in prompt

@@ -17,7 +17,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.domain.workbench.data_request import DataRequest
+from app.domain.workbench.data_request import AnyDataRequest
 
 CONTRACT = "knowfeed-supply-prematch/v1"
 PATH = "/api/internal/v1/supply/prematch"
@@ -112,7 +112,7 @@ class PrematchResponse(BaseModel):
 
 
 def request_items(
-    entries: list[dict[str, Any]], needs: list[DataRequest]
+    entries: list[dict[str, Any]], needs: list[AnyDataRequest]
 ) -> list[dict[str, Any]]:
     """清单里待确认的条目 → 要问的几项（条目带 `ref`）。没有主体的（不限主体）不问：
     knowbase 对它回「暂不能补采」，不会进确认。读法照那一样要的。"""
@@ -130,7 +130,9 @@ def request_items(
             item = PrematchItem(
                 ref=str(entry["ref"]),
                 key=PrematchKey.model_validate(given),
-                readings=[need.reading] if need is not None else [],
+                readings=[getattr(need, "reading", "table")]
+                if need is not None
+                else [],
             )
         except ValidationError:
             # 提供方不收的写法（太长之类）：这一项不问，面板上照常列、只是没有预计

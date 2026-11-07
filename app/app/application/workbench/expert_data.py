@@ -37,7 +37,12 @@ from pydantic import ValidationError
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import PinnedPack
 from app.domain.workbench.data_plan import Plan, gap, item_ref, plan
-from app.domain.workbench.data_request import DataRequest
+from app.domain.workbench.data_request import (
+    AnyDataRequest,
+    DataRequest,
+    FactRequest,
+    parse_need,
+)
 from app.domain.workbench.errors import (
     DataChoiceInvalid,
     UserDataUnavailable,
@@ -456,7 +461,7 @@ class ExpertData:
             await user_token(), str(row["resolution_id"])
         )
         out: dict[str, list[dict[str, Any]]] = {}
-        needs: list[DataRequest] = []
+        needs: list[AnyDataRequest] = []
         for r in pending:
             scoped = _scoped(latest, request_needs(r))
             needs += request_needs(r)
@@ -478,7 +483,7 @@ class ExpertData:
         return out
 
     async def _prematch(
-        self, entries: list[dict[str, Any]], needs: list[DataRequest]
+        self, entries: list[dict[str, Any]], needs: list[AnyDataRequest]
     ) -> dict[str, Any] | None:
         """待确认的几项问 knowfeed（0043 第 3.3 节第 1 条）。补采没开（含 knowfeed 没配）
         不问：那时待确认的一律「暂不能补采」，显示预计反倒误导。问不到回 None，不挡。"""
@@ -686,8 +691,8 @@ def holds_task(row: dict[str, Any] | None) -> TypeGuard[dict[str, Any]]:
     )
 
 
-def request_needs(request: dict[str, Any]) -> list[DataRequest]:
-    return [DataRequest.model_validate(n) for n in request.get("needs") or []]
+def request_needs(request: dict[str, Any]) -> list[AnyDataRequest]:
+    return [parse_need(n) for n in request.get("needs") or []]
 
 
 async def request_data(
@@ -853,9 +858,11 @@ async def _ask_the_tester(
     }
 
 
-def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataRequest:
+def _asked_need(asked: dict[str, Any], number: int, n: int) -> AnyDataRequest:
     if not isinstance(asked, dict):
         raise DataChoiceInvalid("each item is an object")
+    if asked.get("metrics"):
+        return _asked_facts(asked, number, n)
     period = asked.get("period") or {"kind": "none"}
     reason = str(asked.get("reason") or "").strip()
     source_query = asked.get("source_query")
@@ -892,20 +899,55 @@ def _asked_need(asked: dict[str, Any], number: int, n: int) -> DataRequest:
         ) from None
 
 
-def _revised(given: list[dict[str, Any]], request_id: str) -> list[DataRequest]:
+def _asked_facts(asked: dict[str, Any], number: int, n: int) -> FactRequest:
+    """要哪些数（SDD 0051）：主体、固定期间、科目编码、口径；不写渠道、不写怎么取。"""
+    period = asked.get("period") or {}
+    reason = str(asked.get("reason") or "").strip()
+    if not isinstance(period, dict) or period.get("kind") != "fixed":
+        raise DataChoiceInvalid("metrics need a fixed period {kind: fixed, start, end}")
+    try:
+        return FactRequest.model_validate(
+            {
+                "kind": "facts",
+                "key": f"req{number}_{n}",
+                "name": (reason or "要哪些数")[:80],
+                "subject": asked.get("subject"),
+                "start": period.get("start"),
+                "end": period.get("end"),
+                "codes": asked.get("metrics"),
+                **{
+                    k: asked[k]
+                    for k in ("consolidation", "duration", "disclosure")
+                    if asked.get(k)
+                },
+                "required": asked.get("essential") is True,
+                "description": reason[:500],
+            }
+        )
+    except ValidationError as exc:
+        where = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
+        raise DataChoiceInvalid(
+            "these metrics are not in the vocabulary: " + ", ".join(where[:5])
+        ) from None
+
+
+def _revised(given: list[dict[str, Any]], request_id: str) -> list[AnyDataRequest]:
     """用户改过的整份（换主体、改期间、去掉、自己加一样）：自己加的没有 key，这里按
     请求编号补上；一样一个 key。"""
     if not isinstance(given, list) or not 1 <= len(given) <= MAX_REQUEST_NEEDS:
         raise DataChoiceInvalid(f"keep 1 to {MAX_REQUEST_NEEDS} items")
-    out: list[DataRequest] = []
+    out: list[AnyDataRequest] = []
     for n, raw in enumerate(given, start=1):
         if not isinstance(raw, dict):
             raise DataChoiceInvalid("each item is an object")
-        body = {"formats": ALL_FORMATS, **raw}
+        facts = raw.get("kind") == "facts"
+        body = dict(raw) if facts else {"formats": ALL_FORMATS, **raw}
         body.setdefault("key", f"{request_id}_u{n}")
-        body.setdefault("name", str(body.get("doc_type") or "")[:80])
+        body.setdefault(
+            "name", "要哪些数" if facts else str(body.get("doc_type") or "")[:80]
+        )
         try:
-            out.append(DataRequest.model_validate(body))
+            out.append(parse_need(body))
         except ValidationError as exc:
             where = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
             raise DataChoiceInvalid(
@@ -917,7 +959,7 @@ def _revised(given: list[dict[str, Any]], request_id: str) -> list[DataRequest]:
 
 
 def _replace_needs(
-    detail: dict[str, Any], pending: list[dict[str, Any]], needs: list[DataRequest]
+    detail: dict[str, Any], pending: list[dict[str, Any]], needs: list[AnyDataRequest]
 ) -> list[dict[str, Any]]:
     """改过的整份记到第一张待确认的请求上；同时待确认的别的几张并进来。"""
     first, rest = pending[0]["id"], {r["id"] for r in pending[1:]}
@@ -936,7 +978,7 @@ def _replace_needs(
     return out
 
 
-def _scoped(resolution: dict[str, Any], needs: list[DataRequest]) -> dict[str, Any]:
+def _scoped(resolution: dict[str, Any], needs: list[AnyDataRequest]) -> dict[str, Any]:
     keys = {n.key for n in needs}
     return {
         **resolution,

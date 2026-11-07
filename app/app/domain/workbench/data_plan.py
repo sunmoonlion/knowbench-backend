@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
-from app.domain.workbench.data_request import DataRequest
+from app.domain.workbench.data_request import AnyDataRequest
 from app.domain.workbench.knowbots import FrozenBinding
 
 APP_BASIS_REF = "app:knowbench"
@@ -93,7 +93,7 @@ class Plan:
 
 def plan(
     resolution: dict[str, Any],
-    needs: list[DataRequest],
+    needs: list[AnyDataRequest],
     bindings: tuple[FrozenBinding, ...] = (),
     *,
     picks: dict[str, dict[str, Any]] | None = None,
@@ -176,14 +176,16 @@ def plan(
     return out
 
 
-def _name(need: DataRequest) -> str:
+def _name(need: AnyDataRequest) -> str:
     return need.name
 
 
-def _label(need: DataRequest, item: dict[str, Any]) -> str:
+def _label(need: AnyDataRequest, item: dict[str, Any]) -> str:
     key = item.get("key") or {}
     parts = [need.name, str(key.get("subject") or "")]
-    if key.get("period_end"):
+    if key.get("kind") == "facts":  # 要哪些数：一期一条，只有期末日
+        parts.append(str(key.get("period_end") or ""))
+    elif key.get("period_end"):
         parts.append(f"{key.get('period_start')}–{key.get('period_end')}")
     return " ".join(p for p in parts if p)
 
