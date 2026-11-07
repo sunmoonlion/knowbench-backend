@@ -180,3 +180,23 @@ class DataRequest(_Strict):
     topics: tuple[Topic, ...] = Field(default=(), max_length=12)
     industry: Industry | None = None
     source_query: SourceQuery | None = None
+
+
+class FactRequest(_Strict):
+    """要哪些数（knowbase data-request/v1 的加法，SDD 0051）：主体、期间、科目表编码、
+    口径；不写渠道与取法，取法由 knowfeed 定。照提供方逐字段一样，锁测试核结构。"""
+
+    kind: Literal["facts"]
+    key: str = Field(pattern=r"^[a-z][a-z0-9_]{0,39}$")
+    name: str = Field(min_length=1, max_length=80)
+    subject: str = Field(min_length=1, max_length=64)
+    start: date
+    end: date
+    codes: tuple[Annotated[str, Field(pattern=r"^[A-Z]{2}\.[A-Z0-9_]{1,60}$")], ...] = (
+        Field(min_length=1, max_length=30)
+    )
+    consolidation: Literal["consolidated", "parent"] = "consolidated"
+    duration: Literal["year", "half", "quarter", "ytd", "instant"] = "year"
+    disclosure: Literal["first", "latest"] = "first"
+    required: bool = True
+    description: str = Field(default="", max_length=500)

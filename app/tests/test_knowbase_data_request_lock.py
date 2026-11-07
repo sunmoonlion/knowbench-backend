@@ -14,7 +14,7 @@ from typing import Any
 
 import pytest
 
-from app.domain.workbench.data_request import DataRequest
+from app.domain.workbench.data_request import DataRequest, FactRequest
 
 PARENT = Path(__file__).resolve().parents[3]
 LOCK = PARENT / "contracts/knowbase-data-request-lock.json"
@@ -58,7 +58,13 @@ def test_lock_matches_the_provider() -> None:
 
 def test_our_model_is_the_provider_model() -> None:
     provider = json.loads(_provider(_lock()).read_text(encoding="utf-8"))
-    ours = DataRequest.model_json_schema(ref_template="#/$defs/{model}")
-    defs = ours.pop("$defs", {})
-    defs["DataRequest"] = ours
+    defs: dict[str, Any] = {}
+    for model in (DataRequest, FactRequest):  # 要哪份资料 / 要哪些数（SDD 0051）
+        ours = model.model_json_schema(ref_template="#/$defs/{model}")
+        defs.update(ours.pop("$defs", {}))
+        defs[model.__name__] = ours
     assert _structure(defs) == _structure(provider["$defs"])
+    assert provider["oneOf"] == [
+        {"$ref": "#/$defs/DataRequest"},
+        {"$ref": "#/$defs/FactRequest"},
+    ]
