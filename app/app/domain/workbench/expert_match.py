@@ -13,7 +13,7 @@ from typing import Annotated, Any, Literal, Self
 from pydantic import Field, TypeAdapter, model_validator
 
 from app.domain.workbench.method_catalog import PublicCapability
-from app.domain.workbench.packs import Scope, Strict
+from app.domain.workbench.packs import Strict
 
 Identifier = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,47}$")]
 Text = Annotated[str, Field(min_length=1, max_length=2000)]
@@ -45,13 +45,25 @@ class Requirement(Strict):
         return self
 
 
+class DirectoryScope(Strict):
+    """目录里公开的接什么、不接什么。照提供方 knowmart `expert-directory/v2`：三项都可不写。
+
+    不复用专家包的 `Scope`（那里「接什么」必填）：调用方比提供方严，会拒掉合法的目录条目
+    （SDD 0052 第一节逐字段比对查出）。
+    """
+
+    does: str = ""
+    does_not: str = ""
+    elsewhere: str = ""
+
+
 class PublicExpert(Strict):
     knowbot_id: str = Field(min_length=1, max_length=64)
     version: str = Field(pattern=r"^[1-9][0-9]{0,5}$")
     digest: Digest
     name: str = Field(min_length=1, max_length=80)
     tagline: str = Field(max_length=200)
-    scope: Scope
+    scope: DirectoryScope
     declaration: Literal["scope/v1", "capabilities/v1"]
     runtime_contract: Literal[
         "knowbench/fixed/v1",
