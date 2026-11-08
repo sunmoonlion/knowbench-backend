@@ -68,8 +68,10 @@ async def test_asking_an_expert_from_the_expert_entry(make_client, db):  # noqa:
             "spent": "0.00",
             "estimated": True,
         }
-        assert shown["position"] == {"step": 1, "of": 7, "title": "定范围", "left": 7}
-        assert [s["status"] for s in shown["steps"]] == ["running"] + ["pending"] * 6
+        # 刚收到、还没开工：没有正在执行的步骤号，正式步骤都待开始（0c0f7cf，11-04
+        # 「排队无虚假步骤」）
+        assert shown["position"] is None
+        assert [s["status"] for s in shown["steps"]] == ["pending"] * 7
         one = await http.get(f"/api/workbench/tasks/{made['task_id']}/steps/2")
         assert one.status_code == 200
         assert one.json()["step"]["attempts"] == []

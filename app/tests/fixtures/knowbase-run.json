@@ -51,11 +51,11 @@
     },
     "now": {
       "step": {
-        "index": 1,
+        "index": 0,
         "of": 2,
-        "title": "数据准备",
-        "summary": "等待数据确认或补采完成",
-        "why": "需要先核对并确认本次的数据范围；获准的数据准备好后，专家才继续分析"
+        "title": "定数据",
+        "summary": "先提出本次问题需要的数据",
+        "why": "先列出数据需求供你确认，获准的数据准备好后才开始正式分析"
       },
       "doing": {
         "code": "waiting",
@@ -66,12 +66,7 @@
       "last_event_at": "2026-01-01T00:00:00+00:00",
       "held": false
     },
-    "position": {
-      "step": 1,
-      "of": 2,
-      "title": "拆步",
-      "left": 2
-    },
+    "position": null,
     "steps": [
       {
         "index": 1,
@@ -101,7 +96,7 @@
           "text": "重做，最多 1 次；仍不过，停下来问你"
         },
         "reserve": "0.05",
-        "status": "waiting",
+        "status": "pending",
         "attempts": [],
         "times": 0,
         "rejected": 0,
