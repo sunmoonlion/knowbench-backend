@@ -39,12 +39,12 @@ from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
 from app.domain.workbench.supply_prematch import eta_of
 from app.infrastructure.storage.postgres import get_db_session
+from app.interfaces.endpoints.commands_wakeup import publish_commands_wakeup
 from app.interfaces.endpoints.workbench_routes import (
     CONTRACT_VERSION,
     Pick,
     _actor,
     _http,
-    _publish_commands_wakeup,
     require_workbench_enabled,
 )
 from app.interfaces.http.middleware.auth import (
@@ -261,7 +261,7 @@ async def delegate(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     if made["created"]:
-        await _publish_commands_wakeup()
+        await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **made}
 
 
@@ -381,7 +381,7 @@ async def confirm_data_requests(
             raise translated from None
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **done}
 
 
@@ -423,7 +423,7 @@ async def decline_data_requests(
         done = await expert_data().decline_requests(repo, task)
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **done}
 
 
@@ -538,7 +538,7 @@ async def start_find_expert(
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **made}
 
 

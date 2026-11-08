@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +30,7 @@ from app.infrastructure.security.relation_auth import (
     require_testrun_service,
 )
 from app.infrastructure.storage.postgres import get_db_session
+from app.interfaces.endpoints.commands_wakeup import publish_commands_wakeup
 from app.interfaces.http.internal.host_guard import internal_host_only
 
 NO_STORE = {"Cache-Control": "no-store"}
@@ -116,8 +118,6 @@ async def execution(
 ) -> JSONResponse:
     """knowlab authorizes the viewer; runtime also checks owner/run/case binding."""
     try:
-        from fastapi.encoders import jsonable_encoder
-
         return _out(
             jsonable_encoder(
                 await execution_view(
@@ -155,9 +155,7 @@ async def cancel(_: Caller, svc: Service, run_id: RunId) -> JSONResponse:
     except WorkbenchError as exc:
         raise _http(exc) from exc
     # 叫醒 runner 去中断作者电脑上在跑的那一轮（同网页上停委托）
-    from app.interfaces.endpoints.workbench_routes import _publish_commands_wakeup
-
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return _out(result)
 
 

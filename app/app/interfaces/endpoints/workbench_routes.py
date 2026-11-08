@@ -68,6 +68,7 @@ from app.domain.workbench.provider_url import (
 )
 from app.infrastructure.storage.postgres import get_db_session, get_postgres
 from app.infrastructure.storage.redis import get_redis
+from app.interfaces.endpoints.commands_wakeup import publish_commands_wakeup
 from app.interfaces.http.middleware.auth import (
     get_web_current_user,
     get_web_knowbase_token_provider,
@@ -275,15 +276,6 @@ def _plain(d: dict[str, Any]) -> dict[str, Any]:
 def _http(exc: WorkbenchError) -> AppException:
     # 走统一的 problem+json：顶层 code / status / detail
     return AppException(code=exc.code, status_code=exc.http_status, msg=exc.message)
-
-
-async def _publish_commands_wakeup() -> None:
-    try:
-        await get_redis().client.publish(
-            f"{get_settings().workbench_redis_key_prefix}:commands", "1"
-        )
-    except Exception:  # noqa: BLE001
-        pass
 
 
 # ---------------- environments / sandboxes ----------------
@@ -660,7 +652,7 @@ async def create_session(
                 )
         except WorkbenchError as exc:
             raise _http(exc) from exc
-        await _publish_commands_wakeup()
+        await publish_commands_wakeup()
         return result
     if not (body.environment_id and body.sandbox_id and body.project_root):
         raise HTTPException(
@@ -693,7 +685,7 @@ async def create_session(
             )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return result
 
 
@@ -771,7 +763,7 @@ async def start_turn(
             )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return {"request_id": body.request_id, "command_id": cid, "cursor": event["cursor"]}
 
 
@@ -796,7 +788,7 @@ async def interrupt(
             )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return {"command_id": cid}
 
 
@@ -955,7 +947,7 @@ async def handover(
                 )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return result
 
 
@@ -1003,7 +995,7 @@ async def cancel_task(
         result = await stop_task(repo, task_id, owner_actor_id=_actor(principal))
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return result
 
 
@@ -1442,5 +1434,5 @@ async def respond_interaction(
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await _publish_commands_wakeup()
+    await publish_commands_wakeup()
     return result

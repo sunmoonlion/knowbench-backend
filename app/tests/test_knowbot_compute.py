@@ -142,6 +142,8 @@ def world(reader: Reader | None = None):  # type: ignore[no-untyped-def]
         ("1.21 ** 0.5", {}, "1.1"),
         ("x ** n", {"x": Decimal(4), "n": Decimal("1.5")}, "8"),
         ("4 ** -0.5", {}, "0.5"),
+        ("1e30 / 1e30", {}, "1"),
+        ("2.5e-29 * 4e29", {}, "10"),
     ],
 )
 def test_expressions_compute_exactly_in_decimal(expression, values, expected) -> None:
@@ -154,6 +156,10 @@ def test_expressions_compute_exactly_in_decimal(expression, values, expected) ->
         ("a / b", {"a": Decimal(1), "b": Decimal(0)}, calc.ZERO_DIVISOR),
         ("1e1000000000", {}, "exponent is out of range"),
         ("1e-1000000000", {}, "exponent is out of range"),
+        # 字面量的指数收到 30：1e999999 这类会展开成近百万位写进回执（opus-qwen 第 13 条）
+        ("1e31", {}, "exponent is out of range"),
+        ("1e-31", {}, "exponent is out of range"),
+        ("1e999999", {}, "exponent is out of range"),
         ("__import__('os')", {}, "not allowed"),
         ("a.real", {"a": Decimal(1)}, "only"),
         ("a ** 0.5", {"a": Decimal(-4)}, "fractional power needs a positive base"),
