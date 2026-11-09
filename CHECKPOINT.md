@@ -377,7 +377,7 @@ pyright 通过。日志 /tmp/luna-dynamic-intake-{tests,regression,types}.txt。
 验证边界：本地连接登记为合成测试账号，探针转接各 turn 至独立真实沙箱线程，
 合成文档全部在题面，无数据 MCP/relay/Wind 或 PDF 检验；不是线上任务端到端验收。
 原件 /tmp/luna-dynamic-live-{results,engine}.jsonl 与 engine-tests.txt，持久证据
-归档于 sunmoonun 总纲/数据拓扑重构/第二轨联调/2026-11-02-创意入口与动态测试。
+归档于 sunmoonun scripts/results/第二轨联调/2026-11-02-创意入口与动态测试（2026-11-09 从 docs/总纲/数据拓扑重构/ 挪来）。
 没有更新沙箱、续跑旧任务或代点采单；生产仍需 qwen 发布本增量后本人正式测试。
 
 
