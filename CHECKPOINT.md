@@ -625,7 +625,7 @@ find_expert 明确 readOnlyHint=true：只读市场声明，保存不可变目�
 
 回归168 passed（56.19s）：compute_batch、compute_batch_db、knowbot_compute、workbench_mcp_routes、compute_progress_guard_db、method_evidence_delivery_db、workbench_advisor_db；Ruff/Pyright/diff通过。新负例覆盖{}、仅task、空batch仍不合法且零计算记录，既有混合模式拒绝与批量原子性仍过。测试最初从父目录误跑uv提示缺项目，已在app目录正式运行，不掩盖该执行错误。
 
-隔离对照共14次HTTP200、6次参数校验HTTP400（未返回用量），所有真实请求max_output_tokens=768、无自动重试。按返回usage和应用价目表估算0.461396元，额外保守计缓存写入0.492116元，低于2元；供应商账单为准。证据在sunmoonun/docs/总纲/发版/证据/2026-11-04-compute参数对照.json，保留请求、仅工具参数SSE事件、usage与虚拟服务回放；无Key、业务数据和模型推理正文。
+隔离对照共14次HTTP200、6次参数校验HTTP400（未返回用量），所有真实请求max_output_tokens=768、无自动重试。按返回usage和应用价目表估算0.461396元，额外保守计缓存写入0.492116元，低于2元；供应商账单为准。证据在sunmoonun/docs/总纲/发版/证据/2026-11-04-compute参数对照.json（2026-11-09 已删，原文见 sunmoonun 提交 `13048f793`），保留请求、仅工具参数SSE事件、usage与虚拟服务回放；无Key、业务数据和模型推理正文。
 
 发布仍交Qwen，统一交接《2026-11-04-AI选专家结果验收修复交接.md》。发布后旧线程工具缓存要在无活动turn时刷新，真实tools/list和mcpServerStatus/list需核完整anyOf字段。新财务任务须用户显式发起；已取消14a8eba0不恢复。该证据不等于完整财务委托验收，2023H1缺项补提被拒仍另查。
 
