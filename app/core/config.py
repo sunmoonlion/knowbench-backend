@@ -198,7 +198,7 @@ class Settings(BaseSettings):
     auth_jwks_cache_seconds: int = Field(default=300, ge=1, le=3600)
     auth_clock_skew_seconds: int = Field(default=30, ge=0, le=120)
     auth_allowed_algorithms: str = "RS256,ES256"
-    session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    session_ttl_seconds: int = Field(default=86400, ge=60, le=86400)
     web_session_ttl_seconds: int = Field(default=86400, ge=60, le=86400)
     session_cookie_secure: bool | None = None
 
