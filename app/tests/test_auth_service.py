@@ -519,9 +519,14 @@ async def test_providers_without_the_capability_still_sign_in(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("surface", "provider_seconds", "expected_seconds"),
-    [("web", 172800, 86400), ("web", 1800, 1800), ("admin", 86400, 3600)],
+    [
+        ("web", 172800, 86400),
+        ("web", 1800, 1800),
+        ("admin", 172800, 86400),
+        ("admin", 1800, 1800),
+    ],
 )
-async def test_browser_lifetime_keeps_web_for_a_day_but_never_outlives_provider(
+async def test_browser_sessions_last_a_day_without_outliving_provider(
     surface: str,
     provider_seconds: int,
     expected_seconds: int,
