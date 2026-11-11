@@ -199,6 +199,7 @@ class Settings(BaseSettings):
     auth_clock_skew_seconds: int = Field(default=30, ge=0, le=120)
     auth_allowed_algorithms: str = "RS256,ES256"
     session_ttl_seconds: int = Field(default=3600, ge=60, le=86400)
+    web_session_ttl_seconds: int = Field(default=86400, ge=60, le=86400)
     session_cookie_secure: bool | None = None
 
     allowed_hosts: str = "localhost,127.0.0.1,testserver"

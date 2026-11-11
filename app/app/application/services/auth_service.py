@@ -222,7 +222,12 @@ class AuthService:
         provider_exp = int(claims["exp"])
         issued_at = int(claims["iat"])
         now = int(time.time())
-        expires_at_epoch = min(provider_exp, now + self._settings.session_ttl_seconds)
+        session_ttl = (
+            self._settings.web_session_ttl_seconds
+            if self.surface == "web"
+            else self._settings.session_ttl_seconds
+        )
+        expires_at_epoch = min(provider_exp, now + session_ttl)
         if expires_at_epoch <= now:
             raise UnauthorizedError(
                 "The identity token is invalid",
