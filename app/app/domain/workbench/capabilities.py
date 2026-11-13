@@ -34,6 +34,12 @@ class CapabilityReauthRequired(CapabilityError):
     code = "capability_reauth_required"
 
 
+class CapabilityOutcomeUnknown(CapabilityError):
+    """Dispatch may have happened, but no authoritative result was received."""
+
+    code = "capability_outcome_unknown"
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

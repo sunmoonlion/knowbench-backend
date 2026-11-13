@@ -11,7 +11,11 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.domain.workbench.capabilities import CapabilityError, CapabilityReauthRequired
+from app.domain.workbench.capabilities import (
+    CapabilityError,
+    CapabilityOutcomeUnknown,
+    CapabilityReauthRequired,
+)
 
 MAX_BYTES = 1024 * 1024
 
@@ -92,8 +96,13 @@ class RemoteMcp:
                         json=body,
                         extensions={"sni_hostname": host},
                     ) as response:
-                        if response.status_code in (401, 403):
-                            raise CapabilityReauthRequired("MCP authentication requires renewal")
+                        if (
+                            response.status_code in (401, 403)
+                            and method != "tools/call"
+                        ):
+                            raise CapabilityReauthRequired(
+                                "MCP authentication requires renewal"
+                            )
                         if response.status_code not in (200, 202, 204):
                             raise CapabilityError("MCP service rejected the request")
                         session_id = response.headers.get("mcp-session-id")
@@ -137,18 +146,50 @@ class RemoteMcp:
                                     break
                         if not sse:
                             reply = json.loads(data)
-                        if (
-                            not isinstance(reply, dict)
-                            or reply.get("id") != sequence
-                            or "error" in reply
-                            or not isinstance(reply.get("result"), dict)
-                        ):
-                            raise CapabilityError(
-                                "MCP returned an invalid or unsuccessful response"
-                            )
+                        if not isinstance(reply, dict) or reply.get("id") != sequence:
+                            raise CapabilityError("MCP returned an invalid response")
+                        if "error" in reply:
+                            error = reply["error"]
+                            if (
+                                "result" in reply
+                                or not isinstance(error, dict)
+                                or type(error.get("code")) is not int
+                                or not isinstance(error.get("message"), str)
+                            ):
+                                raise CapabilityError("MCP returned an invalid error")
+                            # A correlated protocol response is an explicit result,
+                            # unlike a proxy HTTP error or an incomplete response.
+                            return {"isError": True, "content": [], "error": error}
+                        if not isinstance(reply.get("result"), dict):
+                            raise CapabilityError("MCP returned an invalid result")
                         return reply["result"]
-                except (httpx.HTTPError, ValueError, UnicodeError, RecursionError) as exc:
+                except (
+                    httpx.ConnectError,
+                    httpx.ConnectTimeout,
+                    httpx.PoolTimeout,
+                ) as exc:
+                    # No HTTP request was sent on this connection.
                     raise CapabilityError(
+                        "MCP connection unavailable before dispatch"
+                    ) from exc
+                except CapabilityError as exc:
+                    if method == "tools/call":
+                        raise CapabilityOutcomeUnknown(
+                            "External outcome is unknown. Check the provider before retrying."
+                        ) from exc
+                    raise
+                except (
+                    httpx.HTTPError,
+                    ValueError,
+                    UnicodeError,
+                    RecursionError,
+                ) as exc:
+                    error_type = (
+                        CapabilityOutcomeUnknown
+                        if method == "tools/call"
+                        else CapabilityError
+                    )
+                    raise error_type(
                         "MCP response unavailable; a submitted operation may have an unknown outcome"
                     ) from exc
 
@@ -209,5 +250,11 @@ class RemoteMcp:
 
     async def call(self, url, token, name, arguments):
         # Never retry tools/call: transport failure after dispatch is an unknown outcome.
-        async with asyncio.timeout(45), self.connect(url, token) as rpc:
-            return await rpc("tools/call", {"name": name, "arguments": arguments})
+        dispatching = False
+        try:
+            async with asyncio.timeout(45), self.connect(url, token) as rpc:
+                dispatching = True
+                return await rpc("tools/call", {"name": name, "arguments": arguments})
+        except TimeoutError as exc:
+            error_type = CapabilityOutcomeUnknown if dispatching else CapabilityError
+            raise error_type("MCP operation timed out") from exc

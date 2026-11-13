@@ -103,8 +103,11 @@ async def test_install_before_connecting_then_bind_current_account_and_revoke(db
             second["id"],
             AssetAction(revision=second["revision"], action="disable"),
         )
-        with pytest.raises(CapabilityError):
-            await svc.prepare(OWNER, sid)
+        degraded = await svc.prepare(OWNER, sid)
+        assert (
+            degraded["config"]["mcp_servers.sunmoon_capabilities"]["enabled"] is False
+        )
+        assert "excluded from this turn" in degraded["inputs"][0]["text"]
         # Presence of the first account never makes it an implicit replacement.
         current = await svc.selection(OWNER, sid)
         assert current["tools"] == [second_key]

@@ -126,6 +126,7 @@ async def test_missing_tools_prevents_turn_start_and_token_spend(monkeypatch):
     link = runtime.SandboxLink(
         SimpleNamespace(
             stores=stores,
+            capabilities=None,
             turn_plan=AsyncMock(return_value=SimpleNamespace(settings={})),
         ),
         {"id": "sandbox"},

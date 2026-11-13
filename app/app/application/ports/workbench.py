@@ -128,6 +128,7 @@ class AppServerConnector(Protocol):
 
 
 class WorkbenchStore(Protocol):
+    async def capability_context_exists(self, owner: str, session_id: str) -> bool: ...
     async def capability_assets(
         self, owner: str, *, lock: bool = False
     ) -> list[dict[str, Any]]: ...
@@ -168,12 +169,13 @@ class WorkbenchStore(Protocol):
     async def capability_runtime_event(
         self,
         session_id: str,
-        scope: str,
+        scope: str | None,
         turn_id: str,
         *,
         started: bool,
         aborted: bool = False,
     ) -> None: ...
+    async def capability_revoke_sandbox(self, sandbox_id: str) -> None: ...
     async def capability_calls(
         self, owner: str, session_id: str
     ) -> list[dict[str, Any]]: ...

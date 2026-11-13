@@ -103,8 +103,31 @@ class ReplayAppServer:
                     }
                 )
             return
+        if method == "thread/read":
+            thread = str(params["threadId"])
+            active = any(t == thread for _, t in self.open_turns.values())
+            await send(
+                {
+                    "id": rid,
+                    "result": {
+                        "thread": {
+                            "id": thread,
+                            "status": {"type": "active" if active else "idle"},
+                        }
+                    },
+                }
+            )
+            return
+        if method == "thread/unsubscribe":
+            await send({"id": rid, "result": {"status": "unsubscribed"}})
+            return
         if method == "thread/resume":
-            await send({"id": rid, "result": {"model": MODEL}})
+            await send(
+                {
+                    "id": rid,
+                    "result": {"model": MODEL, "thread": {"id": params["threadId"]}},
+                }
+            )
             # 真的 Codex 在重新装载一条线时，把上一次的用量原样再报一遍
             again = self.last_usage.get(str(params.get("threadId")))
             if again is not None:

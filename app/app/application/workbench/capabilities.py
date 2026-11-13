@@ -22,6 +22,7 @@ from app.application.workbench.method_capabilities import (
 )
 from app.domain.workbench.capabilities import (
     CapabilityError,
+    CapabilityOutcomeUnknown,
     digest,
     disabled_mcp_config,
     public_asset,
@@ -578,7 +579,7 @@ class Capabilities:
                 "inputs": [],
                 "revision": None,
             }
-        if current["issues"]:
+        if current["issues"] and scene == ExecutionScene.METHOD:
             raise CapabilityError(
                 "Selected capabilities need attention before this turn",
                 issues=current["issues"],
@@ -593,13 +594,37 @@ class Capabilities:
             assets = await self.repo.capability_assets(owner, lock=True)
             # Recheck under row locks, after any concurrent disable/refresh completed.
             fresh = await self.view(owner, session_id, selected)
-            if fresh["issues"]:
+            if fresh["issues"] and scene == ExecutionScene.METHOD:
                 raise CapabilityError(
                     "Capability changed during preparation", issues=fresh["issues"]
                 )
             tools = {}
             inputs = []
             packages = {}
+            if fresh["issues"]:
+                # Conversation can continue without unusable capabilities. Never
+                # rewrite the user's selection or silently rebind a changed account.
+                blocked = {issue["ref"] for issue in fresh["issues"]}
+                fresh["tools"] = [key for key in fresh["tools"] if key not in blocked]
+                fresh["skills"] = [key for key in fresh["skills"] if key not in blocked]
+                if fresh["skill_mode"] == "explicit":
+                    fresh["skills"] = [
+                        a["id"]
+                        for a in assets
+                        if a["id"] in fresh["skills"]
+                        and not missing_skill_dependencies(a, assets, fresh["tools"])
+                    ]
+                if "runtime" in blocked:
+                    fresh["tools"], fresh["skills"] = [], []
+                inputs.append(
+                    {
+                        "type": "text",
+                        "text": "Some selected capabilities are unavailable or have changed and are excluded from this turn. "
+                        "Continue only work that does not require them. If needed, ask the user to review Current capabilities; "
+                        "do not claim the missing operation was performed or substitute another account. Issues: "
+                        + json.dumps(fresh["issues"], ensure_ascii=False),
+                    }
+                )
             method_binding = None
             if scene == ExecutionScene.METHOD and fresh["method"]:
                 session = await self.repo.get_session(session_id, owner_actor_id=owner)
@@ -1070,6 +1095,12 @@ class Capabilities:
                         and selected["runtime"].get("status")
                         not in ("prepared", "applied")
                     )
+                    or datetime.fromisoformat(
+                        selected["runtime"].get(
+                            "expires_at", "1970-01-01T00:00:00+00:00"
+                        )
+                    )
+                    <= datetime.now(UTC)
                 ):
                     raise CapabilityError(
                         "Authorization changed; request the operation again"
@@ -1116,6 +1147,9 @@ class Capabilities:
                     )
                     status = "failed" if result.get("isError") else "succeeded"
                     intent["result"] = result
+            except CapabilityOutcomeUnknown as exc:
+                status = "unknown"
+                intent["result"] = {"message": exc.message}
             except CapabilityError as exc:
                 status = "failed"
                 intent["result"] = {"isError": True, "message": exc.message}

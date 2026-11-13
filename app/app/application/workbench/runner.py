@@ -345,6 +345,17 @@ class SandboxLink:
     ) -> list[dict[str, Any]]:
         if self.runner.capabilities is None:
             return []
+        if scene == ExecutionScene.CONVERSATION:
+            async with self.runner.stores() as repo:
+                session = await repo.get_session_by_thread(thread_id)
+                if (
+                    session is not None
+                    and not session.get("active_task_id")
+                    and not await repo.capability_context_exists(
+                        str(session["owner_actor_id"]), str(session["id"])
+                    )
+                ):
+                    return []
         # Check before issuing/rotating a scope. Repeated commands must not revoke
         # the token of an existing turn, even if stage configuration was cached.
         client = await self.ensure_connected()
@@ -547,10 +558,9 @@ class SandboxLink:
                 params = priced
             async with repo.transaction():
                 if self.runner.capabilities is not None and method == "turn/completed":
-                    scope = self.capability_scopes.get(thread_id_of(params) or "")
                     turn = params.get("turn") or {}
                     tid = turn.get("id") or params.get("turnId")
-                    if scope and tid:
+                    if tid:
                         aborted = turn.get("status") in ("interrupted", "failed")
                         self.capability_finished[tid] = aborted
                         if len(self.capability_finished) > 256:
@@ -558,7 +568,7 @@ class SandboxLink:
                                 next(iter(self.capability_finished))
                             )
                         await repo.capability_runtime_event(
-                            session_id, scope, tid, started=False, aborted=aborted
+                            session_id, None, tid, started=False, aborted=aborted
                         )
                 event = await repo.append_event(
                     session_id=session_id,
@@ -1919,6 +1929,8 @@ class Runner:
         self, repo: WorkbenchStore, sandbox_id: str, reason: str
     ) -> int:
         """这个沙箱上没答的工具审批作废（app-server 那边的请求已随连接消失，Codex 会重问）。"""
+        if self.capabilities is not None:
+            await repo.capability_revoke_sandbox(sandbox_id)
         expired = await repo.expire_pending_tool_approvals(
             sandbox_id=sandbox_id, reason=reason
         )

@@ -13,7 +13,6 @@ from test_workbench_ledger_db import seed
 
 from app.domain.workbench.capabilities import (
     AssetAction,
-    CapabilityError,
     SelectionPut,
     SkillCreate,
 )
@@ -214,7 +213,7 @@ async def test_skill_discovery_never_grants_tool_dependencies(db):
         p = await svc.prepare(OWNER, sid)
         with pytest.raises(Forbidden):
             await svc.request_call(sid, token(p), "shell", {"command": "echo unsafe"})
-        frozen = await svc.prepare(OWNER, sid, expert=True)
+        frozen = await svc.prepare(OWNER, sid, scene="method")
         assert (
             frozen["inputs"] == []
             and not frozen["config"]["mcp_servers.sunmoon_capabilities"]["enabled"]
@@ -224,5 +223,6 @@ async def test_skill_discovery_never_grants_tool_dependencies(db):
                 sid, token(p), {"skill_id": a["id"], "path": "SKILL.md"}
             )
         svc.runtime_url = ""
-        with pytest.raises(CapabilityError):
-            await svc.prepare(OWNER, sid)
+        excluded = await svc.prepare(OWNER, sid)
+        assert not excluded["config"]["mcp_servers.sunmoon_capabilities"]["enabled"]
+        assert "excluded from this turn" in str(excluded["inputs"])

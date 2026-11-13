@@ -136,6 +136,16 @@ async def setup_method(db):
     )
 
 
+async def test_refresh_of_required_connection_still_blocks_method_step(db):
+    sid, _, _, conn, _, _, _, _, remote = await setup_method(db)
+    async with db() as s:
+        svc = service(WorkbenchRepository(s), remote)
+        await svc.action(OWNER, conn["id"], AssetAction(revision=1, action="refresh"))
+        with pytest.raises(CapabilityError, match="need attention"):
+            await svc.prepare(OWNER, sid, scene="method")
+        assert not remote.calls
+
+
 async def test_step_scope_lazy_read_and_cancellation(db):
     sid, tid, aid, conn, skill, other, key, token, remote = await setup_method(db)
     async with db() as s:
