@@ -1,4 +1,4 @@
-"""Portable step requirements; account credentials and installation IDs stay outside packs."""
+"""Portable step requirements, without account credentials or installation IDs."""
 
 from urllib.parse import urlsplit
 
