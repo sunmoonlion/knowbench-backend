@@ -188,7 +188,7 @@ async def test_selection_conflicts_dependencies_disabled_revision_and_method_bou
             await svc.save_selection(
                 OWNER, sid, SelectionPut(revision=selection["revision"] - 1)
             )
-        frozen = await svc.prepare(OWNER, sid, expert=True)
+        frozen = await svc.prepare(OWNER, sid, scene="method")
         assert (
             frozen["inputs"] == []
             and frozen["config"]["mcp_servers.sunmoon_capabilities"]["enabled"] is False
@@ -444,6 +444,7 @@ async def test_method_panel_projects_frozen_tools_without_chat_authority(db):
         projection = await service(repo).selection(OWNER, sid)
         assert not projection["editable"] and projection["method"] is not None
         assert projection["tools"] == [] and projection["skills"] == []
-        assert projection["method"]["managed_bindings_supported"] is False
+        assert projection["method"]["managed_bindings_supported"] is True
+        assert projection["method"]["requirements"] == {"tools": [], "skills": []}
         assert projection["preparation"] == "method_managed"
         assert key not in projection["method"]["declared_tools"]

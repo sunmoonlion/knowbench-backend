@@ -1,0 +1,219 @@
+{
+  "requirements": {
+    "$defs": {
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      },
+      "SkillRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "required_tools": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "maxItems": 30,
+            "title": "Required Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "digest"
+        ],
+        "title": "SkillRequirement",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "tools": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/McpRequirement"
+        },
+        "maxItems": 30,
+        "title": "Tools",
+        "type": "array"
+      },
+      "skills": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/SkillRequirement"
+        },
+        "maxItems": 10,
+        "title": "Skills",
+        "type": "array"
+      }
+    },
+    "title": "MethodCapabilities",
+    "type": "object"
+  },
+  "author_catalog": {
+    "$defs": {
+      "AuthorSkill": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "required_tools": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "maxItems": 30,
+            "title": "Required Tools",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "unresolved_dependencies": {
+            "default": false,
+            "title": "Unresolved Dependencies",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "digest",
+          "description"
+        ],
+        "title": "AuthorSkill",
+        "type": "object"
+      },
+      "AuthorTool": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "service_name": {
+            "title": "Service Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name",
+          "service_name",
+          "description"
+        ],
+        "title": "AuthorTool",
+        "type": "object"
+      },
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "tools": {
+        "items": {
+          "$ref": "#/$defs/AuthorTool"
+        },
+        "title": "Tools",
+        "type": "array"
+      },
+      "skills": {
+        "items": {
+          "$ref": "#/$defs/AuthorSkill"
+        },
+        "title": "Skills",
+        "type": "array"
+      }
+    },
+    "required": [
+      "tools",
+      "skills"
+    ],
+    "title": "AuthorCapabilityCatalog",
+    "type": "object"
+  }
+}

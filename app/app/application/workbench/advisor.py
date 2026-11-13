@@ -105,8 +105,10 @@ class Advisor:
         records: bool = False,
         deliverables: DeliverableCheck | None = None,
         reader: Any = None,
+        capabilities: Any = None,
     ):
         self.stores = stores  # 每次调用开一个工作单元
+        self.capabilities = capabilities
         self.driver = driver
         # 沙箱里配好了读项目记录的工具：每一步的说明里告诉模型有这组工具、委托编号是什么
         self.records = records
@@ -256,6 +258,15 @@ class Advisor:
             step = pack.step(int(task["current_step"]))
             if step is None:
                 return await self._finish(led, repo, task, pack)
+            if step.managed_capabilities and (
+                step.managed_capabilities.tools or step.managed_capabilities.skills
+            ):
+                if self.capabilities is None:
+                    raise RuntimeError("Managed method capabilities are not configured")
+                if await self.capabilities(repo).hold_method(
+                    str(task["owner_actor_id"]), str(task["session_id"])
+                ):
+                    return TaskState.WAITING
             attempts = await repo.list_attempts(task_id)
             reworks = sum(
                 1

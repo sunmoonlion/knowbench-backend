@@ -28,6 +28,13 @@ from app.domain.workbench.capability_contract import (  # noqa: E402
     Catalog,
     Selection,
 )
+from app.domain.workbench.skill_dependencies import public_skill_asset  # noqa: E402
+from app.domain.workbench.skill_execution import public_call  # noqa: E402
+from app.domain.workbench.skill_installation import (  # noqa: E402
+    SkillInstall,
+    SkillSourcePreview,
+    SkillSourceRequest,
+)
 from app.domain.workbench.skill_package import SkillPackageCreate  # noqa: E402
 
 models = (
@@ -35,6 +42,9 @@ models = (
     ConnectionRenew,
     SkillCreate,
     SkillPackageCreate,
+    SkillSourceRequest,
+    SkillSourcePreview,
+    SkillInstall,
     AssetAction,
     SelectionPut,
     ActionDecision,
@@ -157,6 +167,9 @@ call = {
         "approval_token": "synthetic-approval-only",
     },
 }
+catalog["assets"][1] = public_skill_asset(skill, [asset])
+selection["available_skills"] = [public_skill_asset(skill, [asset], [key])]
+call = public_call(call)
 examples = {
     m.__name__: m.model_validate(v).model_dump(mode="json", exclude_unset=True)
     for m, v in [

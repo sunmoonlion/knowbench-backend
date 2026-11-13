@@ -631,10 +631,14 @@ def _validate_atomic_binding(
     advanced = policy["advanced"]
     if not isinstance(advanced, dict) or advanced.get("output_schema") is not None:
         raise ValueError("execution policy cannot override method output semantics")
-    for name in ("tools", "reserve", "input_max_chars", "output_file"):
-        compiled = getattr(unit.contract, name)
-        if name == "tools":
-            compiled = list(compiled)
+    for name in (
+        "tools",
+        "reserve",
+        "input_max_chars",
+        "output_file",
+        "managed_capabilities",
+    ):
+        compiled = unit.contract.model_dump(mode="json").get(name)
         if compiled != advanced.get(name):
             raise ValueError("compiled execution differs from the expert policy")
 

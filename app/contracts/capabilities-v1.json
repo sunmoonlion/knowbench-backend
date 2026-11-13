@@ -80,6 +80,31 @@
     "type": "object"
   },
   "SkillCreate": {
+    "$defs": {
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      }
+    },
     "additionalProperties": false,
     "properties": {
       "request_id": {
@@ -118,6 +143,14 @@
         "maxItems": 30,
         "title": "Dependencies",
         "type": "array"
+      },
+      "tool_requirements": {
+        "items": {
+          "$ref": "#/$defs/McpRequirement"
+        },
+        "maxItems": 30,
+        "title": "Tool Requirements",
+        "type": "array"
       }
     },
     "required": [
@@ -131,6 +164,31 @@
     "type": "object"
   },
   "SkillPackageCreate": {
+    "$defs": {
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      }
+    },
     "additionalProperties": false,
     "properties": {
       "request_id": {
@@ -169,6 +227,14 @@
         "maxItems": 30,
         "title": "Dependencies",
         "type": "array"
+      },
+      "tool_requirements": {
+        "items": {
+          "$ref": "#/$defs/McpRequirement"
+        },
+        "maxItems": 30,
+        "title": "Tool Requirements",
+        "type": "array"
       }
     },
     "required": [
@@ -179,6 +245,177 @@
       "archive_base64"
     ],
     "title": "SkillPackageCreate",
+    "type": "object"
+  },
+  "SkillSourceRequest": {
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "maxLength": 1000,
+        "minLength": 15,
+        "title": "Url",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "title": "SkillSourceRequest",
+    "type": "object"
+  },
+  "SkillSourcePreview": {
+    "$defs": {
+      "SkillCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "files": {
+            "title": "Files",
+            "type": "integer"
+          },
+          "has_scripts": {
+            "title": "Has Scripts",
+            "type": "boolean"
+          },
+          "instructions": {
+            "title": "Instructions",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "name",
+          "description",
+          "digest",
+          "files",
+          "has_scripts",
+          "instructions"
+        ],
+        "title": "SkillCandidate",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "repository": {
+        "title": "Repository",
+        "type": "string"
+      },
+      "commit": {
+        "title": "Commit",
+        "type": "string"
+      },
+      "candidates": {
+        "items": {
+          "$ref": "#/$defs/SkillCandidate"
+        },
+        "title": "Candidates",
+        "type": "array"
+      }
+    },
+    "required": [
+      "repository",
+      "commit",
+      "candidates"
+    ],
+    "title": "SkillSourcePreview",
+    "type": "object"
+  },
+  "SkillInstall": {
+    "$defs": {
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "url": {
+        "maxLength": 1000,
+        "minLength": 15,
+        "title": "Url",
+        "type": "string"
+      },
+      "request_id": {
+        "maxLength": 128,
+        "minLength": 8,
+        "title": "Request Id",
+        "type": "string"
+      },
+      "commit": {
+        "pattern": "^[a-f0-9]{40}$",
+        "title": "Commit",
+        "type": "string"
+      },
+      "path": {
+        "maxLength": 500,
+        "title": "Path",
+        "type": "string"
+      },
+      "digest": {
+        "pattern": "^[a-f0-9]{64}$",
+        "title": "Digest",
+        "type": "string"
+      },
+      "dependencies": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 30,
+        "title": "Dependencies",
+        "type": "array"
+      },
+      "tool_requirements": {
+        "items": {
+          "$ref": "#/$defs/McpRequirement"
+        },
+        "maxItems": 30,
+        "title": "Tool Requirements",
+        "type": "array"
+      }
+    },
+    "required": [
+      "url",
+      "request_id",
+      "commit",
+      "path",
+      "digest"
+    ],
+    "title": "SkillInstall",
     "type": "object"
   },
   "AssetAction": {
@@ -196,7 +433,8 @@
           "disconnect",
           "default_on",
           "default_off",
-          "refresh"
+          "refresh",
+          "remove"
         ],
         "title": "Action",
         "type": "string"
@@ -247,6 +485,19 @@
         ],
         "title": "Skill Mode",
         "type": "string"
+      },
+      "method_context": {
+        "anyOf": [
+          {
+            "pattern": "^[a-f0-9]{64}$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Method Context"
       }
     },
     "required": [
@@ -341,6 +592,63 @@
         "title": "ConnectionDetail",
         "type": "object"
       },
+      "DependencyCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "connection_id",
+          "connection_name",
+          "account_label",
+          "status"
+        ],
+        "title": "DependencyCandidate",
+        "type": "object"
+      },
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      },
       "RegisteredTool": {
         "additionalProperties": false,
         "properties": {
@@ -371,9 +679,78 @@
         "title": "RegisteredTool",
         "type": "object"
       },
+      "SkillDependency": {
+        "additionalProperties": false,
+        "properties": {
+          "service_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Url"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "legacy_tool_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Legacy Tool Key"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "selected",
+              "selection_required",
+              "connection_required",
+              "connection_inactive"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/$defs/DependencyCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "service_url",
+          "tool_name",
+          "status",
+          "candidates"
+        ],
+        "title": "SkillDependency",
+        "type": "object"
+      },
       "SkillDetail": {
         "additionalProperties": false,
         "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -395,6 +772,20 @@
               "type": "string"
             },
             "title": "Dependencies",
+            "type": "array"
+          },
+          "tool_requirements": {
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "title": "Tool Requirements",
+            "type": "array"
+          },
+          "dependency_status": {
+            "items": {
+              "$ref": "#/$defs/SkillDependency"
+            },
+            "title": "Dependency Status",
             "type": "array"
           },
           "format": {
@@ -451,6 +842,31 @@
           "media_type"
         ],
         "title": "SkillFile",
+        "type": "object"
+      },
+      "SkillSource": {
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "commit": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Commit",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "commit",
+          "path"
+        ],
+        "title": "SkillSource",
         "type": "object"
       }
     },
@@ -654,6 +1070,63 @@
         "title": "ConnectionDetail",
         "type": "object"
       },
+      "DependencyCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "connection_id",
+          "connection_name",
+          "account_label",
+          "status"
+        ],
+        "title": "DependencyCandidate",
+        "type": "object"
+      },
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      },
       "RegisteredTool": {
         "additionalProperties": false,
         "properties": {
@@ -706,9 +1179,78 @@
         "title": "Service",
         "type": "object"
       },
+      "SkillDependency": {
+        "additionalProperties": false,
+        "properties": {
+          "service_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Url"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "legacy_tool_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Legacy Tool Key"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "selected",
+              "selection_required",
+              "connection_required",
+              "connection_inactive"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/$defs/DependencyCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "service_url",
+          "tool_name",
+          "status",
+          "candidates"
+        ],
+        "title": "SkillDependency",
+        "type": "object"
+      },
       "SkillDetail": {
         "additionalProperties": false,
         "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -730,6 +1272,20 @@
               "type": "string"
             },
             "title": "Dependencies",
+            "type": "array"
+          },
+          "tool_requirements": {
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "title": "Tool Requirements",
+            "type": "array"
+          },
+          "dependency_status": {
+            "items": {
+              "$ref": "#/$defs/SkillDependency"
+            },
+            "title": "Dependency Status",
             "type": "array"
           },
           "format": {
@@ -787,10 +1343,40 @@
         ],
         "title": "SkillFile",
         "type": "object"
+      },
+      "SkillSource": {
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "commit": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Commit",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "commit",
+          "path"
+        ],
+        "title": "SkillSource",
+        "type": "object"
       }
     },
     "additionalProperties": false,
     "properties": {
+      "script_execution_enabled": {
+        "default": false,
+        "title": "Script Execution Enabled",
+        "type": "boolean"
+      },
       "assets": {
         "items": {
           "$ref": "#/$defs/Asset"
@@ -1005,6 +1591,40 @@
         "title": "ConnectionDetail",
         "type": "object"
       },
+      "DependencyCandidate": {
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "key",
+          "connection_id",
+          "connection_name",
+          "account_label",
+          "status"
+        ],
+        "title": "DependencyCandidate",
+        "type": "object"
+      },
       "Issue": {
         "additionalProperties": false,
         "properties": {
@@ -1022,6 +1642,54 @@
           "code"
         ],
         "title": "Issue",
+        "type": "object"
+      },
+      "McpRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Url",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "url",
+          "name"
+        ],
+        "title": "McpRequirement",
+        "type": "object"
+      },
+      "MethodCapabilities": {
+        "additionalProperties": false,
+        "properties": {
+          "tools": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "maxItems": 30,
+            "title": "Tools",
+            "type": "array"
+          },
+          "skills": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/SkillRequirement"
+            },
+            "maxItems": 10,
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "title": "MethodCapabilities",
         "type": "object"
       },
       "MethodContext": {
@@ -1055,9 +1723,31 @@
             "type": "array"
           },
           "managed_bindings_supported": {
-            "const": false,
             "title": "Managed Bindings Supported",
             "type": "boolean"
+          },
+          "context": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Context"
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/MethodCapabilities"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "required": [
@@ -1100,9 +1790,78 @@
         "title": "RegisteredTool",
         "type": "object"
       },
+      "SkillDependency": {
+        "additionalProperties": false,
+        "properties": {
+          "service_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Service Url"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          },
+          "legacy_tool_key": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Legacy Tool Key"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "selected",
+              "selection_required",
+              "connection_required",
+              "connection_inactive"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "candidates": {
+            "items": {
+              "$ref": "#/$defs/DependencyCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          }
+        },
+        "required": [
+          "service_url",
+          "tool_name",
+          "status",
+          "candidates"
+        ],
+        "title": "SkillDependency",
+        "type": "object"
+      },
       "SkillDetail": {
         "additionalProperties": false,
         "properties": {
+          "source": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillSource"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "description": {
             "title": "Description",
             "type": "string"
@@ -1124,6 +1883,20 @@
               "type": "string"
             },
             "title": "Dependencies",
+            "type": "array"
+          },
+          "tool_requirements": {
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "title": "Tool Requirements",
+            "type": "array"
+          },
+          "dependency_status": {
+            "items": {
+              "$ref": "#/$defs/SkillDependency"
+            },
+            "title": "Dependency Status",
             "type": "array"
           },
           "format": {
@@ -1180,6 +1953,68 @@
           "media_type"
         ],
         "title": "SkillFile",
+        "type": "object"
+      },
+      "SkillRequirement": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 50,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "required_tools": {
+            "default": [],
+            "items": {
+              "$ref": "#/$defs/McpRequirement"
+            },
+            "maxItems": 30,
+            "title": "Required Tools",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "version",
+          "digest"
+        ],
+        "title": "SkillRequirement",
+        "type": "object"
+      },
+      "SkillSource": {
+        "additionalProperties": false,
+        "properties": {
+          "repository": {
+            "title": "Repository",
+            "type": "string"
+          },
+          "commit": {
+            "pattern": "^[a-f0-9]{40}$",
+            "title": "Commit",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "repository",
+          "commit",
+          "path"
+        ],
+        "title": "SkillSource",
         "type": "object"
       }
     },
@@ -1294,10 +2129,43 @@
       "CallDetail": {
         "additionalProperties": false,
         "properties": {
+          "execution_kind": {
+            "anyOf": [
+              {
+                "const": "skill_script",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Kind"
+          },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
           "connection_id": {
-            "format": "uuid",
-            "title": "Connection Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
           },
           "revision": {
             "title": "Revision",
@@ -1338,6 +2206,21 @@
           "result": {
             "default": null,
             "title": "Result"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
           }
         },
         "required": [
@@ -1398,10 +2281,30 @@
         "title": "Session Id",
         "type": "string"
       },
+      "source_asset_id": {
+        "anyOf": [
+          {
+            "format": "uuid",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Source Asset Id"
+      },
       "connection_id": {
-        "format": "uuid",
-        "title": "Connection Id",
-        "type": "string"
+        "anyOf": [
+          {
+            "format": "uuid",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Connection Id"
       },
       "interaction_id": {
         "anyOf": [
@@ -1481,10 +2384,30 @@
             "title": "Session Id",
             "type": "string"
           },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
           "connection_id": {
-            "format": "uuid",
-            "title": "Connection Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
           },
           "interaction_id": {
             "anyOf": [
@@ -1547,10 +2470,43 @@
       "CallDetail": {
         "additionalProperties": false,
         "properties": {
+          "execution_kind": {
+            "anyOf": [
+              {
+                "const": "skill_script",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Kind"
+          },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
           "connection_id": {
-            "format": "uuid",
-            "title": "Connection Id",
-            "type": "string"
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
           },
           "revision": {
             "title": "Revision",
@@ -1591,6 +2547,21 @@
           "result": {
             "default": null,
             "title": "Result"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
           }
         },
         "required": [

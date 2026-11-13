@@ -33,6 +33,11 @@ def approval_policy(chosen: str | None) -> str:
     return chosen if chosen in APPROVAL_POLICIES else DEFAULT_APPROVAL_POLICY
 
 
+class ExecutionScene(StrEnum):
+    CONVERSATION = "conversation"
+    METHOD = "method"
+
+
 class ConversationKind(StrEnum):
     CHAT = "chat"  # 一问一答。不改文件，不跑命令
     WORK = "work"  # 代理在项目里动手做。必须属于一个项目
@@ -188,14 +193,19 @@ def mode_of(
     directory: str | None,
     environment_key: str | None,
     environment_online: bool,
-    expert: bool = False,
+    scene: ExecutionScene = ExecutionScene.CONVERSATION,
 ) -> Mode:
     kind = ConversationKind(kind)
+    scene = ExecutionScene(scene)
     in_project = directory is not None and environment_key is not None
-    if kind in HANDS_ON or expert:
+    if kind in HANDS_ON or scene == ExecutionScene.METHOD:
         if not in_project:
             raise ValueError("work and expert turns need a project")
-        return Mode.EXPERT if (expert or kind is ConversationKind.EXPERT) else Mode.WORK
+        return (
+            Mode.EXPERT
+            if (scene == ExecutionScene.METHOD or kind is ConversationKind.EXPERT)
+            else Mode.WORK
+        )
     if in_project and environment_online:
         return Mode.CHAT_IN_PROJECT
     return Mode.CHAT
@@ -306,7 +316,7 @@ def turn_settings(
     environment_key: str | None,
     environment_online: bool,
     approval: str | None,
-    expert: bool = False,
+    scene: ExecutionScene = ExecutionScene.CONVERSATION,
     test_round: bool = False,
 ) -> dict[str, Any]:
     """这一轮发给 Codex 的四样：执行环境、目录、沙箱策略、审批。每一轮都带全。
@@ -324,7 +334,7 @@ def turn_settings(
         directory=directory,
         environment_key=environment_key,
         environment_online=environment_online,
-        expert=expert,
+        scene=scene,
     )
     if mode in (Mode.WORK, Mode.EXPERT):
         return {

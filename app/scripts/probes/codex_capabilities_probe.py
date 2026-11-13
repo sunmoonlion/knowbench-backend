@@ -3,6 +3,7 @@
 import asyncio
 import json
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -130,6 +131,17 @@ class Handler(BaseHTTPRequestHandler):
             data = json.dumps(
                 {"jsonrpc": "2.0", "id": msg["id"], "result": value}
             ).encode()
+            if method == "tools/call" and msg["params"]["name"] != "skill_read":
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.end_headers()
+                self.wfile.write(b": awaiting user approval\n\n")
+                self.wfile.flush()
+                # The host must keep the model turn open until a real result arrives.
+                time.sleep(0.5)
+                self.wfile.write(b"event: message\ndata: " + data + b"\n\n")
+                self.wfile.flush()
+                return
             ctype = "application/json"
         else:
             self.send_response(404)
@@ -403,6 +415,10 @@ stream_max_retries = 0
             },
             invoke="c_11111111111141118111111111111111_27ce1d1bf427aecd",
         )
+        assert (
+            "synthetic_c_11111111111141118111111111111111_27ce1d1bf427aecd"
+            in json.dumps(captures[-1]["input"])
+        )
         assert "INSTRUCTION_BODY_7821" in json.dumps(captures[-1]["input"])
         assert any(
             "c_11111111111141118111111111111111_27ce1d1bf427aecd" in n for n in names
@@ -501,7 +517,7 @@ stream_max_retries = 0
             notices
         )
         print(
-            "PASS: empty-home start, no local execution, explicit instruction body, staged tool, per-turn header/whitelist rotation, lazy Skill reference read and disable",
+            "PASS: empty-home start, no local execution, explicit instruction body, SSE-delayed tool result, per-turn header/whitelist rotation, lazy Skill reference read and disable",
             flush=True,
         )
     finally:

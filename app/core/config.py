@@ -261,6 +261,9 @@ class Settings(BaseSettings):
     workbench_provisioner_token: str | None = Field(
         default=None, validation_alias="WORKBENCH_PROVISIONER_TOKEN"
     )
+    workbench_skill_scripts_enabled: bool = Field(
+        default=False, validation_alias="WORKBENCH_SKILL_SCRIPTS_ENABLED"
+    )
     workbench_relay_admin_url: str | None = Field(
         default=None, validation_alias="WORKBENCH_RELAY_ADMIN_URL"
     )

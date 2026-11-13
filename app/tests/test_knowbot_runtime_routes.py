@@ -254,3 +254,24 @@ async def test_knowlab_cancels_a_test_and_again_gets_the_same(client, db):  # no
     ) as h:
         no_token = await h.post(f"{BASE}/knowlab-run-0300/cancel")
         assert no_token.status_code == 401
+
+
+async def test_capability_catalog_requires_internal_service_identity(client, db):
+    url = "/api/internal/v1/knowbot-runtime/users/user-123/capabilities"
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://127.0.0.1"
+    ) as http:
+        assert (await http.get(url)).status_code in (401, 403)
+        client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
+            caller="knowlab", principal=None
+        )
+        response = await http.get(url)
+        assert response.status_code == 200 and response.json() == {
+            "tools": [],
+            "skills": [],
+        }
+        assert response.headers["cache-control"] == "no-store"
+    async with AsyncClient(
+        transport=ASGITransport(app=client), base_url="http://testserver"
+    ) as http:
+        assert (await http.get(url)).status_code == 404

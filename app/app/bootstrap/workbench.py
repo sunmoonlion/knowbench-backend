@@ -443,6 +443,8 @@ def capability_service(repo):
 
     from app.application.workbench.capabilities import Capabilities
     from app.infrastructure.workbench.capability_mcp import RemoteMcp
+    from app.infrastructure.workbench.skill_executor import SkillExecutor
+    from app.infrastructure.workbench.skill_sources import GitHubSkills
 
     settings = get_settings()
     cipher = (
@@ -455,4 +457,12 @@ def capability_service(repo):
         RemoteMcp(tuple(settings.workbench_capability_mcp_urls)),
         cipher,
         runtime_url=settings.workbench_capability_mcp_url,
+        skill_source=GitHubSkills(),
+        script_executor=SkillExecutor(
+            settings.workbench_provisioner_url, settings.workbench_provisioner_token
+        )
+        if settings.workbench_skill_scripts_enabled
+        and settings.workbench_provisioner_url
+        and settings.workbench_provisioner_token
+        else None,
     )

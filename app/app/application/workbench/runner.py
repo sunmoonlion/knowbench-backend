@@ -66,6 +66,7 @@ from app.domain.workbench.pricing import (
 )
 from app.domain.workbench.projects import (
     THREAD_CONFIG,
+    ExecutionScene,
     mode_note,
     mode_of,
     orchestrator_cwd,
@@ -340,7 +341,7 @@ class SandboxLink:
                     )
 
     async def prepare_capabilities(
-        self, thread_id: str, *, expert: bool
+        self, thread_id: str, *, scene: ExecutionScene
     ) -> list[dict[str, Any]]:
         if self.runner.capabilities is None:
             return []
@@ -356,7 +357,7 @@ class SandboxLink:
             if session is None:
                 raise RuntimeError("Capability context has no session")
             prepared = await self.runner.capabilities(repo).prepare(
-                str(session["owner_actor_id"]), str(session["id"]), expert=expert
+                str(session["owner_actor_id"]), str(session["id"]), scene=scene
             )
         self.capability_scopes[thread_id] = prepared.get("scope_id", "")
         config = prepared["config"]
@@ -645,7 +646,9 @@ class SandboxLink:
         """TurnDriver：顾问在用户的 thread 上发一个 turn 并等它结束。"""
         client = await self.ensure_connected()
         await self.ensure_thread(thread_id)
-        plan = await self.runner.turn_plan(thread_id=thread_id, expert=True)
+        plan = await self.runner.turn_plan(
+            thread_id=thread_id, scene=ExecutionScene.METHOD
+        )
         await self.announce(thread_id, plan)
         async with self.runner.stores() as repo:
             required_data = await declared_data_tools(repo, thread_id)
@@ -696,7 +699,9 @@ class SandboxLink:
             # MCP tools. Native web search cannot supply their pinned fact refs;
             # reopening it after data planning causes fruitless off-source loops.
             # Ordinary chat and experts without data tools retain their settings.
-            capability_inputs = await self.prepare_capabilities(thread_id, expert=True)
+            capability_inputs = await self.prepare_capabilities(
+                thread_id, scene=ExecutionScene.METHOD
+            )
             await self.configure_search_scope(
                 thread_id, restricted=planning or lookup or bool(required_data)
             )
@@ -781,6 +786,7 @@ class SandboxLink:
         self.active_turns[thread_id] = turn_id
         loop = asyncio.get_running_loop()
         started, waited_before = loop.time(), self.waited(thread_id)
+        capability_waiting = False
         try:
             if expected_attempt is not None:
                 try:
@@ -810,6 +816,14 @@ class SandboxLink:
             while True:
                 if waiter["future"].done():
                     break
+                if expected_attempt and self.capability_scopes.get(thread_id):
+                    waiting = await self.method_capability_wait(expected_attempt)
+                    if waiting != capability_waiting:
+                        if waiting:
+                            self._wait_started(thread_id)
+                        else:
+                            self._wait_ended(thread_id)
+                        capability_waiting = waiting
                 if guard := waiter["idle_guard"]:
                     now = loop.time() - self.waited(thread_id)
                     guard.tick(now)
@@ -912,6 +926,8 @@ class SandboxLink:
         except ConnectionError as exc:
             waiter["error"] = f"connection lost: {exc}"
         finally:
+            if capability_waiting:
+                self._wait_ended(thread_id)
             self.turn_waiters.pop(turn_id, None)
             if self.active_turns.get(thread_id) == turn_id:
                 self.active_turns.pop(thread_id, None)
@@ -1393,6 +1409,24 @@ class SandboxLink:
         except Exception:  # noqa: BLE001
             log.info("answer to a request of an ended turn failed rid=%s", rid)
 
+    async def method_capability_wait(self, expected: tuple[str, str]) -> bool:
+        """External MCP approvals use the same stopped clock as native user requests."""
+        async with self.runner.stores() as repo:
+            task = await repo.get_task(expected[0])
+            if (
+                task["state"] != TaskState.WAITING
+                or str(task.get("active_attempt_id")) != expected[1]
+                or not task.get("active_interaction_id")
+            ):
+                return False
+            interaction = await repo.get_interaction(str(task["active_interaction_id"]))
+            return bool(
+                str(interaction.get("attempt_id")) == expected[1]
+                and ((interaction.get("prompt") or {}).get("subject") or {}).get(
+                    "capability_call_id"
+                )
+            )
+
     def _wait_started(self, thread_id: str) -> None:
         if not self._waits_open.get(thread_id):
             self._wait_since[thread_id] = asyncio.get_running_loop().time()
@@ -1804,6 +1838,7 @@ class Runner:
     ):
         self.records = records
         self.capabilities = capabilities
+        self.script_receipts: asyncio.Task | None = None
         self.deliverables = deliverables
         # 第四版：数值验收回查事实编号、资料页码（run_reader.RunReader）
         self.reader = reader
@@ -1848,6 +1883,9 @@ class Runner:
                     await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
                 except TimeoutError:
                     pass
+        if self.script_receipts:
+            self.script_receipts.cancel()
+            await asyncio.gather(self.script_receipts, return_exceptions=True)
         for link in self.links.values():
             if link.client:
                 await link.client.close()
@@ -2034,7 +2072,20 @@ class Runner:
         finally:
             self.driving.pop(task_id, None)
 
+    async def _script_receipts(self) -> None:
+        try:
+            async with self.stores() as repo:
+                await self.capabilities(repo).reconcile_scripts()
+        except Exception:
+            log.exception("could not reconcile Skill script receipts")
+
     async def run_once(self) -> int:
+        if self.capabilities is not None and (
+            self.script_receipts is None or self.script_receipts.done()
+        ):
+            self.script_receipts = asyncio.create_task(
+                self._script_receipts(), name="skill-script-receipts"
+            )
         async with self.stores() as repo:
             async with repo.transaction():
                 await repo.requeue_stale_commands()
@@ -2134,10 +2185,12 @@ class Runner:
                 raise RuntimeError(
                     f"wheel is held by {session['wheel']}; turn by {payload.get('by', 'user')} refused"
                 )
-            plan = await self.turn_plan(session=session, expert=False)
+            plan = await self.turn_plan(
+                session=session, scene=ExecutionScene.CONVERSATION
+            )
             await link.announce(session["thread_id"], plan)
             capability_inputs = await link.prepare_capabilities(
-                session["thread_id"], expert=False
+                session["thread_id"], scene=ExecutionScene.CONVERSATION
             )
             await link.configure_search_scope(session["thread_id"], restricted=False)
             result = await client.request(
@@ -2213,7 +2266,7 @@ class Runner:
         *,
         session: dict[str, Any] | None = None,
         thread_id: str | None = None,
-        expert: bool,
+        scene: ExecutionScene,
     ) -> TurnPlan:
         """这一轮的执行环境、目录、沙箱策略、审批。每一轮都带全，不靠上一轮留下的。
 
@@ -2239,7 +2292,7 @@ class Runner:
                         directory=None,
                         environment_key=None,
                         environment_online=False,
-                        expert=False,
+                        scene=ExecutionScene.CONVERSATION,
                         approval="never",
                     ),
                     mode="chat",
@@ -2260,7 +2313,7 @@ class Runner:
                 legacy.get("environmentId", self.environment_key) if directory else None
             ),
             "environment_online": online,
-            "expert": expert,
+            "scene": scene,
         }
         kind = session.get("kind") or "work"
         async with self.stores() as repo:
@@ -2360,6 +2413,7 @@ class Runner:
             records=self.records,
             deliverables=self.deliverables,
             reader=self.reader,
+            capabilities=self.capabilities,
         )
         try:
             state = await advisor.drive(task_id)
