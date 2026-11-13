@@ -277,6 +277,12 @@ class CapabilityRepositoryMixin:
                 {"o": owner, "s": session_id},
             )
 
+    async def capability_pending_scripts(self):
+        result = await self.session.execute(text("""SELECT * FROM workbench_capability_calls
+            WHERE status='dispatching' AND detail->>'execution_kind'='skill_script'
+            ORDER BY updated_at LIMIT 20"""))
+        return [row(r) for r in result.mappings()]
+
     async def capability_call(self, owner, call_id, *, lock=False):
         r = (
             (

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import secrets
 import uuid
@@ -13,8 +14,12 @@ from jsonschema.exceptions import SchemaError
 from referencing import Registry
 from referencing.exceptions import Unresolvable
 
-from app.application.workbench.execution_plan import display_for_task
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.method_capabilities import (
+    check_runtime_method,
+    method_scope,
+    selection_issues,
+)
 from app.domain.workbench.capabilities import (
     CapabilityError,
     digest,
@@ -23,14 +28,29 @@ from app.domain.workbench.capabilities import (
     tool_key,
 )
 from app.domain.workbench.errors import Forbidden
-from app.domain.workbench.method_plan import PLAN_STEP
+from app.domain.workbench.method_capabilities import matches_skill, matches_tool
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.projects import ExecutionScene
+from app.domain.workbench.skill_dependencies import (
+    missing_skill_dependencies,
+    public_skill_asset,
+    skill_dependencies,
+)
+from app.domain.workbench.skill_execution import (
+    execution_input,
+    public_call,
+    public_result,
+    script_tool,
+)
+from app.domain.workbench.skill_installation import repository_packages
 from app.domain.workbench.skill_package import (
+    SkillPackageCreate,
     SkillRead,
     resource_result,
     skill_files,
     unpack_skill,
 )
+from app.domain.workbench.states import TaskState, WaitingReason
 
 
 def schema_validator(schema):
@@ -74,7 +94,14 @@ class McpPort(Protocol):
 
 class Capabilities:
     def __init__(
-        self, repo: Any, remote: McpPort, cipher: Any = None, *, runtime_url: str = ""
+        self,
+        repo: Any,
+        remote: McpPort,
+        cipher: Any = None,
+        *,
+        runtime_url: str = "",
+        skill_source: Any = None,
+        script_executor: Any = None,
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
             repo,
@@ -82,6 +109,8 @@ class Capabilities:
             cipher,
             runtime_url,
         )
+        self.skill_source = skill_source
+        self.script_executor = script_executor
 
     def secret(self, asset):
         if not asset.get("secret"):
@@ -91,7 +120,8 @@ class Capabilities:
         return self.cipher.decrypt(asset["secret"].encode()).decode()
 
     async def assets(self, owner):
-        return [public_asset(a) for a in await self.repo.capability_assets(owner)]
+        assets = await self.repo.capability_assets(owner)
+        return [public_skill_asset(a, assets) for a in assets]
 
     async def create_connection(self, owner, body):
         if body.token and self.cipher is None:
@@ -120,7 +150,57 @@ class Capabilities:
         }
         return public_asset(await self.repo.capability_insert(asset))
 
-    async def create_skill(self, owner, body, *, package=False):
+    async def preview_skill_source(self, body):
+        if self.skill_source is None:
+            raise CapabilityError("Repository installation is not configured")
+        source = await self.skill_source.fetch(body.url)
+        candidates = await asyncio.to_thread(
+            repository_packages, source["archive"], source["prefix"]
+        )
+        return {
+            "repository": source["repository"],
+            "commit": source["commit"],
+            "candidates": [c for c, _ in candidates],
+        }
+
+    async def install_skill(self, owner, body):
+        if self.skill_source is None:
+            raise CapabilityError("Repository installation is not configured")
+        source = await self.skill_source.fetch(body.url, body.commit)
+        packages = await asyncio.to_thread(
+            repository_packages, source["archive"], source["prefix"], only=body.path
+        )
+        if len(packages) != 1 or packages[0][0]["digest"] != body.digest:
+            raise CapabilityError(
+                "Skill content differs from the preview; review its source again"
+            )
+        candidate, encoded = packages[0]
+        return await self.create_skill(
+            owner,
+            SkillPackageCreate(
+                request_id=body.request_id,
+                name=candidate["name"],
+                description=candidate["description"],
+                version=source["commit"],
+                archive_base64=encoded,
+                dependencies=body.dependencies,
+                tool_requirements=body.tool_requirements,
+            ),
+            package=True,
+            source={
+                "repository": source["repository"],
+                "commit": source["commit"],
+                "path": body.path,
+            },
+        )
+
+    async def create_skill(self, owner, body, *, package=False, source=None):
+        if len(body.dependencies) + len(body.tool_requirements) > 30:
+            raise CapabilityError("A Skill may declare at most 30 tool dependencies")
+        if len({(r.url, r.name) for r in body.tool_requirements}) != len(
+            body.tool_requirements
+        ):
+            raise CapabilityError("Duplicate Skill tool requirements")
         available = {
             tool_key(a["id"], t["name"])
             for a in await self.repo.capability_assets(owner)
@@ -146,12 +226,24 @@ class Capabilities:
             "status": "active",
             "secret": None,
             "request_id": body.request_id,
-            "request_digest": digest(body.model_dump()),
+            "request_digest": digest(
+                {**body.model_dump(), **({"source": source} if source else {})}
+            ),
             "detail": {
                 "description": body.description,
                 "version": body.version,
                 "dependencies": body.dependencies,
+                **(
+                    {
+                        "tool_requirements": [
+                            r.model_dump() for r in body.tool_requirements
+                        ]
+                    }
+                    if body.tool_requirements
+                    else {}
+                ),
                 **material,
+                **({"source": source} if source else {}),
             },
         }
         return public_asset(await self.repo.capability_insert(asset))
@@ -217,14 +309,21 @@ class Capabilities:
                 schema_validator(tool["inputSchema"])
             detail["checked_at"] = datetime.now(UTC).isoformat()
         elif body.action == "disconnect":
+            if asset["kind"] != "connection":
+                raise CapabilityError("Use remove to uninstall a Skill")
             status, default, secret = "disconnected", False, None
             detail["revocation"] = (
                 "local_access_removed; revoke bearer credential at provider if required"
             )
+        elif body.action == "remove":
+            if asset["kind"] != "skill":
+                raise CapabilityError("Use disconnect for an MCP connection")
+            # Preserve immutable content and past receipts; revoke further use.
+            status, default, secret = "disconnected", False, None
         elif body.action in ("enable", "disable"):
             if status == "disconnected":
                 raise CapabilityError(
-                    "Disconnected assets must be reconnected as a new connection"
+                    "Removed assets must be installed or connected again"
                 )
             status = "active" if body.action == "enable" else "disabled"
         else:
@@ -264,7 +363,13 @@ class Capabilities:
         session = await self.repo.get_session(session_id, owner_actor_id=owner)
         assets = await self.repo.capability_assets(owner)
         detail = selected["detail"]
-        issues = []
+        scope = await method_scope(self.repo, owner, session)
+        if scope:
+            detail = detail.get("method_selections", {}).get(
+                scope["context"],
+                {"tools": [], "skills": [], "skill_mode": "explicit", "bindings": {}},
+            )
+        issues = selection_issues(scope, detail, assets) if scope else []
         by_tool = {
             tool_key(a["id"], t["name"]): (a, t)
             for a in assets
@@ -297,49 +402,45 @@ class Capabilities:
                 issues.append({"ref": key, "code": "skill_unavailable"})
             elif skill_mode == "explicit" and bindings.get(key) != asset["revision"]:
                 issues.append({"ref": key, "code": "revision_changed"})
-            elif skill_mode == "explicit" and not set(
-                asset["detail"].get("dependencies", [])
-            ) <= set(detail.get("tools", [])):
+            elif skill_mode == "explicit" and missing_skill_dependencies(
+                asset, assets, detail.get("tools", [])
+            ):
                 issues.append({"ref": key, "code": "missing_dependencies"})
         if (detail.get("tools") or skill_ids) and not self.runtime_url:
             issues.append({"ref": "runtime", "code": "runtime_unconfigured"})
         runtime = selected["runtime"]
         method = None
-        if session["wheel"] != "user" and session.get("active_task_id"):
-            task = await self.repo.get_task(str(session["active_task_id"]))
-            pack = await display_for_task(self.repo, task)
-            step = pack.step(int(task["current_step"])) if pack else None
-            attempt = (
-                await self.repo.get_attempt(str(task["active_attempt_id"]))
-                if task.get("active_attempt_id")
-                else None
-            )
+        if scope:
+            task, step, attempt = scope["task"], scope["step"], scope["attempt"]
             attempt_step = attempt["step_id"] if attempt else None
-            special = attempt_step in ("data-plan", PLAN_STEP)
+            special = scope["special"]
             method = {
                 "task_id": str(task["id"]),
                 "profile_id": task["profile_id"],
                 "step_id": attempt["step_id"]
-                if attempt
+                if attempt and special
                 else (step.step_id if step else None),
                 "declared_tools": ["describe_items"]
-                if attempt_step == "data-plan"
+                if special and attempt_step == "data-plan"
                 else ([] if special or not step else list(step.tools)),
-                "managed_bindings_supported": False,
+                "managed_bindings_supported": True,
+                "context": scope["context"],
+                "requirements": scope["requirements"].model_dump(mode="json"),
             }
         return {
             "session_id": session_id,
             "method": method,
             "revision": selected["revision"],
-            "tools": [] if method else detail.get("tools", []),
-            "skills": [] if method else skill_ids,
+            "tools": detail.get("tools", []),
+            "skills": skill_ids,
             "skill_mode": "explicit" if method else skill_mode,
-            "purpose": "" if method else detail.get("purpose", ""),
-            "issues": [] if method else issues,
-            "editable": session["wheel"] == "user",
-            "applied_revision": None if method else runtime.get("selection_revision"),
+            "purpose": detail.get("purpose", ""),
+            "issues": issues,
+            "editable": scope["editable"] if scope else session["wheel"] == "user",
+            "applied_revision": runtime.get("selection_revision"),
             "preparation": "method_managed"
-            if method
+            if scope
+            and (runtime.get("method") or {}).get("context") != scope["context"]
             else runtime.get("status", "not_prepared"),
             "available_tools": [
                 {
@@ -351,21 +452,40 @@ class Capabilities:
                     **t,
                 }
                 for key, (a, t) in by_tool.items()
+                if not scope or matches_tool(scope["requirements"], a, t)
             ],
             "available_skills": [
-                public_asset(a) for a in assets if a["kind"] == "skill"
+                public_skill_asset(a, assets, detail.get("tools", []))
+                for a in assets
+                if a["kind"] == "skill"
+                and (not scope or matches_skill(scope["requirements"], a, assets))
             ],
         }
 
     async def save_selection(self, owner, session_id, body):
         async with self.repo.transaction():
+            selected = await self.repo.capability_selection(
+                owner, session_id, lock=True
+            )
             session = await self.repo.get_session(session_id, owner_actor_id=owner)
-            if session["wheel"] != "user":
+            scope = await method_scope(self.repo, owner, session, lock=True)
+            if scope:
+                if not scope["editable"] or body.method_context != scope["context"]:
+                    raise CapabilityError(
+                        "Method changed or is executing; reload at an idle step boundary"
+                    )
+                if body.skill_mode != "explicit":
+                    raise CapabilityError("Method Skill scope must be explicit")
+            elif session["wheel"] != "user" or body.method_context is not None:
                 raise CapabilityError(
                     "Method execution owns this session; frozen method requirements cannot be changed here"
                 )
-            await self.repo.capability_selection(owner, session_id, lock=True)
             assets = await self.repo.capability_assets(owner, lock=True)
+            if scope and selection_issues(scope, body.model_dump(), assets):
+                raise CapabilityError(
+                    "Bind exactly the declared method capabilities",
+                    issues=selection_issues(scope, body.model_dump(), assets),
+                )
             by_tool = {
                 tool_key(a["id"], t["name"]): a
                 for a in assets
@@ -385,25 +505,69 @@ class Capabilities:
             if any(a["status"] != "active" for a in chosen):
                 raise CapabilityError("Selected capability is not active")
             if any(
-                not set(a["detail"].get("dependencies", [])) <= set(body.tools)
+                missing_skill_dependencies(a, assets, body.tools)
                 for a in chosen
                 if a["kind"] == "skill"
             ):
                 raise CapabilityError(
                     "Select every required tool before selecting this skill"
                 )
-            detail = body.model_dump(exclude={"revision"})
+            detail = body.model_dump(exclude={"revision", "method_context"})
             detail["bindings"] = {a["id"]: a["revision"] for a in chosen}
+            if scope:
+                detail = {
+                    **selected["detail"],
+                    "method_selections": {
+                        **selected["detail"].get("method_selections", {}),
+                        scope["context"]: detail,
+                    },
+                }
+            elif selected["detail"].get("method_selections"):
+                detail["method_selections"] = selected["detail"]["method_selections"]
             selected = await self.repo.capability_save_selection(
                 owner, session_id, body.revision, detail
             )
         return await self.view(owner, session_id, selected)
 
-    async def prepare(self, owner, session_id, *, expert=False):
+    async def hold_method(self, owner, session_id):
+        """Pause before opening an attempt or reserving model budget for missing bindings."""
+        async with self.repo.transaction():
+            selected = await self.repo.capability_selection(
+                owner, session_id, lock=True
+            )
+            session = await self.repo.get_session(session_id, owner_actor_id=owner)
+            scope = await method_scope(self.repo, owner, session, lock=True)
+            if not scope:
+                raise CapabilityError("Method task is no longer active")
+            view = await self.view(owner, session_id, selected)
+            if not view["issues"]:
+                return False
+            await Ledger(self.repo).open_interaction(
+                str(scope["task"]["id"]),
+                kind="question",
+                waiting_reason=WaitingReason.INPUT,
+                prompt=InteractionPrompt(
+                    title="配置本步骤的工具与技能",
+                    question="请打开「本次能力」，选择本步骤所需的连接和技能并保存；完成后继续。尚未启动本步骤的模型调用。",
+                    options=[{"value": "continue", "label": "已配置，继续"}],
+                    subject={
+                        "capability_binding": scope["context"],
+                        "step_id": view["method"]["step_id"],
+                    },
+                ),
+            )
+            return True
+
+    async def prepare(
+        self, owner, session_id, *, scene: ExecutionScene = ExecutionScene.CONVERSATION
+    ):
+        scene = ExecutionScene(scene)
         current = await self.selection(owner, session_id)
+        if scene == ExecutionScene.CONVERSATION and current["method"]:
+            raise CapabilityError("Active method tasks require method execution scope")
         # Legacy method contracts do not declare managed capabilities. Never inherit
         # chat's extra authority into a frozen method. Requirements support is explicit.
-        if expert:
+        if scene == ExecutionScene.METHOD and not current["method"]:
             async with self.repo.transaction():
                 await self.repo.capability_selection(owner, session_id, lock=True)
                 await self.repo.capability_runtime(
@@ -436,11 +600,28 @@ class Capabilities:
             tools = {}
             inputs = []
             packages = {}
+            method_binding = None
+            if scene == ExecutionScene.METHOD and fresh["method"]:
+                session = await self.repo.get_session(session_id, owner_actor_id=owner)
+                scope = await method_scope(self.repo, owner, session, lock=True)
+                if (
+                    scope
+                    and not scope["special"]
+                    and (fresh["tools"] or fresh["skills"])
+                ):
+                    if not scope["attempt"]:
+                        raise CapabilityError("Method has no active attempt")
+                    method_binding = {
+                        "context": scope["context"],
+                        "task_id": str(scope["task"]["id"]),
+                        "attempt_id": str(scope["attempt"]["id"]),
+                        "step_id": scope["step"].step_id,
+                    }
             for asset in assets:
                 if asset["kind"] == "connection":
                     for tool in asset["detail"].get("tools", []):
                         key = tool_key(asset["id"], tool["name"])
-                        if key in current["tools"]:
+                        if key in fresh["tools"]:
                             tools[key] = {
                                 "connection_id": asset["id"],
                                 "revision": asset["revision"],
@@ -451,6 +632,14 @@ class Capabilities:
                         "revision": asset["revision"],
                         "digest": asset["detail"]["digest"],
                     }
+                    tool = script_tool(asset) if self.script_executor else None
+                    if tool:
+                        tools[tool_key(asset["id"], "skill_run")] = {
+                            "connection_id": asset["id"],
+                            "revision": asset["revision"],
+                            "tool": tool,
+                            "execution_kind": "skill_script",
+                        }
             if len(packages) > 100:
                 raise CapabilityError(
                     "More than 100 enabled Skills; limit this conversation's Skill scope"
@@ -462,9 +651,20 @@ class Capabilities:
                         "name": a["name"],
                         "description": a["detail"]["description"],
                         "version": a["detail"]["version"],
+                        "script_tool": tool_key(a["id"], "skill_run")
+                        if tool_key(a["id"], "skill_run") in tools
+                        else None,
                         "missing_tools": sorted(
                             set(a["detail"].get("dependencies", []))
                             - set(fresh["tools"])
+                        ),
+                        "connection_dependency_count": len(
+                            a["detail"].get("dependencies", [])
+                        )
+                        + len(a["detail"].get("tool_requirements", [])),
+                        "unresolved_connection_dependencies": sum(
+                            d["status"] != "selected"
+                            for d in skill_dependencies(a, assets, fresh["tools"])
                         ),
                     }
                     for a in assets
@@ -480,7 +680,7 @@ class Capabilities:
                             + json.dumps(catalog, ensure_ascii=False)
                             + "\nChoose relevant Skills by name/description for the user's task, or follow the user's explicit Skill request. Before applying a Skill, use skill_read with its skill_id and path=SKILL.md to load its instructions, then read relevant references on demand. "
                             "Use skill_files for file discovery. These files are in the platform, not the local filesystem. Paths are package-root-relative by default; for links in a document set relative_to to that document's returned path. "
-                            "A Skill is guidance, not authorization. Missing tools are NOT granted by discovery or reading; ask the user to configure/select dependencies when the task requires them. Scripts are reference text only and cannot be executed through this reader. "
+                            "A Skill is guidance, not authorization. Missing tools are NOT granted by discovery or reading; ask the user to configure/select dependencies when the task requires them. When script_tool is present, use that tool to run a package script in an isolated cloud container after approval; it has no network, credentials or local project files. Never substitute cloud execution for an unavailable local project environment. Without script_tool, scripts are reference text only. "
                             "Only the listed IDs and versions are available this turn. Other Skills named in their text are not implicitly enabled."
                         ),
                     }
@@ -495,7 +695,20 @@ class Capabilities:
                 "skill_mode": fresh["skill_mode"],
                 "packages": packages,
                 "status": "prepared",
+                "method": method_binding,
+                "purpose": fresh["purpose"],
             }
+            if method_binding:
+                await check_runtime_method(self.repo, owner, session, runtime)
+                inputs.append(
+                    {
+                        "type": "text",
+                        "text": "This method step may use only the listed managed capabilities. "
+                        "External tool calls wait for user approval and return the actual operation result. "
+                        "A refusal, expired approval or unknown outcome is not a successful operation. "
+                        "Do not retry an unknown external write automatically.",
+                    }
+                )
             await self.repo.capability_runtime(owner, session_id, runtime)
         config = disabled_mcp_config()
         if tools or packages:
@@ -509,7 +722,13 @@ class Capabilities:
                     + (["skill_files", "skill_read"] if packages else []),
                     "required": True,
                     "startup_timeout_sec": 15,
-                    "tool_timeout_sec": 60,
+                    "tool_timeout_sec": 960
+                    if method_binding
+                    or any(
+                        spec.get("execution_kind") == "skill_script"
+                        for spec in tools.values()
+                    )
+                    else 60,
                 }
             }
         return {
@@ -524,6 +743,8 @@ class Capabilities:
         runtime = selected["runtime"] if selected else {}
         if (
             not token
+            or not selected
+            or runtime.get("selection_revision") != selected["revision"]
             or runtime.get("status") not in ("prepared", "applied")
             or not secrets.compare_digest(runtime.get("token_hash", ""), digest(token))
             or datetime.fromisoformat(
@@ -535,8 +756,12 @@ class Capabilities:
         session = await self.repo.get_session(
             session_id, owner_actor_id=selected["owner_actor_id"]
         )
-        if session["wheel"] != "user":
-            raise Forbidden("Capability scope is not valid for the active method")
+        try:
+            await check_runtime_method(
+                self.repo, selected["owner_actor_id"], session, runtime
+            )
+        except CapabilityError as exc:
+            raise Forbidden(exc.message) from exc
         return selected
 
     async def skill_resource(self, session_id, token, arguments, *, listing=False):
@@ -571,6 +796,26 @@ class Capabilities:
                     "next_offset": end if end < len(files) else None,
                 }
             result = resource_result(asset["detail"], request)
+            if result["path"] == "SKILL.md" and request.offset == 0:
+                dependencies = skill_dependencies(
+                    asset,
+                    await self.repo.capability_assets(owner),
+                    runtime.get("tools", {}),
+                )
+                result["connection_dependencies"] = [
+                    {
+                        "service_url": d["service_url"],
+                        "tool_name": d["tool_name"],
+                        "status": d["status"],
+                        "selected_tools": [
+                            c["key"]
+                            for c in d["candidates"]
+                            if c["key"] in runtime.get("tools", {})
+                            and c["status"] == "active"
+                        ],
+                    }
+                    for d in dependencies
+                ]
             await self.repo.append_event(
                 session_id=session_id,
                 kind="tool",
@@ -593,7 +838,11 @@ class Capabilities:
         spec = selected["runtime"].get("tools", {}).get(key)
         if (
             not spec
-            or key not in selected["detail"].get("tools", [])
+            or (
+                not selected["runtime"].get("method")
+                and spec.get("execution_kind") != "skill_script"
+                and key not in selected["detail"].get("tools", [])
+            )
             or selected["runtime"].get("selection_revision") != selected["revision"]
         ):
             raise Forbidden("Tool is outside the selected scope")
@@ -618,12 +867,22 @@ class Capabilities:
             "connection_id": connection["id"],
             "revision": connection["revision"],
             "connection_name": connection["name"],
-            "account_label": connection["detail"]["account_label"],
-            "purpose": selected["detail"].get("purpose", ""),
+            "account_label": connection["detail"].get(
+                "account_label", "隔离云端容器（无联网与本地文件访问）"
+            ),
+            "purpose": selected["runtime"].get(
+                "purpose", selected["detail"].get("purpose", "")
+            ),
             "tool": spec["tool"],
             "arguments": arguments,
             "selection_revision": selected["revision"],
             "runtime": selected["runtime"]["token_hash"],
+            "method": selected["runtime"].get("method"),
+            **(
+                {"execution_kind": "skill_script"}
+                if spec.get("execution_kind") == "skill_script"
+                else {}
+            ),
         }
         identity = digest(intent)
         async with self.repo.transaction():
@@ -638,13 +897,32 @@ class Capabilities:
                 return {
                     "call_id": existing["id"],
                     "status": existing["status"],
-                    "result": existing["detail"].get("result"),
+                    "result": public_result(
+                        existing["detail"].get("result"), existing["id"]
+                    ),
                 }
+            binding = selected["runtime"].get("method")
+            if binding:
+                session = await self.repo.get_session(session_id, owner_actor_id=owner)
+                await check_runtime_method(
+                    self.repo, owner, session, selected["runtime"], lock=True
+                )
+                task = await self.repo.get_task(binding["task_id"])
+                if task["state"] != TaskState.RUNNING or task.get(
+                    "active_interaction_id"
+                ):
+                    raise CapabilityError(
+                        "Resolve the current method approval before another operation"
+                    )
             call_id = str(uuid.uuid4())
             approval_token = secrets.token_urlsafe(32)
             prompt = InteractionPrompt(
-                title="确认外部工具操作",
-                question="请核对账号、操作和完整参数。连接成功并不表示批准本次操作。",
+                title="确认运行技能脚本"
+                if intent.get("execution_kind") == "skill_script"
+                else "确认外部工具操作",
+                question="请核对技能、脚本和输入。本次在隔离云端容器执行，不读取本地项目、不连接网络。"
+                if intent.get("execution_kind") == "skill_script"
+                else "请核对账号、操作和完整参数。连接成功并不表示批准本次操作。",
                 options=[
                     {"value": "accept", "label": "仅允许这次"},
                     {"value": "decline", "label": "拒绝"},
@@ -652,22 +930,34 @@ class Capabilities:
                 subject={
                     "capability_call_id": call_id,
                     "connection": connection["name"],
-                    "account": connection["detail"]["account_label"],
+                    "account": intent["account_label"],
                     "tool": spec["tool"]["name"],
                     "arguments": arguments,
                 },
             )
-            iid = await self.repo.insert_interaction(
-                session_id=session_id,
-                task_id=None,
-                attempt_id=None,
-                kind="tool_approval",
-                prompt=prompt.model_dump(),
-                subject_digest=identity,
-                token=approval_token,
-                target_state_version=None,
-                expires_at=datetime.now(UTC) + timedelta(minutes=15),
-            )
+            if binding:
+                opened = await Ledger(self.repo).open_interaction(
+                    binding["task_id"],
+                    attempt_id=binding["attempt_id"],
+                    kind="tool_approval",
+                    prompt=prompt,
+                    subject_digest=identity,
+                    waiting_reason=WaitingReason.APPROVAL,
+                    ttl=timedelta(minutes=15),
+                )
+                iid, approval_token = opened["interaction_id"], opened["token"]
+            else:
+                iid = await self.repo.insert_interaction(
+                    session_id=session_id,
+                    task_id=None,
+                    attempt_id=None,
+                    kind="tool_approval",
+                    prompt=prompt.model_dump(),
+                    subject_digest=identity,
+                    token=approval_token,
+                    target_state_version=None,
+                    expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                )
             detail = {**intent, "approval_token": approval_token}
             await self.repo.capability_add_call(
                 {
@@ -681,19 +971,20 @@ class Capabilities:
                     "detail": detail,
                 }
             )
-            await self.repo.append_event(
-                session_id=session_id,
-                kind="approval",
-                event_type="interaction/opened",
-                payload={
-                    "interaction_id": iid,
-                    "kind": "tool_approval",
-                    "token": approval_token,
-                    "subject_digest": identity,
-                    "subject": prompt.subject,
-                    "prompt": prompt.model_dump(),
-                },
-            )
+            if not binding:
+                await self.repo.append_event(
+                    session_id=session_id,
+                    kind="approval",
+                    event_type="interaction/opened",
+                    payload={
+                        "interaction_id": iid,
+                        "kind": "tool_approval",
+                        "token": approval_token,
+                        "subject_digest": identity,
+                        "subject": prompt.subject,
+                        "prompt": prompt.model_dump(),
+                    },
+                )
         return {
             "call_id": call_id,
             "status": "awaiting_approval",
@@ -703,13 +994,56 @@ class Capabilities:
     async def calls(self, owner, session_id):
         await self.repo.get_session(session_id, owner_actor_id=owner)
         await self.repo.capability_recover_calls(owner, session_id)
-        return await self.repo.capability_calls(owner, session_id)
+        return [
+            public_call(c) for c in await self.repo.capability_calls(owner, session_id)
+        ]
+
+    async def method_call_result(self, session_id, token, call_id):
+        """Short polling transaction; no connection is held while the HTTP stream sleeps."""
+        async with self.repo.transaction():
+            selected = await self.runtime(session_id, token)
+            owner = selected["owner_actor_id"]
+            await self.repo.capability_recover_calls(owner, session_id)
+            call = await self.repo.capability_call(owner, call_id)
+            if (
+                call["session_id"] != session_id
+                or call["detail"].get("method") != selected["runtime"].get("method")
+                or call["detail"]["runtime"] != selected["runtime"]["token_hash"]
+            ):
+                raise Forbidden("Operation belongs to another method execution")
+            if call["status"] == "expired":
+                binding = call["detail"].get("method")
+                if binding:
+                    task = await self.repo.get_task(binding["task_id"], for_update=True)
+                    if task["state"] == TaskState.WAITING and str(
+                        task.get("active_interaction_id")
+                    ) == str(call["interaction_id"]):
+                        await self.repo.cas_task(
+                            str(task["id"]),
+                            expected_version=task["state_version"],
+                            active_interaction_id=None,
+                        )
+                        await Ledger(self.repo).transition(
+                            str(task["id"]),
+                            TaskState.QUEUED,
+                            reason={"capability_approval_expired": call_id},
+                        )
+                        await Ledger(self.repo).transition(
+                            str(task["id"]),
+                            TaskState.RUNNING,
+                            reason={"resume_active_attempt": binding["attempt_id"]},
+                        )
+            return {
+                "call_id": call_id,
+                "status": call["status"],
+                "result": public_result(call["detail"].get("result"), call["id"]),
+            }
 
     async def decide(self, owner, call_id, body):
         async with self.repo.transaction():
             call = await self.repo.capability_call(owner, call_id, lock=True)
             if call["status"] != "awaiting_approval":
-                return call
+                return public_call(call)
             if body.subject_digest != call["digest"]:
                 raise Forbidden("Approval does not match the operation")
             selected = await self.repo.capability_selection(
@@ -727,14 +1061,25 @@ class Capabilities:
                 if (
                     connection["status"] != "active"
                     or connection["revision"] != intent["revision"]
-                    or key not in selected["detail"].get("tools", [])
+                    or key not in selected["runtime"].get("tools", {})
                     or selected["revision"] != intent["selection_revision"]
-                    or session["wheel"] != "user"
                     or selected["runtime"].get("token_hash") != intent["runtime"]
                     or selected["runtime"].get("aborted")
+                    or (
+                        intent.get("method")
+                        and selected["runtime"].get("status")
+                        not in ("prepared", "applied")
+                    )
                 ):
                     raise CapabilityError(
                         "Authorization changed; request the operation again"
+                    )
+                await check_runtime_method(
+                    self.repo, owner, session, selected["runtime"], lock=True
+                )
+                if intent.get("method") != selected["runtime"].get("method"):
+                    raise CapabilityError(
+                        "Method approval belongs to another execution"
                     )
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
@@ -743,23 +1088,43 @@ class Capabilities:
                 owner_actor_id=owner,
                 subject_digest=body.subject_digest,
             )
+            if intent.get("method"):
+                await Ledger(self.repo).transition(
+                    intent["method"]["task_id"],
+                    TaskState.RUNNING,
+                    reason={"resume_active_attempt": intent["method"]["attempt_id"]},
+                )
             status = "dispatching" if body.decision == "accept" else "declined"
             await self.repo.capability_update_call(owner, call_id, status, intent)
         if status == "dispatching":
             # Receipt is committed before outbound I/O. No automatic retry after a crash.
             try:
-                result = await self.remote.call(
-                    connection["detail"]["url"],
-                    self.secret(connection),
-                    intent["tool"]["name"],
-                    intent["arguments"],
-                )
-                status = "failed" if result.get("isError") else "succeeded"
-                intent["result"] = result
+                if intent.get("execution_kind") == "skill_script":
+                    if self.script_executor is None:
+                        raise CapabilityError("Script execution is unavailable")
+                    await self.script_executor.start(
+                        owner, call_id, execution_input(connection, intent["arguments"])
+                    )
+                    # The runner reconciles the asynchronous Job into this same call.
+                    return public_call(await self.repo.capability_call(owner, call_id))
+                else:
+                    result = await self.remote.call(
+                        connection["detail"]["url"],
+                        self.secret(connection),
+                        intent["tool"]["name"],
+                        intent["arguments"],
+                    )
+                    status = "failed" if result.get("isError") else "succeeded"
+                    intent["result"] = result
+            except CapabilityError as exc:
+                status = "failed"
+                intent["result"] = {"isError": True, "message": exc.message}
             except Exception:
                 status = "unknown"
                 intent["result"] = {
-                    "message": "External outcome is unknown. Check the provider before retrying."
+                    "message": "Script submission outcome is unknown; it was not retried. Any created container is bounded by its execution deadline."
+                    if intent.get("execution_kind") == "skill_script"
+                    else "External outcome is unknown. Check the provider before retrying."
                 }
             async with self.repo.transaction():
                 await self.repo.capability_update_call(owner, call_id, status, intent)
@@ -769,4 +1134,138 @@ class Capabilities:
                     event_type="capability/action_completed",
                     payload={"call_id": call_id, "status": status},
                 )
-        return await self.repo.capability_call(owner, call_id)
+        return public_call(await self.repo.capability_call(owner, call_id))
+
+    async def cancel_script(self, owner, call_id):
+        call = await self.repo.capability_call(owner, call_id)
+        if call["detail"].get("execution_kind") != "skill_script":
+            raise CapabilityError("Only script executions can be stopped here")
+        if call["status"] != "dispatching":
+            return public_call(call)
+        if self.script_executor is None:
+            raise CapabilityError(
+                "Script executor is unavailable; its execution deadline remains in force"
+            )
+        await self.script_executor.cancel(owner, call_id)
+        async with self.repo.transaction():
+            current = await self.repo.capability_call(owner, call_id, lock=True)
+            if current["status"] == "dispatching":
+                await self.repo.capability_update_call(
+                    owner,
+                    call_id,
+                    "failed",
+                    {
+                        **current["detail"],
+                        "result": {
+                            "isError": True,
+                            "message": "Stopped at the user's request",
+                        },
+                    },
+                )
+                await self.repo.append_event(
+                    session_id=call["session_id"],
+                    kind="tool",
+                    event_type="capability/action_completed",
+                    payload={"call_id": call_id, "status": "failed"},
+                )
+        return public_call(await self.repo.capability_call(owner, call_id))
+
+    async def reconcile_scripts(self):
+        """Runner-owned receipt collection, cancellation and recovery; never retry execution."""
+        if self.script_executor is None:
+            return
+        for call in await self.repo.capability_pending_scripts():
+            owner, call_id, intent = call["owner_actor_id"], call["id"], call["detail"]
+            status, result = None, None
+            async with self.repo.transaction():
+                selected = await self.repo.capability_selection(
+                    owner, call["session_id"]
+                )
+                asset = await self.repo.capability_asset(owner, call["connection_id"])
+                runtime = selected["runtime"]
+                valid = (
+                    asset["status"] == "active"
+                    and asset["revision"] == intent["revision"]
+                    and runtime.get("token_hash") == intent["runtime"]
+                    and selected["revision"] == intent["selection_revision"]
+                    and not runtime.get("aborted")
+                    and datetime.fromisoformat(
+                        runtime.get("expires_at", "1970-01-01T00:00:00+00:00")
+                    )
+                    > datetime.now(UTC)
+                )
+                if valid and intent.get("method"):
+                    session = await self.repo.get_session(
+                        call["session_id"], owner_actor_id=owner
+                    )
+                    try:
+                        await check_runtime_method(self.repo, owner, session, runtime)
+                    except CapabilityError:
+                        valid = False
+            try:
+                if not valid:
+                    await self.script_executor.cancel(owner, call_id)
+                    status, result = (
+                        "failed",
+                        {
+                            "isError": True,
+                            "message": "Script stopped: execution authorization was revoked or the task ended",
+                        },
+                    )
+                else:
+                    receipt = await self.script_executor.status(owner, call_id)
+                    if receipt["state"] == "finished":
+                        result = receipt["result"]
+                        result["isError"] = (
+                            result["exit_code"] != 0 or result["timed_out"]
+                        )
+                        status = "failed" if result["isError"] else "succeeded"
+                    elif receipt["state"] == "failed":
+                        status, result = (
+                            "failed",
+                            {"isError": True, "message": receipt.get("error")},
+                        )
+                    elif receipt["state"] == "absent" and datetime.now(UTC) - call[
+                        "updated_at"
+                    ] > timedelta(seconds=30):
+                        status, result = (
+                            "unknown",
+                            {
+                                "isError": True,
+                                "message": "Script receipt is unavailable; execution was not retried",
+                            },
+                        )
+                    if not status and datetime.now(UTC) - call[
+                        "updated_at"
+                    ] > timedelta(minutes=2):
+                        await self.script_executor.cancel(owner, call_id)
+                        status, result = (
+                            "unknown",
+                            {
+                                "isError": True,
+                                "message": "Script execution deadline exceeded; execution was not retried",
+                            },
+                        )
+            except Exception:
+                # A temporary provider outage does not grant execution or restart work.
+                continue
+            if not status:
+                continue
+            async with self.repo.transaction():
+                current = await self.repo.capability_call(owner, call_id, lock=True)
+                if current["status"] != "dispatching":
+                    continue
+                await self.repo.capability_update_call(
+                    owner, call_id, status, {**intent, "result": result}
+                )
+                await self.repo.append_event(
+                    session_id=call["session_id"],
+                    kind="tool",
+                    event_type="capability/action_completed",
+                    payload={"call_id": call_id, "status": status},
+                )
+            # The immutable result is durable before removal of temporary input/output.
+            try:
+                await self.script_executor.cancel(owner, call_id)
+            except Exception:
+                pass  # Job TTL removes leftovers; no user data outside this run is touched.

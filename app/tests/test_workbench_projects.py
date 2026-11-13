@@ -164,7 +164,7 @@ def test_a_test_round_writes_temporary_files_only_to_tmpdir():
         "environment_key": "test-pc",
         "environment_online": True,
         "approval": "never",
-        "expert": True,
+        "scene": "method",
     }
     test = turn_settings("work", test_round=True, **common)["sandboxPolicy"]
     assert (test["excludeSlashTmp"], test["excludeTmpdirEnvVar"]) == (True, False)
@@ -213,7 +213,7 @@ def test_the_expert_works_even_on_a_conversation_that_began_as_chat():
         environment_key="user-pc",
         environment_online=True,
         approval="on-request",
-        expert=True,
+        scene="method",
     )
     assert settings["sandboxPolicy"]["type"] == "workspaceWrite"
     assert settings["approvalPolicy"] == "on-request"
@@ -228,7 +228,7 @@ def test_work_and_expert_turns_cannot_be_built_without_a_project():
                 environment_key=None,
                 environment_online=True,
                 approval="on-request",
-                expert=expert,
+                scene="method" if expert else "conversation",
             )
 
 
@@ -308,7 +308,7 @@ def test_the_mode_of_a_turn(kind, directory, online, expert, expected):
             directory=directory,
             environment_key="user-pc" if directory else None,
             environment_online=online,
-            expert=expert,
+            scene="method" if expert else "conversation",
         )
         == expected
     )
@@ -322,7 +322,7 @@ def test_work_and_expert_need_a_project():
                 directory=None,
                 environment_key=None,
                 environment_online=True,
-                expert=expert,
+                scene="method" if expert else "conversation",
             )
 
 

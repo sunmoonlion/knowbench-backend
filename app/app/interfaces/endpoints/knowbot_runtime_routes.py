@@ -180,6 +180,15 @@ async def readiness(
     return _out(await svc.readiness(subject))
 
 
+@router.get("/users/{subject}/capabilities")
+async def author_capabilities(
+    _: Caller,
+    svc: Service,
+    subject: Annotated[str, Path(pattern=r"^[A-Za-z0-9._:@-]{1,512}$")],
+) -> JSONResponse:
+    return _out(await svc.author_capabilities(subject))
+
+
 @router.post("/incubations")
 async def submit_incubation(
     caller: IncubationCaller, body: dict[str, Any], svc: Incubations

@@ -19,6 +19,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.domain.workbench.method_capabilities import MethodCapabilities
 from app.domain.workbench.tool_policy import (
     ToolPolicy,
     ToolPolicyOverride,
@@ -151,6 +152,9 @@ class StepContract(Strict):
     why: str = ""
     input_refs: tuple[str, ...] = ()  # 上游步骤的 artifact 名（取最新版本）
     method_text: str
+    managed_capabilities: MethodCapabilities | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     tools: tuple[
         str, ...
     ] = ()  # 这一步允许的 MCP 工具（服务端按 token 鉴权；此处用于 turn 输入说明）

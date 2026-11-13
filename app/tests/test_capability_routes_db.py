@@ -24,6 +24,11 @@ from app.domain.workbench.capability_contract import (
     Catalog,
     Selection,
 )
+from app.domain.workbench.skill_installation import (
+    SkillInstall,
+    SkillSourcePreview,
+    SkillSourceRequest,
+)
 from app.domain.workbench.skill_package import SkillPackageCreate
 from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints import capability_routes as routes
@@ -120,6 +125,9 @@ MODELS = (
     ConnectionRenew,
     SkillCreate,
     SkillPackageCreate,
+    SkillSourceRequest,
+    SkillSourcePreview,
+    SkillInstall,
     AssetAction,
     SelectionPut,
     ActionDecision,

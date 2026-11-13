@@ -14,6 +14,7 @@ import zlib
 from pydantic import Field
 
 from app.domain.workbench.capabilities import CapabilityError, Strict
+from app.domain.workbench.method_capabilities import McpRequirement
 
 MAX_ARCHIVE = 2 * 1024 * 1024
 MAX_TOTAL = 4 * 1024 * 1024
@@ -28,6 +29,9 @@ class SkillPackageCreate(Strict):
     version: str = Field(min_length=1, max_length=50)
     archive_base64: str = Field(min_length=4, max_length=2796204, repr=False)
     dependencies: list[str] = Field(default_factory=list, max_length=30)
+    tool_requirements: list[McpRequirement] = Field(
+        default_factory=list, max_length=30, exclude_if=lambda value: not value
+    )
 
 
 class SkillRead(Strict):

@@ -1199,6 +1199,7 @@ class Ledger:
                     "prompt": prompt.model_dump(),
                     # 网页的时间线按 subject 画审批卡；放一份在顶层，和自驾那条路一样
                     "subject": prompt.subject,
+                    **({"subject_digest": subject_digest} if subject_digest else {}),
                 },
                 task_id=task_id,
                 attempt_id=attempt_id,

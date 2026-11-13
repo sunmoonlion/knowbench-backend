@@ -440,6 +440,67 @@ class KnowbotTestService:
             return {"model_key": False}
         return {"model_key": await self.repo.active_credential(actor) is not None}
 
+    async def author_capabilities(self, subject: str) -> dict:
+        """Account-local public descriptors for the author's step picker; no credentials or bodies."""
+        from app.domain.workbench.method_capabilities import AuthorCapabilityCatalog
+        from app.domain.workbench.skill_dependencies import skill_dependencies
+
+        actor = await self.repo.actor_for_subject(subject)
+        assets = await self.repo.capability_assets(actor) if actor else []
+        tools, skills, seen, seen_skills = [], [], set(), {}
+        for asset in assets:
+            if asset["status"] != "active":
+                continue
+            detail = asset["detail"]
+            if asset["kind"] == "connection":
+                for tool in detail.get("tools", []):
+                    identity = (detail["url"], tool["name"])
+                    if identity not in seen:
+                        seen.add(identity)
+                        tools.append(
+                            {
+                                "url": detail["url"],
+                                "name": tool["name"],
+                                "description": tool["description"],
+                                "service_name": asset["name"],
+                            }
+                        )
+            else:
+                identity = (asset["name"], detail["version"], detail["digest"])
+                dependencies = skill_dependencies(asset, assets)
+                required = {
+                    (d["service_url"], d["tool_name"])
+                    for d in dependencies
+                    if d["service_url"] and d["tool_name"]
+                }
+                unresolved = any(
+                    not d["service_url"] or not d["tool_name"] for d in dependencies
+                )
+                if identity in seen_skills:
+                    existing = seen_skills[identity]
+                    # One content/version cannot silently hide different installation dependencies.
+                    if existing["required_tools"] != [
+                        {"url": url, "name": name} for url, name in sorted(required)
+                    ]:
+                        existing["unresolved_dependencies"] = True
+                    existing["unresolved_dependencies"] |= unresolved
+                    continue
+                entry = {
+                    "name": asset["name"],
+                    "version": detail["version"],
+                    "digest": detail["digest"],
+                    "description": detail["description"],
+                    "required_tools": [
+                        {"url": url, "name": name} for url, name in sorted(required)
+                    ],
+                    "unresolved_dependencies": unresolved,
+                }
+                seen_skills[identity] = entry
+                skills.append(entry)
+        return AuthorCapabilityCatalog(tools=tools, skills=skills).model_dump(
+            mode="json"
+        )
+
     async def status(self, run_id: str) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
         if run is None:

@@ -107,8 +107,10 @@ class Advisor:
         deliverables: DeliverableCheck | None = None,
         reader: Any = None,
         fixed_as_plan_owners: frozenset[str] = frozenset(),
+        capabilities: Any = None,
     ):
         self.stores = stores  # 每次调用开一个工作单元
+        self.capabilities = capabilities
         # 名单里的账号，固定专家受理时由平台写计划回执、之后按回执走（SDD 0050）；默认没人
         self.fixed_as_plan_owners = fixed_as_plan_owners
         self.driver = driver
@@ -274,6 +276,15 @@ class Advisor:
             step = pack.step(int(task["current_step"]))
             if step is None:
                 return await self._finish(led, repo, task, pack)
+            if step.managed_capabilities and (
+                step.managed_capabilities.tools or step.managed_capabilities.skills
+            ):
+                if self.capabilities is None:
+                    raise RuntimeError("Managed method capabilities are not configured")
+                if await self.capabilities(repo).hold_method(
+                    str(task["owner_actor_id"]), str(task["session_id"])
+                ):
+                    return TaskState.WAITING
             attempts = await repo.list_attempts(task_id)
             reworks = sum(
                 1

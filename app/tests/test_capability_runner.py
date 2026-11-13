@@ -31,7 +31,7 @@ async def test_busy_or_unknown_thread_preserves_current_scope(
         link.active_turns["thread-fixture"] = "in-progress-turn"
 
     with pytest.raises(RuntimeError, match="active or unknown"):
-        await link.prepare_capabilities("thread-fixture", expert=False)
+        await link.prepare_capabilities("thread-fixture", scene="conversation")
 
     factory.assert_not_called()
     stores.assert_not_called()

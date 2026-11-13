@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+import base64
 import json
+from pathlib import PurePosixPath
+from urllib.parse import quote
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,6 +33,12 @@ from app.domain.workbench.capability_contract import (
     Selection,
 )
 from app.domain.workbench.errors import Forbidden, WorkbenchError
+from app.domain.workbench.skill_execution import public_result
+from app.domain.workbench.skill_installation import (
+    SkillInstall,
+    SkillSourcePreview,
+    SkillSourceRequest,
+)
 from app.domain.workbench.skill_package import SkillPackageCreate, SkillRead
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -78,6 +88,7 @@ async def list_capabilities(
         ],
         "skill_formats": ["instruction-markdown", "skill-package-zip"],
         "runtime_enabled": bool(svc.runtime_url),
+        "script_execution_enabled": svc.script_executor is not None,
     }
 
 
@@ -94,6 +105,37 @@ async def create_connection(
 ):
     try:
         return await svc.create_connection(_actor(user), body)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post(
+    "/workbench/capabilities/skill-sources/preview", response_model=SkillSourcePreview
+)
+async def preview_skill_source(
+    body: SkillSourceRequest,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    try:
+        return await svc.preview_skill_source(body)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post(
+    "/workbench/capabilities/skill-sources/install",
+    status_code=201,
+    response_model=Asset,
+    response_model_exclude_unset=True,
+)
+async def install_skill(
+    body: SkillInstall,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    try:
+        return await svc.install_skill(_actor(user), body)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 
@@ -226,6 +268,50 @@ async def decide_call(
         raise _http(exc) from exc
 
 
+@router.get("/workbench/capability-calls/{call_id}/artifacts/{index}")
+async def script_artifact(
+    call_id: UUID,
+    index: int,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    try:
+        call = await svc.repo.capability_call(_actor(user), str(call_id))
+        result = call["detail"].get("result") or {}
+        artifacts = result.get("artifacts", [])
+        if call["detail"].get(
+            "execution_kind"
+        ) != "skill_script" or not 0 <= index < len(artifacts):
+            return Response(status_code=404)
+        artifact = artifacts[index]
+        return Response(
+            base64.b64decode(artifact["data_base64"], validate=True),
+            media_type="application/octet-stream",
+            headers={
+                "Content-Disposition": "attachment; filename*=UTF-8''"
+                + quote(PurePosixPath(artifact["path"]).name, safe=""),
+                "X-Content-Type-Options": "nosniff",
+                "Cache-Control": "private, no-store",
+            },
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post(
+    "/workbench/capability-calls/{call_id}/cancel",
+    response_model=Call,
+    response_model_exclude_unset=True,
+)
+async def stop_script(
+    call_id: UUID, user: Principal = Depends(get_web_current_user), svc=Depends(service)
+):
+    try:
+        return await svc.cancel_script(_actor(user), str(call_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.post("/mcp/capabilities/{session_id}")
 async def capability_rpc(
     session_id: UUID,
@@ -264,14 +350,19 @@ async def capability_rpc(
                         + spec["tool"]["name"]
                         + ". "
                         + spec["tool"]["description"]
-                        + " This stages the operation only; use action_result after approval. Never claim success while awaiting approval.",
+                        + (
+                            " This call waits for user approval and returns the actual operation result. Never claim success before receiving it."
+                            if selected["runtime"].get("method")
+                            or spec.get("execution_kind") == "skill_script"
+                            else " This stages the operation only; use action_result after approval. Never claim success while awaiting approval."
+                        ),
                         "inputSchema": spec["tool"]["inputSchema"],
                         # This broker only stages a local approval record. It does not
                         # run the remote operation or modify external resources.
                         "annotations": {
                             "readOnlyHint": False,
-                            "destructiveHint": False,
-                            "openWorldHint": False,
+                            "destructiveHint": bool(selected["runtime"].get("method")),
+                            "openWorldHint": bool(selected["runtime"].get("method")),
                         },
                     }
                     for key, spec in selected["runtime"].get("tools", {}).items()
@@ -350,15 +441,38 @@ async def capability_rpc(
                 )
                 if call["session_id"] != str(session_id):
                     raise Forbidden("Call belongs to another conversation")
+                if (
+                    selected["runtime"].get("method")
+                    and call["detail"].get("method") != selected["runtime"]["method"]
+                ):
+                    raise Forbidden("Call belongs to another method execution")
                 value = {
                     "call_id": call["id"],
                     "status": call["status"],
-                    "result": call["detail"].get("result"),
+                    "result": public_result(call["detail"].get("result"), call["id"]),
                 }
             else:
                 value = await svc.request_call(
                     str(session_id), token, params.get("name"), args
                 )
+                spec = selected["runtime"].get("tools", {}).get(params.get("name"), {})
+                if (
+                    selected["runtime"].get("method")
+                    or spec.get("execution_kind") == "skill_script"
+                ):
+                    # Keep the standard tools/call open while the user approves.
+                    # SSE comments keep intermediaries alive; the final JSON-RPC
+                    # response is emitted only when an actual outcome is known.
+                    return StreamingResponse(
+                        method_call_stream(
+                            svc, str(session_id), token, value["call_id"], mid
+                        ),
+                        media_type="text/event-stream",
+                        headers={
+                            "Cache-Control": "no-store",
+                            "X-Accel-Buffering": "no",
+                        },
+                    )
             result = {
                 "content": [
                     {"type": "text", "text": json.dumps(value, ensure_ascii=False)}
@@ -398,6 +512,50 @@ async def capability_rpc(
         )
     except (ValueError, KeyError, TypeError):
         return Response(status_code=400)
+
+
+async def method_call_stream(svc, session_id, token, call_id, mid):
+    deadline = asyncio.get_running_loop().time() + 950
+    while True:
+        try:
+            value = await svc.method_call_result(session_id, token, call_id)
+        except WorkbenchError as exc:
+            value = {
+                "call_id": call_id,
+                "status": "authorization_changed",
+                "message": exc.message,
+            }
+        if value["status"] not in ("awaiting_approval", "dispatching"):
+            result = {
+                "content": [
+                    {"type": "text", "text": json.dumps(value, ensure_ascii=False)}
+                ],
+                "isError": value["status"] != "succeeded",
+            }
+            yield (
+                "event: message\ndata: "
+                + json.dumps({"jsonrpc": "2.0", "id": mid, "result": result})
+                + "\n\n"
+            )
+            return
+        if asyncio.get_running_loop().time() >= deadline:
+            result = {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Operation outcome is unknown; inspect its receipt before retrying.",
+                    }
+                ],
+                "isError": True,
+            }
+            yield (
+                "event: message\ndata: "
+                + json.dumps({"jsonrpc": "2.0", "id": mid, "result": result})
+                + "\n\n"
+            )
+            return
+        yield ": waiting for operation decision/result\n\n"
+        await asyncio.sleep(1)
 
 
 @router.get("/mcp/capabilities/{session_id}")

@@ -7,6 +7,9 @@ from uuid import UUID
 from pydantic import Field
 
 from app.domain.workbench.capabilities import Strict
+from app.domain.workbench.method_capabilities import McpRequirement, MethodCapabilities
+from app.domain.workbench.skill_dependencies import SkillDependency
+from app.domain.workbench.skill_installation import SkillSource
 
 
 class Tool(Strict):
@@ -36,11 +39,14 @@ class SkillFile(Strict):
 
 
 class SkillDetail(Strict):
+    source: SkillSource | None = None
     description: str
     version: str
     content: str
     digest: str
     dependencies: list[str]
+    tool_requirements: list[McpRequirement] = Field(default_factory=list)
+    dependency_status: list[SkillDependency] = Field(default_factory=list)
     format: Literal["instruction-markdown", "skill-package-zip"]
     files: list[SkillFile] = Field(default_factory=list)
 
@@ -63,6 +69,7 @@ class Service(Strict):
 
 
 class Catalog(Strict):
+    script_execution_enabled: bool = False
     assets: list[Asset]
     services: list[Service]
     skill_formats: list[str]
@@ -87,7 +94,9 @@ class MethodContext(Strict):
     profile_id: str
     step_id: str | None
     declared_tools: list[str]
-    managed_bindings_supported: Literal[False]
+    managed_bindings_supported: bool
+    context: str | None = None
+    requirements: MethodCapabilities | None = None
 
 
 class Selection(Strict):
@@ -107,7 +116,9 @@ class Selection(Strict):
 
 
 class CallDetail(Strict):
-    connection_id: UUID
+    execution_kind: Literal["skill_script"] | None = None
+    source_asset_id: UUID | None = None
+    connection_id: UUID | None
     revision: int
     connection_name: str
     account_label: str
@@ -118,13 +129,15 @@ class CallDetail(Strict):
     runtime: str
     approval_token: str = Field(repr=False)
     result: Any = None
+    method: dict[str, str] | None = None
 
 
 class Call(Strict):
     id: UUID
     owner_actor_id: UUID
     session_id: UUID
-    connection_id: UUID
+    source_asset_id: UUID | None = None
+    connection_id: UUID | None
     interaction_id: UUID | None
     digest: str
     status: Literal[

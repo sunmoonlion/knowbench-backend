@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.method_capabilities import McpRequirement
 
 
 def disabled_mcp_config() -> dict[str, Any]:
@@ -48,7 +49,13 @@ class ConnectionCreate(Strict):
 class AssetAction(Strict):
     revision: int = Field(ge=1)
     action: Literal[
-        "enable", "disable", "disconnect", "default_on", "default_off", "refresh"
+        "enable",
+        "disable",
+        "disconnect",
+        "default_on",
+        "default_off",
+        "refresh",
+        "remove",
     ]
 
 
@@ -64,6 +71,9 @@ class SkillCreate(Strict):
     version: str = Field(min_length=1, max_length=50)
     content: str = Field(min_length=1, max_length=64000)
     dependencies: list[str] = Field(default_factory=list, max_length=30)
+    tool_requirements: list[McpRequirement] = Field(
+        default_factory=list, max_length=30, exclude_if=lambda value: not value
+    )
 
     @model_validator(mode="after")
     def valid_content(self):
@@ -82,6 +92,7 @@ class SelectionPut(Strict):
     skills: list[str] = Field(default_factory=list, max_length=10)
     purpose: str = Field(default="", max_length=1000)
     skill_mode: Literal["auto", "explicit"] = "explicit"
+    method_context: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
     def unique(self):
