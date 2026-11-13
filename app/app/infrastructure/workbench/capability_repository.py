@@ -33,6 +33,21 @@ class CapabilityRepositoryMixin:
     transaction: Callable[[], AbstractAsyncContextManager[Any]]
     get_session: Callable[..., Awaitable[dict[str, Any]]]
 
+    async def capability_context_exists(self, owner, session_id):
+        # Metadata-only fast path. Prior runtime state must still be reconciled,
+        # even after all assets have been disabled or removed.
+        return bool(
+            (
+                await self.session.execute(
+                    text("""SELECT
+            EXISTS (SELECT 1 FROM workbench_capability_assets WHERE owner_actor_id=:o)
+            OR EXISTS (SELECT 1 FROM workbench_capability_selections
+                WHERE session_id=:s AND runtime <> '{}'::jsonb)"""),
+                    {"o": owner, "s": session_id},
+                )
+            ).scalar_one()
+        )
+
     async def capability_assets(self, owner, *, lock=False):
         rows = (
             await self.session.execute(
@@ -222,16 +237,33 @@ class CapabilityRepositoryMixin:
             else {"status": "completed", "aborted": aborted}
         )
         condition = (
-            "runtime->>'status'='prepared'" if started else "runtime->>'turn_id'=:t"
+            "runtime->>'status'='prepared' AND runtime->>'scope_id'=:scope"
+            if started
+            else "runtime->>'turn_id'=:t AND runtime->>'status'='applied'"
         )
         await self.session.execute(
             text(
                 """UPDATE workbench_capability_selections
             SET runtime=runtime || cast(:patch as jsonb)
-            WHERE session_id=:s AND runtime->>'scope_id'=:scope AND """
+            WHERE session_id=:s AND """
                 + condition
             ),
             {"s": session_id, "scope": scope, "t": turn_id, "patch": json.dumps(patch)},
+        )
+
+    async def capability_revoke_sandbox(self, sandbox_id):
+        # A new runner/transport cannot prove continuity of an old turn. Close
+        # its authority before accepting more requests, including Skill reads.
+        await self.session.execute(
+            text("""UPDATE workbench_capability_selections c
+                SET runtime=runtime || cast(:patch as jsonb)
+                FROM workbench_sessions s
+                WHERE c.session_id=s.id AND s.sandbox_id=:sandbox
+                AND c.runtime->>'status' IN ('prepared','applied','completed')"""),
+            {
+                "sandbox": sandbox_id,
+                "patch": json.dumps({"status": "completed", "aborted": True}),
+            },
         )
 
     async def capability_calls(self, owner, session_id):
@@ -278,9 +310,11 @@ class CapabilityRepositoryMixin:
             )
 
     async def capability_pending_scripts(self):
-        result = await self.session.execute(text("""SELECT * FROM workbench_capability_calls
+        result = await self.session.execute(
+            text("""SELECT * FROM workbench_capability_calls
             WHERE status='dispatching' AND detail->>'execution_kind'='skill_script'
-            ORDER BY updated_at LIMIT 20"""))
+            ORDER BY updated_at LIMIT 20""")
+        )
         return [row(r) for r in result.mappings()]
 
     async def capability_call(self, owner, call_id, *, lock=False):

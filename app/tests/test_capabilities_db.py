@@ -194,8 +194,9 @@ async def test_selection_conflicts_dependencies_disabled_revision_and_method_bou
             and frozen["config"]["mcp_servers.sunmoon_capabilities"]["enabled"] is False
         )
         await svc.action(OWNER, skill["id"], AssetAction(revision=1, action="disable"))
-        with pytest.raises(CapabilityError):
-            await svc.prepare(OWNER, sid)
+        degraded = await svc.prepare(OWNER, sid)
+        assert skill["id"] not in str(degraded["config"])
+        assert "excluded from this turn" in str(degraded["inputs"])
         with pytest.raises(Forbidden):
             await svc.runtime(sid, token)
 
@@ -273,6 +274,82 @@ async def test_timeout_and_crash_are_unknown_never_retried(db):
         assert recovered[0]["status"] == "unknown" and len(remote.calls) == 1
 
 
+@pytest.mark.parametrize(
+    ("outcome", "status", "dispatches"),
+    [
+        ("handshake_timeout", "failed", 0),
+        ("connect_timeout", "failed", 1),
+        ("read_timeout", "unknown", 1),
+        ("connection_lost", "unknown", 1),
+        ("write_error", "unknown", 1),
+        ("http_error", "unknown", 1),
+        ("oversize", "unknown", 1),
+        ("malformed", "unknown", 1),
+        ("wrong_id", "unknown", 1),
+        ("protocol_error", "failed", 1),
+        ("tool_error", "failed", 1),
+        ("success", "succeeded", 1),
+    ],
+)
+async def test_real_mcp_adapter_outcomes_are_recorded_without_retry(
+    db, monkeypatch, outcome, status, dispatches
+):
+    from capability_transport_support import transport_remote
+
+    sid, _, key, token, _ = await prepared(db)
+    remote, calls = transport_remote(monkeypatch, URL, outcome)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        svc = service(repo, remote)
+        requested = await svc.request_call(
+            sid, token, key, {"to": "reader@example.test"}
+        )
+        call = await repo.capability_call(OWNER, requested["call_id"])
+        result = await svc.decide(OWNER, call["id"], approval(call))
+        assert result["status"] == status
+        assert (await repo.capability_call(OWNER, call["id"]))["status"] == status
+        assert (await svc.decide(OWNER, call["id"], approval(call)))["status"] == status
+        assert len(calls) == dispatches
+
+
+@pytest.mark.parametrize("change", ["refresh", "renew", "disable_enable"])
+async def test_changed_connection_does_not_block_chat_or_reuse_old_approval(db, change):
+    from app.domain.workbench.capabilities import ConnectionRenew
+
+    sid, asset, key, token, remote = await prepared(db)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        svc = service(repo, remote)
+        requested = await svc.request_call(
+            sid, token, key, {"to": "reader@example.test"}
+        )
+        call = await repo.capability_call(OWNER, requested["call_id"])
+        if change == "renew":
+            await svc.renew(
+                OWNER, asset["id"], ConnectionRenew(revision=1, token="replacement")
+            )
+        elif change == "disable_enable":
+            await svc.action(
+                OWNER, asset["id"], AssetAction(revision=1, action="disable")
+            )
+            await svc.action(
+                OWNER, asset["id"], AssetAction(revision=2, action="enable")
+            )
+        else:
+            await svc.action(
+                OWNER, asset["id"], AssetAction(revision=1, action="refresh")
+            )
+        with pytest.raises(CapabilityError):
+            await svc.decide(OWNER, call["id"], approval(call))
+        result = await svc.prepare(OWNER, sid)
+        assert result["config"]["mcp_servers.sunmoon_capabilities"]["enabled"] is False
+        assert "excluded from this turn" in str(result["inputs"])
+        selected = await svc.selection(OWNER, sid)
+        assert selected["tools"] == [key]  # User's intent remains visible for review.
+        assert any(issue["code"] == "revision_changed" for issue in selected["issues"])
+        assert not remote.calls
+
+
 async def test_dedupe_is_not_limited_to_latest_100_and_expiry(db):
     sid, a, key, token, remote = await prepared(db)
     async with db() as s:
@@ -336,13 +413,13 @@ async def test_prepare_rechecks_asset_after_preflight_and_blocks_schema_refresh(
             return view
 
         svc.selection = race
-        with pytest.raises(CapabilityError):
-            await svc.prepare(OWNER, sid)
+        result = await svc.prepare(OWNER, sid)
+        assert result["config"]["mcp_servers.sunmoon_capabilities"]["enabled"] is False
         assert (await repo.capability_runtime_by_session(sid))["runtime"][
             "status"
         ] == "prepared"
         # The old token still cannot stage a call to a now-disabled connection.
-        with pytest.raises(CapabilityError):
+        with pytest.raises(Forbidden):
             await svc.request_call(sid, token, key, {"to": "reader@example.test"})
 
 
@@ -398,6 +475,103 @@ async def test_late_turn_events_cannot_overwrite_new_scope(db):
                 sid, old["scope_id"], "turn-old", started=True
             )
         assert (await repo.capability_runtime_by_session(sid))["runtime"] == current
+
+
+@pytest.mark.parametrize("event", ["completed", "takeover", "reconnected"])
+@pytest.mark.parametrize("already_completed", [False, True])
+async def test_new_runner_closes_persisted_scope_without_in_memory_scope(
+    db, event, already_completed
+):
+    from app.application.workbench.runner import SandboxLink
+    from app.bootstrap.workbench import build_runner
+    from app.infrastructure.workbench.publisher import RedisPublisher
+
+    sid, _, key, _, remote = await prepared(db)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        svc = service(repo, remote)
+        skill = await svc.create_skill(
+            OWNER,
+            SkillCreate(
+                request_id="restart-skill",
+                name="restart",
+                description="Restart fixture",
+                version="1",
+                content="BODY_MUST_NOT_BE_READ_AFTER_COMPLETION",
+            ),
+        )
+        selected = await svc.selection(OWNER, sid)
+        await svc.save_selection(
+            OWNER,
+            sid,
+            SelectionPut(
+                revision=selected["revision"],
+                tools=[key],
+                skills=[skill["id"]],
+            ),
+        )
+        prepared_scope = await svc.prepare(OWNER, sid)
+        token = prepared_scope["config"]["mcp_servers.sunmoon_capabilities"][
+            "http_headers"
+        ]["Authorization"].split()[1]
+        request = await svc.request_call(sid, token, key, {"to": "reader@example.test"})
+        call = await repo.capability_call(OWNER, request["call_id"])
+        sandbox_id = str((await repo.get_session(sid))["sandbox_id"])
+        async with repo.transaction():
+            await repo.set_session_thread(sid, "restart-thread")
+            await repo.capability_runtime_event(
+                sid, prepared_scope["scope_id"], "old-turn", started=True
+            )
+        assert await svc.skill_resource(
+            sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+        )
+        if already_completed:
+            async with repo.transaction():
+                await repo.capability_runtime_event(
+                    sid, prepared_scope["scope_id"], "old-turn", started=False
+                )
+
+    runner = build_runner(
+        db, publisher=RedisPublisher(None, "test"), runner_id="restarted-runner"
+    )
+    link = SandboxLink(runner, {"id": sandbox_id})
+    assert link.capability_scopes == {}
+    if event == "completed":
+        await link.on_notification(
+            "turn/completed",
+            {
+                "threadId": "restart-thread",
+                "turn": {"id": "old-turn", "status": "completed"},
+            },
+        )
+    elif event == "takeover":
+        async with runner.stores() as repo, repo.transaction():
+            await runner._take_over(repo, sandbox_id)
+    else:
+        await runner.expire_approvals(sandbox_id, "connection re-established")
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        svc = service(repo, remote)
+        assert (await repo.capability_runtime_by_session(sid))["runtime"][
+            "status"
+        ] == "completed"
+        with pytest.raises(Forbidden):
+            await svc.skill_resource(
+                sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+            )
+        with pytest.raises(Forbidden):
+            await svc.request_call(sid, token, key, {"to": "another@example.test"})
+        if event != "completed":
+            with pytest.raises(CapabilityError):
+                await svc.decide(OWNER, call["id"], approval(call))
+            assert not remote.calls
+        else:
+            # Normal completion permits the user to approve the already-staged
+            # exact operation until its original deadline, without a reconnect.
+            assert (await svc.decide(OWNER, call["id"], approval(call)))[
+                "status"
+            ] == "succeeded"
+            assert len(remote.calls) == 1
 
 
 async def test_migration_down_up_preserves_existing_sessions(db):

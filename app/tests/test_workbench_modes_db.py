@@ -16,6 +16,7 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.project_service import ProjectService
 from app.application.workbench.session_service import SessionService
 from app.bootstrap.workbench import build_runner
+from app.domain.workbench.capabilities import disabled_mcp_config
 from app.domain.workbench.models import HandoverRequest
 from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.repository import WorkbenchRepository
@@ -147,7 +148,7 @@ async def test_a_chat_outside_any_project_is_read_only_and_has_no_machine(db):
             "environments": [],
             "sandbox": "read-only",
             "approvalPolicy": "never",
-            "config": NO_SIDE_THREADS,
+            "config": {**NO_SIDE_THREADS, **disabled_mcp_config()},
             "model": "kimi-k3",
         }
         await say(db, runner, sandbox, sid, "毛利率是什么")
@@ -254,7 +255,7 @@ async def test_work_starts_writable_with_the_users_approval_policy(db):
             "sandbox": "workspace-write",
             # 设置页里的 on-failure，Codex 0.155.1 已经不认：按 on-request 发
             "approvalPolicy": "on-request",
-            "config": NO_SIDE_THREADS,
+            "config": {**NO_SIDE_THREADS, **disabled_mcp_config()},
             "model": "kimi-k3",
         }
         await say(db, runner, sandbox, sid, "整理年报要点")
@@ -358,7 +359,7 @@ async def test_sessions_made_the_old_way_keep_working(db):
             ],
             "approvalPolicy": "untrusted",
             "sandbox": "workspace-write",
-            "config": NO_SIDE_THREADS,
+            "config": {**NO_SIDE_THREADS, **disabled_mcp_config()},
         }
         await say(db, runner, sandbox, sid, "hello")
         turn = only_settings(sent(fake, "turn/start")[0])
@@ -437,7 +438,19 @@ async def test_a_resumed_thread_keeps_side_threads_off(db):
         await say(db, runner, sandbox, sid, "接着做")
         resumed = sent(fake, "thread/resume")
         assert resumed
-        assert all(item["config"] == NO_SIDE_THREADS for item in resumed)
+        assert all(
+            all(
+                item["config"].get(key) == value
+                for key, value in NO_SIDE_THREADS.items()
+            )
+            for item in resumed
+        )
+        assert all(
+            not item["config"]
+            .get("mcp_servers.sunmoon_capabilities", {})
+            .get("enabled", False)
+            for item in resumed
+        )
         await closing(runner)
     finally:
         await fake.close()

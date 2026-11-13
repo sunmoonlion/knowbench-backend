@@ -1,5 +1,6 @@
 """A repeated command must not rotate an active turn's capability credentials."""
 
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -20,7 +21,17 @@ from app.application.workbench.runner import SandboxLink
 async def test_busy_or_unknown_thread_preserves_current_scope(
     state, remembered_active, monkeypatch
 ):
-    factory, stores = Mock(), Mock()
+    factory = Mock()
+
+    @asynccontextmanager
+    async def stores():
+        yield SimpleNamespace(
+            get_session_by_thread=AsyncMock(
+                return_value={"id": "session", "owner_actor_id": "owner"}
+            ),
+            capability_context_exists=AsyncMock(return_value=True),
+        )
+
     runner = SimpleNamespace(capabilities=factory, stores=stores)
     link = SandboxLink(runner, {"id": "sandbox-fixture"})
     client = SimpleNamespace(request=AsyncMock(return_value=state))
@@ -34,7 +45,6 @@ async def test_busy_or_unknown_thread_preserves_current_scope(
         await link.prepare_capabilities("thread-fixture", scene="conversation")
 
     factory.assert_not_called()
-    stores.assert_not_called()
     assert link.capability_scopes["thread-fixture"] == "existing-scope"
     assert link.capability_config["thread-fixture"] == {"existing": "config"}
     client.request.assert_awaited_once_with(
@@ -42,3 +52,27 @@ async def test_busy_or_unknown_thread_preserves_current_scope(
         {"threadId": "thread-fixture", "includeTurns": False},
         timeout=10,
     )
+
+
+async def test_empty_conversation_does_not_read_thread_or_prepare_scope(monkeypatch):
+    factory = Mock()
+
+    @asynccontextmanager
+    async def stores():
+        yield SimpleNamespace(
+            get_session_by_thread=AsyncMock(
+                return_value={"id": "session", "owner_actor_id": "owner"}
+            ),
+            capability_context_exists=AsyncMock(return_value=False),
+        )
+
+    link = SandboxLink(
+        SimpleNamespace(capabilities=factory, stores=stores), {"id": "sandbox"}
+    )
+    connect = AsyncMock(
+        side_effect=AssertionError("No capability protocol work needed")
+    )
+    monkeypatch.setattr(link, "ensure_connected", connect)
+    assert await link.prepare_capabilities("thread", scene="conversation") == []
+    connect.assert_not_called()
+    factory.assert_not_called()
