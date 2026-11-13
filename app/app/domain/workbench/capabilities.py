@@ -11,6 +11,19 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.domain.workbench.errors import WorkbenchError
 
 
+def disabled_mcp_config() -> dict[str, Any]:
+    """Codex validates transport even for disabled servers; never connect here."""
+    return {
+        "mcp_servers.sunmoon_capabilities": {
+            "enabled": False,
+            "url": "http://127.0.0.1:9",
+            "enabled_tools": [],
+            "http_headers": {},
+            "required": False,
+        }
+    }
+
+
 class CapabilityError(WorkbenchError):
     code = "capability_unavailable"
     http_status = 409

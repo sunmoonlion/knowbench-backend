@@ -18,6 +18,7 @@ from app.application.workbench.ledger import Ledger
 from app.domain.workbench.capabilities import (
     CapabilityError,
     digest,
+    disabled_mcp_config,
     public_asset,
     tool_key,
 )
@@ -384,7 +385,7 @@ class Capabilities:
                     owner, session_id, {"status": "method_managed"}
                 )
             return {
-                "config": {"mcp_servers.sunmoon_capabilities.enabled": False},
+                "config": disabled_mcp_config(),
                 "inputs": [],
                 "revision": None,
             }
@@ -442,7 +443,7 @@ class Capabilities:
                 "status": "prepared",
             }
             await self.repo.capability_runtime(owner, session_id, runtime)
-        config = {"mcp_servers.sunmoon_capabilities.enabled": False}
+        config = disabled_mcp_config()
         if tools:
             config = {
                 "mcp_servers.sunmoon_capabilities": {

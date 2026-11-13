@@ -190,7 +190,7 @@ async def test_selection_conflicts_dependencies_disabled_revision_and_method_bou
         frozen = await svc.prepare(OWNER, sid, expert=True)
         assert (
             frozen["inputs"] == []
-            and frozen["config"]["mcp_servers.sunmoon_capabilities.enabled"] is False
+            and frozen["config"]["mcp_servers.sunmoon_capabilities"]["enabled"] is False
         )
         await svc.action(OWNER, skill["id"], AssetAction(revision=1, action="disable"))
         with pytest.raises(CapabilityError):

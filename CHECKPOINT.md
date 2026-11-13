@@ -1,3 +1,11 @@
+# 2026-11-13 发布前空配置阻断修复
+
+真实固定Codex补验发现：未预置受管MCP时仅设置enabled=false仍报invalid transport，
+Jenkins #91已在部署前停止，现网未改。禁用配置改为完整无凭据传输定义（127.0.0.1:9、
+enabled=false、空工具列表、required=false），固定版不会连接这个禁用地址。
+app/scripts/probes/codex_capabilities_probe.py现在从无MCP配置启动，真实验证A/B切换和
+再次禁用；三轮均通过，禁用后无受管工具暴露。此修复必须包含在本地重新发布候选。
+
 # 2026-11-13 本地增量发布候选
 
 所有者授权：到本地按原Jenkins流程发布；外部MCP目录先空，仅发布入口和纯指令Skill。
