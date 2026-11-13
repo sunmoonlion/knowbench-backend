@@ -257,6 +257,7 @@ def build_runner(
         deliverables=deliverables,
         reader=_run_reader(),
         fixed_as_plan_owners=fixed_as_plan_owners,
+        capabilities=capability_service,
     )
 
 
@@ -436,4 +437,24 @@ def build_incubation_folders(
             TokenIssuer(signing_key, issuer=settings.workbench_token_issuer),
         ),
         workbench_stores(session_factory),
+    )
+
+
+def capability_service(repo):
+    from cryptography.fernet import Fernet
+
+    from app.application.workbench.capabilities import Capabilities
+    from app.infrastructure.workbench.capability_mcp import RemoteMcp
+
+    settings = get_settings()
+    cipher = (
+        Fernet(settings.workbench_credential_key.encode())
+        if settings.workbench_credential_key
+        else None
+    )
+    return Capabilities(
+        repo,
+        RemoteMcp(tuple(settings.workbench_capability_mcp_urls)),
+        cipher,
+        runtime_url=settings.workbench_capability_mcp_url,
     )

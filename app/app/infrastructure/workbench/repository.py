@@ -39,6 +39,7 @@ from app.domain.workbench.scheduling import LOOKUP_PROFILE, ProjectLane
 from app.domain.workbench.states import TURN_HOLD_SECONDS
 from app.domain.workbench.tokens import token_hash
 from app.infrastructure.repositories.outbox import SqlOutboxRepository
+from app.infrastructure.workbench.capability_repository import CapabilityRepositoryMixin
 
 # Recover only the historical planner/confirmation race: a confirmed supply
 # phase was marked ready while its task still waits for data. Never revive a
@@ -105,7 +106,7 @@ def _test_session(alias: str) -> str:
     return f"(coalesce({alias}.origin, '') = 'knowlab-test')"
 
 
-class WorkbenchRepository:
+class WorkbenchRepository(CapabilityRepositoryMixin):
     def __init__(self, session: AsyncSession, *, browser_view: bool = False):
         self.session = session
         self.browser_view = browser_view
@@ -553,6 +554,7 @@ class WorkbenchRepository:
                 "origin": origin,
             },
         )
+        await self.capability_initialize(owner_actor_id, sid)
         return sid
 
     async def attach_session_project(

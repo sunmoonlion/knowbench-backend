@@ -1422,6 +1422,33 @@ async def respond_interaction(
         if v is not None
     }
     try:
+        interaction = await repo.get_interaction(interaction_id)
+        capability_call = ((interaction.get("prompt") or {}).get("subject") or {}).get(
+            "capability_call_id"
+        )
+        if capability_call:
+            from app.bootstrap.workbench import capability_service
+            from app.domain.workbench.capabilities import ActionDecision
+
+            if body.decision not in ("accept", "decline") or not body.subject_digest:
+                raise HTTPException(
+                    status_code=422,
+                    detail="This external action only supports an exact once-only decision",
+                )
+            await capability_service(repo).decide(
+                _actor(principal),
+                capability_call,
+                ActionDecision(
+                    decision=body.decision,
+                    token=body.token,
+                    subject_digest=body.subject_digest,
+                ),
+            )
+            return {
+                "interaction_id": interaction_id,
+                "session_id": str(interaction["session_id"]),
+                "consumed": True,
+            }
         # 消费交互，并排上接着驾驶 / 把答复送到 runner 的命令（与跑分身测试共用）
         result = await answer_interaction(
             repo,

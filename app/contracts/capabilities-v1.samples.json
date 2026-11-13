@@ -1,0 +1,254 @@
+{
+  "Asset": {
+    "id": "11111111-1111-4111-8111-111111111111",
+    "kind": "connection",
+    "name": "Office mail",
+    "revision": 1,
+    "status": "active",
+    "default_selected": false,
+    "detail": {
+      "url": "https://tools.example.test/mcp",
+      "account_label": "office@example.test",
+      "auth": "bearer",
+      "tools": [
+        {
+          "name": "send",
+          "description": "Send one notice",
+          "inputSchema": {
+            "type": "object",
+            "properties": {
+              "to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "to"
+            ],
+            "additionalProperties": false
+          },
+          "key": "c_11111111111141118111111111111111_27ce1d1bf4270020"
+        }
+      ],
+      "checked_at": "2026-11-13T00:00:00Z"
+    },
+    "created_at": "2026-11-13T00:00:00Z",
+    "updated_at": "2026-11-13T00:00:00Z"
+  },
+  "Catalog": {
+    "assets": [
+      {
+        "id": "11111111-1111-4111-8111-111111111111",
+        "kind": "connection",
+        "name": "Office mail",
+        "revision": 1,
+        "status": "active",
+        "default_selected": false,
+        "detail": {
+          "url": "https://tools.example.test/mcp",
+          "account_label": "office@example.test",
+          "auth": "bearer",
+          "tools": [
+            {
+              "name": "send",
+              "description": "Send one notice",
+              "inputSchema": {
+                "type": "object",
+                "properties": {
+                  "to": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "to"
+                ],
+                "additionalProperties": false
+              },
+              "key": "c_11111111111141118111111111111111_27ce1d1bf4270020"
+            }
+          ],
+          "checked_at": "2026-11-13T00:00:00Z"
+        },
+        "created_at": "2026-11-13T00:00:00Z",
+        "updated_at": "2026-11-13T00:00:00Z"
+      },
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "kind": "skill",
+        "name": "notice",
+        "revision": 1,
+        "status": "active",
+        "default_selected": false,
+        "detail": {
+          "description": "Write a notice",
+          "version": "1",
+          "content": "Draft and validate a notice before requesting delivery.",
+          "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "dependencies": [
+            "c_11111111111141118111111111111111_27ce1d1bf4270020"
+          ],
+          "format": "instruction-markdown"
+        },
+        "created_at": "2026-11-13T00:00:00Z",
+        "updated_at": "2026-11-13T00:00:00Z"
+      }
+    ],
+    "services": [
+      {
+        "url": "https://tools.example.test/mcp",
+        "authentication": [
+          "none",
+          "bearer"
+        ]
+      }
+    ],
+    "skill_formats": [
+      "instruction-markdown"
+    ],
+    "runtime_enabled": true
+  },
+  "Selection": {
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "method": null,
+    "revision": 1,
+    "tools": [
+      "c_11111111111141118111111111111111_27ce1d1bf4270020"
+    ],
+    "skills": [
+      "33333333-3333-4333-8333-333333333333"
+    ],
+    "purpose": "Notify reader",
+    "editable": true,
+    "applied_revision": null,
+    "preparation": "not_prepared",
+    "issues": [],
+    "available_tools": [
+      {
+        "name": "send",
+        "description": "Send one notice",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "additionalProperties": false
+        },
+        "key": "c_11111111111141118111111111111111_27ce1d1bf4270020",
+        "connection_id": "11111111-1111-4111-8111-111111111111",
+        "connection_name": "Office mail",
+        "account_label": "office@example.test",
+        "status": "active"
+      }
+    ],
+    "available_skills": [
+      {
+        "id": "33333333-3333-4333-8333-333333333333",
+        "kind": "skill",
+        "name": "notice",
+        "revision": 1,
+        "status": "active",
+        "default_selected": false,
+        "detail": {
+          "description": "Write a notice",
+          "version": "1",
+          "content": "Draft and validate a notice before requesting delivery.",
+          "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "dependencies": [
+            "c_11111111111141118111111111111111_27ce1d1bf4270020"
+          ],
+          "format": "instruction-markdown"
+        },
+        "created_at": "2026-11-13T00:00:00Z",
+        "updated_at": "2026-11-13T00:00:00Z"
+      }
+    ]
+  },
+  "Call": {
+    "id": "44444444-4444-4444-8444-444444444444",
+    "owner_actor_id": "55555555-5555-4555-8555-555555555555",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "connection_id": "11111111-1111-4111-8111-111111111111",
+    "interaction_id": "33333333-3333-4333-8333-333333333333",
+    "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "status": "awaiting_approval",
+    "created_at": "2026-11-13T00:00:00Z",
+    "updated_at": "2026-11-13T00:00:00Z",
+    "detail": {
+      "connection_id": "11111111-1111-4111-8111-111111111111",
+      "revision": 1,
+      "connection_name": "Office mail",
+      "account_label": "office@example.test",
+      "purpose": "Notify reader",
+      "tool": {
+        "name": "send",
+        "description": "Send one notice",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "arguments": {
+        "to": "reader@example.test"
+      },
+      "selection_revision": 1,
+      "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "approval_token": "synthetic-approval-only"
+    }
+  },
+  "Calls": {
+    "calls": [
+      {
+        "id": "44444444-4444-4444-8444-444444444444",
+        "owner_actor_id": "55555555-5555-4555-8555-555555555555",
+        "session_id": "22222222-2222-4222-8222-222222222222",
+        "connection_id": "11111111-1111-4111-8111-111111111111",
+        "interaction_id": "33333333-3333-4333-8333-333333333333",
+        "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "status": "awaiting_approval",
+        "created_at": "2026-11-13T00:00:00Z",
+        "updated_at": "2026-11-13T00:00:00Z",
+        "detail": {
+          "connection_id": "11111111-1111-4111-8111-111111111111",
+          "revision": 1,
+          "connection_name": "Office mail",
+          "account_label": "office@example.test",
+          "purpose": "Notify reader",
+          "tool": {
+            "name": "send",
+            "description": "Send one notice",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "arguments": {
+            "to": "reader@example.test"
+          },
+          "selection_revision": 1,
+          "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+          "approval_token": "synthetic-approval-only"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,1467 @@
+{
+  "ConnectionCreate": {
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "maxLength": 128,
+        "minLength": 8,
+        "title": "Request Id",
+        "type": "string"
+      },
+      "name": {
+        "maxLength": 100,
+        "minLength": 1,
+        "title": "Name",
+        "type": "string"
+      },
+      "url": {
+        "maxLength": 1000,
+        "minLength": 8,
+        "title": "Url",
+        "type": "string"
+      },
+      "account_label": {
+        "maxLength": 100,
+        "minLength": 1,
+        "title": "Account Label",
+        "type": "string"
+      },
+      "token": {
+        "anyOf": [
+          {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Token"
+      }
+    },
+    "required": [
+      "request_id",
+      "name",
+      "url",
+      "account_label"
+    ],
+    "title": "ConnectionCreate",
+    "type": "object"
+  },
+  "ConnectionRenew": {
+    "additionalProperties": false,
+    "properties": {
+      "revision": {
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      },
+      "token": {
+        "anyOf": [
+          {
+            "maxLength": 4096,
+            "minLength": 1,
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Token"
+      }
+    },
+    "required": [
+      "revision"
+    ],
+    "title": "ConnectionRenew",
+    "type": "object"
+  },
+  "SkillCreate": {
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "maxLength": 128,
+        "minLength": 8,
+        "title": "Request Id",
+        "type": "string"
+      },
+      "name": {
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+        "title": "Name",
+        "type": "string"
+      },
+      "description": {
+        "maxLength": 1000,
+        "minLength": 1,
+        "title": "Description",
+        "type": "string"
+      },
+      "version": {
+        "maxLength": 50,
+        "minLength": 1,
+        "title": "Version",
+        "type": "string"
+      },
+      "content": {
+        "maxLength": 64000,
+        "minLength": 1,
+        "title": "Content",
+        "type": "string"
+      },
+      "dependencies": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 30,
+        "title": "Dependencies",
+        "type": "array"
+      }
+    },
+    "required": [
+      "request_id",
+      "name",
+      "description",
+      "version",
+      "content"
+    ],
+    "title": "SkillCreate",
+    "type": "object"
+  },
+  "AssetAction": {
+    "additionalProperties": false,
+    "properties": {
+      "revision": {
+        "minimum": 1,
+        "title": "Revision",
+        "type": "integer"
+      },
+      "action": {
+        "enum": [
+          "enable",
+          "disable",
+          "disconnect",
+          "default_on",
+          "default_off",
+          "refresh"
+        ],
+        "title": "Action",
+        "type": "string"
+      }
+    },
+    "required": [
+      "revision",
+      "action"
+    ],
+    "title": "AssetAction",
+    "type": "object"
+  },
+  "SelectionPut": {
+    "additionalProperties": false,
+    "properties": {
+      "revision": {
+        "minimum": 0,
+        "title": "Revision",
+        "type": "integer"
+      },
+      "tools": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 50,
+        "title": "Tools",
+        "type": "array"
+      },
+      "skills": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 10,
+        "title": "Skills",
+        "type": "array"
+      },
+      "purpose": {
+        "default": "",
+        "maxLength": 1000,
+        "title": "Purpose",
+        "type": "string"
+      }
+    },
+    "required": [
+      "revision"
+    ],
+    "title": "SelectionPut",
+    "type": "object"
+  },
+  "ActionDecision": {
+    "additionalProperties": false,
+    "properties": {
+      "decision": {
+        "enum": [
+          "accept",
+          "decline"
+        ],
+        "title": "Decision",
+        "type": "string"
+      },
+      "token": {
+        "maxLength": 256,
+        "minLength": 16,
+        "title": "Token",
+        "type": "string"
+      },
+      "subject_digest": {
+        "pattern": "^[a-f0-9]{64}$",
+        "title": "Subject Digest",
+        "type": "string"
+      }
+    },
+    "required": [
+      "decision",
+      "token",
+      "subject_digest"
+    ],
+    "title": "ActionDecision",
+    "type": "object"
+  },
+  "Asset": {
+    "$defs": {
+      "ConnectionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "auth": {
+            "enum": [
+              "none",
+              "bearer"
+            ],
+            "title": "Auth",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/RegisteredTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "revocation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revocation"
+          }
+        },
+        "required": [
+          "url",
+          "account_label",
+          "auth",
+          "tools",
+          "checked_at"
+        ],
+        "title": "ConnectionDetail",
+        "type": "object"
+      },
+      "RegisteredTool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "key"
+        ],
+        "title": "RegisteredTool",
+        "type": "object"
+      },
+      "SkillDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dependencies",
+            "type": "array"
+          },
+          "format": {
+            "const": "instruction-markdown",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "version",
+          "content",
+          "digest",
+          "dependencies",
+          "format"
+        ],
+        "title": "SkillDetail",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "format": "uuid",
+        "title": "Id",
+        "type": "string"
+      },
+      "kind": {
+        "enum": [
+          "connection",
+          "skill"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "name": {
+        "title": "Name",
+        "type": "string"
+      },
+      "revision": {
+        "title": "Revision",
+        "type": "integer"
+      },
+      "status": {
+        "enum": [
+          "active",
+          "disabled",
+          "disconnected"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "default_selected": {
+        "title": "Default Selected",
+        "type": "boolean"
+      },
+      "detail": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/ConnectionDetail"
+          },
+          {
+            "$ref": "#/$defs/SkillDetail"
+          }
+        ],
+        "title": "Detail"
+      },
+      "created_at": {
+        "format": "date-time",
+        "title": "Created At",
+        "type": "string"
+      },
+      "updated_at": {
+        "format": "date-time",
+        "title": "Updated At",
+        "type": "string"
+      }
+    },
+    "required": [
+      "id",
+      "kind",
+      "name",
+      "revision",
+      "status",
+      "default_selected",
+      "detail",
+      "created_at",
+      "updated_at"
+    ],
+    "title": "Asset",
+    "type": "object"
+  },
+  "Catalog": {
+    "$defs": {
+      "Asset": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "connection",
+              "skill"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled",
+              "disconnected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "default_selected": {
+            "title": "Default Selected",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectionDetail"
+              },
+              {
+                "$ref": "#/$defs/SkillDetail"
+              }
+            ],
+            "title": "Detail"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "revision",
+          "status",
+          "default_selected",
+          "detail",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Asset",
+        "type": "object"
+      },
+      "ConnectionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "auth": {
+            "enum": [
+              "none",
+              "bearer"
+            ],
+            "title": "Auth",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/RegisteredTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "revocation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revocation"
+          }
+        },
+        "required": [
+          "url",
+          "account_label",
+          "auth",
+          "tools",
+          "checked_at"
+        ],
+        "title": "ConnectionDetail",
+        "type": "object"
+      },
+      "RegisteredTool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "key"
+        ],
+        "title": "RegisteredTool",
+        "type": "object"
+      },
+      "Service": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "authentication": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Authentication",
+            "type": "array"
+          }
+        },
+        "required": [
+          "url",
+          "authentication"
+        ],
+        "title": "Service",
+        "type": "object"
+      },
+      "SkillDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dependencies",
+            "type": "array"
+          },
+          "format": {
+            "const": "instruction-markdown",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "version",
+          "content",
+          "digest",
+          "dependencies",
+          "format"
+        ],
+        "title": "SkillDetail",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "assets": {
+        "items": {
+          "$ref": "#/$defs/Asset"
+        },
+        "title": "Assets",
+        "type": "array"
+      },
+      "services": {
+        "items": {
+          "$ref": "#/$defs/Service"
+        },
+        "title": "Services",
+        "type": "array"
+      },
+      "skill_formats": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Skill Formats",
+        "type": "array"
+      },
+      "runtime_enabled": {
+        "title": "Runtime Enabled",
+        "type": "boolean"
+      }
+    },
+    "required": [
+      "assets",
+      "services",
+      "skill_formats",
+      "runtime_enabled"
+    ],
+    "title": "Catalog",
+    "type": "object"
+  },
+  "Selection": {
+    "$defs": {
+      "Asset": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "connection",
+              "skill"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "status": {
+            "enum": [
+              "active",
+              "disabled",
+              "disconnected"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "default_selected": {
+            "title": "Default Selected",
+            "type": "boolean"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectionDetail"
+              },
+              {
+                "$ref": "#/$defs/SkillDetail"
+              }
+            ],
+            "title": "Detail"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "revision",
+          "status",
+          "default_selected",
+          "detail",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "Asset",
+        "type": "object"
+      },
+      "AvailableTool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "key",
+          "connection_id",
+          "connection_name",
+          "account_label",
+          "status"
+        ],
+        "title": "AvailableTool",
+        "type": "object"
+      },
+      "ConnectionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "auth": {
+            "enum": [
+              "none",
+              "bearer"
+            ],
+            "title": "Auth",
+            "type": "string"
+          },
+          "tools": {
+            "items": {
+              "$ref": "#/$defs/RegisteredTool"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "checked_at": {
+            "title": "Checked At",
+            "type": "string"
+          },
+          "revocation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Revocation"
+          }
+        },
+        "required": [
+          "url",
+          "account_label",
+          "auth",
+          "tools",
+          "checked_at"
+        ],
+        "title": "ConnectionDetail",
+        "type": "object"
+      },
+      "Issue": {
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "title": "Ref",
+            "type": "string"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "ref",
+          "code"
+        ],
+        "title": "Issue",
+        "type": "object"
+      },
+      "MethodContext": {
+        "additionalProperties": false,
+        "properties": {
+          "task_id": {
+            "format": "uuid",
+            "title": "Task Id",
+            "type": "string"
+          },
+          "profile_id": {
+            "title": "Profile Id",
+            "type": "string"
+          },
+          "step_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Step Id"
+          },
+          "declared_tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Declared Tools",
+            "type": "array"
+          },
+          "managed_bindings_supported": {
+            "const": false,
+            "title": "Managed Bindings Supported",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "task_id",
+          "profile_id",
+          "step_id",
+          "declared_tools",
+          "managed_bindings_supported"
+        ],
+        "title": "MethodContext",
+        "type": "object"
+      },
+      "RegisteredTool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema",
+          "key"
+        ],
+        "title": "RegisteredTool",
+        "type": "object"
+      },
+      "SkillDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "dependencies": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Dependencies",
+            "type": "array"
+          },
+          "format": {
+            "const": "instruction-markdown",
+            "title": "Format",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "version",
+          "content",
+          "digest",
+          "dependencies",
+          "format"
+        ],
+        "title": "SkillDetail",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "session_id": {
+        "format": "uuid",
+        "title": "Session Id",
+        "type": "string"
+      },
+      "method": {
+        "anyOf": [
+          {
+            "$ref": "#/$defs/MethodContext"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      },
+      "revision": {
+        "title": "Revision",
+        "type": "integer"
+      },
+      "tools": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Tools",
+        "type": "array"
+      },
+      "skills": {
+        "items": {
+          "type": "string"
+        },
+        "title": "Skills",
+        "type": "array"
+      },
+      "purpose": {
+        "title": "Purpose",
+        "type": "string"
+      },
+      "editable": {
+        "title": "Editable",
+        "type": "boolean"
+      },
+      "applied_revision": {
+        "anyOf": [
+          {
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Applied Revision"
+      },
+      "preparation": {
+        "title": "Preparation",
+        "type": "string"
+      },
+      "issues": {
+        "items": {
+          "$ref": "#/$defs/Issue"
+        },
+        "title": "Issues",
+        "type": "array"
+      },
+      "available_tools": {
+        "items": {
+          "$ref": "#/$defs/AvailableTool"
+        },
+        "title": "Available Tools",
+        "type": "array"
+      },
+      "available_skills": {
+        "items": {
+          "$ref": "#/$defs/Asset"
+        },
+        "title": "Available Skills",
+        "type": "array"
+      }
+    },
+    "required": [
+      "session_id",
+      "method",
+      "revision",
+      "tools",
+      "skills",
+      "purpose",
+      "editable",
+      "applied_revision",
+      "preparation",
+      "issues",
+      "available_tools",
+      "available_skills"
+    ],
+    "title": "Selection",
+    "type": "object"
+  },
+  "Call": {
+    "$defs": {
+      "CallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "selection_revision",
+          "runtime",
+          "approval_token"
+        ],
+        "title": "CallDetail",
+        "type": "object"
+      },
+      "Tool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema"
+        ],
+        "title": "Tool",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "id": {
+        "format": "uuid",
+        "title": "Id",
+        "type": "string"
+      },
+      "owner_actor_id": {
+        "format": "uuid",
+        "title": "Owner Actor Id",
+        "type": "string"
+      },
+      "session_id": {
+        "format": "uuid",
+        "title": "Session Id",
+        "type": "string"
+      },
+      "connection_id": {
+        "format": "uuid",
+        "title": "Connection Id",
+        "type": "string"
+      },
+      "interaction_id": {
+        "anyOf": [
+          {
+            "format": "uuid",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Interaction Id"
+      },
+      "digest": {
+        "title": "Digest",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "awaiting_approval",
+          "dispatching",
+          "succeeded",
+          "failed",
+          "declined",
+          "unknown",
+          "expired"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "created_at": {
+        "format": "date-time",
+        "title": "Created At",
+        "type": "string"
+      },
+      "updated_at": {
+        "format": "date-time",
+        "title": "Updated At",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/$defs/CallDetail"
+      }
+    },
+    "required": [
+      "id",
+      "owner_actor_id",
+      "session_id",
+      "connection_id",
+      "interaction_id",
+      "digest",
+      "status",
+      "created_at",
+      "updated_at",
+      "detail"
+    ],
+    "title": "Call",
+    "type": "object"
+  },
+  "Calls": {
+    "$defs": {
+      "Call": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "owner_actor_id": {
+            "format": "uuid",
+            "title": "Owner Actor Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "interaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interaction Id"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "awaiting_approval",
+              "dispatching",
+              "succeeded",
+              "failed",
+              "declined",
+              "unknown",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "detail": {
+            "$ref": "#/$defs/CallDetail"
+          }
+        },
+        "required": [
+          "id",
+          "owner_actor_id",
+          "session_id",
+          "connection_id",
+          "interaction_id",
+          "digest",
+          "status",
+          "created_at",
+          "updated_at",
+          "detail"
+        ],
+        "title": "Call",
+        "type": "object"
+      },
+      "CallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "selection_revision",
+          "runtime",
+          "approval_token"
+        ],
+        "title": "CallDetail",
+        "type": "object"
+      },
+      "Tool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema"
+        ],
+        "title": "Tool",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "calls": {
+        "items": {
+          "$ref": "#/$defs/Call"
+        },
+        "title": "Calls",
+        "type": "array"
+      }
+    },
+    "required": [
+      "calls"
+    ],
+    "title": "Calls",
+    "type": "object"
+  }
+}

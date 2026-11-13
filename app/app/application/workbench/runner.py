@@ -203,6 +203,9 @@ class SandboxLink:
         self._waits_open: dict[str, int] = {}
         self._wait_since: dict[str, float] = {}
         self._waited: dict[str, float] = {}
+        self.capability_config: dict[str, dict[str, Any]] = {}
+        self.capability_scopes: dict[str, str] = {}
+        self.capability_finished: dict[str, bool] = {}
         self._lock = asyncio.Lock()
         self.turn_waiters: dict[str, dict[str, Any]] = {}  # turn_id -> waiter
         # 用户在审批面点了「停下」（或等不到人）：这条线这一轮是被人停的，不是出错。
@@ -269,15 +272,9 @@ class SandboxLink:
             return
         client = await self.ensure_connected()
         state = await client.request(
-            "thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=10
+            "thread/read", {"threadId": thread_id, "includeTurns": False}, timeout=10
         )
-        thread = (state or {}).get("thread")
-        if not isinstance(thread, dict) or not isinstance(thread.get("turns"), list):
-            raise RuntimeError("cannot verify idle thread for stage tools")
-        if thread_id in self.active_turns or any(
-            turn.get("status") == "inProgress" for turn in thread["turns"]
-        ):
-            raise RuntimeError("cannot change stage tools during an active turn")
+        self.require_idle(thread_id, state)
         self.search_scopes.pop(thread_id, None)
         detached = await client.request(
             "thread/unsubscribe", {"threadId": thread_id}, timeout=10
@@ -293,6 +290,7 @@ class SandboxLink:
             **((session or {}).get("thread_settings") or {}).get("config", {}),
             **THREAD_CONFIG,
         }
+        config.update(self.capability_config.get(thread_id, {}))
         if restricted:
             config["web_search"] = "disabled"
         resumed = await client.request(
@@ -303,6 +301,68 @@ class SandboxLink:
         self.remember_model(thread_id, resumed)
         self.live_threads.add(thread_id)
         self.search_scopes[thread_id] = restricted
+
+    def require_idle(self, thread_id: str, state: Any) -> None:
+        thread = (state or {}).get("thread")
+        if not isinstance(thread, dict):
+            raise RuntimeError("cannot verify idle thread for capabilities")
+        status = (thread.get("status") or {}).get("type")
+        # 0.155.1 paginated threads reject includeTurns. Metadata status is the
+        # live authority; legacy test/older peers can provide a complete turn list.
+        legacy_idle = (
+            status is None
+            and isinstance(thread.get("turns"), list)
+            and all(t.get("status") != "inProgress" for t in thread["turns"])
+        )
+        if thread_id in self.active_turns or not (status == "idle" or legacy_idle):
+            raise RuntimeError(
+                "cannot change stage tools during an active or unknown turn"
+            )
+
+    async def record_capability_turn(self, thread_id: str, turn_id: str | None) -> None:
+        scope = self.capability_scopes.get(thread_id)
+        if not scope or not turn_id:
+            return
+        async with self.runner.stores() as repo, repo.transaction():
+            session = await repo.get_session_by_thread(thread_id)
+            if session:
+                await repo.capability_runtime_event(
+                    str(session["id"]), scope, turn_id, started=True
+                )
+                if turn_id in self.capability_finished:
+                    await repo.capability_runtime_event(
+                        str(session["id"]),
+                        scope,
+                        turn_id,
+                        started=False,
+                        aborted=self.capability_finished.pop(turn_id),
+                    )
+
+    async def prepare_capabilities(
+        self, thread_id: str, *, expert: bool
+    ) -> list[dict[str, Any]]:
+        if self.runner.capabilities is None:
+            return []
+        # Check before issuing/rotating a scope. Repeated commands must not revoke
+        # the token of an existing turn, even if stage configuration was cached.
+        client = await self.ensure_connected()
+        state = await client.request(
+            "thread/read", {"threadId": thread_id, "includeTurns": False}, timeout=10
+        )
+        self.require_idle(thread_id, state)
+        async with self.runner.stores() as repo:
+            session = await repo.get_session_by_thread(thread_id)
+            if session is None:
+                raise RuntimeError("Capability context has no session")
+            prepared = await self.runner.capabilities(repo).prepare(
+                str(session["owner_actor_id"]), str(session["id"]), expert=expert
+            )
+        self.capability_scopes[thread_id] = prepared.get("scope_id", "")
+        config = prepared["config"]
+        if self.capability_config.get(thread_id) != config:
+            self.capability_config[thread_id] = config
+            self.search_scopes.pop(thread_id, None)
+        return prepared["inputs"]
 
     def remember_model(self, thread_id: str, answer: Any) -> str | None:
         """起线、重新装载线的答复里有这条线用的模型。"""
@@ -484,6 +544,20 @@ class SandboxLink:
                     return
                 params = priced
             async with repo.transaction():
+                if self.runner.capabilities is not None and method == "turn/completed":
+                    scope = self.capability_scopes.get(thread_id_of(params) or "")
+                    turn = params.get("turn") or {}
+                    tid = turn.get("id") or params.get("turnId")
+                    if scope and tid:
+                        aborted = turn.get("status") in ("interrupted", "failed")
+                        self.capability_finished[tid] = aborted
+                        if len(self.capability_finished) > 256:
+                            self.capability_finished.pop(
+                                next(iter(self.capability_finished))
+                            )
+                        await repo.capability_runtime_event(
+                            session_id, scope, tid, started=False, aborted=aborted
+                        )
                 event = await repo.append_event(
                     session_id=session_id,
                     kind=event_kind(method),
@@ -621,6 +695,7 @@ class SandboxLink:
             # MCP tools. Native web search cannot supply their pinned fact refs;
             # reopening it after data planning causes fruitless off-source loops.
             # Ordinary chat and experts without data tools retain their settings.
+            capability_inputs = await self.prepare_capabilities(thread_id, expert=True)
             await self.configure_search_scope(
                 thread_id, restricted=planning or lookup or bool(required_data)
             )
@@ -648,12 +723,13 @@ class SandboxLink:
             "turn/start",
             {
                 "threadId": thread_id,
-                "input": [{"type": "text", "text": text}],
+                "input": [*capability_inputs, {"type": "text", "text": text}],
                 **plan.settings,
             },
             timeout=120,
         )
         turn_id = ((result or {}).get("turn") or {}).get("id")
+        await self.record_capability_turn(thread_id, turn_id)
         if not turn_id:
             return TurnResult(
                 turn_id=None,
@@ -1724,8 +1800,10 @@ class Runner:
         deliverables: DeliverableCheck | None = None,
         reader: Any = None,
         fixed_as_plan_owners: frozenset[str] = frozenset(),
+        capabilities: Any = None,
     ):
         self.records = records
+        self.capabilities = capabilities
         self.fixed_as_plan_owners = fixed_as_plan_owners  # SDD 0050；默认没人
         self.deliverables = deliverables
         # 第四版：数值验收回查事实编号、资料页码（run_reader.RunReader）
@@ -2058,17 +2136,26 @@ class Runner:
                     f"wheel is held by {session['wheel']}; turn by {payload.get('by', 'user')} refused"
                 )
             plan = await self.turn_plan(session=session, expert=False)
-            await link.configure_search_scope(session["thread_id"], restricted=False)
             await link.announce(session["thread_id"], plan)
+            capability_inputs = await link.prepare_capabilities(
+                session["thread_id"], expert=False
+            )
+            await link.configure_search_scope(session["thread_id"], restricted=False)
             result = await client.request(
                 "turn/start",
                 {
                     "threadId": session["thread_id"],
-                    "input": [{"type": "text", "text": payload["text"]}],
+                    "input": [
+                        *capability_inputs,
+                        {"type": "text", "text": payload["text"]},
+                    ],
                     "clientUserMessageId": payload.get("request_id"),
                     **plan.settings,
                 },
                 timeout=120,
+            )
+            await link.record_capability_turn(
+                session["thread_id"], ((result or {}).get("turn") or {}).get("id")
             )
             async with self.stores() as repo:
                 async with repo.transaction():
@@ -2381,6 +2468,10 @@ class Runner:
                 approval=prefs.get("approval_policy"),
                 model=prefs.get("model"),
             )
+        params["config"] = {
+            **params.get("config", {}),
+            "mcp_servers.sunmoon_capabilities.enabled": False,
+        }
         try:
             result = await client.request("thread/start", params, timeout=60)
         except AppServerError as exc:
@@ -2391,6 +2482,9 @@ class Runner:
         link.threads[thread_id] = str(session["id"])
         link.live_threads.add(thread_id)
         link.search_scopes[thread_id] = False
+        link.capability_config[thread_id] = {
+            "mcp_servers.sunmoon_capabilities.enabled": False
+        }
         payload: dict[str, Any] = {
             "thread_id": thread_id,
             "environment": env_key
