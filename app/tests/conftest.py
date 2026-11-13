@@ -2,10 +2,42 @@
 
 from __future__ import annotations
 
+import os
+from pathlib import Path
+
 import pytest
+import yaml
 from sample_packs import SAMPLE_PACKS
 
 from app.domain.workbench import packs
+
+
+@pytest.fixture
+def celery_probe_config(tmp_path, monkeypatch):
+    """Use the deployed Celery queue policy in opt-in real broker probes."""
+    if not os.environ.get("CELERY_PROBE_TEST_BROKER_URL"):
+        return
+    root = Path(__file__).resolve().parents[4]
+    manifest = root / (
+        "sunmoonun/gitops/components/app-platform/knowbench-app/"
+        "knowbench-backend/runtime/workload.yaml"
+    )
+    assert manifest.is_file(), "broker probes require the platform deployment source"
+    configs = [
+        doc["data"]["celeryconfig.py"]
+        for doc in yaml.safe_load_all(manifest.read_text())
+        if isinstance(doc, dict)
+        and doc.get("kind") == "ConfigMap"
+        and "celeryconfig.py" in doc.get("data", {})
+    ]
+    assert len(configs) == 1, "expected one deployed Celery configuration"
+    module = "broker_test_celeryconfig"
+    (tmp_path / f"{module}.py").write_text(configs[0])
+    monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.setenv("CELERY_CONFIG_MODULE", module)
+    monkeypatch.setenv(
+        "PYTHONPATH", str(tmp_path) + os.pathsep + os.environ.get("PYTHONPATH", "")
+    )
 
 
 @pytest.fixture(autouse=True)

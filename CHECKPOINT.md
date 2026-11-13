@@ -1,3 +1,11 @@
+# 2026-11-14 最终全量验证：真实 broker 测试复用部署配置
+
+承接平台实施方案 §17.6 第 2 项。首轮全量启用 AGENT/DELIVERY 测试库及独立 RabbitMQ 后，在真实 prefork 测试发现 RabbitMQ 4.3 拒绝临时非独占队列；已受控中止，原结果 1 failed / 1216 passed / 3 skipped，日志 /tmp/capability-full-final-20261114.log，不称全量完成。
+
+生产部署已有 celeryconfig.py 的 control/event 独占队列配置，测试此前没有加载。测试 fixture 现从并列 sunmoonun 的 KnowBench workload ConfigMap 读取原生配置，给测试客户端及子进程使用，不开放 broker deprecated_features 兼容开关。子进程保留 PYTHONPATH；Redis ACL 测试修正已废弃 k8s 路径为 sunmoonun。真实 worker、scheduler、队列恢复与 ACL 五项通过（/tmp/capability-broker-retest-20261114.log，44.76 秒）；改动 Ruff 通过。无产品逻辑或部署变化。
+
+下一步固定提交后串行重跑最终全量（pytest/Ruff/Pyright），显式提供 WEB_INTERACTION_CONSUMER_VECTORS 指向 tpl-app/contracts/web-interaction-v1.consumer-vectors.json。测试私有数据库配置只读 ~/.config/sunmoon-remote-test/pg.env，不输出内容。临时 broker 由平台 CHECKPOINT 记录，完成后只清理该容器与其匿名卷。两份复审仍待评审方回执；本增量仅补真实验证环境，不代替独立复审或发布。
+
 # 2026-11-13 技能包与自动发现扩展（待本地发布）
 
 后端 ZIP 校验/不可变资源、自动目录与按需读取、逐次撤权核验/读回执、专家隔离、契约更新。没有新增 DDL，迁移头 0040。

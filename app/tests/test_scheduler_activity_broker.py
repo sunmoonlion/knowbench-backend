@@ -24,7 +24,9 @@ from app.infrastructure.messaging.scheduler_activity import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_real_beat_publication_pause_restart_and_dead_process_rejection(tmp_path):
+def test_real_beat_publication_pause_restart_and_dead_process_rejection(
+    tmp_path, celery_probe_config
+):
     broker = os.environ.get("CELERY_PROBE_TEST_BROKER_URL")
     if not broker:
         pytest.skip("requires disposable CELERY_PROBE_TEST_BROKER_URL")
