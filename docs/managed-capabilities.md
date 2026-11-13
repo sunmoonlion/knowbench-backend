@@ -47,6 +47,8 @@ WORKBENCH_CAPABILITY_MCP_URL=https://your-platform.example/api/mcp/capabilities
 
 断网真实二进制探针：`app/scripts/probes/codex_capabilities_probe.py`。合成 Responses 和 MCP 均在容器回环内，不访问模型供应商或真实账号。它验证与产品一致的长工具别名、服务名、`approvalPolicy=never`、`environments=[]`、不同轮次的认证头／白名单切换，以及显式技能正文确实到达模型请求。
 
+新用户未预置受管 MCP 时，即使禁用也必须提供完整传输定义，否则固定版报 `invalid transport`。禁用配置使用 `enabled=false`、空工具与凭据、`required=false` 及未使用的回环丢弃端口；不发起连接。探针从没有 MCP 预配置的目录启动，并验证启用后再次禁用。
+
 空线程尚未物化时不能直接 unsubscribe/resume。runner 先注入原有模式说明，再准备工具；没有制造一轮模型调用。分页线程的 `thread/read(includeTurns=true)` 在固定版本会返回 `list_turns is not supported yet`，现在用 metadata 的实时 idle 状态判断。非空闲或未知状态拒绝重配，不轮换正在执行的令牌。范围应用由对应 `turn/start` 回执确认，晚到的通知按 scope/turn 条件更新，不能覆盖新范围。
 
 纯指令技能通过已选版本的正文输入交付。文件写入与 `skills/list` 成功不证明模型已读 Skill；本次探针发现 `environments=[]` 时原生 Skill 输入不加载正文，因此未以开启本地执行来绕过限制。脚本／附件包及原生扫描目录管理仍待后续实现。停用会阻止之后注入，不会删除模型已看到的历史文字；同一线程的旧文本仍可能存在。

@@ -185,10 +185,6 @@ requires_openai_auth = false
 supports_websockets = false
 request_max_retries = 0
 stream_max_retries = 0
-[mcp_servers.sunmoon_capabilities]
-url = "http://127.0.0.1:{server.server_port}/mcp"
-startup_timeout_sec = 5
-required = true
 """)
     version = await asyncio.create_subprocess_exec(
         "/probe/codex", "--version", stdout=asyncio.subprocess.PIPE
@@ -249,7 +245,15 @@ required = true
         params = {"cwd": str(cwd), "approvalPolicy": "never", "environments": []}
         if dynamic is not None:
             params["dynamicTools"] = [tool(n) for n in dynamic]
-            params["config"] = {"mcp_servers.sunmoon_capabilities.enabled": False}
+            params["config"] = {
+                "mcp_servers.sunmoon_capabilities": {
+                    "enabled": False,
+                    "url": "http://127.0.0.1:9",
+                    "enabled_tools": [],
+                    "http_headers": {},
+                    "required": False,
+                }
+            }
         else:
             params["config"] = {
                 "mcp_servers.sunmoon_capabilities.enabled_tools": enabled
@@ -322,6 +326,7 @@ required = true
         stdin.write(b'{"method":"initialized"}\n')
         await stdin.drain()
         tid = await start(dynamic=[])
+        assert not mcp_events, "Disabled initial server must not connect"
         state = await call("thread/read", {"threadId": tid, "includeTurns": False})
         assert state["thread"]["status"]["type"] == "idle"
         await call(
@@ -410,11 +415,27 @@ required = true
         assert len(calls) == 2 and calls[1]["scope"] == "Bearer synthetic-scope-b", (
             calls
         )
+        await call("thread/unsubscribe", {"threadId": tid})
+        await resume(
+            tid,
+            config={
+                "mcp_servers.sunmoon_capabilities": {
+                    "enabled": False,
+                    "url": "http://127.0.0.1:9",
+                    "enabled_tools": [],
+                    "http_headers": {},
+                    "required": False,
+                }
+            },
+        )
+        names = await turn(tid, "managed_disabled")
+        assert not any("sunmoon_capabilities" in name for name in names), names
+        assert len([e for e in mcp_events if e["method"] == "tools/call"]) == 2
         assert not any("requestApproval" in m.get("method", "") for m in notices), (
             notices
         )
         print(
-            "PASS: no local execution, explicit instruction body, staged non-destructive closed-world tool, per-turn header and whitelist rotation",
+            "PASS: empty-home start, no local execution, explicit instruction body, staged tool, per-turn header/whitelist rotation and disable",
             flush=True,
         )
     finally:

@@ -40,6 +40,7 @@ from app.application.workbench.runtime_tools import (
     unavailable_data_tools,
 )
 from app.domain.workbench import step_progress
+from app.domain.workbench.capabilities import disabled_mcp_config
 from app.domain.workbench.compute_progress import (
     MISSING_TASK_MESSAGE,
     ComputeProgressGuard,
@@ -2470,7 +2471,7 @@ class Runner:
             )
         params["config"] = {
             **params.get("config", {}),
-            "mcp_servers.sunmoon_capabilities.enabled": False,
+            **disabled_mcp_config(),
         }
         try:
             result = await client.request("thread/start", params, timeout=60)
@@ -2482,9 +2483,7 @@ class Runner:
         link.threads[thread_id] = str(session["id"])
         link.live_threads.add(thread_id)
         link.search_scopes[thread_id] = False
-        link.capability_config[thread_id] = {
-            "mcp_servers.sunmoon_capabilities.enabled": False
-        }
+        link.capability_config[thread_id] = disabled_mcp_config()
         payload: dict[str, Any] = {
             "thread_id": thread_id,
             "environment": env_key
