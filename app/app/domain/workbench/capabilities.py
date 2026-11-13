@@ -81,6 +81,7 @@ class SelectionPut(Strict):
     tools: list[str] = Field(default_factory=list, max_length=50)
     skills: list[str] = Field(default_factory=list, max_length=10)
     purpose: str = Field(default="", max_length=1000)
+    skill_mode: Literal["auto", "explicit"] = "explicit"
 
     @model_validator(mode="after")
     def unique(self):
@@ -88,6 +89,10 @@ class SelectionPut(Strict):
             self.skills
         ):
             raise ValueError("duplicate selection")
+        if self.skill_mode == "auto" and self.skills:
+            raise ValueError(
+                "Automatic Skill scope cannot include an explicit selection"
+            )
         return self
 
 
@@ -129,6 +134,10 @@ def public_asset(asset: dict) -> dict:
                 for t in asset["detail"].get("tools", [])
             ],
         }
+    if asset["kind"] == "skill":
+        public["detail"] = {
+            k: v for k, v in asset["detail"].items() if k != "resources"
+        }
     return public
 
 
@@ -141,10 +150,10 @@ def default_selection(assets: list[dict]) -> dict:
         if a["kind"] == "connection"
         for t in a["detail"].get("tools", [])
     ][:50]
-    skills = [a["id"] for a in chosen if a["kind"] == "skill"][:10]
     return {
         "tools": tools,
-        "skills": skills,
+        "skills": [],
+        "skill_mode": "auto",
         "purpose": "",
         "bindings": {a["id"]: a["revision"] for a in chosen},
     }

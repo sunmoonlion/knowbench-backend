@@ -28,11 +28,13 @@ from app.domain.workbench.capability_contract import (  # noqa: E402
     Catalog,
     Selection,
 )
+from app.domain.workbench.skill_package import SkillPackageCreate  # noqa: E402
 
 models = (
     ConnectionCreate,
     ConnectionRenew,
     SkillCreate,
+    SkillPackageCreate,
     AssetAction,
     SelectionPut,
     ActionDecision,
@@ -114,6 +116,7 @@ selection = {
     "revision": 1,
     "tools": [key],
     "skills": [SK],
+    "skill_mode": "explicit",
     "purpose": "Notify reader",
     "editable": True,
     "applied_revision": None,

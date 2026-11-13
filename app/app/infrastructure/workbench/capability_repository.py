@@ -37,7 +37,9 @@ class CapabilityRepositoryMixin:
         rows = (
             await self.session.execute(
                 text(
-                    "SELECT * FROM workbench_capability_assets WHERE owner_actor_id=:o ORDER BY id"
+                    "SELECT id,owner_actor_id,kind,name,revision,status,default_selected,"
+                    "detail - 'resources' AS detail,secret,request_id,request_digest,created_at,updated_at "
+                    "FROM workbench_capability_assets WHERE owner_actor_id=:o ORDER BY id"
                     + (" FOR UPDATE" if lock else "")
                 ),
                 {"o": owner},

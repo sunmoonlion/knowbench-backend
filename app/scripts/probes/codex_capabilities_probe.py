@@ -45,7 +45,14 @@ class Handler(BaseHTTPRequestHandler):
                     "call_id": "call_" + rid,
                     "name": next_model_tool,
                     "namespace": "mcp__sunmoon_capabilities",
-                    "arguments": "{}",
+                    "arguments": json.dumps(
+                        {
+                            "skill_id": "11111111-1111-4111-8111-111111111111",
+                            "path": "references/guide.md",
+                        }
+                    )
+                    if next_model_tool == "skill_read"
+                    else "{}",
                     "status": "completed",
                 }
                 next_model_tool = None
@@ -94,7 +101,7 @@ class Handler(BaseHTTPRequestHandler):
                         {
                             **tool(n),
                             "annotations": {
-                                "readOnlyHint": False,
+                                "readOnlyHint": n == "skill_read",
                                 "destructiveHint": False,
                                 "openWorldHint": False,
                             },
@@ -102,13 +109,19 @@ class Handler(BaseHTTPRequestHandler):
                         for n in (
                             "c_11111111111141118111111111111111_27ce1d1bf427aecd",
                             "c_22222222222242228222222222222222_1b29de8941ee403a",
+                            "skill_read",
                         )
                     ]
                 }
             elif method == "tools/call":
                 value = {
                     "content": [
-                        {"type": "text", "text": "synthetic_" + msg["params"]["name"]}
+                        {
+                            "type": "text",
+                            "text": "LAZY_REFERENCE_BODY_9182"
+                            if msg["params"]["name"] == "skill_read"
+                            else "synthetic_" + msg["params"]["name"],
+                        }
                     ],
                     "isError": False,
                 }
@@ -130,6 +143,20 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def tool(name):
+    if name == "skill_read":
+        return {
+            "name": name,
+            "description": "Read a selected Skill reference without execution",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "skill_id": {"type": "string"},
+                    "path": {"type": "string"},
+                },
+                "required": ["skill_id", "path"],
+                "additionalProperties": False,
+            },
+        }
     return {
         "name": name,
         "description": "Synthetic no-side-effect probe " + name,
@@ -420,6 +447,45 @@ stream_max_retries = 0
             tid,
             config={
                 "mcp_servers.sunmoon_capabilities": {
+                    "enabled": True,
+                    "url": f"http://127.0.0.1:{server.server_port}/mcp",
+                    "http_headers": {"Authorization": "Bearer synthetic-skill-scope"},
+                    "enabled_tools": ["skill_read"],
+                    "required": True,
+                }
+            },
+        )
+        before_skill = len(captures)
+        names = await turn(
+            tid,
+            "lazy_skill_resource",
+            extra={
+                "input": [
+                    {
+                        "type": "text",
+                        "text": "Available Skill: fixture; description: workflow guidance. Read references on demand using skill_read.",
+                    }
+                ]
+            },
+            invoke="skill_read",
+        )
+        assert "LAZY_REFERENCE_BODY_9182" not in json.dumps(
+            captures[before_skill]["input"]
+        )
+        assert "LAZY_REFERENCE_BODY_9182" in json.dumps(
+            captures[before_skill + 1]["input"]
+        )
+        assert any("skill_read" in n for n in names) and not any(
+            "c_111111" in n or "c_222222" in n for n in names
+        ), names
+        calls = [e for e in mcp_events if e["method"] == "tools/call"]
+        assert len(calls) == 3 and calls[-1]["scope"] == "Bearer synthetic-skill-scope"
+        assert calls[-1]["params"]["arguments"]["path"] == "references/guide.md"
+        await call("thread/unsubscribe", {"threadId": tid})
+        await resume(
+            tid,
+            config={
+                "mcp_servers.sunmoon_capabilities": {
                     "enabled": False,
                     "url": "http://127.0.0.1:9",
                     "enabled_tools": [],
@@ -430,12 +496,12 @@ stream_max_retries = 0
         )
         names = await turn(tid, "managed_disabled")
         assert not any("sunmoon_capabilities" in name for name in names), names
-        assert len([e for e in mcp_events if e["method"] == "tools/call"]) == 2
+        assert len([e for e in mcp_events if e["method"] == "tools/call"]) == 3
         assert not any("requestApproval" in m.get("method", "") for m in notices), (
             notices
         )
         print(
-            "PASS: empty-home start, no local execution, explicit instruction body, staged tool, per-turn header/whitelist rotation and disable",
+            "PASS: empty-home start, no local execution, explicit instruction body, staged tool, per-turn header/whitelist rotation, lazy Skill reference read and disable",
             flush=True,
         )
     finally:
