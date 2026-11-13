@@ -28,13 +28,21 @@ class ConnectionDetail(Strict):
     revocation: str | None = None
 
 
+class SkillFile(Strict):
+    path: str
+    size: int
+    sha256: str
+    media_type: str
+
+
 class SkillDetail(Strict):
     description: str
     version: str
     content: str
     digest: str
     dependencies: list[str]
-    format: Literal["instruction-markdown"]
+    format: Literal["instruction-markdown", "skill-package-zip"]
+    files: list[SkillFile] = Field(default_factory=list)
 
 
 class Asset(Strict):
@@ -88,6 +96,7 @@ class Selection(Strict):
     revision: int
     tools: list[str]
     skills: list[str]
+    skill_mode: Literal["auto", "explicit"]
     purpose: str
     editable: bool
     applied_revision: int | None

@@ -1,3 +1,16 @@
+# 2026-11-13 技能包与自动发现扩展（待本地发布）
+
+后端 ZIP 校验/不可变资源、自动目录与按需读取、逐次撤权核验/读回执、专家隔离、契约更新。没有新增 DDL，迁移头 0040。
+用户明确用途为 KnowBench 网页聊天／工作；自动可用只提供名称用途，正文和附件按需读取。
+普通聊天不用原生 Skill 目录，不开放命令执行。按轮冻结版本与范围，停用不能擦除历史正文。
+代码和实际边界见 knowbench-backend/docs/managed-capabilities.md。
+验证：相关 PostgreSQL/HTTP 18 passed，单元/内核/分层 43 passed，网页组件/契约9 passed；
+原有 runner/路由/账房回归57 passed。Ruff、Pyright、Node24 TypeScript/ESLint通过。
+固定Codex0.155.1断网容器验证 lazy reference read，
+本地证据 /home/zymun/sunmoon-probe-runs/skill-package-20261113。未发起真实模型付费调用。
+Agently完整包已在本地桌面 agently-skills-384a6fb0.zip；尚未导入任何真实平台账号。
+发布仍沿用上次隔离分支 capabilities-release-20261113，仅挑选本次改动；不带其他未发布开发。
+
 # 2026-11-13 发布前空配置阻断修复
 
 真实固定Codex补验发现：未预置受管MCP时仅设置enabled=false仍报invalid transport，

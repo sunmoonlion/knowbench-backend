@@ -130,6 +130,57 @@
     "title": "SkillCreate",
     "type": "object"
   },
+  "SkillPackageCreate": {
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "maxLength": 128,
+        "minLength": 8,
+        "title": "Request Id",
+        "type": "string"
+      },
+      "name": {
+        "pattern": "^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$",
+        "title": "Name",
+        "type": "string"
+      },
+      "description": {
+        "maxLength": 1000,
+        "minLength": 1,
+        "title": "Description",
+        "type": "string"
+      },
+      "version": {
+        "maxLength": 50,
+        "minLength": 1,
+        "title": "Version",
+        "type": "string"
+      },
+      "archive_base64": {
+        "maxLength": 2796204,
+        "minLength": 4,
+        "title": "Archive Base64",
+        "type": "string"
+      },
+      "dependencies": {
+        "items": {
+          "type": "string"
+        },
+        "maxItems": 30,
+        "title": "Dependencies",
+        "type": "array"
+      }
+    },
+    "required": [
+      "request_id",
+      "name",
+      "description",
+      "version",
+      "archive_base64"
+    ],
+    "title": "SkillPackageCreate",
+    "type": "object"
+  },
   "AssetAction": {
     "additionalProperties": false,
     "properties": {
@@ -186,6 +237,15 @@
         "default": "",
         "maxLength": 1000,
         "title": "Purpose",
+        "type": "string"
+      },
+      "skill_mode": {
+        "default": "explicit",
+        "enum": [
+          "auto",
+          "explicit"
+        ],
+        "title": "Skill Mode",
         "type": "string"
       }
     },
@@ -338,9 +398,19 @@
             "type": "array"
           },
           "format": {
-            "const": "instruction-markdown",
+            "enum": [
+              "instruction-markdown",
+              "skill-package-zip"
+            ],
             "title": "Format",
             "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/$defs/SkillFile"
+            },
+            "title": "Files",
+            "type": "array"
           }
         },
         "required": [
@@ -352,6 +422,35 @@
           "format"
         ],
         "title": "SkillDetail",
+        "type": "object"
+      },
+      "SkillFile": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256",
+          "media_type"
+        ],
+        "title": "SkillFile",
         "type": "object"
       }
     },
@@ -634,9 +733,19 @@
             "type": "array"
           },
           "format": {
-            "const": "instruction-markdown",
+            "enum": [
+              "instruction-markdown",
+              "skill-package-zip"
+            ],
             "title": "Format",
             "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/$defs/SkillFile"
+            },
+            "title": "Files",
+            "type": "array"
           }
         },
         "required": [
@@ -648,6 +757,35 @@
           "format"
         ],
         "title": "SkillDetail",
+        "type": "object"
+      },
+      "SkillFile": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256",
+          "media_type"
+        ],
+        "title": "SkillFile",
         "type": "object"
       }
     },
@@ -989,9 +1127,19 @@
             "type": "array"
           },
           "format": {
-            "const": "instruction-markdown",
+            "enum": [
+              "instruction-markdown",
+              "skill-package-zip"
+            ],
             "title": "Format",
             "type": "string"
+          },
+          "files": {
+            "items": {
+              "$ref": "#/$defs/SkillFile"
+            },
+            "title": "Files",
+            "type": "array"
           }
         },
         "required": [
@@ -1003,6 +1151,35 @@
           "format"
         ],
         "title": "SkillDetail",
+        "type": "object"
+      },
+      "SkillFile": {
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          },
+          "media_type": {
+            "title": "Media Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "size",
+          "sha256",
+          "media_type"
+        ],
+        "title": "SkillFile",
         "type": "object"
       }
     },
@@ -1040,6 +1217,14 @@
         },
         "title": "Skills",
         "type": "array"
+      },
+      "skill_mode": {
+        "enum": [
+          "auto",
+          "explicit"
+        ],
+        "title": "Skill Mode",
+        "type": "string"
       },
       "purpose": {
         "title": "Purpose",
@@ -1092,6 +1277,7 @@
       "revision",
       "tools",
       "skills",
+      "skill_mode",
       "purpose",
       "editable",
       "applied_revision",

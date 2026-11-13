@@ -24,6 +24,7 @@ from app.domain.workbench.capability_contract import (
     Catalog,
     Selection,
 )
+from app.domain.workbench.skill_package import SkillPackageCreate
 from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints import capability_routes as routes
 from app.interfaces.http.middleware.auth import get_web_current_user
@@ -118,6 +119,7 @@ MODELS = (
     ConnectionCreate,
     ConnectionRenew,
     SkillCreate,
+    SkillPackageCreate,
     AssetAction,
     SelectionPut,
     ActionDecision,

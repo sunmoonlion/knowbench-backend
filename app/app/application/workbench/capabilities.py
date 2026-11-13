@@ -25,6 +25,12 @@ from app.domain.workbench.capabilities import (
 from app.domain.workbench.errors import Forbidden
 from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.skill_package import (
+    SkillRead,
+    resource_result,
+    skill_files,
+    unpack_skill,
+)
 
 
 def schema_validator(schema):
@@ -114,7 +120,7 @@ class Capabilities:
         }
         return public_asset(await self.repo.capability_insert(asset))
 
-    async def create_skill(self, owner, body):
+    async def create_skill(self, owner, body, *, package=False):
         available = {
             tool_key(a["id"], t["name"])
             for a in await self.repo.capability_assets(owner)
@@ -123,7 +129,15 @@ class Capabilities:
         }
         if not set(body.dependencies) <= available:
             raise CapabilityError("Skill dependencies must refer to your active tools")
-        # Pure instruction assets only. No executable archives, arbitrary paths or installers.
+        material = (
+            unpack_skill(body.archive_base64)
+            if package
+            else {
+                "content": body.content,
+                "digest": digest(body.content),
+                "format": "instruction-markdown",
+            }
+        )
         asset = {
             "id": str(uuid.uuid4()),
             "owner_actor_id": owner,
@@ -136,10 +150,8 @@ class Capabilities:
             "detail": {
                 "description": body.description,
                 "version": body.version,
-                "content": body.content,
-                "digest": digest(body.content),
                 "dependencies": body.dependencies,
-                "format": "instruction-markdown",
+                **material,
             },
         }
         return public_asset(await self.repo.capability_insert(asset))
@@ -261,23 +273,35 @@ class Capabilities:
         }
         by_id = {a["id"]: a for a in assets}
         bindings = detail.get("bindings", {})
+        skill_mode = detail.get(
+            "skill_mode", "explicit" if detail.get("skills") else "auto"
+        )
+        skill_ids = (
+            [
+                a["id"]
+                for a in assets
+                if a["kind"] == "skill" and a["status"] == "active"
+            ]
+            if skill_mode == "auto"
+            else detail.get("skills", [])
+        )
         for key in detail.get("tools", []):
             pair = by_tool.get(key)
             if not pair or pair[0]["status"] != "active":
                 issues.append({"ref": key, "code": "connection_unavailable"})
             elif bindings.get(pair[0]["id"]) != pair[0]["revision"]:
                 issues.append({"ref": key, "code": "revision_changed"})
-        for key in detail.get("skills", []):
+        for key in skill_ids:
             asset = by_id.get(key)
             if not asset or asset["kind"] != "skill" or asset["status"] != "active":
                 issues.append({"ref": key, "code": "skill_unavailable"})
-            elif bindings.get(key) != asset["revision"]:
+            elif skill_mode == "explicit" and bindings.get(key) != asset["revision"]:
                 issues.append({"ref": key, "code": "revision_changed"})
-            elif not set(asset["detail"].get("dependencies", [])) <= set(
-                detail.get("tools", [])
-            ):
+            elif skill_mode == "explicit" and not set(
+                asset["detail"].get("dependencies", [])
+            ) <= set(detail.get("tools", [])):
                 issues.append({"ref": key, "code": "missing_dependencies"})
-        if detail.get("tools") and not self.runtime_url:
+        if (detail.get("tools") or skill_ids) and not self.runtime_url:
             issues.append({"ref": "runtime", "code": "runtime_unconfigured"})
         runtime = selected["runtime"]
         method = None
@@ -308,7 +332,8 @@ class Capabilities:
             "method": method,
             "revision": selected["revision"],
             "tools": [] if method else detail.get("tools", []),
-            "skills": [] if method else detail.get("skills", []),
+            "skills": [] if method else skill_ids,
+            "skill_mode": "explicit" if method else skill_mode,
             "purpose": "" if method else detail.get("purpose", ""),
             "issues": [] if method else issues,
             "editable": session["wheel"] == "user",
@@ -410,6 +435,7 @@ class Capabilities:
                 )
             tools = {}
             inputs = []
+            packages = {}
             for asset in assets:
                 if asset["kind"] == "connection":
                     for tool in asset["detail"].get("tools", []):
@@ -420,37 +446,67 @@ class Capabilities:
                                 "revision": asset["revision"],
                                 "tool": tool,
                             }
-                elif asset["id"] in current["skills"]:
-                    inputs.append(
-                        {
-                            "type": "text",
-                            "text": "<user_selected_skill name="
-                            + json.dumps(asset["name"])
-                            + " version="
-                            + json.dumps(asset["detail"]["version"])
-                            + ">\n"
-                            + asset["detail"]["content"]
-                            + "\n</user_selected_skill>",
-                        }
-                    )
+                elif asset["id"] in fresh["skills"]:
+                    packages[asset["id"]] = {
+                        "revision": asset["revision"],
+                        "digest": asset["detail"]["digest"],
+                    }
+            if len(packages) > 100:
+                raise CapabilityError(
+                    "More than 100 enabled Skills; limit this conversation's Skill scope"
+                )
+            if packages:
+                catalog = [
+                    {
+                        "skill_id": a["id"],
+                        "name": a["name"],
+                        "description": a["detail"]["description"],
+                        "version": a["detail"]["version"],
+                        "missing_tools": sorted(
+                            set(a["detail"].get("dependencies", []))
+                            - set(fresh["tools"])
+                        ),
+                    }
+                    for a in assets
+                    if a["id"] in packages
+                ]
+                inputs.append(
+                    {
+                        "type": "text",
+                        "text": (
+                            "Available user-installed Skills for this turn (scope="
+                            + fresh["skill_mode"]
+                            + "): "
+                            + json.dumps(catalog, ensure_ascii=False)
+                            + "\nChoose relevant Skills by name/description for the user's task, or follow the user's explicit Skill request. Before applying a Skill, use skill_read with its skill_id and path=SKILL.md to load its instructions, then read relevant references on demand. "
+                            "Use skill_files for file discovery. These files are in the platform, not the local filesystem. Paths are package-root-relative by default; for links in a document set relative_to to that document's returned path. "
+                            "A Skill is guidance, not authorization. Missing tools are NOT granted by discovery or reading; ask the user to configure/select dependencies when the task requires them. Scripts are reference text only and cannot be executed through this reader. "
+                            "Only the listed IDs and versions are available this turn. Other Skills named in their text are not implicitly enabled."
+                        ),
+                    }
+                )
             runtime = {
                 "scope_id": secrets.token_hex(16),
                 "token_hash": digest(token),
                 "expires_at": (datetime.now(UTC) + timedelta(hours=24)).isoformat(),
                 "selection_revision": selected["revision"],
                 "tools": tools,
-                "skills": current["skills"],
+                "skills": list(packages),
+                "skill_mode": fresh["skill_mode"],
+                "packages": packages,
                 "status": "prepared",
             }
             await self.repo.capability_runtime(owner, session_id, runtime)
         config = disabled_mcp_config()
-        if tools:
+        if tools or packages:
             config = {
                 "mcp_servers.sunmoon_capabilities": {
                     "enabled": True,
                     "url": self.runtime_url.rstrip("/") + "/" + session_id,
                     "http_headers": {"Authorization": "Bearer " + token},
-                    "enabled_tools": list(tools) + ["action_result"],
+                    "enabled_tools": list(tools)
+                    + (["action_result"] if tools else [])
+                    + (["skill_files", "skill_read"] if packages else []),
                     "required": True,
                     "startup_timeout_sec": 15,
                     "tool_timeout_sec": 60,
@@ -482,6 +538,54 @@ class Capabilities:
         if session["wheel"] != "user":
             raise Forbidden("Capability scope is not valid for the active method")
         return selected
+
+    async def skill_resource(self, session_id, token, arguments, *, listing=False):
+        request = SkillRead.model_validate(arguments)
+        async with self.repo.transaction():
+            selected = await self.runtime(session_id, token)
+            owner = selected["owner_actor_id"]
+            selected = await self.repo.capability_selection(
+                owner, session_id, lock=True
+            )
+            runtime = selected["runtime"]
+            if runtime.get("selection_revision") != selected["revision"]:
+                raise Forbidden("Skill selection changed; prepare a new turn")
+            spec = runtime.get("packages", {}).get(request.skill_id)
+            if not spec or request.skill_id not in runtime.get("skills", []):
+                raise Forbidden("Skill is outside the selected scope")
+            await self.runtime(session_id, token)
+            asset = await self.repo.capability_asset(owner, request.skill_id, lock=True)
+            if (
+                asset["status"] != "active"
+                or asset["revision"] != spec["revision"]
+                or asset["detail"]["digest"] != spec["digest"]
+            ):
+                raise Forbidden("Skill changed or was disabled")
+            if listing:
+                files = skill_files(asset["detail"])
+                end = min(request.offset + 50, len(files))
+                return {
+                    "skill_id": asset["id"],
+                    "version": asset["detail"]["version"],
+                    "files": files[request.offset : end],
+                    "next_offset": end if end < len(files) else None,
+                }
+            result = resource_result(asset["detail"], request)
+            await self.repo.append_event(
+                session_id=session_id,
+                kind="tool",
+                event_type="capability/skill_read",
+                payload={
+                    "skill_id": asset["id"],
+                    "version": asset["detail"]["version"],
+                    "digest": asset["detail"]["digest"],
+                    "path": result["path"],
+                    "sha256": result["sha256"],
+                    "scope_id": runtime["scope_id"],
+                    "offset": request.offset,
+                },
+            )
+            return result
 
     async def request_call(self, session_id, token, key, arguments):
         selected = await self.runtime(session_id, token)

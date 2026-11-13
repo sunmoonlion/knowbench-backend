@@ -180,9 +180,10 @@ async def test_selection_conflicts_dependencies_disabled_revision_and_method_bou
             ),
         )
         result = await svc.prepare(OWNER, sid)
-        assert "SKILL_SENTINEL" in str(
+        assert "SKILL_SENTINEL" not in str(
             result["inputs"]
         ) and "only-server-knows" not in str(result)
+        assert "Notice" in str(result["inputs"])
         with pytest.raises(StaleStateVersion):
             await svc.save_selection(
                 OWNER, sid, SelectionPut(revision=selection["revision"] - 1)
