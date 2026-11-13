@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 async def test_prefork_pause_pong_receipts_recovery_duplicate_and_rollback(
-    db, tmp_path
+    db, tmp_path, celery_probe_config
 ):
     broker = os.environ.get("CELERY_PROBE_TEST_BROKER_URL")
     if not broker:
@@ -43,7 +43,9 @@ async def test_prefork_pause_pong_receipts_recovery_duplicate_and_rollback(
         "CELERY_QUEUE": queue,
         "CELERY_RESULT_BACKEND": "",
         "DELIVERY_PROGRESS_TEST_SCHEMA": schema,
-        "PYTHONPATH": str(ROOT / "tests") + os.pathsep + str(ROOT),
+        "PYTHONPATH": os.pathsep.join(
+            (str(ROOT / "tests"), str(ROOT), os.environ.get("PYTHONPATH", ""))
+        ),
     }
     client = Celery("progress-" + suffix, broker=broker)
     log_path = tmp_path / "worker.log"

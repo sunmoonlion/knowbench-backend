@@ -10,7 +10,7 @@ from app.infrastructure.workbench.agent_limiter import consume_window
 _ALLOWED = {"INCR", "EXPIRE", "MULTI", "EXEC"}
 _ACL = (
     Path(__file__).resolve().parents[4]
-    / "k8s/gitops/components/app-platform/common/backend/redis/provision.py.j2"
+    / "sunmoonun/gitops/components/app-platform/common/backend/redis/provision.py.j2"
 )
 
 
@@ -98,7 +98,7 @@ async def test_window_uses_only_allowlisted_commands_and_recovers(clock):
 
 def test_runtime_acl_allows_the_recorded_commands():
     if not _ACL.is_file():
-        pytest.skip("k8s provision.py.j2 was not found at the relative path; ACL check skipped")
+        pytest.skip("sunmoonun Redis provisioning source is not checked out")
     text = _ACL.read_text()
     for command in ("+incr", "+expire", "+multi", "+exec"):
         assert command in text
