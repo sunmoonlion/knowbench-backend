@@ -343,6 +343,16 @@ class Settings(BaseSettings):
         default="", validation_alias="WORKBENCH_SANDBOX_PROVIDER_BASE_URL"
     )
 
+    # 受管外部 MCP：审核目录与沙箱可达的限定会话网关。
+    workbench_capability_mcp_urls: list[str] = Field(
+        default_factory=list,
+        description="Reviewed HTTPS MCP service URLs; no arbitrary server-side endpoints",
+    )
+    workbench_capability_mcp_url: str = Field(
+        default="",
+        description="Internal URL of /api/mcp/capabilities for sandbox clients; empty disables remote capability execution",
+    )
+
     # 专家读本项目别的对话与底稿的工具服务（PRD/apps/investment.md 7.4）。
     # 沙箱里的 Codex 配好这个服务之后才打开：打开后专家每一步的说明里会提到这组工具
     workbench_records_mcp_enabled: bool = Field(

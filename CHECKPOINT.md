@@ -1,3 +1,37 @@
+# 2026-11-13 统一能力三个入口首期代码（未部署）
+
+分支 qwen；后端基线 3cb341fedf9516ee949a477a555ced22017b448c。
+用户授权三个前端部分及所需后端开发，按默认协作规则提交推送；未授权部署或付费验收。
+当前交付：连接/纯指令 Skill 资产与加密凭据、会话默认快照和版本选择、限定会话 MCP
+网关、精确参数审批与持久回执、runner 空闲边界准备和按轮暴露。提供方响应模型、
+导出 Schema/样例与网页消费者锁配套。迁移 20261113_0040 接 20261106_0039。
+详见 docs/managed-capabilities.md，包含配置、发布顺序与回退；尚未修改生产配置/数据。
+
+边界：审核目录 HTTPS Streamable HTTP MCP（无认证/Bearer）和纯 Markdown 指令。
+专家面板只读投影冻结步骤声明；方法的新连接/Skill 需求字段、绑定及步骤执行未完成，
+不得将聊天选择当专家授权。OAuth、原生 SaaS、stdio、技能脚本包/附件/市场不在此交付。
+冻结财务专家保持原契约；这是首期代码，不是整个接入方案或线上验收完成。
+
+验证（隔离测试均使用合成服务，无付费调用）：
+- 新 DB/实际 HTTP 契约/迁移回归 14 passed：/tmp/capability-db-verified.log。
+- MCP 协议与 runner 忙碌/未知线程保护 21 passed：/tmp/capability-final-unit.log。
+- 原 runner/路由/记账回归 57 passed：/tmp/capability-existing-final.log。
+- 较早的新能力+数据计划+内核/分层组合 46 passed：/tmp/capability-backend-final.log。
+- Ruff、Pyright（/tmp/capability-pyright-verified.log）、diff 检查通过；并非全后端套件。
+- 固定 Codex 0.155.1 真实二进制，无网络512MiB容器，脚本
+  app/scripts/probes/codex_capabilities_probe.py：同线程从明确禁用转为启用；A轮只见A别名、
+  B轮只见B别名，认证头同步轮换；显式指令正文到达模型，未开放本地执行，登记工具可调用。
+- 独立只读复核的阻断项已修复：默认快照、准备竞态、忙碌时换token、外部Schema引用、
+  失联回执、超过100条去重、网关注解、迟到scope/turn通知。复核不替代真实服务业务验收。
+
+发现并适配：新空线程先注入既有模式说明物化历史再重载；metadata idle可用，固定版
+includeTurns=true分页路径不支持；environments=[]原生Skill不加载正文，所以纯指令显式输入。
+已消费批准先提交dispatching再访问外部；进程断连查账转unknown而不重发。只读也逐次批准。
+早期临时PG停止导致旧回归报连接错，重建磁盘数据目录的256MiB隔离库后57项完整重跑通过；
+不把早期失败记成全绿。未操作原有服务。后续需发布审核目录/网关配置、迁移和同批API/
+runner/web镜像，经Jenkins与活动任务检查后另做真实账号及浏览器验收；不自动代批操作。
+没有收到明确 token/费用预算；当前真实供应商调用费用为0。测试临时输出不含真实凭据。
+
 # 2026-11-04 定数据重复调用保护（独立发布候选）
 
 分支 fix/data-planning-progress，基线 25956816edbd639e2e7b226f2776d81d4a753b09（#68）。

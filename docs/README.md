@@ -27,3 +27,5 @@
 
 现在的产品代码是工作台：`app/application/workbench/`、`app/domain/workbench/`、`app/infrastructure/workbench/`。
 
+
+统一连接、纯指令技能与会话能力的当前实现、发布配置和验证边界见[受管能力说明](managed-capabilities.md)。

@@ -128,6 +128,63 @@ class AppServerConnector(Protocol):
 
 
 class WorkbenchStore(Protocol):
+    async def capability_assets(
+        self, owner: str, *, lock: bool = False
+    ) -> list[dict[str, Any]]: ...
+    async def capability_asset(
+        self, owner: str, asset_id: str, *, lock: bool = False
+    ) -> dict[str, Any]: ...
+    async def capability_insert(self, asset: dict[str, Any]) -> dict[str, Any]: ...
+    async def capability_update(
+        self,
+        owner: str,
+        asset_id: str,
+        revision: int,
+        *,
+        status: str,
+        default_selected: bool,
+        detail: dict[str, Any],
+        secret: str | None,
+    ) -> dict[str, Any]: ...
+    async def capability_default(
+        self, owner: str, asset_id: str, revision: int, enabled: bool
+    ) -> dict[str, Any]: ...
+    async def capability_call_by_digest(
+        self, owner: str, session_id: str, digest: str
+    ) -> dict[str, Any] | None: ...
+    async def capability_recover_calls(self, owner: str, session_id: str) -> None: ...
+    async def capability_selection(
+        self, owner: str, session_id: str, *, lock: bool = False
+    ) -> dict[str, Any]: ...
+    async def capability_save_selection(
+        self, owner: str, session_id: str, revision: int, detail: dict[str, Any]
+    ) -> dict[str, Any]: ...
+    async def capability_runtime(
+        self, owner: str, session_id: str, runtime: dict[str, Any]
+    ) -> None: ...
+    async def capability_runtime_by_session(
+        self, session_id: str
+    ) -> dict[str, Any] | None: ...
+    async def capability_runtime_event(
+        self,
+        session_id: str,
+        scope: str,
+        turn_id: str,
+        *,
+        started: bool,
+        aborted: bool = False,
+    ) -> None: ...
+    async def capability_calls(
+        self, owner: str, session_id: str
+    ) -> list[dict[str, Any]]: ...
+    async def capability_call(
+        self, owner: str, call_id: str, *, lock: bool = False
+    ) -> dict[str, Any]: ...
+    async def capability_add_call(self, call: dict[str, Any]) -> dict[str, Any]: ...
+    async def capability_update_call(
+        self, owner: str, call_id: str, status: str, detail: dict[str, Any]
+    ) -> None: ...
+
     """工作台的账：环境、沙箱、会话、事件、命令、委托、待办、交回物、偏好、凭据。
 
     一个实例对应一次工作单元。状态改动是比较并交换；业务上合不合法不在这里判断。
