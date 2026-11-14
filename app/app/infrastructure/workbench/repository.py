@@ -3044,15 +3044,6 @@ class WorkbenchRepository(CapabilityRepositoryMixin):
         row = r.mappings().first()
         return dict(row) if row else None
 
-    async def requires_mcp_provenance(self, owner_actor_id: str) -> bool:
-        result = await self.session.execute(
-            text("""select exists(select 1 from workbench_tasks
-                    where owner_actor_id = :owner
-                      and pack_snapshot ? 'runtime_contract')"""),
-            {"owner": owner_actor_id},
-        )
-        return bool(result.scalar())
-
     async def attempt_for_runtime_turn(
         self, *, session_id: str, turn_id: str
     ) -> dict[str, Any] | None:

@@ -11,6 +11,7 @@ import pytest
 from test_capabilities_db import service
 from test_workbench_ledger_db import OWNER, seed
 from test_workbench_ledger_db import db as db
+from tool_invocation_support import ObservedCapabilityTransport, request_call
 
 from app.domain.workbench.capabilities import (
     ActionDecision,
@@ -122,8 +123,8 @@ async def setup(db, *, method=False):
 
 
 async def approve(svc, sid, key, token):
-    staged = await svc.request_call(
-        sid, token, key, {"path": "scripts/calculate.py", "stdin": "21"}
+    staged = await request_call(
+        svc, sid, token, key, {"path": "scripts/calculate.py", "stdin": "21"}
     )
     call = await svc.repo.capability_call(OWNER, staged["call_id"])
     decision = ActionDecision(
@@ -141,7 +142,7 @@ async def test_script_approval_receipt_and_artifact_redaction(db, method):
         svc = service(WorkbenchRepository(s))
         svc.script_executor = executor
         with pytest.raises(CapabilityError):
-            await svc.request_call(sid, token, key, {"path": "scripts/invented.py"})
+            await request_call(svc, sid, token, key, {"path": "scripts/invented.py"})
         call, decision = await approve(svc, sid, key, token)
         assert call["status"] == "dispatching" and len(executor.started) == 1
         await svc.decide(OWNER, call["id"], decision)
@@ -198,7 +199,7 @@ async def test_disabled_skill_stops_running_script(db, method):
 
 
 async def test_http_script_waits_for_real_result_and_protects_download(db):
-    from httpx import ASGITransport, AsyncClient
+    from httpx import AsyncClient
     from test_capability_routes_db import application
     from test_workbench_ledger_db import OTHER
     from test_workbench_routes import principal
@@ -217,7 +218,7 @@ async def test_http_script_waits_for_real_result_and_protects_download(db):
 
     app.dependency_overrides[routes.service] = configured
     async with AsyncClient(
-        transport=ASGITransport(app), base_url="http://testserver"
+        transport=ObservedCapabilityTransport(app, db), base_url="http://testserver"
     ) as http:
         pending = asyncio.create_task(
             http.post(

@@ -15,6 +15,7 @@ from app.application.workbench.method_capabilities import (
     method_scope,
     selection_issues,
 )
+from app.application.workbench.tool_invocation import verify_tool_invocation
 from app.application.workbench.tool_registry import mcp_catalog, registered_call
 from app.domain.workbench.capabilities import (
     CapabilityError,
@@ -47,7 +48,7 @@ from app.domain.workbench.skill_package import (
     skill_files,
     unpack_skill,
 )
-from app.domain.workbench.states import TaskState, WaitingReason
+from app.domain.workbench.states import TaskState, WaitingReason, Wheel
 
 
 class McpPort(Protocol):
@@ -820,7 +821,62 @@ class Capabilities:
             )
             return result
 
-    async def request_call(self, session_id, token, key, arguments):
+    async def verify_invocation(
+        self, session_id, token, name, arguments, meta, *, observe_seconds=2
+    ):
+        selected = await self.runtime(session_id, token)
+        owner = selected["owner_actor_id"]
+        session = await self.repo.get_session(session_id, owner_actor_id=owner)
+        invocation = await verify_tool_invocation(
+            self.repo,
+            owner=owner,
+            sandbox=str(session["sandbox_id"]),
+            server="sunmoon_capabilities",
+            name=name,
+            arguments=arguments,
+            meta=meta,
+            session_id=session_id,
+            observe_seconds=observe_seconds,
+        )
+        deadline = asyncio.get_running_loop().time() + observe_seconds
+        while True:
+            selected = await self.runtime(session_id, token)
+            runtime = selected["runtime"]
+            ready = runtime.get("status") == "applied"
+            if ready and runtime.get("turn_id") != invocation.turn_id:
+                raise Forbidden("Capability request belongs to another execution turn")
+            binding = runtime.get("method")
+            if ready and binding:
+                attempt = await self.repo.attempt_for_runtime_turn(
+                    session_id=session_id, turn_id=invocation.turn_id
+                )
+                if attempt and str(attempt["id"]) != binding["attempt_id"]:
+                    raise Forbidden(
+                        "Capability request belongs to another method execution"
+                    )
+                ready = attempt is not None
+            elif ready:
+                session = await self.repo.get_session(session_id, owner_actor_id=owner)
+                if session["wheel"] != Wheel.user or session.get("active_task_id"):
+                    raise Forbidden(
+                        "Capability request is not from an accepted user turn"
+                    )
+                ready = await self.repo.is_accepted_user_turn(
+                    session_id=session_id, turn_id=invocation.turn_id
+                )
+            if ready:
+                break
+            # Host turn binding and acceptance are recorded after turn/start returns;
+            # an MCP HTTP request may arrive first. No work or row lock while waiting.
+            if asyncio.get_running_loop().time() >= deadline:
+                raise Forbidden("Capability turn has not been verified by the runner")
+            await asyncio.sleep(0.05)
+        return invocation
+
+    async def request_call(self, session_id, token, key, arguments, *, meta=None):
+        invocation = await self.verify_invocation(
+            session_id, token, key, arguments, meta
+        )
         selected = await self.runtime(session_id, token)
         owner = selected["owner_actor_id"]
         spec = selected["runtime"].get("tools", {}).get(key)
@@ -844,6 +900,7 @@ class Capabilities:
             raise CapabilityError("Arguments exceed the limit")
         registered_call(connection, spec).validate_arguments(arguments)
         intent = {
+            "invocation": invocation.snapshot(),
             "connection_id": connection["id"],
             "revision": connection["revision"],
             "connection_name": connection["name"],
@@ -869,11 +926,17 @@ class Capabilities:
             # Serializes duplicate model requests on this session before opening approval.
             await self.repo.capability_selection(owner, session_id, lock=True)
             # Revalidate the scope after acquiring the serialization lock.
-            await self.runtime(session_id, token)
-            existing = await self.repo.capability_call_by_digest(
-                owner, session_id, identity
+            await self.verify_invocation(
+                session_id, token, key, arguments, meta, observe_seconds=0
+            )
+            existing = await self.repo.capability_call_by_invocation(
+                owner, session_id, invocation.key
             )
             if existing:
+                if existing["digest"] != identity:
+                    raise Forbidden(
+                        "Invocation identity was reused for a different operation"
+                    )
                 return {
                     "call_id": existing["id"],
                     "status": existing["status"],
@@ -1039,7 +1102,12 @@ class Capabilities:
                     call["session_id"], owner_actor_id=owner
                 )
                 if (
-                    connection["status"] != "active"
+                    not intent.get("invocation")
+                    or intent["invocation"]["session_id"] != call["session_id"]
+                    or intent["invocation"]["thread_id"] != session.get("thread_id")
+                    or intent["invocation"]["turn_id"]
+                    != selected["runtime"].get("turn_id")
+                    or connection["status"] != "active"
                     or connection["revision"] != intent["revision"]
                     or key not in selected["runtime"].get("tools", {})
                     or selected["revision"] != intent["selection_revision"]

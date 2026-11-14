@@ -3,10 +3,11 @@
 import json
 from pathlib import Path
 
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from test_capabilities_db import OTHER, OWNER, approval, prepared, service
 from test_workbench_ledger_db import db as db
 from test_workbench_routes import principal
+from tool_invocation_support import ObservedCapabilityTransport
 
 from app.bootstrap.api import create_app
 from app.domain.workbench.capabilities import (
@@ -53,7 +54,7 @@ async def test_http_contract_authentication_approval_and_mcp_scope(db):
     sid, asset, key, token, remote = await prepared(db)
     app = application(db, remote)
     async with AsyncClient(
-        transport=ASGITransport(app), base_url="http://testserver"
+        transport=ObservedCapabilityTransport(app, db), base_url="http://testserver"
     ) as http:
         assert (await http.get("/api/workbench/capabilities")).status_code == 200
         catalog = (await http.get("/api/workbench/capabilities")).json()

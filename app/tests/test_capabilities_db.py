@@ -10,6 +10,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import text
 from test_workbench_ledger_db import OTHER, OWNER, seed
 from test_workbench_ledger_db import db as db
+from tool_invocation_support import request_call
 
 from app.application.workbench.capabilities import Capabilities
 from app.domain.workbench.capabilities import (
@@ -206,11 +207,11 @@ async def test_approval_exact_once_replay_and_owner(db):
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        requested = await svc.request_call(
-            sid, token, key, {"to": "reader@example.test"}
+        requested = await request_call(
+            svc, sid, token, key, {"to": "reader@example.test"}
         )
         assert not remote.calls
-        same = await svc.request_call(sid, token, key, {"to": "reader@example.test"})
+        same = await request_call(svc, sid, token, key, {"to": "reader@example.test"})
         assert same["call_id"] == requested["call_id"]
         call = await repo.capability_call(OWNER, requested["call_id"])
         assert call["detail"]["account_label"] == "office@example.test"
@@ -234,13 +235,13 @@ async def test_revocation_after_prompt_rejects_call_and_does_not_resend(db):
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        request = await svc.request_call(sid, token, key, {"to": "r@example.test"})
+        request = await request_call(svc, sid, token, key, {"to": "r@example.test"})
         call = await repo.capability_call(OWNER, request["call_id"])
         await svc.action(OWNER, a["id"], AssetAction(revision=1, action="disconnect"))
         with pytest.raises(CapabilityError):
             await svc.decide(OWNER, call["id"], approval(call))
         with pytest.raises(CapabilityError):
-            await svc.request_call(sid, token, key, {"to": "other@example.test"})
+            await request_call(svc, sid, token, key, {"to": "other@example.test"})
         assert (
             not remote.calls
             and (await repo.capability_asset(OWNER, a["id"]))["secret"] is None
@@ -256,7 +257,7 @@ async def test_timeout_and_crash_are_unknown_never_retried(db):
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        req = await svc.request_call(sid, token, key, {"to": "r@example.test"})
+        req = await request_call(svc, sid, token, key, {"to": "r@example.test"})
         call = await repo.capability_call(OWNER, req["call_id"])
         assert (await svc.decide(OWNER, call["id"], approval(call)))[
             "status"
@@ -301,8 +302,8 @@ async def test_real_mcp_adapter_outcomes_are_recorded_without_retry(
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        requested = await svc.request_call(
-            sid, token, key, {"to": "reader@example.test"}
+        requested = await request_call(
+            svc, sid, token, key, {"to": "reader@example.test"}
         )
         call = await repo.capability_call(OWNER, requested["call_id"])
         result = await svc.decide(OWNER, call["id"], approval(call))
@@ -320,8 +321,8 @@ async def test_changed_connection_does_not_block_chat_or_reuse_old_approval(db, 
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        requested = await svc.request_call(
-            sid, token, key, {"to": "reader@example.test"}
+        requested = await request_call(
+            svc, sid, token, key, {"to": "reader@example.test"}
         )
         call = await repo.capability_call(OWNER, requested["call_id"])
         if change == "renew":
@@ -355,10 +356,10 @@ async def test_dedupe_is_not_limited_to_latest_100_and_expiry(db):
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        first = await svc.request_call(sid, token, key, {"to": "first@example.test"})
+        first = await request_call(svc, sid, token, key, {"to": "first@example.test"})
         for i in range(101):
-            await svc.request_call(sid, token, key, {"to": f"{i}@example.test"})
-        assert (await svc.request_call(sid, token, key, {"to": "first@example.test"}))[
+            await request_call(svc, sid, token, key, {"to": f"{i}@example.test"})
+        assert (await request_call(svc, sid, token, key, {"to": "first@example.test"}))[
             "call_id"
         ] == first["call_id"]
         assert (
@@ -382,7 +383,7 @@ async def test_parallel_approval_dispatches_only_once_and_session_cleanup(db):
     sid, a, key, token, remote = await prepared(db)
     async with db() as s:
         svc = service(WorkbenchRepository(s), remote)
-        req = await svc.request_call(sid, token, key, {"to": "r@example.test"})
+        req = await request_call(svc, sid, token, key, {"to": "r@example.test"})
         call = await svc.repo.capability_call(OWNER, req["call_id"])
 
     async def decide():
@@ -420,7 +421,7 @@ async def test_prepare_rechecks_asset_after_preflight_and_blocks_schema_refresh(
         ] == "prepared"
         # The old token still cannot stage a call to a now-disabled connection.
         with pytest.raises(Forbidden):
-            await svc.request_call(sid, token, key, {"to": "reader@example.test"})
+            await request_call(svc, sid, token, key, {"to": "reader@example.test"})
 
 
 async def test_renew_requires_reconfirmation_and_completed_scope_cannot_stage_calls(db):
@@ -440,7 +441,7 @@ async def test_renew_requires_reconfirmation_and_completed_scope_cannot_stage_ca
             "code"
         ] == "revision_changed"
         with pytest.raises(CapabilityError):
-            await svc.request_call(sid, token, key, {"to": "reader@example.test"})
+            await request_call(svc, sid, token, key, {"to": "reader@example.test"})
         async with repo.transaction():
             selected = await repo.capability_runtime_by_session(sid)
             selected["runtime"]["status"] = "completed"
@@ -514,14 +515,16 @@ async def test_new_runner_closes_persisted_scope_without_in_memory_scope(
         token = prepared_scope["config"]["mcp_servers.sunmoon_capabilities"][
             "http_headers"
         ]["Authorization"].split()[1]
-        request = await svc.request_call(sid, token, key, {"to": "reader@example.test"})
-        call = await repo.capability_call(OWNER, request["call_id"])
-        sandbox_id = str((await repo.get_session(sid))["sandbox_id"])
         async with repo.transaction():
             await repo.set_session_thread(sid, "restart-thread")
             await repo.capability_runtime_event(
                 sid, prepared_scope["scope_id"], "old-turn", started=True
             )
+        request = await request_call(
+            svc, sid, token, key, {"to": "reader@example.test"}
+        )
+        call = await repo.capability_call(OWNER, request["call_id"])
+        sandbox_id = str((await repo.get_session(sid))["sandbox_id"])
         assert await svc.skill_resource(
             sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
         )
@@ -560,7 +563,7 @@ async def test_new_runner_closes_persisted_scope_without_in_memory_scope(
                 sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
             )
         with pytest.raises(Forbidden):
-            await svc.request_call(sid, token, key, {"to": "another@example.test"})
+            await request_call(svc, sid, token, key, {"to": "another@example.test"})
         if event != "completed":
             with pytest.raises(CapabilityError):
                 await svc.decide(OWNER, call["id"], approval(call))

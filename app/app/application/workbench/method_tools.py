@@ -8,7 +8,6 @@ global sandbox configuration, additional model client or parallel task ledger.
 from __future__ import annotations
 
 import asyncio
-import json
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
@@ -19,6 +18,7 @@ from app.application.workbench.execution_plan import (
 )
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.records import as_id
+from app.application.workbench.tool_invocation import verify_tool_invocation
 from app.domain.workbench.errors import RecordsRefused
 from app.domain.workbench.states import AttemptState, TaskState, Wheel
 
@@ -90,73 +90,21 @@ class MethodToolGuard:
         self.observe_seconds = observe_seconds
 
     async def check(self, name: str, args: dict[str, Any], meta: Any) -> None:
-        # Legacy fixed-only accounts retain their current route. Once dynamic
-        # execution exists, even no-task/market/chat calls need provenance;
-        # finishing/cancelling a task must not re-enable an unverified fallback.
-        guarded = await self.repo.requires_mcp_provenance(self.owner)
-        if not guarded and args.get("task"):
-            task = await self.repo.get_task(
-                as_id(args["task"], "task"), owner_actor_id=self.owner
-            )
-            guarded = is_dynamic(task)
-        if not guarded:
-            return
-        if not isinstance(meta, dict):
-            raise RecordsRefused("this call requires verified execution metadata")
-        turn = meta.get("x-codex-turn-metadata")
-        if not isinstance(turn, dict):
-            raise RecordsRefused("this call requires verified execution metadata")
-        thread_id, turn_id, call_id = (
-            turn.get("thread_id"),
-            turn.get("turn_id"),
-            meta.get("callId"),
+        invocation = await verify_tool_invocation(
+            self.repo,
+            owner=self.owner,
+            sandbox=self.sandbox,
+            server=SERVER,
+            name=name,
+            arguments=args,
+            meta=meta,
+            observe_seconds=self.observe_seconds,
         )
-        if (
-            not all(
-                isinstance(v, str) and 0 < len(v) <= 200
-                for v in (thread_id, turn_id, call_id)
-            )
-            or meta.get("threadId") != thread_id
-        ):
-            raise RecordsRefused("invalid execution metadata")
-        assert (
-            isinstance(thread_id, str)
-            and isinstance(turn_id, str)
-            and isinstance(call_id, str)
-        )
-        session = await self.repo.get_session_by_thread(thread_id)
-        if not session or str(session["owner_actor_id"]) != self.owner:
-            raise RecordsRefused("execution context not found")
-        sandbox = await self.repo.get_sandbox(str(session["sandbox_id"]))
-        if str(sandbox["owner_actor_id"]) != self.owner or self.sandbox not in {
-            str(sandbox["id"]),
-            sandbox.get("relay_user"),
-        }:
-            raise RecordsRefused("execution context not found")
-        # HTTP and the websocket reader race. Wait briefly without locking Task
-        # or performing tool work; a timeout is a refusal, never an allow.
+        turn_id = invocation.turn_id
         deadline = asyncio.get_running_loop().time() + self.observe_seconds
-        while True:
-            observed = await self.repo.observed_mcp_call(
-                session_id=str(session["id"]), turn_id=turn_id, call_id=call_id
-            )
-            if observed:
-                break
-            if asyncio.get_running_loop().time() >= deadline:
-                raise RecordsRefused("tool call has not been verified by the runner")
-            await asyncio.sleep(0.05)
-        item = observed.get("item") or {}
-        if (
-            observed.get("threadId") != thread_id
-            or item.get("server") != SERVER
-            or item.get("tool") != name
-            or json.dumps(item.get("arguments"), sort_keys=True, ensure_ascii=False)
-            != json.dumps(args, sort_keys=True, ensure_ascii=False)
-        ):
-            raise RecordsRefused("tool call differs from the runner's observed call")
         # Re-read mutable identity after waiting. Other chats may still operate,
         # but cannot name this or any other thread's active task/data session.
-        session = await self.repo.get_session(str(session["id"]))
+        session = await self.repo.get_session(invocation.session_id)
         active = session.get("active_task_id")
         source_attempt = await self.repo.attempt_for_runtime_turn(
             session_id=str(session["id"]), turn_id=turn_id

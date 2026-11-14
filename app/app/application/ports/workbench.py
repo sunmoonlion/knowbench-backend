@@ -150,8 +150,8 @@ class WorkbenchStore(Protocol):
     async def capability_default(
         self, owner: str, asset_id: str, revision: int, enabled: bool
     ) -> dict[str, Any]: ...
-    async def capability_call_by_digest(
-        self, owner: str, session_id: str, digest: str
+    async def capability_call_by_invocation(
+        self, owner: str, session_id: str, invocation_key: str
     ) -> dict[str, Any] | None: ...
     async def capability_recover_calls(self, owner: str, session_id: str) -> None: ...
     async def capability_selection(
@@ -783,8 +783,6 @@ class WorkbenchStore(Protocol):
     async def requeue_stale_commands(self, *, older_than_seconds: int = 300) -> int: ...
 
     async def get_session_by_thread(self, thread_id: str) -> dict[str, Any] | None: ...
-
-    async def requires_mcp_provenance(self, owner_actor_id: str) -> bool: ...
 
     async def attempt_for_runtime_turn(
         self, *, session_id: str, turn_id: str

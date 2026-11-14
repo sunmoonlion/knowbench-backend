@@ -13,6 +13,7 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_records_db import world
 from test_workbench_review_db import unbalanced
+from tool_invocation_support import ObservedPlatformTransport
 
 from app.application.workbench.data_relay import RELAYED
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
@@ -159,7 +160,10 @@ async def test_empty_compute_args_explain_missing_parameters_not_missing_task(se
 async def test_calling_the_tools(served, db):  # noqa: F811
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
-        async with client(served) as http:
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
             got = await http.post(
                 URL,
                 json=tool("list_project_conversations", task=ids["task"]),
@@ -199,7 +203,10 @@ async def test_calling_the_tools(served, db):  # noqa: F811
             ):
                 refused = (await http.post(URL, json=call, headers=bearer())).json()
                 assert refused["result"]["isError"] is True, call
-                assert "not found" in refused["result"]["content"][0]["text"]
+                assert any(
+                    message in refused["result"]["content"][0]["text"]
+                    for message in ("not found", "does not belong")
+                )
 
             # 别的用户的令牌：这个委托对他不存在
             other = await http.post(
@@ -229,7 +236,10 @@ async def test_too_many_calls_are_slowed_down(served, db):  # noqa: F811
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     served.dependency_overrides[records_rate] = lambda: 3
     try:
-        async with client(served) as http:
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
             answers = []
             for _ in range(5):
                 got = await http.post(
@@ -259,7 +269,10 @@ async def test_a_result_too_large_for_the_model_is_refused_in_words(
             return {"text": "年" * (TOOL_RESULT_MAX_BYTES // 3 + 1)}
 
         monkeypatch.setattr(workbench_mcp, "call", huge)
-        async with client(served) as http:
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
             got = await http.post(
                 URL,
                 json=tool("list_project_conversations", task=ids["task"]),
@@ -351,7 +364,10 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
                 {"i": OWNER},
             )
             await s.commit()
-        async with client(served) as http:
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
             # 没有清单的委托没有运行授权：读不了用户的数据
             bare = await http.post(
                 URL, json=tool("list_inputs", task=ids["task"]), headers=bearer()
@@ -371,7 +387,10 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
                         "status": "ready",
                     }
                 )
-        async with client(served) as http:
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
             listed = (
                 await http.post(URL, json=rpc("tools/list"), headers=bearer())
             ).json()
@@ -424,7 +443,10 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
                 json=tool("read_input", conversation=ids["chat"], material_id="m"),
                 headers=bearer(),
             )
-            assert "give the task id" in held.json()["result"]["content"][0]["text"]
+            assert (
+                "does not belong to this execution"
+                in held.json()["result"]["content"][0]["text"]
+            )
             assert fake_kb.seen[-1][1]["params"]["arguments"].get("session") is None
             stranger = await http.post(
                 URL,

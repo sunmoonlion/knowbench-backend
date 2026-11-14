@@ -4,12 +4,13 @@ import asyncio
 import json
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from sqlalchemy import text
 from test_capabilities_db import OWNER, URL, Remote, approval, body, service
 from test_capability_routes_db import application
 from test_workbench_ledger_db import db as db
 from test_workbench_ledger_db import handover, seed
+from tool_invocation_support import ObservedCapabilityTransport, request_call
 
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.capabilities import (
@@ -182,7 +183,7 @@ async def test_step_scope_lazy_read_and_cancellation(db):
                 sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
             )
         with pytest.raises(Forbidden):
-            await svc.request_call(sid, token, key, {"to": "test@example.test"})
+            await request_call(svc, sid, token, key, {"to": "test@example.test"})
         assert remote.calls == []
 
 
@@ -193,7 +194,7 @@ async def test_http_method_tool_waits_for_decision_and_returns_real_result(
     sid, tid, aid, conn, skill, other, key, token, remote = await setup_method(db)
     app = application(db, remote)
     async with AsyncClient(
-        transport=ASGITransport(app), base_url="http://testserver"
+        transport=ObservedCapabilityTransport(app, db), base_url="http://testserver"
     ) as http:
         pending = asyncio.create_task(
             http.post(
@@ -260,7 +261,9 @@ async def test_step_approval_expiry_and_revoke_before_dispatch(db):
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        requested = await svc.request_call(sid, token, key, {"to": "test@example.test"})
+        requested = await request_call(
+            svc, sid, token, key, {"to": "test@example.test"}
+        )
         call = await repo.capability_call(OWNER, requested["call_id"])
         await svc.action(OWNER, conn["id"], AssetAction(revision=1, action="disable"))
         with pytest.raises(CapabilityError):

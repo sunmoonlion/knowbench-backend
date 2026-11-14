@@ -54,6 +54,7 @@ def public_result(result, call_id: str):
 
 def public_call(call: dict) -> dict:
     copy = deepcopy(call)
+    copy["detail"].pop("invocation", None)  # Host identity is internal evidence.
     # The 0040 storage column is an asset FK despite its legacy name. Keep its
     # interpretation private; a Skill package must never appear as an account.
     source = copy.get("source_asset_id") or copy["connection_id"]

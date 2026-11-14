@@ -423,6 +423,10 @@ async def capability_rpc(
             args = params.get("arguments") or {}
             if not isinstance(args, dict):
                 raise Forbidden("Invalid tool arguments")
+            if params.get("name") in ("skill_files", "skill_read", "action_result"):
+                await svc.verify_invocation(
+                    str(session_id), token, params["name"], args, params.get("_meta")
+                )
             if params.get("name") in ("skill_files", "skill_read"):
                 listing = params["name"] == "skill_files"
                 if listing:
@@ -453,7 +457,11 @@ async def capability_rpc(
                 }
             else:
                 value = await svc.request_call(
-                    str(session_id), token, params.get("name"), args
+                    str(session_id),
+                    token,
+                    params.get("name"),
+                    args,
+                    meta=params.get("_meta"),
                 )
                 spec = selected["runtime"].get("tools", {}).get(params.get("name"), {})
                 if (

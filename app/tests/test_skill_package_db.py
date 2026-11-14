@@ -4,12 +4,13 @@ import json
 from datetime import UTC, datetime, timedelta
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import AsyncClient
 from test_capabilities_db import OTHER, OWNER, service
 from test_capability_routes_db import application
 from test_skill_package import archive
 from test_workbench_ledger_db import db as db
 from test_workbench_ledger_db import seed
+from tool_invocation_support import ObservedCapabilityTransport, request_call
 
 from app.domain.workbench.capabilities import (
     AssetAction,
@@ -151,7 +152,7 @@ async def test_http_package_import_and_lazy_mcp_read(db):
     _, _, sid = await seed(db)
     app = application(db, None)
     async with AsyncClient(
-        transport=ASGITransport(app), base_url="http://testserver"
+        transport=ObservedCapabilityTransport(app, db), base_url="http://testserver"
     ) as http:
         response = await http.post(
             "/api/workbench/capabilities/skill-packages", json=package().model_dump()
@@ -212,7 +213,7 @@ async def test_skill_discovery_never_grants_tool_dependencies(db):
         a = await svc.create_skill(OWNER, package(), package=True)
         p = await svc.prepare(OWNER, sid)
         with pytest.raises(Forbidden):
-            await svc.request_call(sid, token(p), "shell", {"command": "echo unsafe"})
+            await request_call(svc, sid, token(p), "shell", {"command": "echo unsafe"})
         frozen = await svc.prepare(OWNER, sid, scene="method")
         assert (
             frozen["inputs"] == []

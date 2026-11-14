@@ -280,13 +280,13 @@ class CapabilityRepositoryMixin:
             ).mappings()
         ]
 
-    async def capability_call_by_digest(self, owner, session_id, digest):
+    async def capability_call_by_invocation(self, owner, session_id, invocation_key):
         result = (
             (
                 await self.session.execute(
                     text("""SELECT * FROM workbench_capability_calls
-            WHERE owner_actor_id=:o AND session_id=:s AND digest=:d"""),
-                    {"o": owner, "s": session_id, "d": digest},
+            WHERE owner_actor_id=:o AND session_id=:s AND detail->'invocation'->>'key'=:k"""),
+                    {"o": owner, "s": session_id, "k": invocation_key},
                 )
             )
             .mappings()
