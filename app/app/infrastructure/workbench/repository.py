@@ -2122,6 +2122,11 @@ class WorkbenchRepository(
             params,
         )
         for table in (
+            # Authority references calls; calls reference Tasks and Attempts.
+            # Delete the whole session call tree in one statement so its parent
+            # links remain valid until PostgreSQL checks the statement boundary.
+            "workbench_method_authorizations",
+            "workbench_calls",
             "workbench_approval_log",
             "workbench_tool_grants",
             "workbench_commands",

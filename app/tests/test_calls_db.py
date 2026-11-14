@@ -7,7 +7,9 @@ import pytest
 from alembic.operations import Operations
 from alembic.runtime.migration import MigrationContext
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from test_capabilities_db import approval, prepared, service
+from test_method_authorization_db import setup as setup_authorized_method
 from test_method_capabilities_db import setup_method
 from test_skill_execution_db import setup as setup_script
 from test_workbench_ledger_db import OTHER, OWNER, seed
@@ -105,9 +107,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
 
 
 def migration(filename="20261114_0041_calls.py"):
-    path = (
-        Path(__file__).resolve().parents[1] / "alembic/versions" / filename
-    )
+    path = Path(__file__).resolve().parents[1] / "alembic/versions" / filename
     spec = importlib.util.spec_from_file_location("call_migration", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -277,3 +277,110 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
         )
         assert not fresh and same["id"] == call["id"] and same["status"] == "unknown"
         assert "response" not in same["detail"]
+
+
+@pytest.mark.parametrize("origin", ["platform", "managed_step"])
+async def test_session_cleanup_removes_call_tree_and_authority_only_for_that_session(
+    db, origin
+):
+    # A separate session with live authority must survive the expiration cleanup.
+    _, other_sid, _, _, _, _ = await setup_authorized_method(db)
+    if origin == "managed_step":
+        tid, sid, key, token, remote, _ = await setup_authorized_method(db)
+    else:
+        sid, tid, _, _, _, _, key, token, remote = await setup_method(db)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        if origin == "managed_step":
+            await request_call(
+                service(repo, remote), sid, token, key, {"to": "test@example.test"}
+            )
+        else:
+            await CallLedger(repo, OWNER).begin(
+                ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
+                PLATFORM_TOOLS["list_project_conversations"],
+                {"task": tid},
+                task_id=tid,
+            )
+        for table in ("workbench_calls", "workbench_method_authorizations"):
+            assert await s.scalar(
+                text(f"SELECT count(*) FROM {table} WHERE session_id=:s"), {"s": sid}
+            )
+        other_calls = (
+            await s.execute(
+                text("SELECT * FROM workbench_calls WHERE session_id=:s ORDER BY id"),
+                {"s": other_sid},
+            )
+        ).all()
+        other_authority = (
+            await s.execute(
+                text(
+                    "SELECT * FROM workbench_method_authorizations WHERE session_id=:s ORDER BY call_id"
+                ),
+                {"s": other_sid},
+            )
+        ).all()
+        async with repo.transaction():
+            await repo.delete_session_tree(sid)
+        for table in (
+            "workbench_method_authorizations",
+            "workbench_calls",
+            "workbench_tasks",
+        ):
+            assert not await s.scalar(
+                text(f"SELECT count(*) FROM {table} WHERE session_id=:s"), {"s": sid}
+            )
+        assert not await s.scalar(
+            text("SELECT count(*) FROM workbench_attempts WHERE task_id=:t"), {"t": tid}
+        )
+        assert not await s.scalar(
+            text("SELECT count(*) FROM workbench_sessions WHERE id=:s"), {"s": sid}
+        )
+        assert (
+            await s.execute(
+                text("SELECT * FROM workbench_calls WHERE session_id=:s ORDER BY id"),
+                {"s": other_sid},
+            )
+        ).all() == other_calls
+        assert (
+            await s.execute(
+                text(
+                    "SELECT * FROM workbench_method_authorizations WHERE session_id=:s ORDER BY call_id"
+                ),
+                {"s": other_sid},
+            )
+        ).all() == other_authority
+        assert await repo.get_session(other_sid)
+
+
+async def test_call_migration_refuses_lossy_downgrade_and_preserves_history(db):
+    sid, tid, _, _, _, _, _, _, _ = await setup_method(db)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        await CallLedger(repo, OWNER).begin(
+            ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
+            PLATFORM_TOOLS["list_project_conversations"],
+            {"task": tid},
+            task_id=tid,
+        )
+        before = (
+            await s.execute(text("SELECT * FROM workbench_calls ORDER BY id"))
+        ).all()
+        assert {row.origin for row in before} >= {"platform", "method"}
+
+        def downgrade(sync):
+            with Operations.context(MigrationContext.configure(sync)):
+                migration().downgrade()
+
+        with pytest.raises(
+            DBAPIError, match="shared call history requires forward repair"
+        ):
+            async with s.begin_nested():
+                await (await s.connection()).run_sync(downgrade)
+        assert (
+            await s.execute(text("SELECT * FROM workbench_calls ORDER BY id"))
+        ).all() == before
+        assert (
+            await s.scalar(text("SELECT to_regclass('workbench_capability_calls')"))
+            is None
+        )
