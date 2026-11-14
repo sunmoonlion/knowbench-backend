@@ -350,7 +350,7 @@ async def test_selected_http_call_still_uses_the_existing_data_grant(
             "assigned by the workbench"
             in refused.json()["result"]["content"][0]["text"]
         )
-    assert len(kb.seen) == 1
+    assert [m["method"] for _, m in kb.seen] == ["tools/list", "tools/call"]
 
 
 @pytest.mark.parametrize(

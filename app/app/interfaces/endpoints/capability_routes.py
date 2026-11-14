@@ -438,7 +438,7 @@ async def capability_rpc(
                     str(session_id), token, args, listing=listing
                 )
             elif params.get("name") == "action_result":
-                await svc.repo.capability_recover_calls(
+                await svc.repo.recover_calls(
                     selected["owner_actor_id"], str(session_id)
                 )
                 call = await svc.repo.capability_call(

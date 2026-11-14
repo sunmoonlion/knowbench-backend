@@ -9,6 +9,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from app.application.workbench.calls import call_context
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_access import check_access, declared_access
 from app.application.workbench.method_capabilities import (
@@ -677,7 +678,10 @@ class Capabilities:
                         key = tool_key(asset["id"], tool["name"])
                         if key in fresh["tools"]:
                             tools[key] = {
-                                "connection_id": asset["id"],
+                                "source_asset_id": asset["id"],
+                                "connection_id": asset["id"]
+                                if asset["kind"] == "connection"
+                                else None,
                                 "revision": asset["revision"],
                                 "tool": tool,
                                 "service_url": asset["detail"]["url"],
@@ -704,7 +708,10 @@ class Capabilities:
                     tool = script_tool(asset) if self.script_executor else None
                     if tool:
                         tools[tool_key(asset["id"], "skill_run")] = {
-                            "connection_id": asset["id"],
+                            "source_asset_id": asset["id"],
+                            "connection_id": asset["id"]
+                            if asset["kind"] == "connection"
+                            else None,
                             "revision": asset["revision"],
                             "tool": tool,
                             "execution_kind": "skill_script",
@@ -979,7 +986,7 @@ class Capabilities:
             or selected["runtime"].get("selection_revision") != selected["revision"]
         ):
             raise Forbidden("Tool is outside the selected scope")
-        connection = await self.repo.capability_asset(owner, spec["connection_id"])
+        connection = await self.repo.capability_asset(owner, spec["source_asset_id"])
         if (
             connection["status"] != "active"
             or connection["revision"] != spec["revision"]
@@ -999,7 +1006,10 @@ class Capabilities:
                 check_access(spec.get("access"), policy, arguments)
         intent = {
             "invocation": invocation.snapshot(),
-            "connection_id": connection["id"],
+            "source_asset_id": connection["id"],
+            "connection_id": connection["id"]
+            if connection["kind"] == "connection"
+            else None,
             "revision": connection["revision"],
             "connection_name": connection["name"],
             "account_label": connection["detail"].get(
@@ -1122,12 +1132,24 @@ class Capabilities:
                     expires_at=datetime.now(UTC) + timedelta(minutes=15),
                 )
             detail = {**intent, "approval_token": approval_token}
-            await self.repo.capability_add_call(
+            context = await call_context(
+                self.repo, owner, invocation, task_id=(binding or {}).get("task_id")
+            )
+            await self.repo.add_call(
                 {
+                    **context,
+                    "kind": "tool",
+                    "origin": "managed",
+                    "call_key": invocation.key,
+                    "registration_id": registered.tool_id,
+                    "registration_digest": registered.descriptor_digest,
                     "id": call_id,
                     "owner_actor_id": owner,
                     "session_id": session_id,
-                    "connection_id": connection["id"],
+                    "source_asset_id": connection["id"],
+                    "connection_id": connection["id"]
+                    if connection["kind"] == "connection"
+                    else None,
                     "interaction_id": iid,
                     "digest": identity,
                     "status": "awaiting_approval",
@@ -1156,7 +1178,7 @@ class Capabilities:
 
     async def calls(self, owner, session_id):
         await self.repo.get_session(session_id, owner_actor_id=owner)
-        await self.repo.capability_recover_calls(owner, session_id)
+        await self.repo.recover_calls(owner, session_id)
         return [
             public_call(c) for c in await self.repo.capability_calls(owner, session_id)
         ]
@@ -1166,7 +1188,7 @@ class Capabilities:
         async with self.repo.transaction():
             selected = await self.runtime(session_id, token)
             owner = selected["owner_actor_id"]
-            await self.repo.capability_recover_calls(owner, session_id)
+            await self.repo.recover_calls(owner, session_id)
             call = await self.repo.capability_call(owner, call_id)
             if (
                 call["session_id"] != session_id
@@ -1213,7 +1235,7 @@ class Capabilities:
                 owner, call["session_id"], lock=True
             )
             connection = await self.repo.capability_asset(
-                owner, call["connection_id"], lock=True
+                owner, call["source_asset_id"], lock=True
             )
             intent = call["detail"]
             if body.decision == "accept":
@@ -1289,7 +1311,7 @@ class Capabilities:
                     reason={"resume_active_attempt": intent["method"]["attempt_id"]},
                 )
             status = "dispatching" if body.decision == "accept" else "declined"
-            await self.repo.capability_update_call(owner, call_id, status, intent)
+            await self.repo.update_call(owner, call_id, status, intent)
         if status == "dispatching":
             # Receipt is committed before outbound I/O. No automatic retry after a crash.
             try:
@@ -1324,7 +1346,7 @@ class Capabilities:
                     else "External outcome is unknown. Check the provider before retrying."
                 }
             async with self.repo.transaction():
-                await self.repo.capability_update_call(owner, call_id, status, intent)
+                await self.repo.update_call(owner, call_id, status, intent)
                 await self.repo.append_event(
                     session_id=call["session_id"],
                     kind="tool",
@@ -1347,7 +1369,7 @@ class Capabilities:
         async with self.repo.transaction():
             current = await self.repo.capability_call(owner, call_id, lock=True)
             if current["status"] == "dispatching":
-                await self.repo.capability_update_call(
+                await self.repo.update_call(
                     owner,
                     call_id,
                     "failed",
@@ -1378,7 +1400,7 @@ class Capabilities:
                 selected = await self.repo.capability_selection(
                     owner, call["session_id"]
                 )
-                asset = await self.repo.capability_asset(owner, call["connection_id"])
+                asset = await self.repo.capability_asset(owner, call["source_asset_id"])
                 runtime = selected["runtime"]
                 valid = (
                     asset["status"] == "active"
@@ -1452,7 +1474,7 @@ class Capabilities:
                 current = await self.repo.capability_call(owner, call_id, lock=True)
                 if current["status"] != "dispatching":
                     continue
-                await self.repo.capability_update_call(
+                await self.repo.update_call(
                     owner, call_id, status, {**intent, "result": result}
                 )
                 await self.repo.append_event(

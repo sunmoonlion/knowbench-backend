@@ -39,6 +39,7 @@ from app.domain.workbench.scheduling import LOOKUP_PROFILE, ProjectLane
 from app.domain.workbench.states import TURN_HOLD_SECONDS
 from app.domain.workbench.tokens import token_hash
 from app.infrastructure.repositories.outbox import SqlOutboxRepository
+from app.infrastructure.workbench.call_repository import CallRepositoryMixin
 from app.infrastructure.workbench.capability_repository import CapabilityRepositoryMixin
 
 # Recover only the historical planner/confirmation race: a confirmed supply
@@ -106,7 +107,7 @@ def _test_session(alias: str) -> str:
     return f"(coalesce({alias}.origin, '') = 'knowlab-test')"
 
 
-class WorkbenchRepository(CapabilityRepositoryMixin):
+class WorkbenchRepository(CapabilityRepositoryMixin, CallRepositoryMixin):
     def __init__(self, session: AsyncSession, *, browser_view: bool = False):
         self.session = session
         self.browser_view = browser_view
@@ -1062,6 +1063,8 @@ class WorkbenchRepository(CapabilityRepositoryMixin):
         v = r.scalar_one_or_none()
         if v is None:
             raise StaleStateVersion("task changed concurrently", task_id=task_id)
+        if "state" in fields:
+            await self.update_method_call_state(task_id, fields["state"])
         return int(v)
 
     # ---------- attempts ----------

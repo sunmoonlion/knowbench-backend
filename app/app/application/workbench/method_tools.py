@@ -18,7 +18,10 @@ from app.application.workbench.execution_plan import (
 )
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.records import as_id
-from app.application.workbench.tool_invocation import verify_tool_invocation
+from app.application.workbench.tool_invocation import (
+    ToolInvocation,
+    verify_tool_invocation,
+)
 from app.domain.workbench.errors import RecordsRefused
 from app.domain.workbench.states import AttemptState, TaskState, Wheel
 
@@ -89,7 +92,9 @@ class MethodToolGuard:
         self.repo, self.owner, self.sandbox = repo, owner, sandbox
         self.observe_seconds = observe_seconds
 
-    async def check(self, name: str, args: dict[str, Any], meta: Any) -> None:
+    async def check(
+        self, name: str, args: dict[str, Any], meta: Any
+    ) -> tuple[ToolInvocation, str | None]:
         invocation = await verify_tool_invocation(
             self.repo,
             owner=self.owner,
@@ -136,10 +141,10 @@ class MethodToolGuard:
             session = await self.repo.get_session(str(session["id"]))
             if session["wheel"] != Wheel.user or session.get("active_task_id"):
                 raise RecordsRefused("the conversation is no longer user-driven")
-            return
+            return invocation, None
         task = await self.repo.get_task(str(active), owner_actor_id=self.owner)
         if not is_dynamic(task):
-            return
+            return invocation, str(active)
         if (
             session["wheel"] != Wheel.advisor
             or task["state"] != TaskState.RUNNING
@@ -189,3 +194,4 @@ class MethodToolGuard:
             task["id"]
         ):
             raise RecordsRefused("give the active task id")
+        return invocation, str(active)

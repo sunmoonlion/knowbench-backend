@@ -57,14 +57,19 @@ def public_call(call: dict) -> dict:
     copy["detail"].pop("invocation", None)  # Host identity is internal evidence.
     copy["detail"].pop("operation", None)  # Reviewed policy snapshot is internal.
     copy["detail"].pop("access", None)  # Frozen method permission is internal evidence.
-    # The 0040 storage column is an asset FK despite its legacy name. Keep its
-    # interpretation private; a Skill package must never appear as an account.
-    source = copy.get("source_asset_id") or copy["connection_id"]
-    copy["source_asset_id"] = source
-    copy["detail"]["source_asset_id"] = source
-    if copy["detail"].get("execution_kind") == "skill_script":
-        copy["connection_id"] = None
-        copy["detail"]["connection_id"] = None
+    for field in (
+        "kind",
+        "origin",
+        "call_key",
+        "parent_call_id",
+        "task_id",
+        "attempt_id",
+        "registration_id",
+        "registration_digest",
+    ):
+        copy.pop(field, None)
+    copy["detail"]["source_asset_id"] = copy["source_asset_id"]
+    copy["detail"]["connection_id"] = copy["connection_id"]
     copy["detail"]["result"] = public_result(
         copy["detail"].get("result"), str(copy["id"])
     )

@@ -11,7 +11,8 @@ def test_receipt_distinguishes_asset_from_account_without_mutating_approved_reco
 ):
     raw = {
         "id": "call-id",
-        "connection_id": "asset-id",
+        "source_asset_id": "asset-id",
+        "connection_id": None if script else "asset-id",
         "digest": "unchanged-approval-digest",
         "detail": {
             "connection_id": "asset-id",

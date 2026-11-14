@@ -151,8 +151,8 @@ async def test_runner_observation_authorizes_only_the_current_method_data_grant(
         await drive(runner)
         assert len(responses) == 1
         assert responses[0]["result"]["isError"] is False, responses
-        assert len(kb.seen) == 1
-        claims, request = kb.seen[0]
+        assert [m["method"] for _, m in kb.seen] == ["tools/list", "tools/call"]
+        claims, request = kb.seen[-1]
         assert claims["tools"] == ["read_input"]
         assert request["params"]["arguments"] == {
             "material_id": "synthetic-document",

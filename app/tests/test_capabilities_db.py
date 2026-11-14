@@ -280,7 +280,7 @@ async def test_timeout_and_crash_are_unknown_never_retried(db):
         async with repo.transaction():
             await s.execute(
                 text(
-                    "UPDATE workbench_capability_calls SET status='dispatching', updated_at=now()-interval '3 minutes' WHERE id=:id"
+                    "UPDATE workbench_calls SET status='dispatching', updated_at=now()-interval '3 minutes' WHERE id=:id"
                 ),
                 {"id": call["id"]},
             )
@@ -600,7 +600,7 @@ async def test_migration_down_up_preserves_existing_sessions(db):
     _, _, sid = await seed(db)
     path = (
         Path(__file__).resolve().parents[1]  # noqa: ASYNC240 - test-only migration module
-        / "alembic/versions/20261113_0040_capabilities.py"
+        / "alembic/versions/20261114_0041_calls.py"
     )
     spec = importlib.util.spec_from_file_location("capability_migration", path)
     module = importlib.util.module_from_spec(spec)

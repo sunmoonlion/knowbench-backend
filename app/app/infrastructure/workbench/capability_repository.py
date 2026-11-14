@@ -22,6 +22,10 @@ def row(value):
         "session_id",
         "connection_id",
         "interaction_id",
+        "source_asset_id",
+        "parent_call_id",
+        "task_id",
+        "attempt_id",
     ):
         if result.get(key) is not None:
             result[key] = str(result[key])
@@ -273,7 +277,7 @@ class CapabilityRepositoryMixin:
             for r in (
                 await self.session.execute(
                     text(
-                        "SELECT * FROM workbench_capability_calls WHERE owner_actor_id=:o AND session_id=:s ORDER BY created_at DESC LIMIT 100"
+                        "SELECT * FROM workbench_calls WHERE origin='managed' AND owner_actor_id=:o AND session_id=:s ORDER BY created_at DESC LIMIT 100"
                     ),
                     {"o": owner, "s": session_id},
                 )
@@ -284,8 +288,8 @@ class CapabilityRepositoryMixin:
         result = (
             (
                 await self.session.execute(
-                    text("""SELECT * FROM workbench_capability_calls
-            WHERE owner_actor_id=:o AND session_id=:s AND detail->'invocation'->>'key'=:k"""),
+                    text("""SELECT * FROM workbench_calls
+            WHERE owner_actor_id=:o AND session_id=:s AND call_key=:k AND origin='managed'"""),
                     {"o": owner, "s": session_id, "k": invocation_key},
                 )
             )
@@ -294,24 +298,9 @@ class CapabilityRepositoryMixin:
         )
         return row(result) if result else None
 
-    async def capability_recover_calls(self, owner, session_id):
-        # Remote adapter has a 45 s deadline. After 2 min a lost dispatch receipt
-        # is unknown, never retried. Expired approval cannot authorize an operation.
-        async with self.transaction():
-            await self.session.execute(
-                text("""UPDATE workbench_capability_calls c
-                SET status=CASE WHEN c.status='dispatching' THEN 'unknown' ELSE 'expired' END,
-                    updated_at=now()
-                WHERE c.owner_actor_id=:o AND c.session_id=:s AND
-                  ((c.status='dispatching' AND c.updated_at < now()-interval '2 minutes') OR
-                   (c.status='awaiting_approval' AND EXISTS
-                     (SELECT 1 FROM workbench_interactions i WHERE i.id=c.interaction_id AND i.expires_at <= now())))"""),
-                {"o": owner, "s": session_id},
-            )
-
     async def capability_pending_scripts(self):
         result = await self.session.execute(
-            text("""SELECT * FROM workbench_capability_calls
+            text("""SELECT * FROM workbench_calls
             WHERE status='dispatching' AND detail->>'execution_kind'='skill_script'
             ORDER BY updated_at LIMIT 20""")
         )
@@ -322,7 +311,7 @@ class CapabilityRepositoryMixin:
             (
                 await self.session.execute(
                     text(
-                        "SELECT * FROM workbench_capability_calls WHERE owner_actor_id=:o AND id=:id"
+                        "SELECT * FROM workbench_calls WHERE origin='managed' AND owner_actor_id=:o AND id=:id"
                         + (" FOR UPDATE" if lock else "")
                     ),
                     {"o": owner, "id": call_id},
@@ -334,39 +323,3 @@ class CapabilityRepositoryMixin:
         if not r:
             raise NotFound("call not found")
         return row(r)
-
-    async def capability_add_call(self, call):
-        r = (
-            (
-                await self.session.execute(
-                    text("""INSERT INTO workbench_capability_calls(id,owner_actor_id,session_id,connection_id,interaction_id,digest,status,detail)
-          VALUES (:id,:owner_actor_id,:session_id,:connection_id,:interaction_id,:digest,:status,cast(:detail as jsonb))
-          ON CONFLICT (session_id,digest) DO NOTHING RETURNING *"""),
-                    {**call, "detail": json.dumps(call["detail"])},
-                )
-            )
-            .mappings()
-            .first()
-        )
-        if not r:
-            r = (
-                (
-                    await self.session.execute(
-                        text(
-                            "SELECT * FROM workbench_capability_calls WHERE session_id=:s AND digest=:d"
-                        ),
-                        {"s": call["session_id"], "d": call["digest"]},
-                    )
-                )
-                .mappings()
-                .one()
-            )
-        return row(r)
-
-    async def capability_update_call(self, owner, call_id, status, detail):
-        await self.session.execute(
-            text(
-                "UPDATE workbench_capability_calls SET status=:status,detail=cast(:d as jsonb),updated_at=now() WHERE owner_actor_id=:o AND id=:id"
-            ),
-            {"o": owner, "id": call_id, "status": status, "d": json.dumps(detail)},
-        )

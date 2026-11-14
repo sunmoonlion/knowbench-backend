@@ -193,7 +193,7 @@ async def test_missing_policy_evidence_is_not_reconstructed_for_old_approval(db)
         async with repo.transaction():
             await session.execute(
                 text(
-                    "UPDATE workbench_capability_calls SET detail=detail-'operation' WHERE id=:id"
+                    "UPDATE workbench_calls SET detail=detail-'operation' WHERE id=:id"
                 ),
                 {"id": call["id"]},
             )

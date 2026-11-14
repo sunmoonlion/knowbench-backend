@@ -25,6 +25,7 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.workbench.calls import CallLedger
 from app.application.workbench.data_relay import RELAYED, DataRelay
 from app.application.workbench.expert_data import find_subject, request_data
 from app.application.workbench.find_expert import find_expert
@@ -42,6 +43,7 @@ from app.bootstrap.workbench import (
 )
 from app.domain.workbench.errors import ComputeRefused, WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
+from app.domain.workbench.tool_registry import ToolRegistration
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     require_workbench_enabled,
@@ -204,51 +206,117 @@ async def handle(
             "name/expression/inputs, or task plus batch. An empty object performs "
             "no calculation; do not repeat it. This does not mean the task was deleted.",
         )
+    ledger = CallLedger(records.repo, owner) if guard is not None else None
+    receipt = None
     if guard is not None:
+        assert ledger is not None
         try:
-            await guard.check(name, args, params.get("_meta"))
+            invocation, task_id = await guard.check(name, args, params.get("_meta"))
+            if relayed:
+                assert relay is not None
+                registration = next(
+                    (
+                        ToolRegistration.discover("knowbase", "knowbase-data", tool)
+                        for tool in await relay.tools()
+                        if tool["name"] == name
+                    ),
+                    None,
+                )
+                if registration is None:
+                    return _tool_error(mid, "tool is not registered")
+            else:
+                registration = PLATFORM_TOOLS[name]
+            receipt, fresh = await ledger.begin(
+                invocation, registration, args, task_id=task_id
+            )
+            if not fresh:
+                response = receipt["detail"].get("response")
+                if response is None:
+                    return _tool_error(
+                        mid,
+                        "This call is already recorded and may have executed; it will not be repeated.",
+                    )
+                return {"jsonrpc": "2.0", "id": mid, **response}
         except WorkbenchError as exc:
             log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
             return _tool_error(mid, exc.message)
-    if relayed:
-        assert relay is not None
-        try:
-            return await relay.call(mid, name, args)
-        except WorkbenchError as exc:
-            log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
-            return _tool_error(mid, exc.message)
-        except Exception:  # 内部错误的细节不给模型
-            log.exception("workbench_mcp_relay_failed tool=%s", name)
-            return _tool_error(mid, "the data service is temporarily unavailable")
+    response, status = await dispatch(records, mid, name, args, relay, relayed)
+    if receipt is not None:
+        assert ledger is not None
+        if "result" in response:
+            metadata = response["result"].get("_meta")
+            if not isinstance(metadata, dict):
+                metadata = {}
+            response["result"]["_meta"] = {
+                **metadata,
+                "call_id": receipt["id"],
+                "call_status": status,
+            }
+        await ledger.finish(receipt, response, status)
+    return response
+
+
+async def dispatch(records, mid, name, args, relay, relayed):
     try:
+        if relayed:
+            response = await relay.call(mid, name, args)
+            if not isinstance(response, dict) or ("error" in response) == (
+                "result" in response
+            ):
+                raise ValueError("invalid MCP result")
+            if "error" in response:
+                if (
+                    not isinstance(response["error"], dict)
+                    or type(response["error"].get("code")) is not int
+                    or not isinstance(response["error"].get("message"), str)
+                ):
+                    raise ValueError("invalid MCP error")
+                status = "failed"
+            else:
+                result = response["result"]
+                if not isinstance(result, dict) or not isinstance(
+                    result.get("content"), list
+                ):
+                    raise ValueError("invalid MCP tool result")
+                status = "failed" if result.get("isError") else "succeeded"
+            if (
+                len(
+                    json.dumps(response, ensure_ascii=False, allow_nan=False).encode(
+                        "utf-8"
+                    )
+                )
+                > TOOL_RESULT_MAX_BYTES
+            ):
+                return _tool_error(
+                    mid, "This result is too large; ask for a smaller part."
+                ), "unknown"
+            return response, status
         result = jsonable_encoder(
             await call(records, name, args, relay.reader if relay else None)
         )
+        rendered = json.dumps(result, ensure_ascii=False, allow_nan=False)
     except WorkbenchError as exc:
-        # 给模型看的话：不带编号之外的细节
         log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
-        return _tool_error(mid, exc.message)
-    except Exception:  # 内部错误的细节不给模型
+        # An exception alone cannot prove no nested service operation took place.
+        return _tool_error(mid, exc.message), "unknown"
+    except Exception:
         log.exception("workbench_mcp_tool_failed tool=%s", name)
-        return _tool_error(mid, "the records are temporarily unavailable")
-    text = json.dumps(result, ensure_ascii=False)
-    size = len(text.encode("utf-8"))
+        return _tool_error(mid, "the service is temporarily unavailable"), "unknown"
+    size = len(rendered.encode("utf-8"))
     if size > TOOL_RESULT_MAX_BYTES:
-        # 太大会被 Codex 从中间省掉、模型却不知道：明说，让它换小一点的读法（待办账 137）
-        log.warning("workbench_mcp_result_too_large tool=%s bytes=%d", name, size)
         return _tool_error(
             mid,
             f"This result is too large to show in one go ({size} bytes); "
             "ask for a smaller part (another page, fewer items).",
-        )
+        ), "unknown"
     return _ok(
         mid,
         {
-            "content": [{"type": "text", "text": text}],
+            "content": [{"type": "text", "text": rendered}],
             "structuredContent": result,
             "isError": False,
         },
-    )
+    ), "succeeded"
 
 
 router = APIRouter(
