@@ -10,6 +10,7 @@ base = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(base))
 from app.domain.workbench.method_capabilities import (  # noqa: E402
     AuthorCapabilityCatalog,
+    MethodAccess,
     MethodCapabilities,
 )
 
@@ -30,6 +31,7 @@ schema = (
     json.dumps(
         {
             "requirements": MethodCapabilities.model_json_schema(),
+            "access": MethodAccess.model_json_schema(),
             "author_catalog": AuthorCapabilityCatalog.model_json_schema(),
         },
         indent=2,

@@ -56,6 +56,7 @@ def public_call(call: dict) -> dict:
     copy = deepcopy(call)
     copy["detail"].pop("invocation", None)  # Host identity is internal evidence.
     copy["detail"].pop("operation", None)  # Reviewed policy snapshot is internal.
+    copy["detail"].pop("access", None)  # Frozen method permission is internal evidence.
     # The 0040 storage column is an asset FK despite its legacy name. Keep its
     # interpretation private; a Skill package must never appear as an account.
     source = copy.get("source_asset_id") or copy["connection_id"]

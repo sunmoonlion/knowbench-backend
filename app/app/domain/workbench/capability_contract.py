@@ -7,7 +7,11 @@ from uuid import UUID
 from pydantic import Field
 
 from app.domain.workbench.capabilities import Strict
-from app.domain.workbench.method_capabilities import McpRequirement, MethodCapabilities
+from app.domain.workbench.method_capabilities import (
+    AccessRequirement,
+    McpRequirement,
+    MethodCapabilities,
+)
 from app.domain.workbench.skill_dependencies import SkillDependency
 from app.domain.workbench.skill_installation import SkillSource
 
@@ -97,6 +101,7 @@ class MethodContext(Strict):
     managed_bindings_supported: bool
     context: str | None = None
     requirements: MethodCapabilities | None = None
+    access_requirements: list[AccessRequirement] = Field(default_factory=list)
 
 
 class Selection(Strict):

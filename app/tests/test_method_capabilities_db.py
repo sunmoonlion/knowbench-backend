@@ -5,6 +5,7 @@ import json
 
 import pytest
 from httpx import AsyncClient
+from method_access_support import ACCESS
 from sqlalchemy import text
 from test_capabilities_db import OWNER, URL, Remote, approval, body, service
 from test_capability_routes_db import application
@@ -27,7 +28,7 @@ from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-async def setup_method(db):
+async def setup_method(db, *, access=None):
     _, _, sid = await seed(db)
     remote = Remote()
     async with db() as s:
@@ -60,8 +61,13 @@ async def setup_method(db):
             "task_id"
         ]
         pack = SMOKE.model_dump(mode="json")
+        pack["workflow"][0]["access_requirements"] = [
+            access if access is not None else ACCESS
+        ]
         pack["workflow"][0]["managed_capabilities"] = {
-            "tools": [{"url": URL, "name": "send"}],
+            "tools": [
+                {"url": URL, "name": "send", "requirement_id": ACCESS["requirement_id"]}
+            ],
             "skills": [
                 {
                     "name": skill["name"],

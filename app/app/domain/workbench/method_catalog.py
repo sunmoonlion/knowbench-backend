@@ -637,6 +637,7 @@ def _validate_atomic_binding(
         "input_max_chars",
         "output_file",
         "managed_capabilities",
+        "access_requirements",
     ):
         compiled = unit.contract.model_dump(mode="json").get(name)
         if compiled != advanced.get(name):

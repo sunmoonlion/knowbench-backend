@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.method_access import check_access, declared_access
 from app.application.workbench.method_capabilities import (
     check_runtime_method,
     method_scope,
@@ -100,6 +101,8 @@ class Capabilities:
                             "mcp", spec.get("service_url", ""), spec["tool"]
                         )
                     )
+                    if runtime.get("method"):
+                        check_access(spec.get("access"), policy)
                 except CapabilityError:
                     continue
                 if policy.policy_digest != spec.get("operation_digest"):
@@ -372,7 +375,16 @@ class Capabilities:
         operation_unavailable = set()
         for key, (asset, tool) in by_tool.items():
             try:
-                self.operation(asset, tool)
+                policy = self.operation(asset, tool)
+                if scope and matches_tool(scope["requirements"], asset, tool):
+                    grant = declared_access(scope, policy)
+                    if (
+                        key in detail.get("tools", [])
+                        and detail.get("access", {}).get(key) != grant
+                    ):
+                        issues.append(
+                            {"ref": key, "code": "method_permission_unconfirmed"}
+                        )
             except CapabilityError:
                 operation_unavailable.add(key)
         bindings = detail.get("bindings", {})
@@ -426,6 +438,9 @@ class Capabilities:
                 "managed_bindings_supported": True,
                 "context": scope["context"],
                 "requirements": scope["requirements"].model_dump(mode="json"),
+                "access_requirements": [
+                    r.model_dump(mode="json") for r in scope["access_requirements"]
+                ],
             }
         return {
             "session_id": session_id,
@@ -496,6 +511,7 @@ class Capabilities:
             }
             by_id = {a["id"]: a for a in assets if a["kind"] == "skill"}
             chosen = []
+            access = {}
             for key in body.tools:
                 if key not in by_tool:
                     raise CapabilityError("Unknown or inaccessible tool")
@@ -505,7 +521,9 @@ class Capabilities:
                     for t in asset["detail"]["tools"]
                     if tool_key(asset["id"], t["name"]) == key
                 )
-                self.operation(asset, tool)
+                policy = self.operation(asset, tool)
+                if scope:
+                    access[key] = declared_access(scope, policy)
                 chosen.append(by_tool[key])
             for key in body.skills:
                 if key not in by_id:
@@ -524,6 +542,9 @@ class Capabilities:
             detail = body.model_dump(exclude={"revision", "method_context"})
             detail["bindings"] = {a["id"]: a["revision"] for a in chosen}
             if scope:
+                # This context-bound user action confirms the displayed declaration
+                # for exactly these accounts/revisions, never all owned connections.
+                detail["access"] = access
                 detail = {
                     **selected["detail"],
                     "method_selections": {
@@ -663,6 +684,17 @@ class Capabilities:
                                 "operation_digest": self.operation(
                                     asset, tool
                                 ).policy_digest,
+                                **(
+                                    {
+                                        "access": selected["detail"]
+                                        .get("method_selections", {})
+                                        .get(method_binding["context"], {})
+                                        .get("access", {})
+                                        .get(key)
+                                    }
+                                    if method_binding
+                                    else {}
+                                ),
                             }
                 elif asset["id"] in fresh["skills"]:
                     packages[asset["id"]] = {
@@ -743,7 +775,16 @@ class Capabilities:
                         "text": "This method step may use only the listed managed capabilities. "
                         "External tool calls wait for user approval and return the actual operation result. "
                         "A refusal, expired approval or unknown outcome is not a successful operation. "
-                        "Do not retry an unknown external write automatically.",
+                        "Do not retry an unknown external write automatically. "
+                        "Confirmed permission ceilings by tool (guidance only; the host enforces these independently): "
+                        + json.dumps(
+                            {
+                                key: spec["access"]["requirement"]
+                                for key, spec in tools.items()
+                                if spec.get("access")
+                            },
+                            ensure_ascii=False,
+                        ),
                     }
                 )
             await self.repo.capability_runtime(owner, session_id, runtime)
@@ -954,6 +995,8 @@ class Capabilities:
             if policy.policy_digest != spec.get("operation_digest"):
                 raise CapabilityError("Operation policy changed; prepare a new turn")
             operation = policy.resolve(arguments)
+            if selected["runtime"].get("method"):
+                check_access(spec.get("access"), policy, arguments)
         intent = {
             "invocation": invocation.snapshot(),
             "connection_id": connection["id"],
@@ -971,6 +1014,11 @@ class Capabilities:
             "runtime": selected["runtime"]["token_hash"],
             "method": selected["runtime"].get("method"),
             **({"operation": operation} if operation is not None else {}),
+            **(
+                {"access": spec.get("access")}
+                if selected["runtime"].get("method") and operation is not None
+                else {}
+            ),
             **(
                 {"execution_kind": "skill_script"}
                 if spec.get("execution_kind") == "skill_script"
@@ -1210,9 +1258,19 @@ class Capabilities:
                 if intent.get("execution_kind") != "skill_script":
                     registered = registered_call(connection, intent)
                     registered.validate_arguments(intent["arguments"])
-                    operation = self.operations.require(registered).resolve(
-                        intent["arguments"]
-                    )
+                    policy = self.operations.require(registered)
+                    operation = policy.resolve(intent["arguments"])
+                    if intent.get("method"):
+                        spec = (
+                            selected["runtime"]
+                            .get("tools", {})
+                            .get(tool_key(connection["id"], intent["tool"]["name"]), {})
+                        )
+                        if spec.get("access") != intent.get("access"):
+                            raise CapabilityError(
+                                "Method permission changed after approval was requested"
+                            )
+                        check_access(spec.get("access"), policy, intent["arguments"])
                     if operation != intent.get("operation"):
                         raise CapabilityError(
                             "Operation policy changed; request approval again"

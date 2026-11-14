@@ -55,6 +55,7 @@ async def method_scope(repo, owner, session, *, lock=False):
         "attempt": attempt,
         "special": special,
         "requirements": requirements or MethodCapabilities(),
+        "access_requirements": step.access_requirements if step and not special else (),
         "context": context,
         "editable": editable,
     }

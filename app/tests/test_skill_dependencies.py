@@ -55,7 +55,7 @@ def test_empty_extension_preserves_legacy_install_request_digest_input():
     assert "tool_requirements" not in skill.model_dump()
 
 
-def test_method_scope_covers_dependencies_without_changing_legacy_snapshots():
+def test_method_scope_covers_installation_dependencies_without_granting_permissions():
     import pytest
     from pydantic import ValidationError
 
@@ -66,12 +66,15 @@ def test_method_scope_covers_dependencies_without_changing_legacy_snapshots():
 
     need = {"url": URL, "name": "send"}
     requirement = {"name": "notice", "version": "1", "digest": "a" * 64}
-    legacy = MethodCapabilities(tools=[need], skills=[requirement])
-    assert legacy.model_dump(mode="json")["skills"] == [requirement]
+    with pytest.raises(ValidationError, match="requirement_id"):
+        MethodCapabilities(tools=[need], skills=[requirement])
+    binding = {**need, "requirement_id": "deliver-notice"}
+    implicit = MethodCapabilities(tools=[binding], skills=[requirement])
+    assert implicit.model_dump(mode="json")["skills"] == [requirement]
     with pytest.raises(ValidationError, match="method tool scope"):
         MethodCapabilities(tools=[], skills=[{**requirement, "required_tools": [need]}])
     scope = MethodCapabilities(
-        tools=[need], skills=[{**requirement, "required_tools": [need]}]
+        tools=[binding], skills=[{**requirement, "required_tools": [need]}]
     )
     skill = {
         "name": "notice",
@@ -80,4 +83,4 @@ def test_method_scope_covers_dependencies_without_changing_legacy_snapshots():
     assert matches_skill(scope, skill, [])
     skill["detail"]["tool_requirements"].append({"url": URL, "name": "delete"})
     assert not matches_skill(scope, skill, [])
-    assert not matches_skill(legacy, skill, [])
+    assert not matches_skill(implicit, skill, [])
