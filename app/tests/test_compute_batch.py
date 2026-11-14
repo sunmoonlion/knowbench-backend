@@ -11,7 +11,8 @@ from app.application.workbench.acceptance import Verdict
 from app.application.workbench.acceptance_numbers import judge_numbers
 from app.domain.workbench.errors import ComputeRefused
 from app.domain.workbench.packs import AcceptanceRule
-from app.interfaces.mcp.workbench_mcp import TOOLS, call
+from app.domain.workbench.platform_tools import TOOLS
+from app.interfaces.mcp.workbench_mcp import call
 
 
 def batch():

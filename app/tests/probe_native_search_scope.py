@@ -20,7 +20,7 @@ import jsonschema
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
-from app.interfaces.mcp.workbench_mcp import TOOLS
+from app.domain.workbench.platform_tools import TOOLS
 
 BINARY = sys.argv[1]
 requests = []

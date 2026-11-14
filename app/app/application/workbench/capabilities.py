@@ -9,17 +9,13 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from jsonschema import Draft202012Validator
-from jsonschema.exceptions import SchemaError
-from referencing import Registry
-from referencing.exceptions import Unresolvable
-
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_capabilities import (
     check_runtime_method,
     method_scope,
     selection_issues,
 )
+from app.application.workbench.tool_registry import mcp_catalog, registered_call
 from app.domain.workbench.capabilities import (
     CapabilityError,
     CapabilityOutcomeUnknown,
@@ -52,36 +48,6 @@ from app.domain.workbench.skill_package import (
     unpack_skill,
 )
 from app.domain.workbench.states import TaskState, WaitingReason
-
-
-def schema_validator(schema):
-    # Never allow a JSON Schema resolver to fetch arbitrary network/file resources.
-    pending, count = [(schema, 0)], 0
-    while pending:
-        value, depth = pending.pop()
-        count += 1
-        if count > 5000 or depth > 32:
-            raise CapabilityError("Tool schema exceeds the complexity limit")
-        if isinstance(value, dict):
-            for key, child in value.items():
-                if key == "$id":
-                    raise CapabilityError(
-                        "Tool schemas cannot change their resolution base"
-                    )
-                if key in ("$ref", "$dynamicRef") and (
-                    not isinstance(child, str) or not child.startswith("#")
-                ):
-                    raise CapabilityError(
-                        "Only document-local schema references are supported"
-                    )
-                pending.append((child, depth + 1))
-        elif isinstance(value, list):
-            pending.extend((child, depth + 1) for child in value)
-    try:
-        Draft202012Validator.check_schema(schema)
-    except (SchemaError, RecursionError) as exc:
-        raise CapabilityError("Invalid tool input schema") from exc
-    return Draft202012Validator(schema, registry=Registry())
 
 
 class McpPort(Protocol):
@@ -128,8 +94,7 @@ class Capabilities:
         if body.token and self.cipher is None:
             raise CapabilityError("Credential storage is unavailable")
         tools = await self.remote.discover(body.url, body.token)
-        for tool in tools:
-            schema_validator(tool["inputSchema"])
+        tools = mcp_catalog(body.url, tools).descriptors()
         asset = {
             "id": str(uuid.uuid4()),
             "owner_actor_id": owner,
@@ -256,8 +221,7 @@ class Capabilities:
         if body.token and self.cipher is None:
             raise CapabilityError("Credential storage is unavailable")
         tools = await self.remote.discover(asset["detail"]["url"], body.token)
-        for tool in tools:
-            schema_validator(tool["inputSchema"])
+        tools = mcp_catalog(asset["detail"]["url"], tools).descriptors()
         detail = {
             **asset["detail"],
             "tools": tools,
@@ -306,8 +270,7 @@ class Capabilities:
             detail["tools"] = await self.remote.discover(
                 detail["url"], self.secret(asset)
             )
-            for tool in detail["tools"]:
-                schema_validator(tool["inputSchema"])
+            detail["tools"] = mcp_catalog(detail["url"], detail["tools"]).descriptors()
             detail["checked_at"] = datetime.now(UTC).isoformat()
         elif body.action == "disconnect":
             if asset["kind"] != "connection":
@@ -879,15 +842,7 @@ class Capabilities:
             raise CapabilityError("Connection changed or was disabled")
         if len(json.dumps(arguments).encode()) > 64000:
             raise CapabilityError("Arguments exceed the limit")
-        validator = schema_validator(spec["tool"]["inputSchema"])
-        try:
-            valid = validator.is_valid(arguments)
-        except (Unresolvable, RecursionError, ValueError) as exc:
-            raise CapabilityError(
-                "Tool input schema cannot be resolved locally"
-            ) from exc
-        if not valid:
-            raise CapabilityError("Arguments do not match the registered schema")
+        registered_call(connection, spec).validate_arguments(arguments)
         intent = {
             "connection_id": connection["id"],
             "revision": connection["revision"],

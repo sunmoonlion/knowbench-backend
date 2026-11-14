@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 
-from app.application.workbench.capabilities import schema_validator
 from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.tool_schema import schema_validator
 from app.infrastructure.workbench import capability_mcp as mcp
 
 

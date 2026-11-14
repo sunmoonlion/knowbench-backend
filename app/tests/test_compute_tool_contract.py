@@ -3,7 +3,7 @@
 import pytest
 from jsonschema import Draft202012Validator
 
-from app.interfaces.mcp.workbench_mcp import TOOLS
+from app.domain.workbench.platform_tools import TOOLS
 
 
 @pytest.mark.parametrize(

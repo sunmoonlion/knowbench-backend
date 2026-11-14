@@ -6,7 +6,7 @@ import pytest
 from jsonschema import Draft202012Validator
 
 from app.application.workbench.expert_data import _asked_need
-from app.interfaces.mcp.workbench_mcp import TOOLS
+from app.domain.workbench.platform_tools import TOOLS
 
 SCHEMA = TOOLS["request_data"]["inputSchema"]
 VALIDATOR = Draft202012Validator(SCHEMA)

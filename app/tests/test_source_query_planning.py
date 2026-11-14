@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock
 import jsonschema
 
 from app.application.workbench.expert_data import _asked_need
+from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.supply_prematch import request_items
 from app.interfaces.mcp import workbench_mcp
 
@@ -26,7 +27,7 @@ def test_supplier_proposal_survives_request_schema_and_prematch_without_subject(
     }
     jsonschema.validate(
         {"task": "test-task", "needs": [asked]},
-        workbench_mcp.TOOLS["request_data"]["inputSchema"],
+        TOOLS["request_data"]["inputSchema"],
     )
     asked["source_query"] = {**QUERY, "request_id": "a" * 32}
     need = _asked_need(asked, 1, 1)
