@@ -27,6 +27,8 @@ from app.domain.workbench.errors import (
     NotFound,
     StaleStateVersion,
 )
+from app.domain.workbench.tool_operations import McpOperation, ResourceBinding
+from app.domain.workbench.tool_registry import ToolRegistration
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 URL = "https://tools.example.test/mcp"
@@ -38,6 +40,16 @@ SCHEMA = {
 }
 TOOLS = [{"name": "send", "description": "Send a notice", "inputSchema": SCHEMA}]
 CIPHER = Fernet(Fernet.generate_key())
+OPERATION = McpOperation(
+    service_url=URL,
+    tool_name="send",
+    descriptor_digest=ToolRegistration.discover("mcp", URL, TOOLS[0]).descriptor_digest,
+    capability_ref="synthetic-mail",
+    version="1",
+    operation="send",
+    effect="send",
+    resources=(ResourceBinding(resource_role="recipient", argument_path=("to",)),),
+)
 
 
 class Remote:
@@ -58,12 +70,13 @@ class Remote:
         return {"content": [{"type": "text", "text": "sent"}], "isError": False}
 
 
-def service(repo, remote=None):
+def service(repo, remote=None, *, operations=(OPERATION,)):
     return Capabilities(
         repo,
         remote or Remote(),
         CIPHER,
         runtime_url="http://api.test/api/mcp/capabilities",
+        operations=operations,
     )
 
 

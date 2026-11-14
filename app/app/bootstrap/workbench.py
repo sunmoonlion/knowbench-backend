@@ -459,6 +459,7 @@ def capability_service(repo):
         RemoteMcp(tuple(settings.workbench_capability_mcp_urls)),
         cipher,
         runtime_url=settings.workbench_capability_mcp_url,
+        operations=settings.workbench_capability_operations,
         skill_source=GitHubSkills(),
         script_executor=SkillExecutor(
             settings.workbench_provisioner_url, settings.workbench_provisioner_token

@@ -49,6 +49,8 @@ from app.domain.workbench.skill_package import (
     unpack_skill,
 )
 from app.domain.workbench.states import TaskState, WaitingReason, Wheel
+from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
+from app.domain.workbench.tool_registry import ToolRegistration
 
 
 class McpPort(Protocol):
@@ -70,6 +72,7 @@ class Capabilities:
         runtime_url: str = "",
         skill_source: Any = None,
         script_executor: Any = None,
+        operations: tuple[McpOperation, ...] = (),
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
             repo,
@@ -79,6 +82,30 @@ class Capabilities:
         )
         self.skill_source = skill_source
         self.script_executor = script_executor
+        self.operations = OperationCatalog(operations)
+
+    def operation(self, asset, tool):
+        return self.operations.require(
+            ToolRegistration.discover("mcp", asset["detail"]["url"], tool)
+        )
+
+    def runtime_tools(self, runtime):
+        """Do not rediscover revoked policies through an already-prepared scope."""
+        available = {}
+        for key, spec in runtime.get("tools", {}).items():
+            if spec.get("execution_kind") != "skill_script":
+                try:
+                    policy = self.operations.require(
+                        ToolRegistration.discover(
+                            "mcp", spec.get("service_url", ""), spec["tool"]
+                        )
+                    )
+                except CapabilityError:
+                    continue
+                if policy.policy_digest != spec.get("operation_digest"):
+                    continue
+            available[key] = spec
+        return available
 
     def secret(self, asset):
         if not asset.get("secret"):
@@ -342,6 +369,12 @@ class Capabilities:
             for t in a["detail"].get("tools", [])
         }
         by_id = {a["id"]: a for a in assets}
+        operation_unavailable = set()
+        for key, (asset, tool) in by_tool.items():
+            try:
+                self.operation(asset, tool)
+            except CapabilityError:
+                operation_unavailable.add(key)
         bindings = detail.get("bindings", {})
         skill_mode = detail.get(
             "skill_mode", "explicit" if detail.get("skills") else "auto"
@@ -361,6 +394,8 @@ class Capabilities:
                 issues.append({"ref": key, "code": "connection_unavailable"})
             elif bindings.get(pair[0]["id"]) != pair[0]["revision"]:
                 issues.append({"ref": key, "code": "revision_changed"})
+            elif key in operation_unavailable:
+                issues.append({"ref": key, "code": "operation_unavailable"})
         for key in skill_ids:
             asset = by_id.get(key)
             if not asset or asset["kind"] != "skill" or asset["status"] != "active":
@@ -413,7 +448,9 @@ class Capabilities:
                     "connection_id": a["id"],
                     "connection_name": a["name"],
                     "account_label": a["detail"]["account_label"],
-                    "status": a["status"],
+                    "status": "operation_unavailable"
+                    if a["status"] == "active" and key in operation_unavailable
+                    else a["status"],
                     **t,
                 }
                 for key, (a, t) in by_tool.items()
@@ -462,6 +499,13 @@ class Capabilities:
             for key in body.tools:
                 if key not in by_tool:
                     raise CapabilityError("Unknown or inaccessible tool")
+                asset = by_tool[key]
+                tool = next(
+                    t
+                    for t in asset["detail"]["tools"]
+                    if tool_key(asset["id"], t["name"]) == key
+                )
+                self.operation(asset, tool)
                 chosen.append(by_tool[key])
             for key in body.skills:
                 if key not in by_id:
@@ -615,6 +659,10 @@ class Capabilities:
                                 "connection_id": asset["id"],
                                 "revision": asset["revision"],
                                 "tool": tool,
+                                "service_url": asset["detail"]["url"],
+                                "operation_digest": self.operation(
+                                    asset, tool
+                                ).policy_digest,
                             }
                 elif asset["id"] in fresh["skills"]:
                     packages[asset["id"]] = {
@@ -786,10 +834,11 @@ class Capabilities:
                 }
             result = resource_result(asset["detail"], request)
             if result["path"] == "SKILL.md" and request.offset == 0:
+                available = self.runtime_tools(runtime)
                 dependencies = skill_dependencies(
                     asset,
                     await self.repo.capability_assets(owner),
-                    runtime.get("tools", {}),
+                    available,
                 )
                 result["connection_dependencies"] = [
                     {
@@ -799,8 +848,7 @@ class Capabilities:
                         "selected_tools": [
                             c["key"]
                             for c in d["candidates"]
-                            if c["key"] in runtime.get("tools", {})
-                            and c["status"] == "active"
+                            if c["key"] in available and c["status"] == "active"
                         ],
                     }
                     for d in dependencies
@@ -898,7 +946,14 @@ class Capabilities:
             raise CapabilityError("Connection changed or was disabled")
         if len(json.dumps(arguments).encode()) > 64000:
             raise CapabilityError("Arguments exceed the limit")
-        registered_call(connection, spec).validate_arguments(arguments)
+        registered = registered_call(connection, spec)
+        registered.validate_arguments(arguments)
+        operation = None
+        if registered.source == "mcp":
+            policy = self.operations.require(registered)
+            if policy.policy_digest != spec.get("operation_digest"):
+                raise CapabilityError("Operation policy changed; prepare a new turn")
+            operation = policy.resolve(arguments)
         intent = {
             "invocation": invocation.snapshot(),
             "connection_id": connection["id"],
@@ -915,6 +970,7 @@ class Capabilities:
             "selection_revision": selected["revision"],
             "runtime": selected["runtime"]["token_hash"],
             "method": selected["runtime"].get("method"),
+            **({"operation": operation} if operation is not None else {}),
             **(
                 {"execution_kind": "skill_script"}
                 if spec.get("execution_kind") == "skill_script"
@@ -976,6 +1032,22 @@ class Capabilities:
                     "account": intent["account_label"],
                     "tool": spec["tool"]["name"],
                     "arguments": arguments,
+                    **(
+                        {
+                            "operation": {
+                                key: operation[key]
+                                for key in (
+                                    "capability_ref",
+                                    "version",
+                                    "operation",
+                                    "effect",
+                                    "resources",
+                                )
+                            }
+                        }
+                        if operation is not None
+                        else {}
+                    ),
                 },
             )
             if binding:
@@ -1135,6 +1207,16 @@ class Capabilities:
                     raise CapabilityError(
                         "Method approval belongs to another execution"
                     )
+                if intent.get("execution_kind") != "skill_script":
+                    registered = registered_call(connection, intent)
+                    registered.validate_arguments(intent["arguments"])
+                    operation = self.operations.require(registered).resolve(
+                        intent["arguments"]
+                    )
+                    if operation != intent.get("operation"):
+                        raise CapabilityError(
+                            "Operation policy changed; request approval again"
+                        )
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
                 token=body.token,

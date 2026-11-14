@@ -20,6 +20,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.cross_app import Source, Target, parse_sources, parse_targets
 from app.domain.workbench.pricing import DEFAULT_PRICES_JSON, PriceList, parse_prices
+from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 
 
 class AgentDownload(BaseModel):
@@ -355,6 +356,11 @@ class Settings(BaseSettings):
         default="",
         description="Internal URL of /api/mcp/capabilities for sandbox clients; empty disables remote capability execution",
     )
+    workbench_capability_operations: tuple[McpOperation, ...] = Field(
+        default=(),
+        max_length=1000,
+        description="Operator-reviewed MCP operation/resource mappings; empty permits discovery only",
+    )
 
     # 专家读本项目别的对话与底稿的工具服务（PRD/apps/investment.md 7.4）。
     # 沙箱里的 Codex 配好这个服务之后才打开：打开后专家每一步的说明里会提到这组工具
@@ -471,6 +477,12 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_base_security(self) -> Settings:
+        OperationCatalog(self.workbench_capability_operations)
+        if any(
+            operation.service_url not in self.workbench_capability_mcp_urls
+            for operation in self.workbench_capability_operations
+        ):
+            raise ValueError("Operation endpoint is not in the reviewed MCP URL list")
         release = self.workbench_agent_download
         if release and release.mode == "object-storage":
             if self.workbench_agent_release_storage is None:

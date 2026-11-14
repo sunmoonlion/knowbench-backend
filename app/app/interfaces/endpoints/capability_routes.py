@@ -342,6 +342,7 @@ async def capability_rpc(
                 "serverInfo": {"name": "sunmoon-capabilities", "version": "1"},
             }
         elif method == "tools/list":
+            tools = svc.runtime_tools(selected["runtime"])
             result = {
                 "tools": [
                     {
@@ -365,7 +366,7 @@ async def capability_rpc(
                             "openWorldHint": bool(selected["runtime"].get("method")),
                         },
                     }
-                    for key, spec in selected["runtime"].get("tools", {}).items()
+                    for key, spec in tools.items()
                 ]
             }
             result["tools"].append(
@@ -381,7 +382,7 @@ async def capability_rpc(
                     "annotations": {"readOnlyHint": True},
                 }
             )
-            if not selected["runtime"].get("tools"):
+            if not tools:
                 result["tools"] = []
             if selected["runtime"].get("packages"):
                 result["tools"].extend(
