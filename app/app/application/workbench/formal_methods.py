@@ -5,6 +5,8 @@ successful runtime evidence. Only persisted, complete runtime receipts admit a
 KnowLab frozen version; the service caller cannot supply its own pass result.
 """
 
+from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any
 
 from app.domain.workbench.capabilities import CapabilityError, digest
@@ -22,14 +24,24 @@ from app.domain.workbench.formal_method_compiler_generated import (
     compile_method,
 )
 from app.domain.workbench.formal_method_generated import Orchestration
+from app.domain.workbench.source_licenses import SourceIdentity, SourceLicenseCatalog
 from app.domain.workbench.tool_operations import OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
 
 
 class FormalMethods:
-    def __init__(self, repo, *, operations=()):
+    def __init__(
+        self,
+        repo,
+        *,
+        operations=(),
+        source_licenses=(),
+        now: Callable[[], datetime] | None = None,
+    ):
         self.repo = repo
         self.operations = OperationCatalog(tuple(operations))
+        self.source_licenses = SourceLicenseCatalog(tuple(source_licenses))
+        self.now = now or (lambda: datetime.now(UTC))
 
     async def _owner(self, subject: str) -> str:
         actor = await self.repo.actor_for_subject(subject)
@@ -37,16 +49,17 @@ class FormalMethods:
             raise NotFound("The author has not connected a workbench account")
         return actor
 
-    def _sources(self, asset: dict[str, Any]) -> list[FormalMethodSource]:
+    def _sources(
+        self, asset: dict[str, Any], subject: str, *, now: datetime
+    ) -> list[FormalMethodSource]:
         if asset["status"] != "active":
             return []
         detail = asset["detail"]
         common = {
             "asset_id": asset["id"],
             "asset_revision": asset["revision"],
-            # A missing license remains a missing check. This label is never
-            # accepted as licensing evidence or a redistribution grant.
-            "license_basis": detail.get("execution_license_basis") or "pending",
+            # Installation detail and author assertions never grant rights.
+            "license_basis": "pending",
         }
         if asset["kind"] == "connection":
             result = []
@@ -66,7 +79,7 @@ class FormalMethods:
                         entry=tool["name"],
                     )
                 )
-            return result
+            return self._licensed_sources(result, subject, now=now)
         if asset["kind"] != "skill":
             return []
         fingerprint = detail["digest"]
@@ -95,19 +108,42 @@ class FormalMethods:
                         entry=file["path"],
                     )
                 )
-        return entries
+        return self._licensed_sources(entries, subject, now=now)
+
+    def _licensed_sources(self, sources, subject: str, *, now: datetime):
+        return [
+            source.model_copy(
+                update={
+                    "license_basis": self.source_licenses.execution_basis(
+                        subject,
+                        SourceIdentity.model_validate(
+                            source.model_dump(
+                                include={"kind", "source", "version", "digest", "entry"}
+                            )
+                        ),
+                        now=now,
+                    )
+                }
+            )
+            for source in sources
+        ]
 
     async def sources(self, subject: str) -> dict:
         async with self.repo.transaction():
             owner = await self._owner(subject)
             assets = await self.repo.capability_assets(owner)
+            now = self.now()
             return {
                 "items": [
-                    s.model_dump(mode="json") for a in assets for s in self._sources(a)
+                    s.model_dump(mode="json")
+                    for a in assets
+                    for s in self._sources(a, subject, now=now)
                 ]
             }
 
-    async def _source(self, owner: str, source: FormalMethodSource | None) -> bool:
+    async def _source(
+        self, owner: str, subject: str, source: FormalMethodSource | None
+    ) -> bool:
         if source is None:
             return True
         if source.asset_id is None:
@@ -117,7 +153,7 @@ class FormalMethods:
                 "Platform implementation has no incubation source record"
             )
         asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
-        if source not in self._sources(asset):
+        if source not in self._sources(asset, subject, now=self.now()):
             raise CapabilityError(
                 "Installed source changed, is unavailable or belongs to another author"
             )
@@ -177,7 +213,9 @@ class FormalMethods:
                 return FormalMethodValidationResult.model_validate(
                     prior["result"]
                 ).model_dump(mode="json")
-            licensed = await self._source(owner, request.draft.source)
+            licensed = await self._source(
+                owner, request.owner_subject, request.draft.source
+            )
             compilation = await self._compile(
                 owner, request.method_id, request.draft.definition
             )
@@ -264,7 +302,7 @@ class FormalMethods:
                 raise Forbidden(
                     "Frozen method does not match a completed trusted validation"
                 )
-            if not await self._source(owner, frozen.draft.source):
+            if not await self._source(owner, frozen.owner_subject, frozen.draft.source):
                 raise Forbidden("Source execution rights have not been verified")
             compilation = await self._compile(
                 owner, frozen.reference.method_id, frozen.draft.definition

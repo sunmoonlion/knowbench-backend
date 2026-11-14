@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from test_capabilities_db import OPERATION, body, service
+from test_source_licenses import license_record
 from test_workbench_ledger_db import OTHER, OWNER
 from test_workbench_ledger_db import db as db
 
@@ -103,16 +104,14 @@ async def setup(db, *, licensed=False):
                 {"o": OWNER, "other": OTHER},
             )
         asset = await service(repo).create_connection(OWNER, body())
-        if licensed:
-            async with repo.transaction():
-                # Fixture represents operator-verified evidence, not a UI claim.
-                await s.execute(
-                    text("""UPDATE workbench_capability_assets SET detail=
-                    detail || '{"execution_license_basis":"synthetic verified permission"}'::jsonb WHERE id=:id"""),
-                    {"id": asset["id"]},
-                )
         catalog = await FormalMethods(repo, operations=(OPERATION,)).sources("author")
         assert len(catalog["items"]) == 1
+        if licensed:
+            catalog = await FormalMethods(
+                repo,
+                operations=(OPERATION,),
+                source_licenses=(license_record(catalog["items"][0]),),
+            ).sources("author")
         return validation_request(catalog["items"][0]), asset
 
 
@@ -237,7 +236,11 @@ async def test_forged_receipt_rejected_and_trusted_fixture_registers_idempotentl
     version = frozen(request)
     async with db() as s:
         repo = WorkbenchRepository(s)
-        svc = FormalMethods(repo, operations=(OPERATION,))
+        svc = FormalMethods(
+            repo,
+            operations=(OPERATION,),
+            source_licenses=(license_record(request.draft.source.model_dump()),),
+        )
         pending = await svc.validate(request, caller="knowlab")
         with pytest.raises(Forbidden):
             await svc.register(version, caller="knowlab")
@@ -307,3 +310,95 @@ async def test_author_license_text_cannot_create_trusted_source_rights(db):
             await FormalMethods(
                 WorkbenchRepository(s), operations=(OPERATION,)
             ).validate(changed, caller="knowlab")
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "missing",
+        "revoked",
+        "expired",
+        "subject",
+        "delivery_only",
+        "evidence",
+        "revision",
+    ],
+)
+async def test_first_registration_rechecks_live_operator_license_after_validation(
+    db, change
+):
+    request, _ = await setup(db, licensed=True)
+    assert request.draft.source is not None
+    record = license_record(request.draft.source.model_dump())
+    version = frozen(request)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        svc = FormalMethods(repo, operations=(OPERATION,), source_licenses=(record,))
+        result = await svc.validate(request, caller="knowlab")
+        assert "source" not in result["missing_checks"]
+        # Synthetic complete receipt isolates the later licensing gate; it does
+        # not represent an implemented or successful runtime validator.
+        async with repo.transaction():
+            await s.execute(
+                text(
+                    "UPDATE workbench_formal_validations SET result=cast(:result as jsonb) WHERE run_id=:id"
+                ),
+                {
+                    "id": str(request.run_id),
+                    "result": json.dumps(
+                        {
+                            **result,
+                            "status": "passed",
+                            "receipt": version.validation.model_dump(mode="json"),
+                            "missing_checks": [],
+                            "details": [],
+                        }
+                    ),
+                },
+            )
+        changes = {
+            "revoked": {"status": "revoked"},
+            "expired": {"expires_at": "2021-01-01T00:00:00Z"},
+            "subject": {"subject": "other"},
+            "delivery_only": {"rights": {"execute": False, "deliver": True}},
+            "evidence": {
+                "evidence": {
+                    "reference": "test:new-review",
+                    "digest": "sha256:" + "d" * 64,
+                }
+            },
+            "revision": {"revision": 2},
+        }
+        records = (
+            ()
+            if change == "missing"
+            else (license_record(request.draft.source.model_dump(), **changes[change]),)
+        )
+        updated = FormalMethods(repo, operations=(OPERATION,), source_licenses=records)
+        with pytest.raises(CapabilityError, match="changed"):
+            await updated.register(version, caller="knowlab")
+        assert await repo.formal_method(OWNER, str(request.method_id), 1) is None
+
+
+async def test_stored_asset_license_label_has_no_authority(db):
+    request, asset = await setup(db)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        async with repo.transaction():
+            await s.execute(
+                text(
+                    "UPDATE workbench_capability_assets SET detail=detail || cast(:detail as jsonb) WHERE id=:id"
+                ),
+                {
+                    "id": asset["id"],
+                    "detail": json.dumps(
+                        {"execution_license_basis": "synthetic old label"}
+                    ),
+                },
+            )
+        svc = FormalMethods(repo, operations=(OPERATION,))
+        assert (await svc.sources("author"))["items"][0]["license_basis"] == "pending"
+        assert (
+            "source"
+            in (await svc.validate(request, caller="knowlab"))["missing_checks"]
+        )

@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from test_source_licenses import license_record
 
 from app.application.errors.exceptions import UnauthorizedError
 from app.application.workbench.formal_methods import FormalMethods
@@ -256,6 +257,52 @@ def app_and_repo(monkeypatch):
     )
     monkeypatch.setattr(relation_auth, "relation_verifier", lambda _: verifier)
     return app, repo
+
+
+async def test_asset_detail_cannot_claim_source_execution_rights(app_and_repo):
+    app, repo = app_and_repo
+    repo.assets[ASSET]["detail"]["execution_license_basis"] = "operator approved"
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://127.0.0.1"
+    ) as client:
+        sources = await client.get(
+            f"{BASE}/users/author/formal-method-sources", headers=HEADERS
+        )
+        assert sources.status_code == 200
+        assert sources.json()["items"][0]["license_basis"] == "pending"
+
+
+async def test_route_uses_configured_rights_without_exposing_review_evidence(
+    app_and_repo, monkeypatch
+):
+    app, repo = app_and_repo
+    body = validation_body()
+    record = license_record(body["draft"]["source"])
+    settings = Settings(_env_file=None, workbench_source_licenses=(record,))
+    monkeypatch.setattr(knowbot_runtime_routes, "get_settings", lambda: settings)
+    monkeypatch.setattr(knowbot_runtime_routes, "WorkbenchRepository", lambda _: repo)
+    app.dependency_overrides[knowbot_runtime_routes.formal_methods] = lambda: (
+        knowbot_runtime_routes.formal_methods(None)
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://127.0.0.1"
+    ) as client:
+        sources = await client.get(
+            f"{BASE}/users/author/formal-method-sources", headers=HEADERS
+        )
+        assert sources.status_code == 200
+        source = sources.json()["items"][0]
+        assert source["license_basis"] == record.basis
+        assert record.evidence.reference not in sources.text
+        assert record.evidence.digest not in sources.text
+        body["draft"]["source"] = source
+        result = await client.post(
+            f"{BASE}/formal-method-validations", headers=HEADERS, json=body
+        )
+        assert result.status_code == 202
+        assert result.json()["status"] == "pending"
+        assert "source" not in result.json()["missing_checks"]
+        assert "authorization" in result.json()["missing_checks"]
 
 
 @pytest.mark.parametrize(
