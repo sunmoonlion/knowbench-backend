@@ -25,6 +25,7 @@ def parent():
         operation_digest="b" * 64,
         requirement=ACCESS,
         delegable=True,
+        recipient_call_id=None,
         expires_at=expiry,
         method_ids=(),
     )
@@ -50,7 +51,10 @@ def test_authority_inheritance_does_not_require_or_fetch_input_values():
     check_delegation(root, leaf)
     assert leaf.grants == root.grants
     assert leaf.parent_call_id == root.call_id
-    assert not {"inputs", "content", "credentials"} & MethodAuthorization.model_fields.keys()
+    assert (
+        not {"inputs", "content", "credentials"}
+        & MethodAuthorization.model_fields.keys()
+    )
 
 
 @pytest.mark.parametrize(
@@ -144,3 +148,52 @@ def test_empty_scope_still_expires_and_cannot_gain_an_account():
         check_delegation(root, leaf, now=datetime.now(UTC) + timedelta(days=1))
     with pytest.raises(CapabilityError):
         delegate(root, call_id=uuid4(), method_id="child", requirements=parent().grants)
+
+
+def test_direct_confirmation_is_for_one_call_and_cannot_delegate_to_a_grandchild():
+    root = parent()
+    recipient = uuid4()
+    direct = root.grants[0].model_copy(
+        update={
+            "delegable": False,
+            "recipient_call_id": recipient,
+        }
+    )
+    root = root.model_copy(update={"grants": (direct,)})
+    leaf = delegate(root, call_id=recipient, method_id="child", requirements=(direct,))
+    check_delegation(root, leaf)
+    for requirements in (
+        leaf.grants,
+        (direct.model_copy(update={"delegable": True, "recipient_call_id": None}),),
+        (direct.model_copy(update={"recipient_call_id": uuid4()}),),
+    ):
+        with pytest.raises(CapabilityError):
+            delegate(
+                leaf, call_id=uuid4(), method_id="child", requirements=requirements
+            )
+    with pytest.raises(CapabilityError):
+        check_delegation(root.model_copy(update={"revoked": True}), leaf)
+    with pytest.raises(CapabilityError):
+        check_delegation(root.model_copy(update={"grants": ()}), leaf)
+
+
+def test_explicit_resource_delegation_may_narrow_to_a_direct_recipient():
+    root = parent()  # An already verified resource-owner grant, not user selection.
+    recipient = uuid4()
+    direct = root.grants[0].model_copy(
+        update={
+            "delegable": False,
+            "recipient_call_id": recipient,
+        }
+    )
+    leaf = delegate(root, call_id=recipient, method_id="child", requirements=(direct,))
+    check_delegation(root, leaf)
+    with pytest.raises(CapabilityError):
+        delegate(leaf, call_id=uuid4(), method_id="child", requirements=(direct,))
+
+
+def test_legacy_grant_without_recipient_is_not_an_implicit_delegation():
+    raw = parent().grants[0].model_dump(mode="json")
+    raw.pop("recipient_call_id")
+    with pytest.raises(ValueError):
+        PermissionGrant.model_validate(raw)

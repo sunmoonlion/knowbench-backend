@@ -431,6 +431,18 @@ class SandboxLink:
         if thread_id and cumulative_of(reported) is not None:
             self.totals[thread_id] = cumulative_of(reported)
         if usage.total == 0:
+            # A well-formed, explicitly zero last call is evidence, unlike an
+            # absent report or a duplicate nonzero cumulative notification.
+            last = reported.get("last") if isinstance(reported, dict) else None
+            fields = ("inputTokens", "outputTokens", "totalTokens")
+            if (
+                isinstance(last, dict)
+                and all(type(last.get(k)) is int and last[k] == 0 for k in fields)
+                and params.get("turnId")
+                and (waiter := self.turn_waiters.get(params["turnId"]))
+                and waiter["thread_id"] == thread_id
+            ):
+                waiter["reported"] = True
             return None
         turn_id = params.get("turnId") or self.active_turns.get(thread_id or "")
         so_far = usage
@@ -724,6 +736,8 @@ class SandboxLink:
                 cost=Decimal("0"),
                 error="本阶段工具配置未生效，已停止，尚未调用模型；请修复运行环境后重试。",
                 platform_failure=True,
+                not_started=True,
+                usage_known=True,
             )
         tool_error = await unavailable_data_tools(client, thread_id, required_data)
         if tool_error:
@@ -734,6 +748,8 @@ class SandboxLink:
                 cost=Decimal("0"),
                 error=tool_error,
                 platform_failure=True,
+                not_started=True,
+                usage_known=True,
             )
         result = await client.request(
             "turn/start",
@@ -791,6 +807,8 @@ class SandboxLink:
             else None,
             "tool_failure": None,
             "tool_stop_unconfirmed": False,
+            "permission_failure": None,
+            "permission_stop_unconfirmed": False,
         }
         self.turn_waiters[turn_id] = waiter
         self.active_turns[thread_id] = turn_id
@@ -827,7 +845,19 @@ class SandboxLink:
                 if waiter["future"].done():
                     break
                 if expected_attempt and self.capability_scopes.get(thread_id):
-                    waiting = await self.method_capability_wait(expected_attempt)
+                    waiting, revoked = await self.method_capability_state(
+                        expected_attempt
+                    )
+                    if revoked:
+                        await self._stop_guarded_turn(
+                            client,
+                            thread_id,
+                            turn_id,
+                            waiter,
+                            "revoked",
+                            stage="permission",
+                        )
+                        break
                     if waiting != capability_waiting:
                         if waiting:
                             self._wait_started(thread_id)
@@ -949,11 +979,17 @@ class SandboxLink:
             turn_id=turn_id,
             final_text=waiter["text"],
             tokens=used.as_json(),
+            usage_known=waiter["reported"],
             error=waiter["error"],
             environment_lost=waiter["env_lost"],
             cost=cost_of(
                 used, self.runner.prices.of(self.models.get(thread_id) or None)
-            ),
+            )
+            if waiter["reported"]
+            or not (
+                waiter["permission_failure"] or waiter["permission_stop_unconfirmed"]
+            )
+            else None,
             interrupted=waiter["interrupted"] or stop is not None,
             stopped_by_user=stop is not None,
             stop_note=(stop or {}).get("note"),
@@ -966,6 +1002,8 @@ class SandboxLink:
             tool_stop_unconfirmed=waiter["tool_stop_unconfirmed"],
             idle_failure=waiter["idle_failure"],
             idle_stop_unconfirmed=waiter["idle_stop_unconfirmed"],
+            permission_failure=waiter["permission_failure"],
+            permission_stop_unconfirmed=waiter["permission_stop_unconfirmed"],
             platform_failure=bool(
                 waiter["tool_failure"] or waiter["tool_stop_unconfirmed"]
             ),
@@ -996,12 +1034,15 @@ class SandboxLink:
                 except TimeoutError:
                     confirmed = await self.turn_running(thread_id, turn_id) is False
             except Exception:  # noqa: BLE001
-                confirmed = False
+                # A completed turn may reject interruption; only live idle
+                # metadata (not that error) can still prove it has stopped.
+                confirmed = await self.turn_running(thread_id, turn_id) is False
         prefix = {
             "planning": "data_planning",
             "lookup": "expert_lookup",
             "tool": "tool_execution",
             "idle": "step_progress",
+            "permission": "method_permission",
         }[stage]
         waiter["error"] = f"{prefix}_{reason}"
         if confirmed:
@@ -1016,7 +1057,7 @@ class SandboxLink:
             waiter["error"] += ": stop not confirmed; execution requires recovery"
 
     async def stop_and_confirm(
-        self, thread_id: str | None, within: float
+        self, thread_id: str | None, within: float, *, turn_id: str | None = None
     ) -> tuple[str | None, bool]:
         """接手没人推的委托时：这条线若还有一轮在跑（上一任开的），按那一轮的编号停下它，再读线程确认它停了。
 
@@ -1026,10 +1067,17 @@ class SandboxLink:
         if not thread_id:
             return None, True
         await self.ensure_thread(thread_id)
-        turn_id = self.active_turns.get(thread_id)
-        if turn_id is None:
-            return None, True
-        await self.interrupt(thread_id, turn_id)
+        turn_id = turn_id or self.active_turns.get(thread_id)
+        if await self.turn_running(thread_id, turn_id) is False:
+            self.active_turns.pop(thread_id, None)
+            return turn_id, True
+        if turn_id is not None:
+            try:
+                await self.interrupt(thread_id, turn_id)
+            except Exception:  # noqa: BLE001
+                # The target can finish between metadata read and interruption.
+                # Continue to require an explicit idle read, even on RPC error.
+                pass
         loop = asyncio.get_running_loop()
         deadline = loop.time() + within
         while True:
@@ -1082,19 +1130,27 @@ class SandboxLink:
         except Exception:  # noqa: BLE001 — 提醒记不下来不影响这一步
             log.warning("stall notice not recorded task=%s", context["task_id"])
 
-    async def turn_running(self, thread_id: str, turn_id: str) -> bool | None:
-        """那一轮还在跑吗：读线程（带各轮）看它的状态。读不到就是 None（不知道）。"""
+    async def turn_running(self, thread_id: str, turn_id: str | None) -> bool | None:
+        """Read live metadata: omitted/paginated turns never prove a stop."""
         client = await self.ensure_connected()
         try:
             read = await client.request(
-                "thread/read", {"threadId": thread_id, "includeTurns": True}, timeout=30
+                "thread/read",
+                {"threadId": thread_id, "includeTurns": False},
+                timeout=30,
             )
         except Exception:  # noqa: BLE001
             return None
-        for turn in ((read or {}).get("thread") or {}).get("turns") or []:
-            if turn.get("id") == turn_id:
-                return turn.get("status") == "inProgress"
-        return False
+        thread = read.get("thread") if isinstance(read, dict) else None
+        if not isinstance(thread, dict) or thread.get("id") != thread_id:
+            return None
+        status_object = thread.get("status")
+        status = status_object.get("type") if isinstance(status_object, dict) else None
+        if status == "idle":
+            return False
+        if status == "active":
+            return True
+        return None
 
     async def interrupt(
         self, thread_id: str | None, turn_id: str | None = None
@@ -1419,23 +1475,29 @@ class SandboxLink:
         except Exception:  # noqa: BLE001
             log.info("answer to a request of an ended turn failed rid=%s", rid)
 
-    async def method_capability_wait(self, expected: tuple[str, str]) -> bool:
-        """External MCP approvals use the same stopped clock as native user requests."""
+    async def method_capability_state(
+        self, expected: tuple[str, str]
+    ) -> tuple[bool, bool]:
+        """Read approval wait and durable revocation for this exact active attempt."""
         async with self.runner.stores() as repo:
             task = await repo.get_task(expected[0])
+            if str(task.get("active_attempt_id")) != expected[1]:
+                return False, False
+            attempt = await repo.get_attempt(expected[1])
+            revoked = bool((attempt.get("refs") or {}).get("permission_revocation"))
             if (
-                task["state"] != TaskState.WAITING
-                or str(task.get("active_attempt_id")) != expected[1]
+                revoked
+                or task["state"] != TaskState.WAITING
                 or not task.get("active_interaction_id")
             ):
-                return False
+                return False, revoked
             interaction = await repo.get_interaction(str(task["active_interaction_id"]))
             return bool(
                 str(interaction.get("attempt_id")) == expected[1]
                 and ((interaction.get("prompt") or {}).get("subject") or {}).get(
                     "capability_call_id"
                 )
-            )
+            ), False
 
     def _wait_started(self, thread_id: str) -> None:
         if not self._waits_open.get(thread_id):
@@ -2055,25 +2117,43 @@ class Runner:
         try:
             async with self.stores() as repo:
                 link = await self.link_for(task["sandbox_id"], repo)
+                attempt = (
+                    await repo.get_attempt(str(task["active_attempt_id"]))
+                    if task.get("active_attempt_id")
+                    else None
+                )
+                persisted_turn = ((attempt or {}).get("refs") or {}).get(
+                    "runtime_turn_id"
+                )
             leftover, stopped = await asyncio.wait_for(
-                link.stop_and_confirm(task.get("thread_id"), self.stop_confirm_seconds),
+                link.stop_and_confirm(
+                    task.get("thread_id"),
+                    self.stop_confirm_seconds,
+                    turn_id=persisted_turn,
+                ),
                 timeout=self.stop_confirm_seconds + 30,
             )
         except Exception:  # noqa: BLE001 - 停不下、确认不了也照样收尾，只是先不放行下一位
             log.warning("could not stop the leftover turn task=%s", task_id)
         try:
             async with self.stores() as repo:
-                state = await Ledger(repo).settle_unattended(
-                    task_id,
-                    expected_version=int(task["state_version"]),
-                    reason={
-                        "error": "the runner driving this task restarted; "
-                        "the step did not finish",
-                        "attempt_id": task.get("active_attempt_id"),
-                        "turn_id": leftover,
-                    },
-                    stopped=stopped,
+                from app.application.workbench.method_permission_recovery import (
+                    recover_revoked_method,
                 )
+
+                state = await recover_revoked_method(repo, task, stopped=stopped)
+                if state is None:
+                    state = await Ledger(repo).settle_unattended(
+                        task_id,
+                        expected_version=int(task["state_version"]),
+                        reason={
+                            "error": "the runner driving this task restarted; "
+                            "the step did not finish",
+                            "attempt_id": task.get("active_attempt_id"),
+                            "turn_id": leftover,
+                        },
+                        stopped=stopped,
+                    )
             log.info(
                 "advisor stopped task=%s state=%s (nobody was driving it; turn=%s stopped=%s)",
                 task_id,

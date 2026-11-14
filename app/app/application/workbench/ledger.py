@@ -67,6 +67,18 @@ def _budget(row: dict[str, Any]) -> Budget:
     )
 
 
+def _revoked_usage(attempt: dict[str, Any]) -> dict[str, Any]:
+    refs = attempt.get("refs") or {}
+    if not refs.get("permission_revocation"):
+        return {}
+    reported = (refs.get("usage_observed") or {}).get("estimated_cost")
+    return {
+        "usage_pending": True,
+        "turn_id": refs.get("runtime_turn_id"),
+        "pending_cost": Decimal(str(reported)) if reported is not None else None,
+    }
+
+
 def writes_files(task: dict[str, Any]) -> bool:
     """这件委托的专家会不会往项目里写成稿文件（0015 §3.3）。认不出专家包时按会写算，照旧指向底稿。"""
     try:
@@ -442,6 +454,7 @@ class Ledger:
                     target,
                     failure_code="cancelled" if cancelled else PLATFORM_FAILURE,
                     retryable=False,
+                    **_revoked_usage(attempt),
                 )
             done = await self.transition(
                 task_id,
@@ -693,7 +706,8 @@ class Ledger:
     ) -> dict[str, Any]:
         """取消意图先持久化（AT-13），同一事务里直接收成「已取消」，不等推它的程序来落实（0034 §三.1）。
 
-        开着的那一轮尝试不论委托在跑还是在等，都一起关掉（这时不知道花了多少，记 0、预留全退），
+        开着的那一轮尝试不论委托在跑还是在等，都一起关掉；撤权轮费用未核实仍保留预留，
+        其它既有取消路径沿用原释放方式。
         调用方照发一次中断；推它的程序若还活着，这一轮跑完撞上终态就只补记花费（`record_late_cost`）。
         Codex 里那一轮可能还在跑（在跑、或等着那一轮里的审批与反问）：项目先不放行下一位（`turn_open`），
         等那一轮确认结束（`release_turn`），最多 TURN_HOLD_SECONDS。
@@ -741,6 +755,7 @@ class Ledger:
                     str(attempt["id"]),
                     AttemptState.CANCELLED,
                     failure_code="cancelled",
+                    **_revoked_usage(attempt),
                 )
             done = await self.transition(
                 task_id,
@@ -831,6 +846,90 @@ class Ledger:
                 )
             return True
 
+    async def observe_pending_usage(
+        self,
+        task_id: str,
+        *,
+        attempt_id: str,
+        turn_id: str,
+        estimated_cost: Decimal | None,
+        tokens: dict | None,
+    ) -> None:
+        """A trusted driver reports partial usage after cancellation, not a final bill."""
+        if not turn_id or (estimated_cost is not None and estimated_cost < 0):
+            raise ValueError(
+                "Pending usage requires a turn and nonnegative reported cost"
+            )
+        async with self.repo.transaction():
+            task = await self.repo.get_task(task_id, for_update=True)
+            attempt = await self.repo.get_attempt(attempt_id, for_update=True)
+            if str(attempt["task_id"]) != task_id:
+                raise IdempotencyConflict(
+                    "Pending usage attempt belongs to another task"
+                )
+            refs = dict(attempt.get("refs") or {})
+            pending = refs.get("usage_pending")
+            if not pending:
+                return
+            if any(
+                value is not None and value != turn_id
+                for value in (pending.get("turn_id"), refs.get("runtime_turn_id"))
+            ):
+                raise IdempotencyConflict("Pending usage belongs to another turn")
+            held = Decimal(str(pending["reserved"]))
+            wanted = max(held, estimated_cost or Decimal("0"))
+            observed = {
+                "turn_id": turn_id,
+                "estimated_cost": str(estimated_cost)
+                if estimated_cost is not None
+                else None,
+                "tokens": tokens or {},
+                "complete": False,
+            }
+            if (
+                observed == refs.get("usage_observed")
+                and wanted == held
+                and pending.get("turn_id") == turn_id
+            ):
+                return
+            refs["runtime_turn_id"] = turn_id
+            refs["usage_observed"] = observed
+            refs["usage_pending"] = {
+                **pending,
+                "turn_id": turn_id,
+                "reserved": str(wanted),
+                "reported_cost": observed["estimated_cost"],
+            }
+            await self.repo.update_attempt(attempt_id, refs=refs)
+            budget = _budget(task)
+            if wanted > held:
+                budget.reserved += wanted - held
+                await self.repo.ledger_append(
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    entry="reserve",
+                    amount=wanted - held,
+                    note="late partial usage awaiting final reconciliation",
+                )
+                await self.repo.cas_task(
+                    task_id,
+                    expected_version=int(task["state_version"]),
+                    budget=budget.as_json(),
+                )
+            await self.repo.append_event(
+                session_id=str(task["session_id"]),
+                kind="task",
+                event_type="attempt/usage_pending",
+                payload={
+                    "attempt_id": attempt_id,
+                    "turn_id": turn_id,
+                    "reported_cost": observed["estimated_cost"],
+                    "complete": False,
+                },
+                task_id=task_id,
+                attempt_id=attempt_id,
+            )
+
     async def record_late_cost(
         self,
         task_id: str,
@@ -839,14 +938,19 @@ class Ledger:
         consumed: Decimal,
         tokens: dict | None,
         turn_id: str | None,
+        not_started: bool = False,
     ) -> None:
         """委托已被别人收尾（取消、测试超时、对账）之后，推它的程序这一轮才跑完：花掉的钱补记上（0034 §三.1）。
 
-        尝试已经关掉、预留已经退了：花费加进委托的 `budget.used` 和这一轮尝试的花费（步骤上看得到这一步花了
-        多少），记一笔 consume 和一条事件；不碰预留，不改尝试的状态。按那一轮的编号去重：同一轮只记一次。
+        普通已关闭尝试的预留已经退了；usage_pending 尝试仍保留自己的预留，只有精确轮次的完整费用
+        回执才能结清（包括已确认零费用）。不能把迟到的部分 usage 通知当完整回执。按轮次去重，不改状态。
         """
-        if not consumed:
-            return
+        if consumed < 0:
+            raise ValueError("Consumption cannot be negative")
+        if not_started and (consumed != 0 or turn_id is not None):
+            raise ValueError(
+                "An unstarted turn cannot have consumption or a turn identity"
+            )
         async with self.repo.transaction():
             task = await self.repo.get_task(task_id, for_update=True)
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
@@ -854,6 +958,35 @@ class Ledger:
                 raise IdempotencyConflict("late cost attempt belongs to another task")
             if turn_id and turn_id in (attempt.get("turn_ids") or []):
                 return  # 这一轮已经记过：同一笔花费只记一次（重复回报、重试）
+            refs = dict(attempt.get("refs") or {})
+            pending = refs.get("usage_pending")
+            if (
+                pending
+                and not_started
+                and (
+                    pending.get("turn_id") is not None
+                    or refs.get("runtime_turn_id") is not None
+                )
+            ):
+                raise IdempotencyConflict(
+                    "An observed turn cannot be declared unstarted"
+                )
+            if (
+                pending
+                and not not_started
+                and (not turn_id or pending.get("turn_id") != turn_id)
+            ):
+                raise IdempotencyConflict(
+                    "Pending usage requires its exact recorded turn"
+                )
+            if not consumed and not pending:
+                return
+            held = Decimal(str(pending["reserved"])) if pending else Decimal("0")
+            if pending:
+                refs.pop("usage_pending")
+                refs["usage_reconciled"] = {"turn_id": turn_id, "amount": str(consumed)}
+                if not_started:
+                    refs["usage_reconciled"]["not_started"] = True
             await self.repo.update_attempt(
                 attempt_id,
                 budget_consumed={
@@ -864,9 +997,23 @@ class Ledger:
                     "tokens": tokens or {},
                 },
                 **({"turn_ids": [*attempt["turn_ids"], turn_id]} if turn_id else {}),
+                **({"refs": refs} if pending else {}),
             )
             budget = _budget(task)
             budget.used += consumed
+            if held:
+                if held < 0 or held > budget.reserved:
+                    raise IdempotencyConflict(
+                        "Pending usage reservation is inconsistent"
+                    )
+                budget.reserved -= held
+                await self.repo.ledger_append(
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    entry="release",
+                    amount=held,
+                    note="pending usage reconciled",
+                )
             await self.repo.cas_task(
                 task_id,
                 expected_version=int(task["state_version"]),
@@ -998,8 +1145,18 @@ class Ledger:
         retryable: bool | None = None,
         turn_id: str | None = None,
         output_artifacts: list | None = None,
+        usage_pending: bool = False,
+        pending_cost: Decimal | None = None,
     ) -> dict[str, Any]:
         target = AttemptState(target)
+        if usage_pending and (target not in ATTEMPT_TERMINAL or consumed != 0):
+            raise ValueError(
+                "Unknown usage can only close an attempt without a consumption claim"
+            )
+        if pending_cost is not None and (not usage_pending or pending_cost < 0):
+            raise ValueError(
+                "Reported pending cost requires unknown usage and a nonnegative amount"
+            )
         async with self.repo.transaction():
             # Attempt ownership is immutable; peek only to identify the task,
             # then take task -> attempt locks like dispatch, cancel and recovery.
@@ -1008,7 +1165,7 @@ class Ledger:
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
             validate_attempt_transition(attempt["status"], target)
             fields: dict[str, Any] = {"status": target}
-            if turn_id:
+            if turn_id and not usage_pending:
                 fields["turn_ids"] = [*attempt["turn_ids"], turn_id]
             if target is AttemptState.RUNNING and attempt["started_at"] is None:
                 fields["started_at"] = datetime.now(UTC)
@@ -1021,7 +1178,11 @@ class Ledger:
             budget = _budget(task)
             task_fields: dict[str, Any] = {}
             if consumed:
-                reserved = Decimal(str(attempt["budget_allocated"].get("amount", "0")))
+                reserved = max(
+                    Decimal("0"),
+                    Decimal(str(attempt["budget_allocated"].get("amount", "0")))
+                    - Decimal(str(attempt["budget_consumed"].get("amount", "0"))),
+                )
                 budget.used += consumed
                 budget.reserved = max(
                     Decimal("0"), budget.reserved - min(consumed, reserved)
@@ -1043,9 +1204,34 @@ class Ledger:
             if target in ATTEMPT_TERMINAL:
                 leftover = (
                     Decimal(str(attempt["budget_allocated"].get("amount", "0")))
+                    - Decimal(str(attempt["budget_consumed"].get("amount", "0")))
                     - consumed
                 )
-                if leftover > 0 and budget.reserved > 0:
+                if usage_pending:
+                    held = max(Decimal("0"), leftover, pending_cost or Decimal("0"))
+                    extra = held - max(Decimal("0"), leftover)
+                    if extra:
+                        budget.reserved += extra
+                        await self.repo.ledger_append(
+                            task_id=str(task["id"]),
+                            attempt_id=attempt_id,
+                            entry="reserve",
+                            amount=extra,
+                            note="reported usage awaiting final reconciliation",
+                        )
+                    fields["refs"] = {
+                        **(attempt.get("refs") or {}),
+                        "usage_pending": {
+                            "turn_id": turn_id,
+                            "reserved": str(held),
+                            **(
+                                {"reported_cost": str(pending_cost)}
+                                if pending_cost is not None
+                                else {}
+                            ),
+                        },
+                    }
+                elif leftover > 0 and budget.reserved > 0:
                     rel = min(leftover, budget.reserved)
                     budget.reserved -= rel
                     await self.repo.ledger_append(
@@ -1071,7 +1257,8 @@ class Ledger:
                     "from": attempt["status"],
                     "to": target,
                     "failure_code": failure_code,
-                    "consumed": str(consumed),
+                    "consumed": None if usage_pending else str(consumed),
+                    **({"cost_status": "pending"} if usage_pending else {}),
                 },
                 task_id=str(task["id"]),
                 attempt_id=attempt_id,

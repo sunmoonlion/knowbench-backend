@@ -116,7 +116,8 @@ class CallRepositoryMixin:
 
     async def recover_calls(self, owner, session_id):
         # Remote adapter has a 45 s deadline. After 2 min a lost dispatch receipt
-        # is unknown, never retried. Expired approval cannot authorize an operation.
+        # is unknown, never retried. Expired/cancelled approvals cannot authorize
+        # an operation; an undelivered intent remains distinct from unknown I/O.
         async with self.transaction():
             await self.session.execute(
                 text("""UPDATE workbench_calls c
@@ -125,6 +126,7 @@ class CallRepositoryMixin:
                 WHERE c.kind='tool' AND c.owner_actor_id=:o AND c.session_id=:s AND
                   ((c.status='dispatching' AND c.updated_at < now()-interval '2 minutes') OR
                    (c.status='awaiting_approval' AND EXISTS
-                     (SELECT 1 FROM workbench_interactions i WHERE i.id=c.interaction_id AND i.expires_at <= now())))"""),
+                     (SELECT 1 FROM workbench_interactions i WHERE i.id=c.interaction_id
+                       AND (i.expires_at <= now() OR i.status IN ('cancelled','expired')))))"""),
                 {"o": owner, "s": session_id},
             )

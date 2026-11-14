@@ -58,7 +58,12 @@ from app.domain.workbench.skill_package import (
     skill_files,
     unpack_skill,
 )
-from app.domain.workbench.states import TaskState, WaitingReason, Wheel
+from app.domain.workbench.states import (
+    ATTEMPT_TERMINAL,
+    TaskState,
+    WaitingReason,
+    Wheel,
+)
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
 
@@ -628,6 +633,19 @@ class Capabilities:
                 session_id,
                 {**selected["runtime"], "aborted": True, "status": "completed"},
             )
+            attempt = scope.get("attempt")
+            if attempt and attempt["status"] not in ATTEMPT_TERMINAL:
+                await self.repo.update_attempt(
+                    str(attempt["id"]),
+                    refs={
+                        **(attempt.get("refs") or {}),
+                        "permission_revocation": {
+                            "call_id": root["id"],
+                            "revision": revoked.revision,
+                            "context": scope["context"],
+                        },
+                    },
+                )
         return await self.view(owner, session_id, selected)
 
     async def hold_method(self, owner, session_id):

@@ -3,7 +3,14 @@
   "contract": "knowlab/formal-method/v1",
   "source_sha256": {
     "formal_method.py": "f99536f27fb699de5ec6861c60a212b0c1fe368462b63f03802e8192f3c7fee4",
-    "formal_method_compiler.py": "65d48964a395161892a47c0dfb186b976cfff0e6c7b3f0afcf83d397d182b544"
+    "formal_method_compiler.py": "65d48964a395161892a47c0dfb186b976cfff0e6c7b3f0afcf83d397d182b544",
+    "formal_method_admission.py": "9831565946de0ace9b1e3b0f7d49ab152fdc3c254174fcd10c6854baf5dc5a75"
   },
-  "schema_sha256": "0387b577ad065f16995c0b14b1302c1e1abba8b1059bc837e2dbd30efac13db7"
+  "schema_sha256": "0387b577ad065f16995c0b14b1302c1e1abba8b1059bc837e2dbd30efac13db7",
+  "validation_schema_sha256": {
+    "validation-request": "e260a7399e5d8b5ade8295e93a4a9fb15c9ac677ee73fa50d267926ba91a1ac2",
+    "validation-result": "61dacbb9c66d0f29a05c99f7b7885a1e2885782ddb1b52b147279bb38b9761a0",
+    "registration-request": "d16b03eb855a89d0fd62150d46da4cc186846bfc9b55e692e182864ea4624f7e",
+    "registration-result": "a7672a35e9bd9e3563cf1a6b021ebe44895cf7b6fa88c29effaa77b2535c2f3e"
+  }
 }

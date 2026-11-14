@@ -37,6 +37,14 @@ class TurnResult:
     tool_stop_unconfirmed: bool = False
     idle_failure: str | None = None
     idle_stop_unconfirmed: bool = False
+    permission_failure: str | None = None
+    permission_stop_unconfirmed: bool = False
+    # Only explicit pre-dispatch evidence proves that no model turn was sent.
+    not_started: bool = False
+    usage_known: bool = False
+    # Only an authoritative complete receipt may settle a pending interrupted turn.
+    # Current app-server usage notifications are incremental, never final receipts.
+    usage_final: bool = False
 
 
 class TurnDriver(Protocol):

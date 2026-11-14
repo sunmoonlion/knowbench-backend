@@ -142,7 +142,11 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
 
         def migrate_existing(sync):
             with Operations.context(MigrationContext.configure(sync)):
+                direct_migration = migration("20261115_0044_direct_method_grants.py")
+                formal_migration = migration("20261114_0043_formal_methods.py")
                 authorization_migration = migration("20261114_0042_authorizations.py")
+                direct_migration.downgrade()
+                formal_migration.downgrade()
                 authorization_migration.downgrade()
                 module.downgrade()
                 # Reproduce the former overloaded storage and active states.
@@ -160,6 +164,8 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
                 )
                 module.upgrade()
                 authorization_migration.upgrade()
+                formal_migration.upgrade()
+                direct_migration.upgrade()
                 assert (
                     sync.execute(
                         text("SELECT to_regclass('workbench_capability_calls')")

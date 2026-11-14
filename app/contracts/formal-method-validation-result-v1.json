@@ -1,0 +1,253 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/validation-result.schema.json",
+  "$defs": {
+    "FormalMethodValidationReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "knowlab/formal-method-validation/v1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "owner_subject": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Owner Subject",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "workdraft_id": {
+          "format": "uuid",
+          "title": "Workdraft Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "method_id": {
+          "format": "uuid",
+          "title": "Method Id",
+          "type": "string"
+        },
+        "definition_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Definition Digest",
+          "type": "string"
+        },
+        "source_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Digest"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "maxItems": 1000,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "checks": {
+          "items": {
+            "enum": [
+              "definition",
+              "source",
+              "dependencies",
+              "authorization",
+              "approval",
+              "isolation",
+              "outcome",
+              "business"
+            ],
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Checks",
+          "type": "array"
+        },
+        "uncovered": {
+          "items": {
+            "$ref": "#/$defs/UncoveredScenario"
+          },
+          "maxItems": 30,
+          "title": "Uncovered",
+          "type": "array"
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract",
+        "run_id",
+        "owner_subject",
+        "request_id",
+        "workdraft_id",
+        "revision",
+        "method_id",
+        "definition_digest",
+        "source_digest",
+        "dependencies",
+        "checks",
+        "uncovered",
+        "completed_at"
+      ],
+      "title": "FormalMethodValidationReceipt",
+      "type": "object"
+    },
+    "MethodRef": {
+      "additionalProperties": false,
+      "properties": {
+        "method_id": {
+          "format": "uuid",
+          "title": "Method Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method_id",
+        "version",
+        "digest"
+      ],
+      "title": "MethodRef",
+      "type": "object"
+    },
+    "UncoveredScenario": {
+      "additionalProperties": false,
+      "properties": {
+        "scenario": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Scenario",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Reason",
+          "type": "string"
+        },
+        "scope": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scenario",
+        "reason",
+        "scope"
+      ],
+      "title": "UncoveredScenario",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "const": "knowlab/formal-method-validation/v1",
+      "title": "Contract",
+      "type": "string"
+    },
+    "run_id": {
+      "format": "uuid",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "passed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "receipt": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/FormalMethodValidationReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "missing_checks": {
+      "items": {
+        "enum": [
+          "definition",
+          "source",
+          "dependencies",
+          "authorization",
+          "approval",
+          "isolation",
+          "outcome",
+          "business"
+        ],
+        "type": "string"
+      },
+      "maxItems": 8,
+      "title": "Missing Checks",
+      "type": "array"
+    },
+    "details": {
+      "items": {
+        "maxLength": 20000,
+        "minLength": 1,
+        "pattern": "\\S",
+        "type": "string"
+      },
+      "maxItems": 30,
+      "title": "Details",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract",
+    "run_id",
+    "status",
+    "receipt",
+    "missing_checks",
+    "details"
+  ],
+  "title": "formal-method v1 validation result",
+  "type": "object"
+}

@@ -506,7 +506,10 @@ class Advisor:
         async with self.stores() as repo:
             await Ledger(repo).end_turn_waits(task_id, attempt_id=attempt_id)
             task = await repo.get_task(task_id)
-            if (await repo.get_attempt(attempt_id))["status"] in ATTEMPT_TERMINAL:
+            attempt = await repo.get_attempt(attempt_id)
+            if attempt["status"] in ATTEMPT_TERMINAL or (attempt.get("refs") or {}).get(
+                "permission_revocation"
+            ):
                 return StepAssessment()
             if (
                 result.stopped_by_user
@@ -591,6 +594,9 @@ class Advisor:
             await repo.get_task(task_id, for_update=True)
             led = Ledger(repo)
             consumed = result.cost or Decimal("0")
+            cost_known = result.not_started or (
+                result.usage_final and result.cost is not None
+            )
             # 这一轮结束了：它里面还挂着的问题作废、委托回到在跑，下面才按结果走得下去
             await led.end_turn_waits(task_id, attempt_id=attempt_id)
             task = await repo.get_task(task_id)
@@ -604,6 +610,22 @@ class Advisor:
                     "step result does not belong to this task instance"
                 )
             settled = attempt["status"] in ATTEMPT_TERMINAL
+            revoked = bool((attempt.get("refs") or {}).get("permission_revocation"))
+            if revoked and not cost_known and not settled:
+                refs = {
+                    **(attempt.get("refs") or {}),
+                    "usage_observed": {
+                        "turn_id": result.turn_id,
+                        "tokens": result.tokens,
+                        "estimated_cost": str(result.cost)
+                        if result.cost is not None
+                        else None,
+                        "complete": False,
+                    },
+                }
+                if result.turn_id:
+                    refs["runtime_turn_id"] = result.turn_id
+                await repo.update_attempt(attempt_id, refs=refs)
             if not settled and attempt["status"] in (
                 AttemptState.CREATED,
                 AttemptState.SUSPENDED,
@@ -612,14 +634,34 @@ class Advisor:
             if settled:
                 # 这一轮跑着的时候委托已被别人收尾（取消、测试超时、对账；0034 §三.1），尝试也已关掉：
                 # 花掉的钱补记到委托上（按这一轮的编号只记一次）；这一轮结束了，放开项目，安静停下
-                await led.record_late_cost(
-                    task_id,
-                    attempt_id=attempt_id,
-                    consumed=consumed,
-                    tokens=result.tokens,
-                    turn_id=result.turn_id,
-                )
-                await led.release_turn(task_id, attempt_id=attempt_id)
+                if (
+                    (attempt.get("refs") or {}).get("usage_pending")
+                    and not cost_known
+                    and result.turn_id
+                ):
+                    await led.observe_pending_usage(
+                        task_id,
+                        attempt_id=attempt_id,
+                        turn_id=result.turn_id,
+                        estimated_cost=result.cost,
+                        tokens=result.tokens,
+                    )
+                if not (attempt.get("refs") or {}).get("usage_pending") or cost_known:
+                    await led.record_late_cost(
+                        task_id,
+                        attempt_id=attempt_id,
+                        consumed=consumed,
+                        tokens=result.tokens,
+                        turn_id=result.turn_id,
+                        not_started=result.not_started,
+                    )
+                if (
+                    not revoked
+                    or result.not_started
+                    or result.permission_failure
+                    or (result.interrupted and not result.permission_stop_unconfirmed)
+                ):
+                    await led.release_turn(task_id, attempt_id=attempt_id)
                 return (await repo.get_task(task_id))["state"]
             task = await repo.get_task(task_id)
             if str(task.get("active_attempt_id")) != attempt_id:
@@ -629,10 +671,12 @@ class Advisor:
                 await led.attempt_transition(
                     attempt_id,
                     AttemptState.CANCELLED,
-                    consumed=consumed,
+                    consumed=consumed if not revoked or cost_known else Decimal("0"),
                     tokens=result.tokens,
                     turn_id=result.turn_id,
                     failure_code="cancelled",
+                    usage_pending=revoked and not cost_known,
+                    pending_cost=result.cost if revoked and not cost_known else None,
                 )
                 if task["state"] in TASK_TERMINAL:
                     # 停在等人批准、等人回答时取消的：委托已经收成「已取消」，这里只把这一步记完
@@ -646,13 +690,25 @@ class Advisor:
                 result.lookup_stop_unconfirmed
                 or result.tool_stop_unconfirmed
                 or result.idle_stop_unconfirmed
+                or result.permission_stop_unconfirmed
+                or (
+                    (attempt.get("refs") or {}).get("permission_revocation")
+                    and (result.error or result.environment_lost or result.timed_out)
+                    and not (
+                        result.permission_failure
+                        or result.interrupted
+                        or result.not_started
+                    )
+                )
             ):
                 await led.settle_unattended(
                     task_id,
                     expected_version=int(task["state_version"]),
                     reason={
                         "error": result.error,
-                        "code": "step_progress_stop_unconfirmed"
+                        "code": "method_permission_stop_unconfirmed"
+                        if (attempt.get("refs") or {}).get("permission_revocation")
+                        else "step_progress_stop_unconfirmed"
                         if result.idle_stop_unconfirmed
                         else "tool_execution_stop_unconfirmed"
                         if result.tool_stop_unconfirmed
@@ -660,14 +716,37 @@ class Advisor:
                     },
                     stopped=False,
                 )
-                await led.record_late_cost(
-                    task_id,
-                    attempt_id=attempt_id,
-                    consumed=consumed,
+                if not revoked or cost_known:
+                    await led.record_late_cost(
+                        task_id,
+                        attempt_id=attempt_id,
+                        consumed=consumed,
+                        tokens=result.tokens,
+                        turn_id=result.turn_id,
+                    )
+                return (await repo.get_task(task_id))["state"]
+            if revoked:
+                from app.application.workbench.method_permission_recovery import (
+                    hold_revoked_method,
+                )
+
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.FAILED,
+                    consumed=consumed if cost_known else Decimal("0"),
                     tokens=result.tokens,
                     turn_id=result.turn_id,
+                    failure_code="method_permission_revoked",
+                    retryable=True,
+                    usage_pending=not cost_known,
+                    pending_cost=result.cost if not cost_known else None,
                 )
-                return (await repo.get_task(task_id))["state"]
+                return await hold_revoked_method(
+                    repo,
+                    task,
+                    attempt,
+                    cost_unknown=not cost_known,
+                )
             if result.idle_failure:
                 await led.attempt_transition(
                     attempt_id,

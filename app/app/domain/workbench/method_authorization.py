@@ -22,6 +22,10 @@ class PermissionGrant(Requirement):
     operation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     requirement: AccessRequirement
     delegable: bool = Field(strict=True)
+    # A user confirmation names an exact host-created invocation. It is direct
+    # authority for that recipient, never permission to delegate to descendants.
+    # None is only useful with an explicitly established resource-owner grant.
+    recipient_call_id: UUID | None
     expires_at: datetime
     # Resource-owner restrictions cannot be erased by the recipient. Empty means
     # no additional method restriction, not authority outside this grant.
@@ -33,6 +37,8 @@ class PermissionGrant(Requirement):
             raise ValueError("Permission expiry must include a timezone")
         if len(set(self.method_ids)) != len(self.method_ids):
             raise ValueError("Duplicate permission method restriction")
+        if self.delegable and self.recipient_call_id is not None:
+            raise ValueError("Direct invocation authority cannot also be delegable")
         return self
 
 
@@ -59,7 +65,13 @@ class MethodAuthorization(Requirement):
         return self
 
 
-def covers(parent: PermissionGrant, child: PermissionGrant, *, method_id: str) -> bool:
+def covers(
+    parent: PermissionGrant,
+    child: PermissionGrant,
+    *,
+    method_id: str,
+    call_id: UUID,
+) -> bool:
     """No union across grants, accounts, purposes or resource-role semantics."""
     a, b = parent.requirement, child.requirement
     if (
@@ -68,7 +80,13 @@ def covers(parent: PermissionGrant, child: PermissionGrant, *, method_id: str) -
         or parent.connection_id != child.connection_id
         or parent.connection_revision != child.connection_revision
         or parent.operation_digest != child.operation_digest
-        or not parent.delegable
+        or not (parent.delegable or parent.recipient_call_id == call_id)
+        or (child.delegable and not parent.delegable)
+        or (
+            parent.recipient_call_id is not None
+            and child.recipient_call_id != parent.recipient_call_id
+        )
+        or (child.recipient_call_id is not None and child.recipient_call_id != call_id)
         or child.expires_at > parent.expires_at
         or (parent.method_ids and method_id not in parent.method_ids)
         or (parent.method_ids and not set(child.method_ids) <= set(parent.method_ids))
@@ -120,7 +138,9 @@ def check_delegation(
             source is None
             or grant.expires_at <= now
             or source.expires_at <= now
-            or not covers(source, grant, method_id=child.method_id)
+            or not covers(
+                source, grant, method_id=child.method_id, call_id=child.call_id
+            )
         ):
             raise CapabilityError(
                 "Required method permission exceeds its live parent scope"

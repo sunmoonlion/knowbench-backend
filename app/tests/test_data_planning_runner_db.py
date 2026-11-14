@@ -224,6 +224,7 @@ async def test_stage_configuration_failure_never_spends_a_model_turn(db, blocker
             fake.in_progress[thread] = "existing-turn"
         result = await runner.links[sb].run_turn(thread, "do not spend")
         assert result.platform_failure and result.cost == 0 and result.turn_id is None
+        assert result.not_started and result.usage_known
         assert not any(r["method"] == "turn/start" for r in fake.requests)
         if blocker == "active":
             assert not any(r["method"] == "thread/unsubscribe" for r in fake.requests)

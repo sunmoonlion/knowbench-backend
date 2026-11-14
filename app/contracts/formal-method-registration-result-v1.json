@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/registration-result.schema.json",
+  "$defs": {
+    "MethodRef": {
+      "additionalProperties": false,
+      "properties": {
+        "method_id": {
+          "format": "uuid",
+          "title": "Method Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method_id",
+        "version",
+        "digest"
+      ],
+      "title": "MethodRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "reference": {
+      "$ref": "#/$defs/MethodRef"
+    },
+    "owner_subject": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Owner Subject",
+      "type": "string"
+    },
+    "status": {
+      "const": "registered",
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "reference",
+    "owner_subject",
+    "status"
+  ],
+  "title": "formal-method v1 registration result",
+  "type": "object"
+}

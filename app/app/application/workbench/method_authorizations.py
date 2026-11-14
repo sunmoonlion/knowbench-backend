@@ -25,6 +25,15 @@ async def confirm_method_permissions(
     """
     task = scope["task"]
     root = await root_call(repo, task)
+    from app.application.workbench.execution_plan import _meta, execution_for_task
+    from app.application.workbench.method_calls import step_call
+
+    view = await execution_for_task(repo, task)
+    call = (
+        await step_call(repo, task, _meta(view, int(task["current_step"])))
+        if view is not None and view.receipt is not None
+        else root
+    )
     previous = await repo.method_authorization(owner, root["id"], lock=True)
     current = MethodAuthorization.model_validate(previous) if previous else None
     expiry = datetime.now(UTC) + timedelta(hours=24)
@@ -37,7 +46,8 @@ async def confirm_method_permissions(
             connection_revision=assets_by_tool[key]["revision"],
             operation_digest=value["operation_digest"],
             requirement=value["requirement"],
-            delegable=True,
+            delegable=False,
+            recipient_call_id=UUID(call["id"]),
             expires_at=expiry,
             method_ids=(method_id,),
         )
@@ -67,12 +77,7 @@ async def confirm_method_permissions(
     )
     # Explicit reconfirmation may replace this child's expired/narrowed scope.
     # Merely widening a parent later still cannot change any existing child.
-    from app.application.workbench.execution_plan import _meta, execution_for_task
-    from app.application.workbench.method_calls import step_call
-
-    view = await execution_for_task(repo, task)
-    if view is not None and view.receipt is not None:
-        call = await step_call(repo, task, _meta(view, int(task["current_step"])))
+    if call["id"] != root["id"]:
         previous_child = await repo.method_authorization(owner, call["id"], lock=True)
         child = delegate(
             authorization,
@@ -187,6 +192,14 @@ async def bind_method_permissions(
     view = await execution_for_task(repo, task)
     if view is None or view.receipt is None:
         # A fixed workflow has no independently registered method children.
+        if any(
+            g.expires_at <= datetime.now(UTC)
+            or not (g.delegable or str(g.recipient_call_id) == root["id"])
+            for g in grants
+        ):
+            raise CapabilityError(
+                "Method direct authorization changed; reconfirm the step"
+            )
         return root["id"]
     call = await step_call(repo, task, _meta(view, int(task["current_step"])))
     existing = await repo.method_authorization(owner, call["id"], lock=True)
@@ -255,6 +268,9 @@ async def check_method_permissions(
                 grant = grants.get(digest([scope["context"], key]))
                 if (
                     grant is None
+                    or not (
+                        grant.delegable or grant.recipient_call_id == current.call_id
+                    )
                     or grant.expires_at <= datetime.now(UTC)
                     or str(grant.connection_id) != spec.get("connection_id")
                     or grant.connection_revision != spec.get("revision")

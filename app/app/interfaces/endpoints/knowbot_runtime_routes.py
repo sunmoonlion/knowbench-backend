@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from typing import Annotated, Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
 from fastapi.encoders import jsonable_encoder
@@ -17,11 +18,16 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.errors.exceptions import AppException
+from app.application.workbench.formal_methods import FormalMethods
 from app.application.workbench.incubations import IncubationService
 from app.application.workbench.test_execution import execution_view
 from app.application.workbench.test_runs import KnowbotTestService
 from app.bootstrap.workbench import incubation_service, test_run_service
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.formal_method_admission_generated import (
+    FormalMethodValidationRequest,
+    FrozenFormalMethod,
+)
 from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
 from app.domain.workbench.test_runs import CASE_ID, RUN_ID, Answers, RunRequest
 from app.infrastructure.security.relation_auth import (
@@ -30,8 +36,10 @@ from app.infrastructure.security.relation_auth import (
     require_testrun_service,
 )
 from app.infrastructure.storage.postgres import get_db_session
+from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints.commands_wakeup import publish_commands_wakeup
 from app.interfaces.http.internal.host_guard import internal_host_only
+from core.config import get_settings
 
 NO_STORE = {"Cache-Control": "no-store"}
 
@@ -63,6 +71,89 @@ def incubations(
 
 
 Incubations = Annotated[IncubationService, Depends(incubations)]
+
+
+def formal_methods(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> FormalMethods:
+    return FormalMethods(
+        WorkbenchRepository(session),
+        operations=get_settings().workbench_capability_operations,
+    )
+
+
+FormalService = Annotated[FormalMethods, Depends(formal_methods)]
+
+
+def formal_caller(caller: Caller) -> ServiceCaller:
+    if caller.caller != "knowlab":
+        raise AppException(
+            code="formal_method_caller_denied",
+            status_code=403,
+            msg="Formal method author authority is required",
+        )
+    return caller
+
+
+FormalCaller = Annotated[ServiceCaller, Depends(formal_caller)]
+
+
+@router.get("/users/{subject}/formal-method-sources")
+async def formal_sources(_: FormalCaller, subject: str, svc: FormalService):
+    try:
+        return _out(await svc.sources(subject))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-validations")
+async def submit_formal_validation(
+    caller: FormalCaller, body: FormalMethodValidationRequest, svc: FormalService
+):
+    try:
+        return _out(await svc.validate(body, caller=caller.caller), status_code=202)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/formal-method-validations/{run_id}")
+async def formal_validation(
+    caller: FormalCaller, run_id: UUID, owner_subject: str, svc: FormalService
+):
+    try:
+        return _out(
+            await svc.validation(owner_subject, str(run_id), caller=caller.caller)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-registrations")
+async def register_formal_method(
+    caller: FormalCaller, body: FrozenFormalMethod, svc: FormalService
+):
+    try:
+        return _out(await svc.register(body, caller=caller.caller))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/formal-method-registrations/{method_id}/versions/{version}")
+async def formal_registration(
+    caller: FormalCaller,
+    method_id: UUID,
+    version: Annotated[int, Path(ge=1)],
+    owner_subject: str,
+    svc: FormalService,
+):
+    try:
+        return _out(
+            await svc.registration(
+                owner_subject, str(method_id), version, caller=caller.caller
+            )
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 def _http(exc: WorkbenchError) -> AppException:

@@ -44,6 +44,9 @@ from app.infrastructure.workbench.authorization_repository import (
 )
 from app.infrastructure.workbench.call_repository import CallRepositoryMixin
 from app.infrastructure.workbench.capability_repository import CapabilityRepositoryMixin
+from app.infrastructure.workbench.formal_method_repository import (
+    FormalMethodRepositoryMixin,
+)
 
 # Recover only the historical planner/confirmation race: a confirmed supply
 # phase was marked ready while its task still waits for data. Never revive a
@@ -111,7 +114,8 @@ def _test_session(alias: str) -> str:
 
 
 class WorkbenchRepository(
-    CapabilityRepositoryMixin, CallRepositoryMixin, AuthorizationRepositoryMixin
+    CapabilityRepositoryMixin, CallRepositoryMixin, AuthorizationRepositoryMixin,
+    FormalMethodRepositoryMixin,
 ):
     def __init__(self, session: AsyncSession, *, browser_view: bool = False):
         self.session = session
@@ -2956,11 +2960,16 @@ class WorkbenchRepository(
                                    and c.payload->>'task_id' = t.id::text) as drive_queued
                    from workbench_tasks t join workbench_sessions s on s.id = t.session_id
                    left join workbench_interactions i on i.id = t.active_interaction_id
+                   left join workbench_attempts a on a.id = t.active_attempt_id
                    where s.sandbox_id::text = any(:sbs)
                      and (t.state in ('VALIDATING', 'QUEUED', 'RUNNING')
                           or (t.state = 'RECEIVED'
                               and coalesce(t.original_input->'client_context'->>'queued_behind', '') = '')
-                          or (t.state = 'WAITING' and coalesce(i.prompt->'subject'->>'request_id', '') <> ''))
+                          or (t.state = 'WAITING' and (
+                              coalesce(i.prompt->'subject'->>'request_id', '') <> ''
+                              or coalesce(i.prompt->'subject'->>'capability_call_id', '') <> ''
+                              or (a.status in ('CREATED', 'RUNNING', 'SUSPENDED')
+                                  and a.refs ? 'permission_revocation'))))
                    order by t.created_at"""
             ),
             {"sbs": list(sandbox_ids)},

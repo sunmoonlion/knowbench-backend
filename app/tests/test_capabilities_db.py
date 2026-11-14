@@ -611,11 +611,24 @@ async def test_migration_down_up_preserves_existing_sessions(db):
     )
     authority_module = importlib.util.module_from_spec(authority_spec)
     authority_spec.loader.exec_module(authority_module)
+    following = []
+    for filename in (
+        "20261114_0043_formal_methods.py",
+        "20261115_0044_direct_method_grants.py",
+    ):
+        later_spec = importlib.util.spec_from_file_location(
+            filename[:-3], path.with_name(filename)
+        )
+        later = importlib.util.module_from_spec(later_spec)
+        later_spec.loader.exec_module(later)
+        following.append(later)
     async with db() as s:
         conn = await s.connection()
 
         def cycle(sync):
             with Operations.context(MigrationContext.configure(sync)):
+                for later in reversed(following):
+                    later.downgrade()
                 authority_module.downgrade()
                 module.downgrade()
                 assert sync.execute(
@@ -623,6 +636,8 @@ async def test_migration_down_up_preserves_existing_sessions(db):
                 ).scalar()
                 module.upgrade()
                 authority_module.upgrade()
+                for later in following:
+                    later.upgrade()
 
         await conn.run_sync(cycle)
         await s.commit()

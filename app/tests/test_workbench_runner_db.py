@@ -100,7 +100,20 @@ class FakeAppServer:
                     else []
                 )
                 await send(
-                    {"id": rid, "result": {"thread": {"id": tid, "turns": turns}}}
+                    {
+                        "id": rid,
+                        "result": {
+                            "thread": {
+                                "id": tid,
+                                "turns": turns,
+                                "status": {
+                                    "type": "active"
+                                    if tid in self.in_progress
+                                    else "idle"
+                                },
+                            }
+                        },
+                    }
                 )
             else:
                 await send(
@@ -369,7 +382,20 @@ class FakeAppServer:
                 if tid in self.in_progress
                 else []
             )
-            await send({"id": rid, "result": {"thread": {"id": tid, "turns": turns}}})
+            await send(
+                {
+                    "id": rid,
+                    "result": {
+                        "thread": {
+                            "id": tid,
+                            "turns": turns,
+                            "status": {
+                                "type": "active" if tid in self.in_progress else "idle"
+                            },
+                        }
+                    },
+                }
+            )
         elif m == "thread/inject_items" and not self.refuse_inject:
             await send({"id": rid, "result": {}})
         else:
