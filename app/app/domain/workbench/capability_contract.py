@@ -102,6 +102,9 @@ class MethodContext(Strict):
     context: str | None = None
     requirements: MethodCapabilities | None = None
     access_requirements: list[AccessRequirement] = Field(default_factory=list)
+    permission_status: Literal[
+        "not_required", "unconfirmed", "active", "revoked", "expired"
+    ]
 
 
 class Selection(Strict):

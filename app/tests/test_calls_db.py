@@ -69,7 +69,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         repo = WorkbenchRepository(s)
         ledger = CallLedger(repo, OWNER)
         first, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {}
+            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
         )
         assert (
             fresh
@@ -77,7 +77,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
             and first["source_asset_id"] is None
         )
         same, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {}
+            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
         )
         assert (
             not fresh and same["id"] == first["id"] and same["status"] == "dispatching"
@@ -94,7 +94,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
             "succeeded",
         )
         same, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {}
+            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
         )
         assert not fresh and same["detail"]["response"] == {
             "result": {"isError": False}
@@ -104,9 +104,9 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
             await repo.capability_call(OWNER, first["id"])
 
 
-def migration():
+def migration(filename="20261114_0041_calls.py"):
     path = (
-        Path(__file__).resolve().parents[1] / "alembic/versions/20261114_0041_calls.py"
+        Path(__file__).resolve().parents[1] / "alembic/versions" / filename
     )
     spec = importlib.util.spec_from_file_location("call_migration", path)
     module = importlib.util.module_from_spec(spec)
@@ -142,6 +142,8 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
 
         def migrate_existing(sync):
             with Operations.context(MigrationContext.configure(sync)):
+                authorization_migration = migration("20261114_0042_authorizations.py")
+                authorization_migration.downgrade()
                 module.downgrade()
                 # Reproduce the former overloaded storage and active states.
                 sync.execute(
@@ -157,6 +159,7 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
                     {"i": external["call_id"]},
                 )
                 module.upgrade()
+                authorization_migration.upgrade()
                 assert (
                     sync.execute(
                         text("SELECT to_regclass('workbench_capability_calls')")
@@ -244,7 +247,7 @@ async def test_scope_change_after_authorization_cannot_create_a_false_parent(db)
             await ledger.begin(
                 ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
                 PLATFORM_TOOLS["list_project_conversations"],
-                {},
+                {"task": "task"},
                 task_id="other-task",
             )
         assert await s.scalar(text("SELECT count(*) FROM workbench_calls")) == 0
@@ -259,7 +262,7 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
         repo = WorkbenchRepository(s)
         ledger = CallLedger(repo, OWNER)
         call, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {}
+            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
         )
         assert fresh
         async with repo.transaction():
@@ -270,7 +273,7 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
                 {"id": call["id"]},
             )
         same, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {}
+            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
         )
         assert not fresh and same["id"] == call["id"] and same["status"] == "unknown"
         assert "response" not in same["detail"]

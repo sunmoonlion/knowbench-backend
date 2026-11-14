@@ -605,16 +605,24 @@ async def test_migration_down_up_preserves_existing_sessions(db):
     spec = importlib.util.spec_from_file_location("capability_migration", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    authority_path = path.with_name("20261114_0042_authorizations.py")
+    authority_spec = importlib.util.spec_from_file_location(
+        "authority_migration", authority_path
+    )
+    authority_module = importlib.util.module_from_spec(authority_spec)
+    authority_spec.loader.exec_module(authority_module)
     async with db() as s:
         conn = await s.connection()
 
         def cycle(sync):
             with Operations.context(MigrationContext.configure(sync)):
+                authority_module.downgrade()
                 module.downgrade()
                 assert sync.execute(
                     text("SELECT id FROM workbench_sessions WHERE id=:s"), {"s": sid}
                 ).scalar()
                 module.upgrade()
+                authority_module.upgrade()
 
         await conn.run_sync(cycle)
         await s.commit()

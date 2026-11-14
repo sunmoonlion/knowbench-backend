@@ -537,6 +537,27 @@
     "title": "ActionDecision",
     "type": "object"
   },
+  "MethodPermissionRevoke": {
+    "additionalProperties": false,
+    "properties": {
+      "revision": {
+        "minimum": 0,
+        "title": "Revision",
+        "type": "integer"
+      },
+      "method_context": {
+        "pattern": "^[a-f0-9]{64}$",
+        "title": "Method Context",
+        "type": "string"
+      }
+    },
+    "required": [
+      "revision",
+      "method_context"
+    ],
+    "title": "MethodPermissionRevoke",
+    "type": "object"
+  },
   "Asset": {
     "$defs": {
       "ConnectionDetail": {
@@ -1857,6 +1878,17 @@
             },
             "title": "Access Requirements",
             "type": "array"
+          },
+          "permission_status": {
+            "enum": [
+              "not_required",
+              "unconfirmed",
+              "active",
+              "revoked",
+              "expired"
+            ],
+            "title": "Permission Status",
+            "type": "string"
           }
         },
         "required": [
@@ -1864,7 +1896,8 @@
           "profile_id",
           "step_id",
           "declared_tools",
-          "managed_bindings_supported"
+          "managed_bindings_supported",
+          "permission_status"
         ],
         "title": "MethodContext",
         "type": "object"

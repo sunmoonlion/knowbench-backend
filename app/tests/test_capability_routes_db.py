@@ -15,6 +15,7 @@ from app.domain.workbench.capabilities import (
     AssetAction,
     ConnectionCreate,
     ConnectionRenew,
+    MethodPermissionRevoke,
     SelectionPut,
     SkillCreate,
 )
@@ -132,6 +133,7 @@ MODELS = (
     AssetAction,
     SelectionPut,
     ActionDecision,
+    MethodPermissionRevoke,
     Asset,
     Catalog,
     Selection,

@@ -319,13 +319,17 @@ async def open_method_step(
             raise MethodPlanInvalid("no next method instance")
         results = await accepted_results(repo, task, view)
         refs = _inputs(view, index, results, dispatch=True)
+        from app.application.workbench.method_calls import step_call
+
+        meta = _meta(view, index)
+        method_call = await step_call(repo, task, meta)
         opened = await ledger.open_attempt(
             task_id,
             step_id=step.step_id,
             step_version=step.step_version,
             reserve=Decimal(step.reserve),
             input_artifact_versions=refs,
-            meta=_meta(view, index),
+            meta={**meta, "method_call_id": method_call["id"]},
         )
         inputs = {
             ref["name"]: {

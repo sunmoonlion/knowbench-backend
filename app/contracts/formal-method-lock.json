@@ -1,0 +1,9 @@
+{
+  "provider": "knowlab",
+  "contract": "knowlab/formal-method/v1",
+  "source_sha256": {
+    "formal_method.py": "f99536f27fb699de5ec6861c60a212b0c1fe368462b63f03802e8192f3c7fee4",
+    "formal_method_compiler.py": "65d48964a395161892a47c0dfb186b976cfff0e6c7b3f0afcf83d397d182b544"
+  },
+  "schema_sha256": "0387b577ad065f16995c0b14b1302c1e1abba8b1059bc837e2dbd30efac13db7"
+}

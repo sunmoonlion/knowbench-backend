@@ -117,6 +117,9 @@ async def check_runtime_method(repo, owner, session, runtime, *, lock=False):
         != step
     ):
         raise CapabilityError("Method execution differs from its accepted plan")
+    from app.application.workbench.method_authorizations import check_method_permissions
+
+    await check_method_permissions(repo, owner, scope, runtime)
     if task["state"] == TaskState.WAITING:
         if not task.get("active_interaction_id"):
             raise CapabilityError("Method is waiting outside the current operation")

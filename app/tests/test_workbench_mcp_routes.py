@@ -11,9 +11,9 @@ from sample_replies import PROFILE, SCOPE
 from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
-from test_workbench_records_db import world
 from test_workbench_review_db import unbalanced
 from tool_invocation_support import ObservedPlatformTransport
+from tool_invocation_support import running_platform_world as world
 
 from app.application.workbench.data_relay import RELAYED
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
@@ -205,7 +205,12 @@ async def test_calling_the_tools(served, db):  # noqa: F811
                 assert refused["result"]["isError"] is True, call
                 assert any(
                     message in refused["result"]["content"][0]["text"]
-                    for message in ("not found", "does not belong")
+                    for message in (
+                        "not found",
+                        "does not belong",
+                        "registered schema",
+                        "give the active task id",
+                    )
                 )
 
             # 别的用户的令牌：这个委托对他不存在

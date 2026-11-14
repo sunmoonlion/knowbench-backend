@@ -6,6 +6,8 @@ import uuid
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
+from app.application.workbench.call_policy import authorize_operation
+from app.application.workbench.method_calls import root_call
 from app.application.workbench.tool_invocation import ToolInvocation
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import RecordsRefused
@@ -43,32 +45,29 @@ async def call_context(
         or attempt["status"] not in (AttemptState.CREATED, AttemptState.RUNNING)
     ):
         raise RecordsRefused("the call's execution attempt is no longer active")
-    # Locking the Task serializes first creation with Task terminal transitions.
-    key = "task:" + str(task_id)
-    root = await repo.call_by_key(owner, invocation.session_id, key)
-    if root is None:
-        root = await repo.add_call(
-            {
-                "id": str(uuid.uuid4()),
-                "owner_actor_id": owner,
-                "session_id": invocation.session_id,
-                "kind": "method",
-                "origin": "method",
-                "call_key": key,
-                "task_id": str(task_id),
-                "digest": digest([key]),
-                "status": task["state"].lower(),
-                "detail": {
-                    "task_id": str(task_id),
-                    "profile_id": task.get("profile_id"),
-                    "profile_version": task.get("profile_version"),
-                    "expert_pack_version": task.get("expert_pack_version"),
-                    "identity_basis": "host_task",
-                },
-            }
+    root = await root_call(repo, task)
+    parent = root
+    refs = (attempt or {}).get("refs") or {}
+    if refs.get("kind") == "method_step":
+        # Recompute the expected identity from the accepted plan rather than
+        # trusting an arbitrary parent ID (even one attached to an Attempt).
+        from app.application.workbench.execution_plan import (
+            _meta,
+            active_method_step,
+            execution_for_task,
         )
+        from app.application.workbench.method_calls import step_call
+
+        view = await execution_for_task(repo, task)
+        if view is None:
+            raise RecordsRefused("method plan is unavailable")
+        # An exact-action approval can temporarily put this same Attempt in WAITING.
+        await active_method_step(repo, {**task, "state": "RUNNING"}, view)
+        parent = await step_call(repo, task, _meta(view, int(task["current_step"])))
+        if refs.get("method_call_id") != parent["id"]:
+            raise RecordsRefused("method invocation does not match its host binding")
     return {
-        "parent_call_id": root["id"],
+        "parent_call_id": parent["id"],
         "task_id": str(task_id),
         "attempt_id": str(attempt["id"]) if attempt else None,
     }
@@ -86,10 +85,14 @@ class CallLedger:
         *,
         task_id: str | None = None,
     ) -> tuple[dict, bool]:
+        decision = authorize_operation(registration, arguments)
+        if decision.requires_approval:
+            raise RecordsRefused("this operation requires the approved adapter path")
         intent = {
             "invocation": invocation.snapshot(),
             "tool": registration.descriptor(),
             "arguments": arguments,
+            "operation": decision.operation,
         }
         identity = digest(intent)
         await self.repo.recover_calls(self.owner, invocation.session_id)

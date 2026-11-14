@@ -1,0 +1,907 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/definition.schema.json",
+  "$defs": {
+    "AccessRequirement": {
+      "additionalProperties": false,
+      "description": "Business permission, independent of installation IDs and tool names.\n\nFirst supported scope: connector operations with exact resource sets and\ntop-level outbound argument fields. Unsupported expressions are rejected.\nThis declaration is a ceiling, not authorization by the account owner.",
+      "properties": {
+        "requirement_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "capability_ref": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Capability Ref",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Version",
+          "type": "string"
+        },
+        "operations": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Operations",
+          "type": "array"
+        },
+        "resources": {
+          "items": {
+            "$ref": "#/$defs/ResourceScope"
+          },
+          "maxItems": 30,
+          "title": "Resources",
+          "type": "array"
+        },
+        "data_transfer": {
+          "$ref": "#/$defs/DataTransfer"
+        },
+        "required_when": {
+          "const": "always",
+          "default": "always",
+          "title": "Required When",
+          "type": "string"
+        },
+        "on_unavailable": {
+          "const": "pause",
+          "default": "pause",
+          "title": "On Unavailable",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "capability_ref",
+        "version",
+        "operations",
+        "resources",
+        "data_transfer"
+      ],
+      "title": "AccessRequirement",
+      "type": "object"
+    },
+    "ApprovalRule": {
+      "additionalProperties": false,
+      "properties": {
+        "requirement_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "operations": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Operations",
+          "type": "array"
+        },
+        "when": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "When",
+          "type": "string"
+        },
+        "preview": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Preview",
+          "type": "array"
+        },
+        "on_denied": {
+          "enum": [
+            "pause",
+            "fail"
+          ],
+          "title": "On Denied",
+          "type": "string"
+        }
+      },
+      "required": [
+        "requirement_id",
+        "operations",
+        "when",
+        "preview",
+        "on_denied"
+      ],
+      "title": "ApprovalRule",
+      "type": "object"
+    },
+    "CallerValue": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "caller",
+          "title": "Source",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "name"
+      ],
+      "title": "CallerValue",
+      "type": "object"
+    },
+    "CapabilityDeclaration": {
+      "additionalProperties": false,
+      "properties": {
+        "title": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Title",
+          "type": "string"
+        },
+        "purpose": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Purpose",
+          "type": "string"
+        },
+        "applies_when": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Applies When",
+          "type": "array"
+        },
+        "excludes": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Excludes",
+          "type": "array"
+        },
+        "promises": {
+          "maxProperties": 30,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            }
+          },
+          "title": "Promises",
+          "type": "object"
+        }
+      },
+      "required": [
+        "title",
+        "purpose",
+        "applies_when",
+        "excludes",
+        "promises"
+      ],
+      "title": "CapabilityDeclaration",
+      "type": "object"
+    },
+    "DataTransfer": {
+      "additionalProperties": false,
+      "properties": {
+        "destination": {
+          "maxLength": 1000,
+          "minLength": 8,
+          "title": "Destination",
+          "type": "string"
+        },
+        "argument_fields": {
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Argument Fields",
+          "type": "array"
+        },
+        "purpose": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Purpose",
+          "type": "string"
+        }
+      },
+      "required": [
+        "destination",
+        "argument_fields",
+        "purpose"
+      ],
+      "title": "DataTransfer",
+      "type": "object"
+    },
+    "Export": {
+      "additionalProperties": false,
+      "properties": {
+        "step": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Step",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        },
+        "always_present": {
+          "title": "Always Present",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "step",
+        "output",
+        "always_present"
+      ],
+      "title": "Export",
+      "type": "object"
+    },
+    "ImplementationRef": {
+      "additionalProperties": false,
+      "description": "A portable source, never an author's credential or private connection ID.",
+      "properties": {
+        "kind": {
+          "enum": [
+            "platform",
+            "mcp",
+            "skill_instruction",
+            "skill_script"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "source": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Source",
+          "type": "string"
+        },
+        "version": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Version",
+          "type": "string"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "entry": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Entry",
+          "type": "string"
+        },
+        "requirement_ids": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Requirement Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "source",
+        "version",
+        "digest",
+        "entry",
+        "requirement_ids"
+      ],
+      "title": "ImplementationRef",
+      "type": "object"
+    },
+    "LiteralValue": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "literal",
+          "title": "Source",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value"
+        }
+      },
+      "required": [
+        "source",
+        "value"
+      ],
+      "title": "LiteralValue",
+      "type": "object"
+    },
+    "MethodRef": {
+      "additionalProperties": false,
+      "properties": {
+        "method_id": {
+          "format": "uuid",
+          "title": "Method Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method_id",
+        "version",
+        "digest"
+      ],
+      "title": "MethodRef",
+      "type": "object"
+    },
+    "MethodStep": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Candidates",
+          "type": "array"
+        },
+        "select_when": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Select When",
+          "type": "string"
+        },
+        "required_when": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Required When",
+          "type": "string"
+        },
+        "always_required": {
+          "title": "Always Required",
+          "type": "boolean"
+        },
+        "depends_on": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Depends On",
+          "type": "array"
+        },
+        "inputs": {
+          "maxProperties": 100,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/StepInput"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputs": {
+          "maxProperties": 100,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/ValueSlot"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "on_failure": {
+          "enum": [
+            "pause",
+            "fail"
+          ],
+          "title": "On Failure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "candidates",
+        "select_when",
+        "required_when",
+        "always_required",
+        "depends_on",
+        "inputs",
+        "outputs",
+        "on_failure"
+      ],
+      "title": "MethodStep",
+      "type": "object"
+    },
+    "Orchestration": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "orchestration",
+          "title": "Kind",
+          "type": "string"
+        },
+        "instructions": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Instructions",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/MethodStep"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Steps",
+          "type": "array"
+        },
+        "exports": {
+          "maxProperties": 100,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/Export"
+            }
+          },
+          "title": "Exports",
+          "type": "object"
+        },
+        "max_depth": {
+          "maximum": 16,
+          "minimum": 1,
+          "title": "Max Depth",
+          "type": "integer"
+        },
+        "max_expansions": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Max Expansions",
+          "type": "integer"
+        },
+        "max_steps": {
+          "maximum": 1000,
+          "minimum": 1,
+          "title": "Max Steps",
+          "type": "integer"
+        },
+        "max_replans": {
+          "maximum": 10,
+          "minimum": 0,
+          "title": "Max Replans",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "instructions",
+        "steps",
+        "exports",
+        "max_depth",
+        "max_expansions",
+        "max_steps",
+        "max_replans"
+      ],
+      "title": "Orchestration",
+      "type": "object"
+    },
+    "ResourceScope": {
+      "additionalProperties": false,
+      "properties": {
+        "resource_kind": {
+          "const": "connector",
+          "default": "connector",
+          "title": "Resource Kind",
+          "type": "string"
+        },
+        "resource_role": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Resource Role",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 1000,
+          "minItems": 1,
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "resource_role",
+        "values"
+      ],
+      "title": "ResourceScope",
+      "type": "object"
+    },
+    "ResourceValue": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "resource",
+          "title": "Source",
+          "type": "string"
+        },
+        "requirement_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Requirement Id",
+          "type": "string"
+        },
+        "role": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Role",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "requirement_id",
+        "role"
+      ],
+      "title": "ResourceValue",
+      "type": "object"
+    },
+    "StepInput": {
+      "additionalProperties": false,
+      "properties": {
+        "slot": {
+          "$ref": "#/$defs/ValueSlot"
+        },
+        "binding": {
+          "discriminator": {
+            "mapping": {
+              "caller": "#/$defs/CallerValue",
+              "literal": "#/$defs/LiteralValue",
+              "resource": "#/$defs/ResourceValue",
+              "step": "#/$defs/StepValue"
+            },
+            "propertyName": "source"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/CallerValue"
+            },
+            {
+              "$ref": "#/$defs/StepValue"
+            },
+            {
+              "$ref": "#/$defs/LiteralValue"
+            },
+            {
+              "$ref": "#/$defs/ResourceValue"
+            }
+          ],
+          "title": "Binding"
+        }
+      },
+      "required": [
+        "slot",
+        "binding"
+      ],
+      "title": "StepInput",
+      "type": "object"
+    },
+    "StepValue": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "step",
+          "title": "Source",
+          "type": "string"
+        },
+        "step": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Step",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "step",
+        "output"
+      ],
+      "title": "StepValue",
+      "type": "object"
+    },
+    "ToolProcedure": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "direct",
+          "title": "Kind",
+          "type": "string"
+        },
+        "implementation": {
+          "$ref": "#/$defs/ImplementationRef"
+        },
+        "inputs": {
+          "maxProperties": 100,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/ValueSlot"
+            }
+          },
+          "title": "Inputs",
+          "type": "object"
+        },
+        "outputs": {
+          "maxProperties": 100,
+          "minProperties": 1,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/ValueSlot"
+            }
+          },
+          "title": "Outputs",
+          "type": "object"
+        },
+        "instructions": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Instructions",
+          "type": "string"
+        },
+        "stop_conditions": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 30,
+          "minItems": 1,
+          "title": "Stop Conditions",
+          "type": "array"
+        },
+        "max_model_turns": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Max Model Turns",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "kind",
+        "implementation",
+        "inputs",
+        "outputs",
+        "instructions",
+        "stop_conditions",
+        "max_model_turns"
+      ],
+      "title": "ToolProcedure",
+      "type": "object"
+    },
+    "ValidationRule": {
+      "additionalProperties": false,
+      "properties": {
+        "promise_id": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Promise Id",
+          "type": "string"
+        },
+        "outputs": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Outputs",
+          "type": "array"
+        },
+        "check": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Check",
+          "type": "string"
+        },
+        "evidence": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Evidence",
+          "type": "string"
+        },
+        "on_failure": {
+          "enum": [
+            "pause",
+            "fail"
+          ],
+          "title": "On Failure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "promise_id",
+        "outputs",
+        "check",
+        "evidence",
+        "on_failure"
+      ],
+      "title": "ValidationRule",
+      "type": "object"
+    },
+    "ValueSlot": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "schema": {
+          "additionalProperties": true,
+          "title": "Schema",
+          "type": "object"
+        },
+        "required": {
+          "title": "Required",
+          "type": "boolean"
+        },
+        "meaning": {
+          "maxProperties": 20,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "maxLength": 20000,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            }
+          },
+          "title": "Meaning",
+          "type": "object"
+        },
+        "on_missing": {
+          "enum": [
+            "pause",
+            "fail",
+            "omit"
+          ],
+          "title": "On Missing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "schema",
+        "required",
+        "meaning",
+        "on_missing"
+      ],
+      "title": "ValueSlot",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "const": "knowlab/formal-method/v1",
+      "title": "Contract",
+      "type": "string"
+    },
+    "capability_declaration": {
+      "$ref": "#/$defs/CapabilityDeclaration"
+    },
+    "access_requirements": {
+      "items": {
+        "$ref": "#/$defs/AccessRequirement"
+      },
+      "maxItems": 100,
+      "title": "Access Requirements",
+      "type": "array"
+    },
+    "procedure": {
+      "discriminator": {
+        "mapping": {
+          "direct": "#/$defs/ToolProcedure",
+          "orchestration": "#/$defs/Orchestration"
+        },
+        "propertyName": "kind"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/ToolProcedure"
+        },
+        {
+          "$ref": "#/$defs/Orchestration"
+        }
+      ],
+      "title": "Procedure"
+    },
+    "how_to_validate": {
+      "items": {
+        "$ref": "#/$defs/ValidationRule"
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "title": "How To Validate",
+      "type": "array"
+    },
+    "what_requires_approval": {
+      "items": {
+        "$ref": "#/$defs/ApprovalRule"
+      },
+      "maxItems": 100,
+      "title": "What Requires Approval",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract",
+    "capability_declaration",
+    "access_requirements",
+    "procedure",
+    "how_to_validate",
+    "what_requires_approval"
+  ],
+  "title": "formal-method v1 definition",
+  "type": "object"
+}

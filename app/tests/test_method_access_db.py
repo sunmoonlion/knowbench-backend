@@ -75,7 +75,7 @@ async def test_changed_permission_invalidates_pending_approval_and_discovery(db)
             del runtime["tools"][key]["access"]
             await repo.capability_runtime(OWNER, sid, runtime)
         assert key not in svc.runtime_tools(runtime)
-        with pytest.raises(CapabilityError, match="permission changed"):
+        with pytest.raises(CapabilityError, match="permission.*(changed|no longer covers)"):
             await svc.decide(OWNER, call["id"], approval(call))
         assert (await repo.capability_call(OWNER, call["id"]))[
             "status"

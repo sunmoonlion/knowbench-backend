@@ -9,9 +9,17 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
+from app.application.workbench.call_policy import authorize_operation
 from app.application.workbench.calls import call_context
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_access import check_access, declared_access
+from app.application.workbench.method_authorizations import (
+    bind_method_permissions,
+    confirm_method_permissions,
+)
+from app.application.workbench.method_authorizations import (
+    permission_status as method_permission_status,
+)
 from app.application.workbench.method_capabilities import (
     check_runtime_method,
     method_scope,
@@ -427,6 +435,19 @@ class Capabilities:
             task, step, attempt = scope["task"], scope["step"], scope["attempt"]
             attempt_step = attempt["step_id"] if attempt else None
             special = scope["special"]
+            permission_status = await method_permission_status(
+                self.repo, owner, scope, detail
+            )
+            if scope["requirements"].tools or scope["requirements"].skills:
+                if permission_status != "active" and (
+                    detail.get("tools") or detail.get("skills")
+                ):
+                    issues.append(
+                        {
+                            "ref": "method",
+                            "code": "method_permission_" + permission_status,
+                        }
+                    )
             method = {
                 "task_id": str(task["id"]),
                 "profile_id": task["profile_id"],
@@ -442,6 +463,7 @@ class Capabilities:
                 "access_requirements": [
                     r.model_dump(mode="json") for r in scope["access_requirements"]
                 ],
+                "permission_status": permission_status,
             }
         return {
             "session_id": session_id,
@@ -546,6 +568,9 @@ class Capabilities:
                 # This context-bound user action confirms the displayed declaration
                 # for exactly these accounts/revisions, never all owned connections.
                 detail["access"] = access
+                detail["authorization"] = await confirm_method_permissions(
+                    self.repo, owner, scope, access, by_tool
+                )
                 detail = {
                     **selected["detail"],
                     "method_selections": {
@@ -557,6 +582,51 @@ class Capabilities:
                 detail["method_selections"] = selected["detail"]["method_selections"]
             selected = await self.repo.capability_save_selection(
                 owner, session_id, body.revision, detail
+            )
+        return await self.view(owner, session_id, selected)
+
+    async def revoke_method_permissions(self, owner, session_id, body):
+        async with self.repo.transaction():
+            selected = await self.repo.capability_selection(
+                owner, session_id, lock=True
+            )
+            session = await self.repo.get_session(session_id, owner_actor_id=owner)
+            scope = await method_scope(self.repo, owner, session, lock=True)
+            if not scope or scope["context"] != body.method_context:
+                raise CapabilityError(
+                    "Method changed; reload before revoking permissions"
+                )
+            from app.application.workbench.method_calls import root_call
+            from app.domain.workbench.method_authorization import MethodAuthorization
+
+            root = await root_call(self.repo, scope["task"])
+            raw = await self.repo.method_authorization(owner, root["id"], lock=True)
+            if raw is None:
+                raise CapabilityError("This method has no confirmed permissions")
+            old = MethodAuthorization.model_validate(raw)
+            revoked = old.model_copy(
+                update={"revoked": True, "revision": old.revision + 1}
+            )
+            await self.repo.save_method_authorization(
+                owner,
+                session_id,
+                revoked.model_dump(mode="json"),
+                previous=old.revision,
+            )
+            await self.repo.append_event(
+                session_id=session_id,
+                task_id=str(scope["task"]["id"]),
+                kind="task",
+                event_type="method/permissionsRevoked",
+                payload={"call_id": root["id"], "revision": revoked.revision},
+            )
+            selected = await self.repo.capability_save_selection(
+                owner, session_id, body.revision, selected["detail"]
+            )
+            await self.repo.capability_runtime(
+                owner,
+                session_id,
+                {**selected["runtime"], "aborted": True, "status": "completed"},
             )
         return await self.view(owner, session_id, selected)
 
@@ -671,6 +741,14 @@ class Capabilities:
                         "task_id": str(scope["task"]["id"]),
                         "attempt_id": str(scope["attempt"]["id"]),
                         "step_id": scope["step"].step_id,
+                        "call_id": await bind_method_permissions(
+                            self.repo,
+                            owner,
+                            scope,
+                            selected["detail"]
+                            .get("method_selections", {})
+                            .get(scope["context"], {}),
+                        ),
                     }
             for asset in assets:
                 if asset["kind"] == "connection":
@@ -995,15 +1073,17 @@ class Capabilities:
         if len(json.dumps(arguments).encode()) > 64000:
             raise CapabilityError("Arguments exceed the limit")
         registered = registered_call(connection, spec)
-        registered.validate_arguments(arguments)
-        operation = None
-        if registered.source == "mcp":
-            policy = self.operations.require(registered)
-            if policy.policy_digest != spec.get("operation_digest"):
-                raise CapabilityError("Operation policy changed; prepare a new turn")
-            operation = policy.resolve(arguments)
-            if selected["runtime"].get("method"):
-                check_access(spec.get("access"), policy, arguments)
+        decision = authorize_operation(
+            registered,
+            arguments,
+            operations=self.operations,
+            method=bool(selected["runtime"].get("method")),
+            access=spec.get("access"),
+            operation_digest=spec.get("operation_digest"),
+        )
+        operation = decision.operation
+        if not decision.requires_approval:
+            raise CapabilityError("Unexpected managed operation approval policy")
         intent = {
             "invocation": invocation.snapshot(),
             "source_asset_id": connection["id"],
@@ -1277,26 +1357,25 @@ class Capabilities:
                     raise CapabilityError(
                         "Method approval belongs to another execution"
                     )
-                if intent.get("execution_kind") != "skill_script":
-                    registered = registered_call(connection, intent)
-                    registered.validate_arguments(intent["arguments"])
-                    policy = self.operations.require(registered)
-                    operation = policy.resolve(intent["arguments"])
-                    if intent.get("method"):
-                        spec = (
-                            selected["runtime"]
-                            .get("tools", {})
-                            .get(tool_key(connection["id"], intent["tool"]["name"]), {})
-                        )
-                        if spec.get("access") != intent.get("access"):
-                            raise CapabilityError(
-                                "Method permission changed after approval was requested"
-                            )
-                        check_access(spec.get("access"), policy, intent["arguments"])
-                    if operation != intent.get("operation"):
-                        raise CapabilityError(
-                            "Operation policy changed; request approval again"
-                        )
+                spec = selected["runtime"].get("tools", {}).get(key, {})
+                if intent.get("method") and spec.get("access") != intent.get("access"):
+                    raise CapabilityError(
+                        "Method permission changed after approval was requested"
+                    )
+                decision = authorize_operation(
+                    registered_call(connection, intent),
+                    intent["arguments"],
+                    operations=self.operations,
+                    method=bool(intent.get("method")),
+                    access=spec.get("access"),
+                    operation_digest=spec.get("operation_digest"),
+                )
+                if not decision.requires_approval or decision.operation != intent.get(
+                    "operation"
+                ):
+                    raise CapabilityError(
+                        "Operation policy changed; request approval again"
+                    )
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
                 token=body.token,

@@ -9,9 +9,9 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_mcp_routes import URL, bearer, client, tool
 from test_workbench_mcp_routes import served as served
-from test_workbench_records_db import world
 from test_workbench_review_db import unbalanced
 from tool_invocation_support import ObservedPlatformTransport
+from tool_invocation_support import running_platform_world as world
 
 from app.infrastructure.workbench.repository import WorkbenchRepository
 

@@ -91,6 +91,28 @@ class CallRepositoryMixin:
           updated_at=now() WHERE kind='method' AND parent_call_id IS NULL AND task_id=:id"""),
             {"id": task_id, "state": state.lower()},
         )
+        active = await self.session.scalar(
+            text("SELECT active_attempt_id FROM workbench_tasks WHERE id=:id"),
+            {"id": task_id},
+        )
+        if active is not None:
+            await self.project_method_attempt(str(active))
+
+    async def project_method_attempt(self, attempt_id):
+        # A late receipt from a replaced dispatch cannot overwrite the current
+        # projection. All transitions still originate from Task/Attempt.
+        await self.session.execute(
+            text("""UPDATE workbench_calls c SET
+                status=CASE WHEN t.state='WAITING' AND a.status IN ('CREATED','RUNNING')
+                            THEN 'waiting' ELSE lower(a.status) END,
+                attempt_id=a.id,updated_at=now()
+                FROM workbench_attempts a, workbench_tasks t
+                WHERE a.id=:id AND t.id=a.task_id AND t.active_attempt_id=a.id
+                  AND c.id::text=a.refs->>'method_call_id'
+                  AND c.task_id=t.id AND c.kind='method'
+                  AND c.parent_call_id IS NOT NULL"""),
+            {"id": attempt_id},
+        )
 
     async def recover_calls(self, owner, session_id):
         # Remote adapter has a 45 s deadline. After 2 min a lost dispatch receipt

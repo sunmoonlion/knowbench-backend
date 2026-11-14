@@ -22,6 +22,7 @@ from app.domain.workbench.capabilities import (
     AssetAction,
     ConnectionCreate,
     ConnectionRenew,
+    MethodPermissionRevoke,
     SelectionPut,
     SkillCreate,
 )
@@ -264,6 +265,23 @@ async def decide_call(
 ):
     try:
         return await svc.decide(_actor(user), str(call_id), body)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post(
+    "/workbench/sessions/{session_id}/capabilities/revoke-method",
+    response_model=Selection,
+    response_model_exclude_unset=True,
+)
+async def revoke_method_permissions(
+    session_id: UUID,
+    body: MethodPermissionRevoke,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    try:
+        return await svc.revoke_method_permissions(_actor(user), str(session_id), body)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 

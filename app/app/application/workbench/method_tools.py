@@ -143,8 +143,6 @@ class MethodToolGuard:
                 raise RecordsRefused("the conversation is no longer user-driven")
             return invocation, None
         task = await self.repo.get_task(str(active), owner_actor_id=self.owner)
-        if not is_dynamic(task):
-            return invocation, str(active)
         if (
             session["wheel"] != Wheel.advisor
             or task["state"] != TaskState.RUNNING
@@ -184,11 +182,39 @@ class MethodToolGuard:
             step = await active_method_step(self.repo, task, view)
             assert step is not None
             allowed = frozenset(step.tools)
+        elif not is_dynamic(task):
+            view = await execution_for_task(self.repo, task)
+            step = view.pack.step(int(task["current_step"])) if view else None
+            if (
+                step is None
+                or attempt["step_id"] != step.step_id
+                or attempt["step_version"] != step.step_version
+            ):
+                raise RecordsRefused("execution differs from its fixed step contract")
+            allowed = frozenset(step.tools)
         else:
             allowed = frozenset()  # A plan proposal cannot run any tools.
         if name not in allowed:
             raise RecordsRefused("this tool is not selected for the active method")
-        if args.get("conversation") or args.get("scope") == "market":
+        from app.application.workbench.method_capabilities import (
+            check_runtime_method,
+            method_scope,
+        )
+
+        scope = await method_scope(self.repo, self.owner, session)
+        if scope and (scope["requirements"].tools or scope["requirements"].skills):
+            selected = await self.repo.capability_selection(
+                self.owner, invocation.session_id
+            )
+            runtime = selected["runtime"]
+            if runtime.get("aborted") or runtime.get("turn_id") != turn_id:
+                raise RecordsRefused(
+                    "method capability authorization is no longer active"
+                )
+            await check_runtime_method(self.repo, self.owner, session, runtime)
+        if (
+            name != "read_project_conversation" and args.get("conversation")
+        ) or args.get("scope") == "market":
             raise RecordsRefused("this method may only use its task's data grant")
         if name not in {"describe_items", "lookup"} and args.get("task") != str(
             task["id"]

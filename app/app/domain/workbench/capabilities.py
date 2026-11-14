@@ -92,6 +92,11 @@ class SkillCreate(Strict):
         return self
 
 
+class MethodPermissionRevoke(Strict):
+    revision: int = Field(ge=0)
+    method_context: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class SelectionPut(Strict):
     revision: int = Field(ge=0)
     tools: list[str] = Field(default_factory=list, max_length=50)

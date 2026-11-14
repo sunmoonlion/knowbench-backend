@@ -8,6 +8,64 @@ from app.domain.workbench.capabilities import digest
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
+async def running_platform_world(db, replies):
+    """Explicit test execution with a fixed allowlist, not a paused review turn.
+
+    Preserve the project's real grants, records and ownership from world(). The
+    scripted runner has already stopped; no production checks are monkeypatched.
+    """
+    import json
+
+    from sqlalchemy import text
+    from test_workbench_records_db import world
+
+    from app.application.workbench.catalog import pack_for_task
+    from app.application.workbench.ledger import Ledger
+
+    fake, runner, ids = await world(db, replies)
+    async with db() as s:
+        repo = WorkbenchRepository(s)
+        row = await repo.get_task(ids["task"])
+        pack = pack_for_task(row)
+        index = int(row["current_step"])
+        step = pack.step(index)
+        step = step.model_copy(
+            update={
+                "tools": (
+                    "list_project_conversations",
+                    "read_project_conversation",
+                    "list_inputs",
+                    "compute",
+                    "request_data",
+                )
+            }
+        )
+        steps = list(pack.workflow)
+        steps[index] = step
+        snapshot = pack.model_copy(update={"workflow": tuple(steps)}).model_dump(
+            mode="json"
+        )
+        async with repo.transaction():
+            await s.execute(
+                text("""UPDATE workbench_tasks SET
+                state='QUEUED', active_interaction_id=NULL, active_attempt_id=NULL,
+                accepted_plan_version=NULL WHERE id=:id"""),
+                {"id": ids["task"]},
+            )
+            row = await repo.get_task(ids["task"])
+            await repo.cas_task(
+                ids["task"],
+                expected_version=row["state_version"],
+                pack_source="knowlab-test",
+                pack_snapshot=json.dumps(snapshot),
+                pack_digest=digest(snapshot),
+            )
+        await Ledger(repo).open_attempt(
+            ids["task"], step_id=step.step_id, step_version=step.step_version
+        )
+    return fake, runner, ids
+
+
 async def observe_capability_call(svc, sid, name, arguments, *, call_id=None):
     repo = svc.repo
     selected = await repo.capability_runtime_by_session(sid)
@@ -146,6 +204,18 @@ class ObservedPlatformTransport(httpx.ASGITransport):
                             kind="turn",
                             event_type="turn/accepted",
                             payload={"by": "user", "turn": {"id": turn}},
+                        )
+                    else:
+                        task = await repo.get_task(str(session["active_task_id"]))
+                        attempt = await repo.get_attempt(str(task["active_attempt_id"]))
+                        # Multiple HTTP calls belong to this same synthetic host turn.
+                        turn = (attempt.get("refs") or {}).get(
+                            "runtime_turn_id"
+                        ) or turn
+                        from app.application.workbench.method_tools import bind_turn
+
+                        assert await bind_turn(
+                            repo, (str(task["id"]), str(attempt["id"])), thread, turn
                         )
                     await repo.append_event(
                         session_id=sid,

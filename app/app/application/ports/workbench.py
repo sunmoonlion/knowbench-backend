@@ -128,6 +128,12 @@ class AppServerConnector(Protocol):
 
 
 class WorkbenchStore(Protocol):
+    async def method_authorization(
+        self, owner: str, call_id: str, *, lock: bool = False
+    ) -> dict[str, Any] | None: ...
+    async def save_method_authorization(
+        self, owner: str, session_id: str, document: dict[str, Any], *, previous: int
+    ) -> None: ...
     async def call_by_key(
         self, owner: str, session_id: str, key: str
     ) -> dict[str, Any] | None: ...

@@ -83,13 +83,15 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261106_0039_test_project_surface.py",
         "20261113_0040_capabilities.py",
         "20261114_0041_calls.py",
+        "20261114_0042_authorizations.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert sum("down_revision = None" in content for content in contents) == 1
-    assert 'down_revision = "20261103_0036"' in contents[-4]
-    assert 'down_revision = "20261104_0038"' in contents[-3]
-    assert 'down_revision = "20261106_0039"' in contents[-2]
-    assert 'down_revision = "20261113_0040"' in contents[-1]
+    assert 'down_revision = "20261103_0036"' in contents[-5]
+    assert 'down_revision = "20261104_0038"' in contents[-4]
+    assert 'down_revision = "20261106_0039"' in contents[-3]
+    assert 'down_revision = "20261113_0040"' in contents[-2]
+    assert 'down_revision = "20261114_0041"' in contents[-1]
     assert 'down_revision = "20260708_0001"' in contents[1]
     assert 'down_revision = "20260712_0002"' in contents[2]
     assert 'down_revision = "20260729_0003"' in contents[3]
