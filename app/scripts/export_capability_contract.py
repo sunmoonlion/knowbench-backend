@@ -35,6 +35,7 @@ from app.domain.workbench.formal_method_calls import (  # noqa: E402
     FormalMethodInvocation,
     FormalMethodInvocations,
 )
+from app.domain.workbench.resource_delegation import ResourceDelegation  # noqa: E402
 from app.domain.workbench.skill_dependencies import public_skill_asset  # noqa: E402
 from app.domain.workbench.skill_execution import public_call  # noqa: E402
 from app.domain.workbench.skill_installation import (  # noqa: E402
@@ -353,6 +354,67 @@ examples["FormalMethodInvocations"] = FormalMethodInvocations.model_validate(
 examples["Calls"] = Calls.model_validate(
     {"calls": [call, host, formal_call, probe_call, model_call]}
 ).model_dump(mode="json", exclude_unset=True)
+authority = ResourceDelegation.model_validate(
+    {
+        "record_id": "example-resource-review",
+        "revision": 1,
+        "issuer": "Example resource owner",
+        "owner_actor_id": ACT,
+        "binding": {
+            "kind": "accepted_plan",
+            "parent_method_id": "notice-workflow",
+            "parent_snapshot_digest": "sha256:" + "b" * 64,
+            "child_method_id": "deliver",
+            "child_method_version": "1",
+        },
+        "connection_id": ID,
+        "connection_revision": 1,
+        "operation_digest": "c" * 64,
+        "requirement": formal_item["access_requirements"][0],
+        "status": "active",
+        "valid_from": now,
+        "expires_at": "2026-11-16T00:00:00Z",
+        "evidence": {
+            "reference": "test-only/resource-review",
+            "digest": "sha256:" + "d" * 64,
+        },
+    }
+)
+delegation_selection = {
+    **selection,
+    "skills": [],
+    "delegations": {key: authority.reference.model_dump(mode="json")},
+    "method": {
+        "task_id": CID,
+        "profile_id": "notice-workflow",
+        "step_id": "deliver_1",
+        "declared_tools": [],
+        "managed_bindings_supported": True,
+        "context": "a" * 64,
+        "access_requirements": formal_item["access_requirements"],
+        "permission_status": "active",
+        "delegation_options": [
+            {
+                "tool_key": key,
+                "authority": authority.reference.model_dump(mode="json"),
+                "issuer": authority.issuer,
+                "expires_at": authority.expires_at.isoformat(),
+                "binding": authority.binding.model_dump(mode="json"),
+            }
+        ],
+    },
+}
+examples["ResourceDelegationSelection"] = Selection.model_validate(
+    delegation_selection
+).model_dump(mode="json")
+examples["ResourceDelegationSelectionPut"] = SelectionPut.model_validate(
+    {
+        "revision": 1,
+        "tools": [key],
+        "method_context": "a" * 64,
+        "delegations": {key: authority.reference.model_dump(mode="json")},
+    }
+).model_dump(mode="json")
 text = json.dumps(examples, ensure_ascii=False, indent=2) + "\n"
 (b / "contracts/capabilities-v1.samples.json").write_text(text)
 if f is None:

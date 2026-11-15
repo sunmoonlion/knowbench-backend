@@ -358,7 +358,12 @@ async def rpc(
         return JSONResponse(_err(None, -32700, "parse error"), status_code=400)
     records = ProjectRecords(workbench_store(session), owner_actor_id=owner)
     relay = DataRelay(records, knowbase_v2(), issuer, sandbox=sandbox)
-    guard = MethodToolGuard(records.repo, owner=owner, sandbox=sandbox)
+    guard = MethodToolGuard(
+        records.repo,
+        owner=owner,
+        sandbox=sandbox,
+        resource_delegations=get_settings().workbench_resource_delegations,
+    )
     messages = body if isinstance(body, list) else [body]
     replies = []
     for message in messages:

@@ -20,6 +20,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.cross_app import Source, Target, parse_sources, parse_targets
 from app.domain.workbench.pricing import DEFAULT_PRICES_JSON, PriceList, parse_prices
+from app.domain.workbench.resource_delegation import (
+    ResourceDelegation,
+    ResourceDelegationCatalog,
+)
 from app.domain.workbench.source_licenses import SourceLicense, SourceLicenseCatalog
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 
@@ -367,6 +371,11 @@ class Settings(BaseSettings):
         max_length=1000,
         description="Operator source-rights evidence for exact subjects and implementations; empty grants no execution rights",
     )
+    workbench_resource_delegations: tuple[ResourceDelegation, ...] = Field(
+        default=(),
+        max_length=1000,
+        description="Reviewed resource-owner evidence for one accepted-plan parent-to-child delegation; empty permits no delegation",
+    )
 
     # 专家读本项目别的对话与底稿的工具服务（PRD/apps/investment.md 7.4）。
     # 沙箱里的 Codex 配好这个服务之后才打开：打开后专家每一步的说明里会提到这组工具
@@ -485,6 +494,7 @@ class Settings(BaseSettings):
     def validate_base_security(self) -> Settings:
         OperationCatalog(self.workbench_capability_operations)
         SourceLicenseCatalog(self.workbench_source_licenses)
+        ResourceDelegationCatalog(self.workbench_resource_delegations)
         if any(
             operation.service_url not in self.workbench_capability_mcp_urls
             for operation in self.workbench_capability_operations

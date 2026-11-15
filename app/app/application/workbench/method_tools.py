@@ -88,9 +88,13 @@ class MethodToolGuard:
         owner: str,
         sandbox: str,
         observe_seconds: float = 2,
+        resource_delegations=(),
     ):
         self.repo, self.owner, self.sandbox = repo, owner, sandbox
         self.observe_seconds = observe_seconds
+        from app.domain.workbench.resource_delegation import ResourceDelegationCatalog
+
+        self.resource_delegations = ResourceDelegationCatalog(resource_delegations)
 
     async def check(
         self, name: str, args: dict[str, Any], meta: Any
@@ -211,7 +215,13 @@ class MethodToolGuard:
                 raise RecordsRefused(
                     "method capability authorization is no longer active"
                 )
-            await check_runtime_method(self.repo, self.owner, session, runtime)
+            await check_runtime_method(
+                self.repo,
+                self.owner,
+                session,
+                runtime,
+                resource_delegations=self.resource_delegations,
+            )
         if (
             name != "read_project_conversation" and args.get("conversation")
         ) or args.get("scope") == "market":

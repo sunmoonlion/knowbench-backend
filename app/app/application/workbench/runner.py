@@ -1696,6 +1696,9 @@ class SandboxLink:
         self, expected: tuple[str, str]
     ) -> tuple[bool, bool]:
         """Read approval wait and durable revocation for this exact active attempt."""
+        if getattr(self.runner, "capabilities", None) is not None:
+            async with self.runner.stores() as repo:
+                await self.runner.capabilities(repo).refresh_method_authority(expected)
         async with self.runner.stores() as repo:
             task = await repo.get_task(expected[0])
             if str(task.get("active_attempt_id")) != expected[1]:
@@ -2389,6 +2392,10 @@ class Runner:
                     recover_revoked_method,
                 )
 
+                if self.capabilities is not None and task.get("active_attempt_id"):
+                    await self.capabilities(repo).refresh_method_authority(
+                        (task_id, str(task["active_attempt_id"]))
+                    )
                 state = await recover_revoked_method(repo, task, stopped=stopped)
                 if state is None:
                     state = await Ledger(repo).settle_unattended(

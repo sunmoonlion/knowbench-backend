@@ -475,6 +475,33 @@
         ],
         "title": "MethodRef",
         "type": "object"
+      },
+      "ResourceAuthorityRef": {
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "revision",
+          "digest"
+        ],
+        "title": "ResourceAuthorityRef",
+        "type": "object"
       }
     },
     "additionalProperties": false,
@@ -536,6 +563,14 @@
         ],
         "default": null,
         "title": "Method Context"
+      },
+      "delegations": {
+        "additionalProperties": {
+          "$ref": "#/$defs/ResourceAuthorityRef"
+        },
+        "maxProperties": 50,
+        "title": "Delegations",
+        "type": "object"
       }
     },
     "required": [
@@ -1752,6 +1787,88 @@
         "title": "DataTransfer",
         "type": "object"
       },
+      "DelegationBinding": {
+        "additionalProperties": false,
+        "properties": {
+          "kind": {
+            "const": "accepted_plan",
+            "default": "accepted_plan",
+            "title": "Kind",
+            "type": "string"
+          },
+          "parent_method_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "title": "Parent Method Id",
+            "type": "string"
+          },
+          "parent_snapshot_digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Parent Snapshot Digest",
+            "type": "string"
+          },
+          "child_method_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "title": "Child Method Id",
+            "type": "string"
+          },
+          "child_method_version": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "title": "Child Method Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "parent_method_id",
+          "parent_snapshot_digest",
+          "child_method_id",
+          "child_method_version"
+        ],
+        "title": "DelegationBinding",
+        "type": "object"
+      },
+      "DelegationOption": {
+        "additionalProperties": false,
+        "properties": {
+          "tool_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Tool Key",
+            "type": "string"
+          },
+          "authority": {
+            "$ref": "#/$defs/ResourceAuthorityRef"
+          },
+          "issuer": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Issuer",
+            "type": "string"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "binding": {
+            "$ref": "#/$defs/DelegationBinding"
+          }
+        },
+        "required": [
+          "tool_key",
+          "authority",
+          "issuer",
+          "expires_at",
+          "binding"
+        ],
+        "title": "DelegationOption",
+        "type": "object"
+      },
       "DependencyCandidate": {
         "additionalProperties": false,
         "properties": {
@@ -1927,6 +2044,13 @@
             ],
             "title": "Permission Status",
             "type": "string"
+          },
+          "delegation_options": {
+            "items": {
+              "$ref": "#/$defs/DelegationOption"
+            },
+            "title": "Delegation Options",
+            "type": "array"
           }
         },
         "required": [
@@ -2025,6 +2149,33 @@
           "key"
         ],
         "title": "RegisteredTool",
+        "type": "object"
+      },
+      "ResourceAuthorityRef": {
+        "additionalProperties": false,
+        "properties": {
+          "record_id": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+            "title": "Record Id",
+            "type": "string"
+          },
+          "revision": {
+            "minimum": 1,
+            "title": "Revision",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "record_id",
+          "revision",
+          "digest"
+        ],
+        "title": "ResourceAuthorityRef",
         "type": "object"
       },
       "ResourceScope": {
@@ -2332,6 +2483,13 @@
         "maxItems": 20,
         "title": "Formal Methods",
         "type": "array"
+      },
+      "delegations": {
+        "additionalProperties": {
+          "$ref": "#/$defs/ResourceAuthorityRef"
+        },
+        "title": "Delegations",
+        "type": "object"
       },
       "skill_mode": {
         "enum": [

@@ -27,7 +27,12 @@ def parent():
         delegable=True,
         recipient_call_id=None,
         expires_at=expiry,
-        method_ids=(),
+        method_ids=("child",),
+        resource_authority={
+            "record_id": "reviewed-test-authority",
+            "revision": 1,
+            "digest": "sha256:" + "a" * 64,
+        },
     )
     return MethodAuthorization(
         call_id=uuid4(),
@@ -49,7 +54,10 @@ def test_authority_inheritance_does_not_require_or_fetch_input_values():
     root = parent()
     leaf = child(root)
     check_delegation(root, leaf)
-    assert leaf.grants == root.grants
+    assert leaf.grants[0].resource_authority == root.grants[0].resource_authority
+    assert leaf.grants[0].requirement == root.grants[0].requirement
+    assert leaf.grants[0].delegable is False
+    assert leaf.grants[0].recipient_call_id == leaf.call_id
     assert leaf.parent_call_id == root.call_id
     assert (
         not {"inputs", "content", "credentials"}

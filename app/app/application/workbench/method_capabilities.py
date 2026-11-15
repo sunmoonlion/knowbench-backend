@@ -88,7 +88,9 @@ def selection_issues(scope, detail, assets):
     return issues
 
 
-async def check_runtime_method(repo, owner, session, runtime, *, lock=False):
+async def check_runtime_method(
+    repo, owner, session, runtime, *, lock=False, resource_delegations=None
+):
     binding = runtime.get("method")
     scope = await method_scope(repo, owner, session, lock=lock)
     if not binding:
@@ -119,7 +121,9 @@ async def check_runtime_method(repo, owner, session, runtime, *, lock=False):
         raise CapabilityError("Method execution differs from its accepted plan")
     from app.application.workbench.method_authorizations import check_method_permissions
 
-    await check_method_permissions(repo, owner, scope, runtime)
+    await check_method_permissions(
+        repo, owner, scope, runtime, resource_delegations=resource_delegations
+    )
     if task["state"] == TaskState.WAITING:
         if not task.get("active_interaction_id"):
             raise CapabilityError("Method is waiting outside the current operation")

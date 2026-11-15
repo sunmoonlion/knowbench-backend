@@ -462,6 +462,7 @@ def capability_service(repo):
         runtime_url=settings.workbench_capability_mcp_url,
         operations=settings.workbench_capability_operations,
         source_licenses=settings.workbench_source_licenses,
+        resource_delegations=settings.workbench_resource_delegations,
         skill_source=GitHubSkills(),
         script_executor=SkillExecutor(
             settings.workbench_provisioner_url, settings.workbench_provisioner_token

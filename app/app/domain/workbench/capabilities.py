@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_capabilities import McpRequirement
+from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 
 
 def disabled_mcp_config() -> dict[str, Any]:
@@ -106,9 +107,16 @@ class SelectionPut(Strict):
     purpose: str = Field(default="", max_length=1000)
     skill_mode: Literal["auto", "explicit"] = "explicit"
     method_context: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    delegations: dict[str, ResourceAuthorityRef] = Field(
+        default_factory=dict, max_length=50
+    )
 
     @model_validator(mode="after")
     def unique(self):
+        if not self.delegations.keys() <= set(self.tools):
+            raise ValueError("Delegation must name a selected tool")
+        if self.delegations and self.method_context is None:
+            raise ValueError("Delegation requires a current method confirmation")
         if len({ref.method_id for ref in self.formal_methods}) != len(
             self.formal_methods
         ):

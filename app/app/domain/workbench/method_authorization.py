@@ -12,6 +12,7 @@ from pydantic import Field, model_validator
 
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.method_capabilities import AccessRequirement, Requirement
+from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 
 
 class PermissionGrant(Requirement):
@@ -30,6 +31,9 @@ class PermissionGrant(Requirement):
     # Resource-owner restrictions cannot be erased by the recipient. Empty means
     # no additional method restriction, not authority outside this grant.
     method_ids: tuple[str, ...] = Field(max_length=100)
+    resource_authority: ResourceAuthorityRef | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def valid(self):
@@ -39,6 +43,10 @@ class PermissionGrant(Requirement):
             raise ValueError("Duplicate permission method restriction")
         if self.delegable and self.recipient_call_id is not None:
             raise ValueError("Direct invocation authority cannot also be delegable")
+        if self.delegable and self.resource_authority is None:
+            raise ValueError("Delegation requires a pinned resource-owner authority")
+        if self.resource_authority is not None and not self.method_ids:
+            raise ValueError("Resource delegation requires an exact method restriction")
         return self
 
 
@@ -80,6 +88,13 @@ def covers(
         or parent.connection_id != child.connection_id
         or parent.connection_revision != child.connection_revision
         or parent.operation_digest != child.operation_digest
+        or (parent.delegable and parent.resource_authority is None)
+        or parent.resource_authority != child.resource_authority
+        or (
+            parent.resource_authority is not None
+            and parent.delegable
+            and (child.delegable or child.recipient_call_id != call_id)
+        )
         or not (parent.delegable or parent.recipient_call_id == call_id)
         or (child.delegable and not parent.delegable)
         or (
@@ -155,6 +170,14 @@ def delegate(
     requirements: tuple[PermissionGrant, ...],
 ) -> MethodAuthorization:
     """Host supplies the concrete child need/binding, separately from input values."""
+    # Current resource evidence supports one hop only. A child receives direct
+    # authority for its host-created invocation, never another delegable grant.
+    narrowed = tuple(
+        grant.model_copy(update={"delegable": False, "recipient_call_id": call_id})
+        if grant.delegable and grant.resource_authority is not None
+        else grant
+        for grant in requirements
+    )
     child = MethodAuthorization(
         call_id=call_id,
         revision=1,
@@ -163,7 +186,7 @@ def delegate(
         method_id=method_id,
         revoked=False,
         expires_at=parent.expires_at,
-        grants=requirements,
+        grants=narrowed,
     )
     check_delegation(parent, child)
     return child

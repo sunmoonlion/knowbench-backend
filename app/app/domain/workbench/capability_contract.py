@@ -13,6 +13,10 @@ from app.domain.workbench.method_capabilities import (
     McpRequirement,
     MethodCapabilities,
 )
+from app.domain.workbench.resource_delegation import (
+    DelegationOption,
+    ResourceAuthorityRef,
+)
 from app.domain.workbench.skill_dependencies import SkillDependency
 from app.domain.workbench.skill_installation import SkillSource
 
@@ -106,6 +110,7 @@ class MethodContext(Strict):
     permission_status: Literal[
         "not_required", "unconfirmed", "active", "revoked", "expired"
     ]
+    delegation_options: list[DelegationOption] = Field(default_factory=list)
 
 
 class Selection(Strict):
@@ -115,6 +120,7 @@ class Selection(Strict):
     tools: list[str]
     skills: list[str]
     formal_methods: tuple[MethodRef, ...] = Field(default=(), max_length=20)
+    delegations: dict[str, ResourceAuthorityRef] = Field(default_factory=dict)
     skill_mode: Literal["auto", "explicit"]
     purpose: str
     editable: bool

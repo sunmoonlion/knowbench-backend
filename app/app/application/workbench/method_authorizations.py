@@ -12,11 +12,116 @@ from app.domain.workbench.method_authorization import (
     check_delegation,
     delegate,
 )
+from app.domain.workbench.method_capabilities import AccessRequirement
+from app.domain.workbench.resource_delegation import (
+    DelegationBinding,
+    ResourceDelegationCatalog,
+)
 from app.domain.workbench.states import TASK_TERMINAL
 
 
+async def delegation_binding(repo, scope):
+    """Only a persisted accepted plan establishes a delegable child identity."""
+    from app.application.workbench.execution_plan import _meta, execution_for_task
+
+    task = scope["task"]
+    if scope.get("special") or task.get("accepted_plan_version") is None:
+        # Planning is a valid runtime phase, but has no accepted child to
+        # delegate to. Do not ask the execution-only reader to interpret it.
+        return None
+    view = await execution_for_task(repo, task)
+    if view is None or view.receipt is None:
+        return None
+    meta = _meta(view, int(task["current_step"]))
+    if meta["pack_digest"] != task["pack_digest"]:
+        raise CapabilityError("Accepted method snapshot changed")
+    return DelegationBinding(
+        parent_method_id=str(task["profile_id"]),
+        parent_snapshot_digest=task["pack_digest"],
+        child_method_id=meta["method_id"],
+        child_method_version=meta["method_version"],
+    )
+
+
+async def check_resource_authorities(repo, owner, scope, grants, catalog=None):
+    """Revalidate resource evidence independently of the owner's confirmation."""
+    backed = [g for g in grants if g.resource_authority is not None]
+    if not backed:
+        return
+    binding = await delegation_binding(repo, scope)
+    if binding is None:
+        raise CapabilityError("Resource delegation requires an accepted child method")
+    catalog = catalog or ResourceDelegationCatalog()
+    # Rebuild the logical child from the host's accepted plan. Neither a grant
+    # document nor a caller-supplied parent id establishes invocation lineage.
+    from app.application.workbench.execution_plan import _meta, execution_for_task
+
+    task = scope["task"]
+    root = await repo.call_by_key(
+        owner, str(task["session_id"]), "task:" + str(task["id"])
+    )
+    view = await execution_for_task(repo, task)
+    if root is None or view is None or view.receipt is None:
+        raise CapabilityError("Resource delegation invocation is unavailable")
+    meta = _meta(view, int(task["current_step"]))
+    identity = {
+        key: meta[key]
+        for key in (
+            "plan_version",
+            "plan_digest",
+            "pack_digest",
+            "instance_id",
+            "method_id",
+            "method_version",
+            "step_index",
+        )
+    }
+    child = await repo.call_by_key(
+        owner, str(task["session_id"]), "method:" + digest([root["id"], identity])
+    )
+    if (
+        root.get("kind") != "method"
+        or str(root.get("task_id")) != str(task["id"])
+        or child is None
+        or child.get("kind") != "method"
+        or child.get("parent_call_id") != root["id"]
+        or str(child.get("task_id")) != str(task["id"])
+        or child.get("digest") != digest(identity)
+        or any(child["detail"].get(key) != value for key, value in identity.items())
+        or any(
+            not g.delegable and str(g.recipient_call_id) != child["id"] for g in backed
+        )
+    ):
+        raise CapabilityError(
+            "Resource delegation differs from its accepted method invocation"
+        )
+    try:
+        for grant in backed:
+            record = catalog.require(
+                grant.resource_authority,
+                owner,
+                binding=binding,
+                connection_id=grant.connection_id,
+                connection_revision=grant.connection_revision,
+                operation_digest=grant.operation_digest,
+                requirement=grant.requirement,
+                now=datetime.now(UTC),
+            )
+            if grant.expires_at > record.expires_at:
+                raise ValueError("Delegated authority exceeds its resource expiry")
+    except ValueError as exc:
+        raise CapabilityError("Resource delegation is no longer valid") from exc
+
+
 async def confirm_method_permissions(
-    repo: WorkbenchStore, owner: str, scope: dict, access: dict, assets_by_tool: dict
+    repo: WorkbenchStore,
+    owner: str,
+    scope: dict,
+    access: dict,
+    assets_by_tool: dict,
+    *,
+    delegations=None,
+    resource_delegations=None,
 ) -> dict:
     """Called only by the owner-confirmed, context/revision-checked selection save.
 
@@ -38,6 +143,36 @@ async def confirm_method_permissions(
     current = MethodAuthorization.model_validate(previous) if previous else None
     expiry = datetime.now(UTC) + timedelta(hours=24)
     method_id = scope["step"].step_id
+    delegations = delegations or {}
+    if not set(delegations) <= access.keys():
+        raise CapabilityError("Delegation must name a selected method tool")
+    records = {}
+    if delegations:
+        binding = await delegation_binding(repo, scope)
+        if binding is None or call["id"] == root["id"]:
+            raise CapabilityError(
+                "Resource delegation requires an accepted child method"
+            )
+        catalog = resource_delegations or ResourceDelegationCatalog()
+        try:
+            for key, reference in delegations.items():
+                records[key] = catalog.require(
+                    reference,
+                    owner,
+                    binding=binding,
+                    connection_id=UUID(assets_by_tool[key]["id"]),
+                    connection_revision=assets_by_tool[key]["revision"],
+                    operation_digest=access[key]["operation_digest"],
+                    requirement=AccessRequirement.model_validate(
+                        access[key]["requirement"]
+                    ),
+                    now=datetime.now(UTC),
+                )
+        except ValueError as exc:
+            raise CapabilityError(
+                "Resource delegation does not cover this method"
+            ) from exc
+        expiry = min(expiry, *(record.expires_at for record in records.values()))
     granted = tuple(
         PermissionGrant(
             grant_id=digest([scope["context"], key]),
@@ -46,8 +181,9 @@ async def confirm_method_permissions(
             connection_revision=assets_by_tool[key]["revision"],
             operation_digest=value["operation_digest"],
             requirement=value["requirement"],
-            delegable=False,
-            recipient_call_id=UUID(call["id"]),
+            delegable=key in records,
+            recipient_call_id=None if key in records else UUID(call["id"]),
+            resource_authority=records[key].reference if key in records else None,
             expires_at=expiry,
             method_ids=(method_id,),
         )
@@ -113,7 +249,12 @@ async def confirm_method_permissions(
 
 
 async def permission_status(
-    repo: WorkbenchStore, owner: str, scope: dict, detail: dict
+    repo: WorkbenchStore,
+    owner: str,
+    scope: dict,
+    detail: dict,
+    *,
+    resource_delegations=None,
 ) -> str:
     """Read-only projection of the actual scope, including the frozen child.
 
@@ -148,6 +289,12 @@ async def permission_status(
         return "unconfirmed"
     if any(grants[key].expires_at <= now for key in wanted):
         return "expired"
+    try:
+        await check_resource_authorities(
+            repo, owner, scope, [grants[key] for key in wanted], resource_delegations
+        )
+    except CapabilityError:
+        return "unconfirmed"
     refs = (scope.get("attempt") or {}).get("refs") or {}
     if refs.get("method_call_id"):
         child_raw = await repo.method_authorization(owner, refs["method_call_id"])
@@ -166,7 +313,12 @@ async def permission_status(
 
 
 async def bind_method_permissions(
-    repo: WorkbenchStore, owner: str, scope: dict, selected: dict
+    repo: WorkbenchStore,
+    owner: str,
+    scope: dict,
+    selected: dict,
+    *,
+    resource_delegations=None,
 ) -> str:
     """Bind the accepted-plan method invocation, not a caller-supplied parent ID."""
     from app.application.workbench.execution_plan import _meta, execution_for_task
@@ -189,6 +341,7 @@ async def bind_method_permissions(
         g.confirmation_context != scope["context"] for g in grants
     ):
         raise CapabilityError("Method permission confirmation changed")
+    await check_resource_authorities(repo, owner, scope, grants, resource_delegations)
     view = await execution_for_task(repo, task)
     if view is None or view.receipt is None:
         # A fixed workflow has no independently registered method children.
@@ -225,7 +378,12 @@ async def bind_method_permissions(
 
 
 async def check_method_permissions(
-    repo: WorkbenchStore, owner: str, scope: dict, runtime: dict
+    repo: WorkbenchStore,
+    owner: str,
+    scope: dict,
+    runtime: dict,
+    *,
+    resource_delegations=None,
 ) -> None:
     """Every dispatch, approval and recovery reads live persisted ancestors."""
     task = scope["task"]
@@ -261,6 +419,9 @@ async def check_method_permissions(
         if current.revoked or current.expires_at <= datetime.now(UTC):
             raise CapabilityError("Method permission expired or was revoked")
         if child is None:
+            await check_resource_authorities(
+                repo, owner, scope, current.grants, resource_delegations
+            )
             grants = {g.grant_id: g for g in current.grants}
             for key, spec in runtime.get("tools", {}).items():
                 if spec.get("execution_kind") == "skill_script":

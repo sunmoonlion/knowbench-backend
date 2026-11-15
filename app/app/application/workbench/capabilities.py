@@ -36,7 +36,11 @@ from app.domain.workbench.capabilities import (
     tool_key,
 )
 from app.domain.workbench.errors import Forbidden
-from app.domain.workbench.method_capabilities import matches_skill, matches_tool
+from app.domain.workbench.method_capabilities import (
+    AccessRequirement,
+    matches_skill,
+    matches_tool,
+)
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.projects import ExecutionScene
 from app.domain.workbench.skill_dependencies import (
@@ -89,6 +93,7 @@ class Capabilities:
         script_executor: Any = None,
         operations: tuple[McpOperation, ...] = (),
         source_licenses=(),
+        resource_delegations=(),
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
             repo,
@@ -99,6 +104,9 @@ class Capabilities:
         self.skill_source = skill_source
         self.script_executor = script_executor
         self.operations = OperationCatalog(operations)
+        from app.domain.workbench.resource_delegation import ResourceDelegationCatalog
+
+        self.resource_delegations = ResourceDelegationCatalog(resource_delegations)
         from app.application.workbench.formal_methods import FormalMethods
 
         self.formal_sources = FormalMethods(
@@ -518,7 +526,11 @@ class Capabilities:
             attempt_step = attempt["step_id"] if attempt else None
             special = scope["special"]
             permission_status = await method_permission_status(
-                self.repo, owner, scope, detail
+                self.repo,
+                owner,
+                scope,
+                detail,
+                resource_delegations=self.resource_delegations,
             )
             if scope["requirements"].tools or scope["requirements"].skills:
                 if permission_status != "active" and (
@@ -546,6 +558,9 @@ class Capabilities:
                     r.model_dump(mode="json") for r in scope["access_requirements"]
                 ],
                 "permission_status": permission_status,
+                "delegation_options": await self.delegation_options(
+                    owner, scope, by_tool
+                ),
             }
         return {
             "session_id": session_id,
@@ -554,6 +569,7 @@ class Capabilities:
             "tools": detail.get("tools", []),
             "skills": skill_ids,
             "formal_methods": formal_methods,
+            "delegations": detail.get("delegations", {}) if scope else {},
             "skill_mode": "explicit" if method else skill_mode,
             "purpose": detail.get("purpose", ""),
             "issues": issues,
@@ -585,6 +601,48 @@ class Capabilities:
             ],
         }
 
+    async def delegation_options(self, owner, scope, by_tool):
+        from app.application.workbench.method_authorizations import delegation_binding
+
+        try:
+            binding = await delegation_binding(self.repo, scope)
+        except (CapabilityError, ValueError):
+            # Unsupported legacy identity never becomes a delegable option.
+            # Rendering it must retain its existing direct-only behavior.
+            return []
+        if binding is None:
+            return []
+        options = []
+        for key, (asset, tool) in by_tool.items():
+            if asset["status"] != "active" or not matches_tool(
+                scope["requirements"], asset, tool
+            ):
+                continue
+            try:
+                access = declared_access(scope, self.operation(asset, tool))
+                records = self.resource_delegations.options(
+                    owner,
+                    binding=binding,
+                    connection_id=asset["id"],
+                    connection_revision=asset["revision"],
+                    operation_digest=access["operation_digest"],
+                    requirement=AccessRequirement.model_validate(access["requirement"]),
+                    now=datetime.now(UTC),
+                )
+            except (CapabilityError, ValueError):
+                continue
+            options.extend(
+                {
+                    "tool_key": key,
+                    "authority": record.reference.model_dump(mode="json"),
+                    "issuer": record.issuer,
+                    "expires_at": record.expires_at.isoformat(),
+                    "binding": record.binding.model_dump(mode="json"),
+                }
+                for record in records
+            )
+        return options
+
     async def save_selection(self, owner, session_id, body):
         async with self.repo.transaction():
             session = await self._locked_session(owner, session_id)
@@ -592,6 +650,10 @@ class Capabilities:
                 owner, session_id, lock=True
             )
             scope = await method_scope(self.repo, owner, session, lock=True)
+            if body.delegations and not scope:
+                raise CapabilityError(
+                    "Resource delegation is only available to a method child"
+                )
             if body.formal_methods and (
                 scope
                 or session.get("kind") not in ("chat", "work")
@@ -670,7 +732,13 @@ class Capabilities:
                 # for exactly these accounts/revisions, never all owned connections.
                 detail["access"] = access
                 detail["authorization"] = await confirm_method_permissions(
-                    self.repo, owner, scope, access, by_tool
+                    self.repo,
+                    owner,
+                    scope,
+                    access,
+                    by_tool,
+                    delegations=body.delegations,
+                    resource_delegations=self.resource_delegations,
                 )
                 detail = {
                     **selected["detail"],
@@ -697,52 +765,142 @@ class Capabilities:
                 raise CapabilityError(
                     "Method changed; reload before revoking permissions"
                 )
-            from app.application.workbench.method_calls import root_call
-            from app.domain.workbench.method_authorization import MethodAuthorization
-
-            root = await root_call(self.repo, scope["task"])
-            raw = await self.repo.method_authorization(owner, root["id"], lock=True)
-            if raw is None:
-                raise CapabilityError("This method has no confirmed permissions")
-            old = MethodAuthorization.model_validate(raw)
-            revoked = old.model_copy(
-                update={"revoked": True, "revision": old.revision + 1}
-            )
-            await self.repo.save_method_authorization(
+            selected = await self._revoke_method_scope(
                 owner,
                 session_id,
-                revoked.model_dump(mode="json"),
-                previous=old.revision,
+                scope,
+                selected,
+                revision=body.revision,
+                reason="owner_permission_revoked",
             )
-            await self.repo.append_event(
-                session_id=session_id,
-                task_id=str(scope["task"]["id"]),
-                kind="task",
-                event_type="method/permissionsRevoked",
-                payload={"call_id": root["id"], "revision": revoked.revision},
-            )
-            selected = await self.repo.capability_save_selection(
-                owner, session_id, body.revision, selected["detail"]
-            )
-            await self.repo.capability_runtime(
-                owner,
-                session_id,
-                {**selected["runtime"], "aborted": True, "status": "completed"},
-            )
-            attempt = scope.get("attempt")
-            if attempt and attempt["status"] not in ATTEMPT_TERMINAL:
-                await self.repo.update_attempt(
-                    str(attempt["id"]),
-                    refs={
-                        **(attempt.get("refs") or {}),
-                        "permission_revocation": {
-                            "call_id": root["id"],
-                            "revision": revoked.revision,
-                            "context": scope["context"],
-                        },
-                    },
-                )
         return await self.view(owner, session_id, selected)
+
+    async def _revoke_method_scope(
+        self, owner, session_id, scope, selected, *, revision, reason
+    ):
+        """Caller holds Task, Session and Selection; both withdrawal paths share this."""
+        from app.application.workbench.method_calls import root_call
+        from app.domain.workbench.method_authorization import MethodAuthorization
+
+        root = await root_call(self.repo, scope["task"])
+        raw = await self.repo.method_authorization(owner, root["id"], lock=True)
+        if raw is None:
+            raise CapabilityError("This method has no confirmed permissions")
+        old = MethodAuthorization.model_validate(raw)
+        revoked = old.model_copy(update={"revoked": True, "revision": old.revision + 1})
+        await self.repo.save_method_authorization(
+            owner,
+            session_id,
+            revoked.model_dump(mode="json"),
+            previous=old.revision,
+        )
+        await self.repo.append_event(
+            session_id=session_id,
+            task_id=str(scope["task"]["id"]),
+            kind="task",
+            event_type="method/permissionsRevoked",
+            payload={
+                "call_id": root["id"],
+                "revision": revoked.revision,
+                "reason": reason,
+            },
+        )
+        selected = await self.repo.capability_save_selection(
+            owner, session_id, revision, selected["detail"]
+        )
+        await self.repo.capability_runtime(
+            owner,
+            session_id,
+            {**selected["runtime"], "aborted": True, "status": "completed"},
+        )
+        attempt = scope.get("attempt")
+        if attempt and attempt["status"] not in ATTEMPT_TERMINAL:
+            await self.repo.update_attempt(
+                str(attempt["id"]),
+                refs={
+                    **(attempt.get("refs") or {}),
+                    "permission_revocation": {
+                        "call_id": root["id"],
+                        "revision": revoked.revision,
+                        "context": scope["context"],
+                    },
+                },
+            )
+        # A withdrawn permission invalidates an unexecuted action immediately.
+        # Keep a running/unknown receipt intact; stopping a turn is separate.
+        task = scope["task"]
+        if task.get("active_interaction_id"):
+            interaction = await self.repo.get_interaction(
+                str(task["active_interaction_id"])
+            )
+            subject = (interaction.get("prompt") or {}).get("subject") or {}
+            if subject.get("capability_call_id"):
+                await self.repo.cancel_pending_interactions(
+                    task_id=str(task["id"]), reason=reason
+                )
+                await self.repo.recover_calls(owner, session_id)
+        return selected
+
+    async def refresh_method_authority(self, expected):
+        """Persist a resource withdrawal before the runner's ordinary stop guard.
+
+        This transaction must not be nested in a failing MCP request: raising
+        after a revoke would otherwise roll it back. Configuration is the local
+        operator snapshot; an explicit owner revoke remains database-wide.
+        """
+        from app.application.workbench.method_authorizations import (
+            check_method_permissions,
+        )
+        from app.domain.workbench.method_authorization import MethodAuthorization
+
+        async with self.repo.transaction():
+            task = await self.repo.get_task(expected[0], for_update=True)
+            if str(task.get("active_attempt_id")) != expected[1]:
+                return
+            owner, session_id = str(task["owner_actor_id"]), str(task["session_id"])
+            session = await self.repo.get_session(
+                session_id, owner_actor_id=owner, for_update=True
+            )
+            if str(session.get("active_task_id")) != expected[0]:
+                return
+            selected = await self.repo.capability_selection(
+                owner, session_id, lock=True
+            )
+            runtime = selected["runtime"]
+            binding = runtime.get("method") or {}
+            if binding.get("attempt_id") != expected[1]:
+                return
+            attempt = await self.repo.get_attempt(expected[1], for_update=True)
+            if attempt["status"] in ATTEMPT_TERMINAL or (attempt.get("refs") or {}).get(
+                "permission_revocation"
+            ):
+                return
+            scope = await method_scope(self.repo, owner, session, lock=True)
+            if scope is None or scope["context"] != binding.get("context"):
+                return
+            raw = await self.repo.method_authorization(owner, binding["call_id"])
+            if raw is None:
+                return
+            authority = MethodAuthorization.model_validate(raw)
+            if not any(g.resource_authority is not None for g in authority.grants):
+                return
+            try:
+                await check_method_permissions(
+                    self.repo,
+                    owner,
+                    scope,
+                    runtime,
+                    resource_delegations=self.resource_delegations,
+                )
+            except CapabilityError:
+                await self._revoke_method_scope(
+                    owner,
+                    session_id,
+                    scope,
+                    selected,
+                    revision=selected["revision"],
+                    reason="resource_delegation_unavailable",
+                )
 
     async def hold_method(self, owner, session_id):
         """Pause before opening an attempt or reserving model budget for missing bindings."""
@@ -892,6 +1050,7 @@ class Capabilities:
                             selected["detail"]
                             .get("method_selections", {})
                             .get(scope["context"], {}),
+                            resource_delegations=self.resource_delegations,
                         ),
                     }
             for asset in assets:
@@ -1007,7 +1166,13 @@ class Capabilities:
                 "purpose": fresh["purpose"],
             }
             if method_binding:
-                await check_runtime_method(self.repo, owner, session, runtime)
+                await check_runtime_method(
+                    self.repo,
+                    owner,
+                    session,
+                    runtime,
+                    resource_delegations=self.resource_delegations,
+                )
                 inputs.append(
                     {
                         "type": "text",
@@ -1085,7 +1250,11 @@ class Capabilities:
                 )
             else:
                 await check_runtime_method(
-                    self.repo, selected["owner_actor_id"], session, runtime
+                    self.repo,
+                    selected["owner_actor_id"],
+                    session,
+                    runtime,
+                    resource_delegations=self.resource_delegations,
                 )
         except CapabilityError as exc:
             raise Forbidden(exc.message) from exc
@@ -1339,7 +1508,12 @@ class Capabilities:
             if binding:
                 session = await self.repo.get_session(session_id, owner_actor_id=owner)
                 await check_runtime_method(
-                    self.repo, owner, session, selected["runtime"], lock=True
+                    self.repo,
+                    owner,
+                    session,
+                    selected["runtime"],
+                    lock=True,
+                    resource_delegations=self.resource_delegations,
                 )
                 task = await self.repo.get_task(binding["task_id"])
                 if task["state"] != TaskState.RUNNING or task.get(
@@ -1593,7 +1767,12 @@ class Capabilities:
                         "Authorization changed; request the operation again"
                     )
                 await check_runtime_method(
-                    self.repo, owner, session, selected["runtime"], lock=True
+                    self.repo,
+                    owner,
+                    session,
+                    selected["runtime"],
+                    lock=True,
+                    resource_delegations=self.resource_delegations,
                 )
                 if intent.get("method") != selected["runtime"].get("method"):
                     raise CapabilityError(
@@ -1747,7 +1926,13 @@ class Capabilities:
                         call["session_id"], owner_actor_id=owner
                     )
                     try:
-                        await check_runtime_method(self.repo, owner, session, runtime)
+                        await check_runtime_method(
+                            self.repo,
+                            owner,
+                            session,
+                            runtime,
+                            resource_delegations=self.resource_delegations,
+                        )
                     except CapabilityError:
                         valid = False
             try:
