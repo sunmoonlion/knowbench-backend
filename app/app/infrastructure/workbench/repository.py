@@ -2946,6 +2946,9 @@ class WorkbenchRepository(
                 """update workbench_interactions i set status = 'expired', response = cast(:resp as jsonb), consumed_at = now()
                    from workbench_sessions s
                    where i.session_id = s.id and s.sandbox_id = :sb and i.kind = 'tool_approval' and i.status = 'pending'
+                     and not exists (select 1 from workbench_calls c where c.interaction_id=i.id
+                       and c.kind='tool' and c.origin='managed'
+                       and c.detail->>'execution_kind'='formal_method')
                      and not exists (select 1 from workbench_tasks t where t.id=i.task_id
                        and (t.pack_source='formal-test'
                          or t.pack_snapshot->>'runtime_contract'='knowlab/formal-method-execution/v1'))

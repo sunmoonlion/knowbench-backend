@@ -34,6 +34,12 @@ from app.domain.workbench.capability_contract import (
     Selection,
 )
 from app.domain.workbench.errors import Forbidden, WorkbenchError
+from app.domain.workbench.formal_method_calls import (
+    FormalMethodCallRequest,
+    FormalMethodCatalogResponse,
+    FormalMethodInvocation,
+    FormalMethodInvocations,
+)
 from app.domain.workbench.skill_execution import public_result
 from app.domain.workbench.skill_installation import (
     SkillInstall,
@@ -56,6 +62,82 @@ router = APIRouter(
 
 def service(db: AsyncSession = Depends(get_db_session)):
     return capability_service(web_workbench_store(db))
+
+
+def formal_service(svc=Depends(service)):
+    from app.application.workbench.formal_method_calls import FormalMethodCalls
+
+    return FormalMethodCalls(svc)
+
+
+@router.get(
+    "/workbench/sessions/{session_id}/formal-methods",
+    response_model=FormalMethodCatalogResponse,
+)
+async def available_formal_methods(
+    session_id: UUID,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(formal_service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.catalog(_actor(user), str(session_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post(
+    "/workbench/sessions/{session_id}/formal-method-calls",
+    response_model=FormalMethodInvocation,
+)
+async def request_formal_method(
+    session_id: UUID,
+    body: FormalMethodCallRequest,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(formal_service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.request(_actor(user), str(session_id), body)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get(
+    "/workbench/sessions/{session_id}/formal-method-calls",
+    response_model=FormalMethodInvocations,
+)
+async def formal_method_call_history(
+    session_id: UUID,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(formal_service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return {"calls": await svc.list_calls(_actor(user), str(session_id))}
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get(
+    "/workbench/sessions/{session_id}/formal-method-calls/{request_id}",
+    response_model=FormalMethodInvocation,
+)
+async def formal_method_call_status(
+    session_id: UUID,
+    request_id: UUID,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(formal_service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.status(_actor(user), str(session_id), str(request_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.post(

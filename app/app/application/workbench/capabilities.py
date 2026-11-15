@@ -1337,6 +1337,10 @@ class Capabilities:
         # The caller supplies only the common approval decision. Dispatch identity
         # comes from the persisted call, never a browser-selected execution mode.
         peek = await self.repo.capability_call(owner, call_id)
+        if peek["detail"].get("execution_kind") == "formal_method":
+            from app.application.workbench.formal_method_calls import FormalMethodCalls
+
+            return (await FormalMethodCalls(self).decide(owner, call_id, body))["call"]
         if peek["detail"].get("execution_kind") == "formal_mcp":
             from app.application.workbench.formal_host_calls import FormalHostCalls
 
@@ -1467,6 +1471,13 @@ class Capabilities:
                 else "External outcome is unknown. Check the provider before retrying."
             }
         async with self.repo.transaction():
+            if intent.get("execution_kind") == "formal_method":
+                # Conversation formal approval/projection locks session before
+                # child. Receipt events also write that session's cursor; take
+                # the same order before acquiring the child's update lock.
+                await self.repo.get_session(
+                    call["session_id"], owner_actor_id=owner, for_update=True
+                )
             await self.repo.update_call(owner, call_id, status, intent)
             await self.repo.append_event(
                 session_id=call["session_id"],

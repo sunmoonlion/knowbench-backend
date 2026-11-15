@@ -12,6 +12,41 @@ from app.domain.workbench.errors import IdempotencyConflict
 class FormalMethodRepositoryMixin:
     session: AsyncSession
 
+    async def list_formal_methods(self, owner):
+        rows = (
+            (
+                await self.session.execute(
+                    text("""SELECT * FROM workbench_formal_methods WHERE owner_actor_id=:owner
+              ORDER BY created_at DESC,method_id,version DESC"""),
+                    {"owner": owner},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [dict(row) for row in rows]
+
+    async def list_formal_session_calls(self, owner, session_id, limit=50):
+        from app.infrastructure.workbench.capability_repository import row
+
+        if not 1 <= limit <= 50:
+            raise ValueError("Formal call history limit must be between 1 and 50")
+        rows = (
+            (
+                await self.session.execute(
+                    text("""SELECT * FROM workbench_calls
+              WHERE owner_actor_id=:owner AND session_id=:session_id
+                AND kind='method' AND origin='method' AND call_key LIKE 'formal-session:%'
+                AND parent_call_id IS NULL
+              ORDER BY created_at DESC,id DESC LIMIT :limit"""),
+                    {"owner": owner, "session_id": session_id, "limit": limit},
+                )
+            )
+            .mappings()
+            .all()
+        )
+        return [row(value) for value in rows]
+
     async def lock_formal_execution(self, run_id: str):
         await self.session.execute(
             text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 45))"),

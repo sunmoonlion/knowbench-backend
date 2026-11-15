@@ -29,6 +29,12 @@ from app.domain.workbench.capability_contract import (  # noqa: E402
     Catalog,
     Selection,
 )
+from app.domain.workbench.formal_method_calls import (  # noqa: E402
+    FormalMethodCallRequest,
+    FormalMethodCatalogResponse,
+    FormalMethodInvocation,
+    FormalMethodInvocations,
+)
 from app.domain.workbench.skill_dependencies import public_skill_asset  # noqa: E402
 from app.domain.workbench.skill_execution import public_call  # noqa: E402
 from app.domain.workbench.skill_installation import (  # noqa: E402
@@ -55,6 +61,10 @@ models = (
     Selection,
     Call,
     Calls,
+    FormalMethodCallRequest,
+    FormalMethodCatalogResponse,
+    FormalMethodInvocation,
+    FormalMethodInvocations,
 )
 (b / "contracts/capabilities-v1.json").write_text(
     json.dumps(
@@ -201,6 +211,106 @@ examples["HostCall"] = Call.model_validate(host).model_dump(
 examples["Calls"] = Calls.model_validate({"calls": [call, host]}).model_dump(
     mode="json", exclude_unset=True
 )
+formal_call = {
+    **host,
+    "id": "77777777-7777-4777-8777-777777777777",
+    "detail": {**host["detail"], "execution_kind": "formal_method"},
+}
+reference = {
+    "method_id": "88888888-8888-4888-8888-888888888888",
+    "version": 1,
+    "digest": "sha256:" + "a" * 64,
+}
+invocation = {
+    "request_id": "99999999-9999-4999-8999-999999999999",
+    "method_call_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    "reference": reference,
+    "title": "Validated private notice",
+    "status": "awaiting_approval",
+    "call": formal_call,
+    "outputs": None,
+    "detail": "Awaiting the owner's exact approval; no operation has run.",
+}
+slot = {
+    "description": "Recipient or receipt",
+    "schema": {"type": "string"},
+    "required": True,
+    "meaning": {},
+    "on_missing": "fail",
+}
+formal_item = {
+    "reference": reference,
+    "title": "Validated private notice",
+    "purpose": "Send one confirmed notice",
+    "inputs": {"to": slot},
+    "outputs": {"receipt": slot},
+    "access_requirements": [
+        {
+            "requirement_id": "deliver-notice",
+            "capability_ref": "synthetic-mail",
+            "version": "1",
+            "operations": ["send"],
+            "resources": [
+                {
+                    "resource_kind": "connector",
+                    "resource_role": "recipient",
+                    "values": ["reader@example.test"],
+                }
+            ],
+            "data_transfer": {
+                "destination": "https://tools.example.test/mcp",
+                "argument_fields": ["to"],
+                "purpose": "Deliver the confirmed notice",
+            },
+            "required_when": "always",
+            "on_unavailable": "pause",
+        }
+    ],
+    "uncovered": [
+        {
+            "scenario": "Supplier business effectiveness",
+            "reason": "Typed assertions do not prove all supplier behavior",
+            "scope": "Private use of the tested method",
+        }
+    ],
+    "available": True,
+    "issue": None,
+}
+for model, value in [
+    (
+        FormalMethodCallRequest,
+        {
+            "request_id": invocation["request_id"],
+            "reference": reference,
+            "values": {"to": "reader@example.test"},
+        },
+    ),
+    (
+        FormalMethodCatalogResponse,
+        {
+            "items": [
+                formal_item,
+                {
+                    **formal_item,
+                    "reference": {**reference, "version": 2},
+                    "available": False,
+                    "issue": "Source execution rights are no longer current",
+                },
+            ]
+        },
+    ),
+    (FormalMethodInvocation, invocation),
+    (FormalMethodInvocations, {"calls": [invocation]}),
+]:
+    examples[model.__name__] = model.model_validate(value).model_dump(
+        mode="json", by_alias=True
+    )
+examples["FormalCall"] = Call.model_validate(formal_call).model_dump(
+    mode="json", exclude_unset=True
+)
+examples["Calls"] = Calls.model_validate(
+    {"calls": [call, host, formal_call]}
+).model_dump(mode="json", exclude_unset=True)
 text = json.dumps(examples, ensure_ascii=False, indent=2) + "\n"
 (b / "contracts/capabilities-v1.samples.json").write_text(text)
 if f is None:

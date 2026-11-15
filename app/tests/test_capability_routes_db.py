@@ -26,6 +26,12 @@ from app.domain.workbench.capability_contract import (
     Catalog,
     Selection,
 )
+from app.domain.workbench.formal_method_calls import (
+    FormalMethodCallRequest,
+    FormalMethodCatalogResponse,
+    FormalMethodInvocation,
+    FormalMethodInvocations,
+)
 from app.domain.workbench.skill_installation import (
     SkillInstall,
     SkillSourcePreview,
@@ -139,6 +145,10 @@ MODELS = (
     Selection,
     Call,
     Calls,
+    FormalMethodCallRequest,
+    FormalMethodCatalogResponse,
+    FormalMethodInvocation,
+    FormalMethodInvocations,
 )
 
 

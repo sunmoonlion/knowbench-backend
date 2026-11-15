@@ -2485,7 +2485,10 @@
             "title": "Result"
           },
           "execution_kind": {
-            "const": "formal_mcp",
+            "enum": [
+              "formal_mcp",
+              "formal_method"
+            ],
             "title": "Execution Kind",
             "type": "string"
           },
@@ -2908,7 +2911,10 @@
             "title": "Result"
           },
           "execution_kind": {
-            "const": "formal_mcp",
+            "enum": [
+              "formal_mcp",
+              "formal_method"
+            ],
             "title": "Execution Kind",
             "type": "string"
           },
@@ -2973,6 +2979,1258 @@
       "calls"
     ],
     "title": "Calls",
+    "type": "object"
+  },
+  "FormalMethodCallRequest": {
+    "$defs": {
+      "JsonValue": {},
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "format": "uuid",
+        "title": "Request Id",
+        "type": "string"
+      },
+      "reference": {
+        "$ref": "#/$defs/MethodRef"
+      },
+      "values": {
+        "additionalProperties": {
+          "$ref": "#/$defs/JsonValue"
+        },
+        "maxProperties": 100,
+        "title": "Values",
+        "type": "object"
+      }
+    },
+    "required": [
+      "request_id",
+      "reference",
+      "values"
+    ],
+    "title": "FormalMethodCallRequest",
+    "type": "object"
+  },
+  "FormalMethodCatalogResponse": {
+    "$defs": {
+      "AccessRequirement": {
+        "additionalProperties": false,
+        "description": "Business permission, independent of installation IDs and tool names.\n\nFirst supported scope: connector operations with exact resource sets and\ntop-level outbound argument fields. Unsupported expressions are rejected.\nThis declaration is a ceiling, not authorization by the account owner.",
+        "properties": {
+          "requirement_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Requirement Id",
+            "type": "string"
+          },
+          "capability_ref": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Capability Ref",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          },
+          "operations": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 30,
+            "minItems": 1,
+            "title": "Operations",
+            "type": "array"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ResourceScope"
+            },
+            "maxItems": 30,
+            "title": "Resources",
+            "type": "array"
+          },
+          "data_transfer": {
+            "$ref": "#/$defs/DataTransfer"
+          },
+          "required_when": {
+            "const": "always",
+            "default": "always",
+            "title": "Required When",
+            "type": "string"
+          },
+          "on_unavailable": {
+            "const": "pause",
+            "default": "pause",
+            "title": "On Unavailable",
+            "type": "string"
+          }
+        },
+        "required": [
+          "requirement_id",
+          "capability_ref",
+          "version",
+          "operations",
+          "resources",
+          "data_transfer"
+        ],
+        "title": "AccessRequirement",
+        "type": "object"
+      },
+      "AvailableFormalMethod": {
+        "additionalProperties": false,
+        "properties": {
+          "reference": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "title": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "purpose": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Purpose",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ValueSlot"
+            },
+            "title": "Inputs",
+            "type": "object"
+          },
+          "outputs": {
+            "additionalProperties": {
+              "$ref": "#/$defs/ValueSlot"
+            },
+            "title": "Outputs",
+            "type": "object"
+          },
+          "access_requirements": {
+            "items": {
+              "$ref": "#/$defs/AccessRequirement"
+            },
+            "title": "Access Requirements",
+            "type": "array"
+          },
+          "uncovered": {
+            "items": {
+              "$ref": "#/$defs/UncoveredScenario"
+            },
+            "title": "Uncovered",
+            "type": "array"
+          },
+          "available": {
+            "title": "Available",
+            "type": "boolean"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "maxLength": 2000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Issue"
+          }
+        },
+        "required": [
+          "reference",
+          "title",
+          "purpose",
+          "inputs",
+          "outputs",
+          "access_requirements",
+          "uncovered",
+          "available",
+          "issue"
+        ],
+        "title": "AvailableFormalMethod",
+        "type": "object"
+      },
+      "DataTransfer": {
+        "additionalProperties": false,
+        "properties": {
+          "destination": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Destination",
+            "type": "string"
+          },
+          "argument_fields": {
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Argument Fields",
+            "type": "array"
+          },
+          "purpose": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Purpose",
+            "type": "string"
+          }
+        },
+        "required": [
+          "destination",
+          "argument_fields",
+          "purpose"
+        ],
+        "title": "DataTransfer",
+        "type": "object"
+      },
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
+        "type": "object"
+      },
+      "ResourceScope": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_kind": {
+            "const": "connector",
+            "default": "connector",
+            "title": "Resource Kind",
+            "type": "string"
+          },
+          "resource_role": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Resource Role",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "maxLength": 2048,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 1000,
+            "minItems": 1,
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_role",
+          "values"
+        ],
+        "title": "ResourceScope",
+        "type": "object"
+      },
+      "UncoveredScenario": {
+        "additionalProperties": false,
+        "properties": {
+          "scenario": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Scenario",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Reason",
+            "type": "string"
+          },
+          "scope": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Scope",
+            "type": "string"
+          }
+        },
+        "required": [
+          "scenario",
+          "reason",
+          "scope"
+        ],
+        "title": "UncoveredScenario",
+        "type": "object"
+      },
+      "ValueSlot": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Description",
+            "type": "string"
+          },
+          "schema": {
+            "additionalProperties": true,
+            "title": "Schema",
+            "type": "object"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          },
+          "meaning": {
+            "maxProperties": 20,
+            "patternProperties": {
+              "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+                "maxLength": 20000,
+                "minLength": 1,
+                "pattern": "\\S",
+                "type": "string"
+              }
+            },
+            "title": "Meaning",
+            "type": "object"
+          },
+          "on_missing": {
+            "enum": [
+              "pause",
+              "fail",
+              "omit"
+            ],
+            "title": "On Missing",
+            "type": "string"
+          }
+        },
+        "required": [
+          "description",
+          "schema",
+          "required",
+          "meaning",
+          "on_missing"
+        ],
+        "title": "ValueSlot",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "items": {
+        "items": {
+          "$ref": "#/$defs/AvailableFormalMethod"
+        },
+        "title": "Items",
+        "type": "array"
+      }
+    },
+    "required": [
+      "items"
+    ],
+    "title": "FormalMethodCatalogResponse",
+    "type": "object"
+  },
+  "FormalMethodInvocation": {
+    "$defs": {
+      "Call": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "owner_actor_id": {
+            "format": "uuid",
+            "title": "Owner Actor Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "interaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interaction Id"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "awaiting_approval",
+              "dispatching",
+              "succeeded",
+              "failed",
+              "declined",
+              "unknown",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CallDetail"
+              },
+              {
+                "$ref": "#/$defs/HostCallDetail"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "id",
+          "owner_actor_id",
+          "session_id",
+          "connection_id",
+          "interaction_id",
+          "digest",
+          "status",
+          "created_at",
+          "updated_at",
+          "detail"
+        ],
+        "title": "Call",
+        "type": "object"
+      },
+      "CallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
+          "execution_kind": {
+            "anyOf": [
+              {
+                "const": "skill_script",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Kind"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "CallDetail",
+        "type": "object"
+      },
+      "HostCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "enum": [
+              "formal_mcp",
+              "formal_method"
+            ],
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id"
+        ],
+        "title": "HostCallDetail",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
+        "type": "object"
+      },
+      "Tool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema"
+        ],
+        "title": "Tool",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "request_id": {
+        "format": "uuid",
+        "title": "Request Id",
+        "type": "string"
+      },
+      "method_call_id": {
+        "format": "uuid",
+        "title": "Method Call Id",
+        "type": "string"
+      },
+      "reference": {
+        "$ref": "#/$defs/MethodRef"
+      },
+      "title": {
+        "maxLength": 20000,
+        "minLength": 1,
+        "title": "Title",
+        "type": "string"
+      },
+      "status": {
+        "enum": [
+          "awaiting_approval",
+          "dispatching",
+          "succeeded",
+          "failed",
+          "declined",
+          "unknown",
+          "expired"
+        ],
+        "title": "Status",
+        "type": "string"
+      },
+      "call": {
+        "$ref": "#/$defs/Call"
+      },
+      "outputs": {
+        "anyOf": [
+          {
+            "additionalProperties": {
+              "$ref": "#/$defs/JsonValue"
+            },
+            "type": "object"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "title": "Outputs"
+      },
+      "detail": {
+        "maxLength": 2000,
+        "title": "Detail",
+        "type": "string"
+      }
+    },
+    "required": [
+      "request_id",
+      "method_call_id",
+      "reference",
+      "title",
+      "status",
+      "call",
+      "outputs",
+      "detail"
+    ],
+    "title": "FormalMethodInvocation",
+    "type": "object"
+  },
+  "FormalMethodInvocations": {
+    "$defs": {
+      "Call": {
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "owner_actor_id": {
+            "format": "uuid",
+            "title": "Owner Actor Id",
+            "type": "string"
+          },
+          "session_id": {
+            "format": "uuid",
+            "title": "Session Id",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "interaction_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interaction Id"
+          },
+          "digest": {
+            "title": "Digest",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "awaiting_approval",
+              "dispatching",
+              "succeeded",
+              "failed",
+              "declined",
+              "unknown",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/CallDetail"
+              },
+              {
+                "$ref": "#/$defs/HostCallDetail"
+              }
+            ],
+            "title": "Detail"
+          }
+        },
+        "required": [
+          "id",
+          "owner_actor_id",
+          "session_id",
+          "connection_id",
+          "interaction_id",
+          "digest",
+          "status",
+          "created_at",
+          "updated_at",
+          "detail"
+        ],
+        "title": "Call",
+        "type": "object"
+      },
+      "CallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "source_asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Source Asset Id"
+          },
+          "execution_kind": {
+            "anyOf": [
+              {
+                "const": "skill_script",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Execution Kind"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "method": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Method"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "CallDetail",
+        "type": "object"
+      },
+      "FormalMethodInvocation": {
+        "additionalProperties": false,
+        "properties": {
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "method_call_id": {
+            "format": "uuid",
+            "title": "Method Call Id",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "title": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "awaiting_approval",
+              "dispatching",
+              "succeeded",
+              "failed",
+              "declined",
+              "unknown",
+              "expired"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "call": {
+            "$ref": "#/$defs/Call"
+          },
+          "outputs": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "$ref": "#/$defs/JsonValue"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outputs"
+          },
+          "detail": {
+            "maxLength": 2000,
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "request_id",
+          "method_call_id",
+          "reference",
+          "title",
+          "status",
+          "call",
+          "outputs",
+          "detail"
+        ],
+        "title": "FormalMethodInvocation",
+        "type": "object"
+      },
+      "HostCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "enum": [
+              "formal_mcp",
+              "formal_method"
+            ],
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id"
+        ],
+        "title": "HostCallDetail",
+        "type": "object"
+      },
+      "JsonValue": {},
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
+        "type": "object"
+      },
+      "Tool": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "inputSchema": {
+            "additionalProperties": true,
+            "title": "Inputschema",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "description",
+          "inputSchema"
+        ],
+        "title": "Tool",
+        "type": "object"
+      }
+    },
+    "additionalProperties": false,
+    "properties": {
+      "calls": {
+        "items": {
+          "$ref": "#/$defs/FormalMethodInvocation"
+        },
+        "maxItems": 50,
+        "title": "Calls",
+        "type": "array"
+      }
+    },
+    "required": [
+      "calls"
+    ],
+    "title": "FormalMethodInvocations",
     "type": "object"
   }
 }
