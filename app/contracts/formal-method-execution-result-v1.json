@@ -111,6 +111,26 @@
           "title": "Case Id",
           "type": "string"
         },
+        "caller": {
+          "default": "host",
+          "enum": [
+            "host",
+            "model"
+          ],
+          "title": "Caller",
+          "type": "string"
+        },
+        "model_trace": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormalModelTrace"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "repetition": {
           "maximum": 10,
           "minimum": 1,
@@ -255,6 +275,27 @@
           "pattern": "^sha256:[a-f0-9]{64}$",
           "title": "Evidence Digest",
           "type": "string"
+        },
+        "validated_callers": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "host",
+                  "model"
+                ],
+                "type": "string"
+              },
+              "maxItems": 2,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Validated Callers"
         }
       },
       "required": [
@@ -466,6 +507,43 @@
         "details"
       ],
       "title": "FormalMethodValidationResult",
+      "type": "object"
+    },
+    "FormalModelTrace": {
+      "additionalProperties": false,
+      "description": "References to runtime facts, never client-submittable execution evidence.",
+      "properties": {
+        "thread_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Thread Id",
+          "type": "string"
+        },
+        "turn_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Turn Id",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "maxLength": 200,
+          "minLength": 1,
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "method_call_id": {
+          "format": "uuid",
+          "title": "Method Call Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "thread_id",
+        "turn_id",
+        "tool_call_id",
+        "method_call_id"
+      ],
+      "title": "FormalModelTrace",
       "type": "object"
     },
     "FormalTestSuiteRef": {

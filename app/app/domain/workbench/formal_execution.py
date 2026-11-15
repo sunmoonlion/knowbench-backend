@@ -13,6 +13,7 @@ from pydantic import Field, model_validator
 
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.formal_method_admission_generated import FormalMethodDraft
+from app.domain.workbench.formal_method_execution_generated import ModelProbeLimits
 from app.domain.workbench.formal_method_generated import Strict, ToolProcedure
 
 FORMAL_RUNTIME = "knowlab/formal-method-execution/v1"
@@ -29,11 +30,30 @@ class FormalTaskSnapshot(Strict):
     draft: FormalMethodDraft
     arguments: dict[str, Any]
     definition_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    caller: Literal["host", "model"] = Field(
+        default="host", exclude_if=lambda value: value == "host"
+    )
+    model_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4000,
+        exclude_if=lambda value: value is None,
+    )
+    model_probe: ModelProbeLimits | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def pinned(self):
         if self.definition_digest != self.draft.definition.digest():
             raise ValueError("Formal definition digest changed")
+        if self.caller not in self.draft.allowed_callers:
+            raise ValueError("The candidate does not allow this caller")
+        if self.caller == "model":
+            if self.model_prompt is None or self.model_probe is None:
+                raise ValueError("Model cases require a bounded caller probe")
+        elif self.model_prompt is not None or self.model_probe is not None:
+            raise ValueError("Host cases cannot contain model probe inputs")
         return self
 
     def document(self) -> dict:
@@ -45,6 +65,16 @@ def is_formal(task: dict) -> bool:
         isinstance(task.get("pack_snapshot"), dict)
         and task["pack_snapshot"].get("runtime_contract") == FORMAL_RUNTIME
     )
+
+
+def is_formal_model(task: dict) -> bool:
+    return (
+        is_formal(task) and (task.get("pack_snapshot") or {}).get("caller") == "model"
+    )
+
+
+def is_formal_host(task: dict) -> bool:
+    return is_formal(task) and not is_formal_model(task)
 
 
 def snapshot_for_task(task: dict) -> FormalTaskSnapshot:
@@ -70,15 +100,23 @@ class PinnedFormalMethod:
         }
 
 
-def direct_procedure(draft: FormalMethodDraft) -> ToolProcedure:
+def direct_mcp_procedure(draft: FormalMethodDraft) -> ToolProcedure:
     procedure = draft.definition.procedure
     if (
         not isinstance(procedure, ToolProcedure)
         or procedure.implementation.kind != "mcp"
-        or draft.allowed_callers != ("host",)
         or procedure.max_model_turns != 0
     ):
-        raise ValueError("Execution currently requires a host-only direct MCP method")
+        raise ValueError("Execution requires a zero-turn direct MCP implementation")
+    return procedure
+
+
+def direct_procedure(
+    draft: FormalMethodDraft, *, caller: str = "host"
+) -> ToolProcedure:
+    procedure = direct_mcp_procedure(draft)
+    if caller not in {"host", "model"} or caller not in draft.allowed_callers:
+        raise ValueError("Formal method does not allow this caller")
     return procedure
 
 
@@ -98,7 +136,7 @@ def structured_outputs(draft: FormalMethodDraft, result: dict) -> dict:
     if result.get("isError"):
         raise ValueError("MCP reported an execution error")
     return validate_values(
-        direct_procedure(draft).outputs, result.get("structuredContent")
+        direct_mcp_procedure(draft).outputs, result.get("structuredContent")
     )
 
 

@@ -33,6 +33,7 @@ from app.domain.workbench.errors import (
     ProjectExists,
     RelayIdentityBusy,
     StaleStateVersion,
+    TestCleanupPending,
     TestManagedInKnowlab,
 )
 from app.domain.workbench.scheduling import LOOKUP_PROFILE, ProjectLane
@@ -2166,7 +2167,29 @@ class WorkbenchRepository(
             owner = await self.actor_for_subject(run["owner_subject"])
             validation = await self.formal_validation(owner, run_id) if owner else None
             if not validation or validation.get("execution_evidence") is None:
-                raise ValueError("Formal test evidence must be sealed before cleanup")
+                raise TestCleanupPending(
+                    "Formal test evidence must be sealed before cleanup"
+                )
+            attempts = await self.session.execute(
+                text("""select a.refs, t.original_input
+                        from workbench_test_cases c
+                        join workbench_tasks t on t.id = c.task_id
+                        join workbench_attempts a on a.task_id = t.id
+                        where c.run_id = :r"""),
+                {"r": run_id},
+            )
+            for attempt in attempts.mappings():
+                refs = attempt["refs"] or {}
+                probe = refs.get("formal_model_probe")
+                context = (attempt["original_input"] or {}).get("client_context") or {}
+                if probe and (
+                    refs.get("usage_pending")
+                    or context.get("turn_open")
+                    or not (probe.get("not_started") or probe.get("stop_confirmed"))
+                ):
+                    raise TestCleanupPending(
+                        "Model test usage and stopped execution must be confirmed before cleanup"
+                    )
         # Preserve the cost of historical timeouts before their task rows expire.
         await self.reconcile_test_run_spent(run_id)
         sessions = [

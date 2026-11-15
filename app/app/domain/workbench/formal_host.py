@@ -12,6 +12,8 @@ from app.domain.workbench.formal_execution import (
 
 def check_host_inputs(snapshot: FormalTaskSnapshot) -> None:
     try:
+        if snapshot.caller != "host":
+            raise ValueError("A model probe cannot use the direct host entry")
         procedure = direct_procedure(snapshot.draft)
         if len(snapshot.draft.definition.access_requirements) != 1:
             raise ValueError(
@@ -51,7 +53,8 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
     host = call["detail"].get("formal_host") or {}
     source = snapshot.draft.source
     if (
-        call.get("kind") != "tool"
+        snapshot.caller != "host"
+        or call.get("kind") != "tool"
         or call.get("origin") != "managed"
         or call["detail"].get("execution_kind") != "formal_mcp"
         or str(call.get("owner_actor_id")) != str(task["owner_actor_id"])

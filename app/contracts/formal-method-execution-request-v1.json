@@ -451,6 +451,20 @@
           "maxProperties": 100,
           "title": "Values",
           "type": "object"
+        },
+        "model_prompt": {
+          "anyOf": [
+            {
+              "maxLength": 4000,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Model Prompt"
         }
       },
       "required": [
@@ -465,6 +479,15 @@
         "case_id": {
           "pattern": "^[A-Za-z0-9_-]{1,48}$",
           "title": "Case Id",
+          "type": "string"
+        },
+        "caller": {
+          "default": "host",
+          "enum": [
+            "host",
+            "model"
+          ],
+          "title": "Caller",
           "type": "string"
         },
         "input": {
@@ -519,6 +542,17 @@
           "minimum": 60,
           "title": "Max Wait Seconds",
           "type": "integer"
+        },
+        "model_probe": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ModelProbeLimits"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -950,6 +984,30 @@
         "on_failure"
       ],
       "title": "MethodStep",
+      "type": "object"
+    },
+    "ModelProbeLimits": {
+      "additionalProperties": false,
+      "description": "Outer caller limits, independent of the method's zero internal model turns.\n\nA Codex turn can contain several inference requests; every usage report counts.",
+      "properties": {
+        "max_turns": {
+          "maximum": 1,
+          "minimum": 1,
+          "title": "Max Turns",
+          "type": "integer"
+        },
+        "max_method_calls": {
+          "maximum": 1,
+          "minimum": 1,
+          "title": "Max Method Calls",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "max_turns",
+        "max_method_calls"
+      ],
+      "title": "ModelProbeLimits",
       "type": "object"
     },
     "Orchestration": {

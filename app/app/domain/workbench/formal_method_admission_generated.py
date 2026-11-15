@@ -21,6 +21,7 @@ from app.domain.workbench.formal_method_generated import (
 )
 
 CONTRACT = "knowlab/formal-method-validation/v1"
+Caller = Literal["host", "model"]
 Check = Literal[
     "definition",
     "source",
@@ -84,9 +85,7 @@ class FormalMethodSource(Strict):
 class FormalMethodDraft(Strict):
     definition: FormalMethodDefinition
     source: FormalMethodSource | None
-    allowed_callers: tuple[Literal["host", "model"], ...] = Field(
-        min_length=1, max_length=2
-    )
+    allowed_callers: tuple[Caller, ...] = Field(min_length=1, max_length=2)
 
     @model_validator(mode="after")
     def binding(self):
@@ -140,6 +139,21 @@ class FormalExecutionEvidenceRef(Strict):
     suite_version: int = Field(ge=1, strict=True)
     suite_digest: Digest
     evidence_digest: Digest
+    validated_callers: tuple[Caller, ...] | None = Field(
+        default=None, min_length=1, max_length=2, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def unique_callers(self):
+        if self.validated_callers is not None and len(
+            set(self.validated_callers)
+        ) != len(self.validated_callers):
+            raise ValueError("Duplicate validated caller")
+        return self
+
+    def covers_callers(self, callers: tuple[Caller, ...]) -> bool:
+        # Absent legacy coverage only describes the original host adapter.
+        return set(self.validated_callers or ("host",)) == set(callers)
 
 
 class FormalMethodValidationReceipt(Strict):
@@ -242,6 +256,14 @@ class FrozenFormalMethod(Strict):
             or self.validation.source_digest != source_digest
         ):
             raise ValueError("Frozen identity differs from its validation receipt")
+        execution = self.validation.execution
+        if (
+            "model" in self.draft.allowed_callers
+            and execution is None
+            or execution is not None
+            and not execution.covers_callers(self.draft.allowed_callers)
+        ):
+            raise ValueError("Frozen callers lack matching execution coverage")
         if self.visibility == "public" and (
             self.validation.uncovered or "business" not in self.validation.checks
         ):

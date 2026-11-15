@@ -454,7 +454,8 @@ async def capability_rpc(
                         + (
                             " This call waits for user approval and returns the actual operation result. Never claim success before receiving it."
                             if selected["runtime"].get("method")
-                            or spec.get("execution_kind") == "skill_script"
+                            or spec.get("execution_kind")
+                            in {"skill_script", "formal_probe"}
                             else " This stages the operation only; use action_result after approval. Never claim success while awaiting approval."
                         ),
                         "inputSchema": spec["tool"]["inputSchema"],
@@ -482,6 +483,10 @@ async def capability_rpc(
                     "annotations": {"readOnlyHint": True},
                 }
             )
+            if selected["runtime"].get("formal_probe"):
+                result["tools"] = [
+                    t for t in result["tools"] if t["name"] != "action_result"
+                ]
             if not tools:
                 result["tools"] = []
             if selected["runtime"].get("packages"):
@@ -565,10 +570,10 @@ async def capability_rpc(
                     meta=params.get("_meta"),
                 )
                 spec = selected["runtime"].get("tools", {}).get(params.get("name"), {})
-                if (
-                    selected["runtime"].get("method")
-                    or spec.get("execution_kind") == "skill_script"
-                ):
+                if selected["runtime"].get("method") or spec.get("execution_kind") in {
+                    "skill_script",
+                    "formal_probe",
+                }:
                     # Keep the standard tools/call open while the user approves.
                     # SSE comments keep intermediaries alive; the final JSON-RPC
                     # response is emitted only when an actual outcome is known.

@@ -21,6 +21,10 @@ class TestManagedInKnowlab(WorkbenchError):
     http_status = 409
 
 
+class TestCleanupPending(ValueError):
+    """Retain test execution records until their evidence and accounting settle."""
+
+
 class Forbidden(WorkbenchError):
     code = "forbidden"
     http_status = 403

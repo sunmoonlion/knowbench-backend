@@ -118,10 +118,12 @@ class Capabilities:
                 try:
                     policy = self.operations.require(
                         ToolRegistration.discover(
-                            "mcp", spec.get("service_url", ""), spec["tool"]
+                            "mcp",
+                            spec.get("service_url", ""),
+                            spec.get("implementation_tool", spec["tool"]),
                         )
                     )
-                    if runtime.get("method"):
+                    if runtime.get("method") or runtime.get("formal_probe"):
                         check_access(spec.get("access"), policy)
                 except CapabilityError:
                     continue
@@ -687,6 +689,17 @@ class Capabilities:
         self, owner, session_id, *, scene: ExecutionScene = ExecutionScene.CONVERSATION
     ):
         scene = ExecutionScene(scene)
+        if scene == ExecutionScene.METHOD:
+            from app.application.workbench.formal_model_calls import FormalModelCalls
+            from app.domain.workbench.formal_execution import is_formal_model
+
+            session = await self.repo.get_session(session_id, owner_actor_id=owner)
+            if session.get("active_task_id") and is_formal_model(
+                await self.repo.get_task(
+                    str(session["active_task_id"]), owner_actor_id=owner
+                )
+            ):
+                return await FormalModelCalls(self).prepare(owner, session_id)
         current = await self.selection(owner, session_id)
         if scene == ExecutionScene.CONVERSATION and current["method"]:
             raise CapabilityError("Active method tasks require method execution scope")
@@ -944,9 +957,18 @@ class Capabilities:
             session_id, owner_actor_id=selected["owner_actor_id"]
         )
         try:
-            await check_runtime_method(
-                self.repo, selected["owner_actor_id"], session, runtime
-            )
+            if runtime.get("formal_probe"):
+                from app.application.workbench.formal_model_calls import (
+                    FormalModelCalls,
+                )
+
+                await FormalModelCalls(self).scope(
+                    selected["owner_actor_id"], session, runtime
+                )
+            else:
+                await check_runtime_method(
+                    self.repo, selected["owner_actor_id"], session, runtime
+                )
         except CapabilityError as exc:
             raise Forbidden(exc.message) from exc
         return selected
@@ -1044,7 +1066,17 @@ class Capabilities:
             if ready and runtime.get("turn_id") != invocation.turn_id:
                 raise Forbidden("Capability request belongs to another execution turn")
             binding = runtime.get("method")
-            if ready and binding:
+            if ready and runtime.get("formal_probe"):
+                attempt = await self.repo.attempt_for_runtime_turn(
+                    session_id=session_id, turn_id=invocation.turn_id
+                )
+                if (
+                    attempt
+                    and str(attempt["id"]) != runtime["formal_probe"]["attempt_id"]
+                ):
+                    raise Forbidden("Capability request belongs to another model probe")
+                ready = attempt is not None
+            elif ready and binding:
                 attempt = await self.repo.attempt_for_runtime_turn(
                     session_id=session_id, turn_id=invocation.turn_id
                 )
@@ -1077,6 +1109,13 @@ class Capabilities:
         return await FormalHostCalls(self).request(owner, task_id, attempt_id)
 
     async def request_call(self, session_id, token, key, arguments, *, meta=None):
+        selected = await self.runtime(session_id, token)
+        if selected["runtime"].get("formal_probe"):
+            from app.application.workbench.formal_model_calls import FormalModelCalls
+
+            return await FormalModelCalls(self).request(
+                session_id, token, key, arguments, meta=meta
+            )
         invocation = await self.verify_invocation(
             session_id, token, key, arguments, meta
         )
@@ -1299,6 +1338,22 @@ class Capabilities:
             owner = selected["owner_actor_id"]
             await self.repo.recover_calls(owner, session_id)
             call = await self.repo.capability_call(owner, call_id)
+            if selected["runtime"].get("formal_probe"):
+                bound = selected["runtime"]["formal_probe"]
+                if (
+                    call["session_id"] != session_id
+                    or call["detail"].get("execution_kind") != "formal_probe"
+                    or call["detail"].get("formal_probe", {}).get("attempt_id")
+                    != bound["attempt_id"]
+                    or call["detail"].get("runtime")
+                    != selected["runtime"]["token_hash"]
+                ):
+                    raise Forbidden("Operation belongs to another model probe")
+                return {
+                    "call_id": call_id,
+                    "status": call["status"],
+                    "result": public_result(call["detail"].get("result"), call_id),
+                }
             if (
                 call["session_id"] != session_id
                 or call["detail"].get("method") != selected["runtime"].get("method")
@@ -1341,7 +1396,7 @@ class Capabilities:
             from app.application.workbench.formal_method_calls import FormalMethodCalls
 
             return (await FormalMethodCalls(self).decide(owner, call_id, body))["call"]
-        if peek["detail"].get("execution_kind") == "formal_mcp":
+        if peek["detail"].get("execution_kind") in ("formal_mcp", "formal_probe"):
             from app.application.workbench.formal_host_calls import FormalHostCalls
 
             return await FormalHostCalls(self).decide(owner, peek, body)

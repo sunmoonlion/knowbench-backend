@@ -17,6 +17,58 @@ from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.states import TaskState, Wheel
 
 
+async def probe_inventory(client, thread_id):
+    """Read a complete inventory; truncated/error responses never mean empty."""
+    rows, cursor, seen = [], None, set()
+    for _ in range(8):
+        params = {"threadId": thread_id, "limit": 100}
+        if cursor:
+            params["cursor"] = cursor
+        reply = await client.request("mcpServerStatus/list", params, timeout=10)
+        if not isinstance(reply, dict) or not isinstance(reply.get("data"), list):
+            raise RuntimeError("Candidate tool inventory is unavailable")
+        rows.extend(reply["data"])
+        cursor = reply.get("nextCursor")
+        if cursor is None:
+            return rows
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            break
+        seen.add(cursor)
+    raise RuntimeError("Candidate tool inventory is incomplete")
+
+
+def verify_probe_inventory(rows):
+    from app.domain.workbench.formal_model import PROBE_SERVER, PROBE_TOOL
+
+    found = False
+    for server in rows:
+        if not isinstance(server, dict) or not isinstance(server.get("name"), str):
+            raise RuntimeError("Invalid candidate tool inventory")
+        tools = server.get("tools")
+        if not isinstance(tools, dict):
+            raise RuntimeError("Unverified tool inventory")
+        if server["name"] != PROBE_SERVER:
+            if tools or server.get("resources") or server.get("resourceTemplates"):
+                raise RuntimeError("Another MCP server remains enabled")
+            continue
+        if (
+            found
+            or server.get("toolsError")
+            or server.get("runtimeStatus") not in (None, "connected")
+        ):
+            raise RuntimeError("Candidate tool server is not ready")
+        found = True
+        if (
+            {t.get("name") for t in tools.values()} != {PROBE_TOOL}
+            or len(tools) != 1
+            or server.get("resources")
+            or server.get("resourceTemplates")
+        ):
+            raise RuntimeError("Candidate tool scope was not isolated")
+    if not found:
+        raise RuntimeError("Candidate tool is not mounted")
+
+
 async def declared_data_tools(repo: WorkbenchStore, thread_id: str) -> frozenset[str]:
     """Read the active frozen step, never model-supplied names or prompt text."""
     session = await repo.get_session_by_thread(thread_id)

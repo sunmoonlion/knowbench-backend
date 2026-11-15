@@ -2513,6 +2513,82 @@
         "title": "HostCallDetail",
         "type": "object"
       },
+      "ModelProbeCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "ModelProbeCallDetail",
+        "type": "object"
+      },
       "Tool": {
         "additionalProperties": false,
         "properties": {
@@ -2627,6 +2703,9 @@
           },
           {
             "$ref": "#/$defs/HostCallDetail"
+          },
+          {
+            "$ref": "#/$defs/ModelProbeCallDetail"
           }
         ],
         "title": "Detail"
@@ -2738,6 +2817,9 @@
               },
               {
                 "$ref": "#/$defs/HostCallDetail"
+              },
+              {
+                "$ref": "#/$defs/ModelProbeCallDetail"
               }
             ],
             "title": "Detail"
@@ -2937,6 +3019,82 @@
           "source_asset_id"
         ],
         "title": "HostCallDetail",
+        "type": "object"
+      },
+      "ModelProbeCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "ModelProbeCallDetail",
         "type": "object"
       },
       "Tool": {
@@ -3474,6 +3632,9 @@
               },
               {
                 "$ref": "#/$defs/HostCallDetail"
+              },
+              {
+                "$ref": "#/$defs/ModelProbeCallDetail"
               }
             ],
             "title": "Detail"
@@ -3703,6 +3864,82 @@
         "title": "MethodRef",
         "type": "object"
       },
+      "ModelProbeCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "ModelProbeCallDetail",
+        "type": "object"
+      },
       "Tool": {
         "additionalProperties": false,
         "properties": {
@@ -3890,6 +4127,9 @@
               },
               {
                 "$ref": "#/$defs/HostCallDetail"
+              },
+              {
+                "$ref": "#/$defs/ModelProbeCallDetail"
               }
             ],
             "title": "Detail"
@@ -4188,6 +4428,82 @@
           "digest"
         ],
         "title": "MethodRef",
+        "type": "object"
+      },
+      "ModelProbeCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "ModelProbeCallDetail",
         "type": "object"
       },
       "Tool": {

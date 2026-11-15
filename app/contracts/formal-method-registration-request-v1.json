@@ -303,6 +303,27 @@
           "pattern": "^sha256:[a-f0-9]{64}$",
           "title": "Evidence Digest",
           "type": "string"
+        },
+        "validated_callers": {
+          "anyOf": [
+            {
+              "items": {
+                "enum": [
+                  "host",
+                  "model"
+                ],
+                "type": "string"
+              },
+              "maxItems": 2,
+              "minItems": 1,
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Validated Callers"
         }
       },
       "required": [

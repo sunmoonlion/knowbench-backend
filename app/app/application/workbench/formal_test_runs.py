@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from app.application.workbench.formal_evidence import collect_case_evidence
 from app.application.workbench.formal_execution import FormalExecution
+from app.application.workbench.interactions import cancel_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.tool_registry import registered_call
@@ -62,6 +63,7 @@ def expanded(request):
 def initial_case(case, repetition, row=None):
     row = row or {}
     return dict(
+        **({"caller": case.caller} if case.caller != "host" else {}),
         case_id=case.case_id,
         repetition=repetition,
         status="pending",
@@ -269,7 +271,9 @@ class FormalExecutions:
             not row
             or not row.get("task_id")
             or str(call.get("task_id")) != str(row["task_id"])
-            or not call["detail"].get("formal_host")
+            or not (
+                call["detail"].get("formal_host") or call["detail"].get("formal_probe")
+            )
         ):
             raise Forbidden("Action does not belong to this execution case")
         await self.capabilities.decide(owner, call_id, body)
@@ -282,8 +286,8 @@ class FormalExecutions:
             if run["status"] in ACTIVE:
                 for row in await self.repo.list_test_cases(run_id):
                     if row.get("task_id"):
-                        await Ledger(self.repo).request_cancel(
-                            str(row["task_id"]), owner_actor_id=owner
+                        await cancel_task(
+                            self.repo, str(row["task_id"]), owner_actor_id=owner
                         )
                 await self.finish(
                     run,
@@ -337,6 +341,20 @@ class FormalExecutions:
             or (task.get("rejection") or {}).get("message")
             or "",
         }
+        if case.caller == "model" and refs.get("capability_call_id"):
+            call = await self.repo.capability_call(
+                str(task["owner_actor_id"]), refs["capability_call_id"]
+            )
+            invocation = call["detail"].get("invocation") or {}
+            if all(
+                invocation.get(k) for k in ("thread_id", "turn_id", "call_id")
+            ) and call.get("parent_call_id"):
+                result["model_trace"] = {
+                    "thread_id": invocation["thread_id"],
+                    "turn_id": invocation["turn_id"],
+                    "tool_call_id": invocation["call_id"],
+                    "method_call_id": str(call["parent_call_id"]),
+                }
         result = FormalExecutionCaseResult.model_validate(result).model_dump(
             mode="json"
         )
@@ -361,8 +379,8 @@ class FormalExecutions:
                 if row.get("task_id"):
                     task = await self.repo.get_task(str(row["task_id"]))
                     if forced and task["state"] not in TASK_TERMINAL:
-                        await Ledger(self.repo).request_cancel(
-                            str(task["id"]), owner_actor_id=owner
+                        await cancel_task(
+                            self.repo, str(task["id"]), owner_actor_id=owner
                         )
                     await self.record_case(run, request, case, n, row)
                     row = next(
@@ -413,8 +431,14 @@ class FormalExecutions:
             and known
             and governed
             and licensed
-            and any(
-                r["status"] == "passed" and r["outcome"] == "succeeded" for r in results
+            and all(
+                any(
+                    r["status"] == "passed"
+                    and r["outcome"] == "succeeded"
+                    and r.get("caller", "host") == caller
+                    for r in results
+                )
+                for caller in request.draft.allowed_callers
             )
         )
         state = (
@@ -425,7 +449,9 @@ class FormalExecutions:
             request_digest=request.fingerprint(),
             suite=request.execution.suite.reference().model_dump(mode="json"),
             definition_digest=request.draft.definition.digest(),
-            adapter="knowbench/formal-mcp-host/v1",
+            adapter="knowbench/formal-mcp-caller-probe/v1"
+            if "model" in request.draft.allowed_callers
+            else "knowbench/formal-mcp-host/v1",
             cases=evidence_cases,
             model_cost=str(await self.repo.test_run_spent(run_id)),
             external_provider_billing="reviewed_no_incremental_fee"
@@ -433,6 +459,10 @@ class FormalExecutions:
             else "unverified",
             sealed_at=self.now().isoformat(),
         )
+        if "model" in request.draft.allowed_callers:
+            evidence["validated_callers"] = (
+                sorted(request.draft.allowed_callers) if passed else []
+            )
         receipt = None
         if passed:
             receipt = FormalMethodValidationReceipt.model_validate(
@@ -454,6 +484,11 @@ class FormalExecutions:
                     ],
                     "completed_at": self.now(),
                     "execution": dict(
+                        **(
+                            {"validated_callers": sorted(request.draft.allowed_callers)}
+                            if "model" in request.draft.allowed_callers
+                            else {}
+                        ),
                         contract=FORMAL_RUNTIME,
                         request_digest=request.fingerprint(),
                         suite_id=request.execution.suite.suite_id,
@@ -475,7 +510,7 @@ class FormalExecutions:
                 for check in sorted(GOVERNANCE_CHECKS - {"definition", "dependencies"})
             ),
             details=(
-                "Typed test thresholds and host governance verified; see the explicit uncovered business scope"
+                "Typed test thresholds and declared caller governance verified; see the explicit uncovered business scope"
                 if passed
                 else detail
                 or (
@@ -638,6 +673,11 @@ async def advance_formal(conductor, run_id):
                 draft=request.draft,
                 arguments=case.input.values,
                 definition_digest=request.draft.definition.digest(),
+                caller=case.caller,
+                model_prompt=case.input.model_prompt,
+                model_probe=request.execution.model_probe
+                if case.caller == "model"
+                else None,
             )
             per_case = (Decimal(request.execution.budget.limit) / len(rows)).quantize(
                 Decimal("0.000001"), rounding=ROUND_DOWN
@@ -670,5 +710,13 @@ async def advance_formal(conductor, run_id):
                 session_id=session["session_id"],
                 project_id=account.project_id,
             )
-    if task_id:
+            if case.caller == "model" and not made.get("queued_behind"):
+                talk = await repo.get_session(session["session_id"])
+                await repo.enqueue_command(
+                    session_id=session["session_id"],
+                    sandbox_id=str(talk["sandbox_id"]),
+                    kind="task.drive",
+                    payload={"task_id": task_id},
+                )
+    if task_id and case.caller == "host":
         await FormalExecution(conductor.stores, factory).drive(task_id)

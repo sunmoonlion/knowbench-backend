@@ -62,6 +62,7 @@ def public_call(call: dict) -> dict:
     )  # Persisted host context, never model provenance.
     copy["detail"].pop("authorization", None)  # Exact-action permission evidence.
     copy["detail"].pop("formal_method", None)  # Private frozen method provenance.
+    copy["detail"].pop("formal_probe", None)  # Verified candidate model provenance.
     for field in (
         "kind",
         "origin",

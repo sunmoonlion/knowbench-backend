@@ -31,7 +31,12 @@ from app.domain.workbench.errors import (
     StaleStateVersion,
     WheelHeldByOther,
 )
-from app.domain.workbench.formal_execution import PinnedFormalMethod, is_formal
+from app.domain.workbench.formal_execution import (
+    PinnedFormalMethod,
+    is_formal,
+    is_formal_host,
+    is_formal_model,
+)
 from app.domain.workbench.knowbots import is_knowbot
 from app.domain.workbench.method_catalog import CapabilityMethodCatalog
 from app.domain.workbench.method_plan import AnyMethodPlan
@@ -70,7 +75,10 @@ def _budget(row: dict[str, Any]) -> Budget:
 
 def _revoked_usage(attempt: dict[str, Any]) -> dict[str, Any]:
     refs = attempt.get("refs") or {}
-    if not refs.get("permission_revocation"):
+    probe = refs.get("formal_model_probe") or {}
+    if not refs.get("permission_revocation") and not (
+        probe and not probe.get("not_started")
+    ):
         return {}
     reported = (refs.get("usage_observed") or {}).get("estimated_cost")
     return {
@@ -440,7 +448,7 @@ class Ledger:
             # All task/attempt writers lock the task first. A cancellation or
             # new dispatch cannot change the active attempt between these reads.
             task = await self.repo.get_task(task_id, for_update=True)
-            if is_formal(task):
+            if is_formal_host(task):
                 # Formal actions recover from their durable common-call receipt,
                 # never a model watchdog's stopped/unknown-turn inference.
                 return None
@@ -760,8 +768,17 @@ class Ledger:
                 task_id=task_id,
             )
             state = TaskState(task["state"])
-            live = not is_formal(task) and (
-                state is TaskState.RUNNING or await self._waits_on_codex(task)
+            probe = ((attempt or {}).get("refs") or {}).get("formal_model_probe") or {}
+            model_live = (
+                is_formal_model(task)
+                and bool(probe)
+                and not probe.get("not_started")
+                and not probe.get("stop_confirmed")
+            )
+            live = not is_formal_host(task) and (
+                state is TaskState.RUNNING
+                or model_live
+                or await self._waits_on_codex(task)
             )
             if (
                 attempt is not None
@@ -787,7 +804,7 @@ class Ledger:
             return {
                 **done,
                 "cancel_requested": True,
-                "interrupt": not is_formal(task)
+                "interrupt": not is_formal_host(task)
                 and (live or state is TaskState.WAITING),
             }
 

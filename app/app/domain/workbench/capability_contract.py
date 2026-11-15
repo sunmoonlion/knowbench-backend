@@ -149,6 +149,14 @@ class HostCallDetail(CommonCallDetail):
     connection_id: UUID
 
 
+class ModelProbeCallDetail(CommonCallDetail):
+    execution_kind: Literal["formal_probe"]
+    source_asset_id: UUID
+    connection_id: UUID
+    selection_revision: int
+    runtime: str
+
+
 class Call(Strict):
     id: UUID
     owner_actor_id: UUID
@@ -168,7 +176,7 @@ class Call(Strict):
     ]
     created_at: datetime
     updated_at: datetime
-    detail: CallDetail | HostCallDetail
+    detail: CallDetail | HostCallDetail | ModelProbeCallDetail
 
 
 class Calls(Strict):

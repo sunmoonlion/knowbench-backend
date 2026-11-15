@@ -304,6 +304,140 @@ class SandboxLink:
         self.live_threads.add(thread_id)
         self.search_scopes[thread_id] = restricted
 
+    async def configure_formal_probe(self, thread_id: str) -> None:
+        import re
+
+        from app.application.workbench.runtime_tools import (
+            probe_inventory,
+            verify_probe_inventory,
+        )
+        from app.domain.workbench.formal_model import (
+            PROBE_CONFIG,
+            PROBE_ISOLATION,
+            PROBE_SERVER,
+            PROBE_TOOL,
+        )
+
+        client = await self.ensure_connected()
+        user_agent = getattr(client, "server_info", {}).get("userAgent", "")
+        if not isinstance(user_agent, str) or not re.match(
+            r"^[^\s/]+/0\.155\.1(?:\s|$)", user_agent
+        ):
+            raise RuntimeError("Unverified Codex version for candidate isolation")
+        state = await client.request(
+            "thread/read", {"threadId": thread_id, "includeTurns": False}, timeout=10
+        )
+        thread = (state or {}).get("thread") or {}
+        if (
+            thread.get("id") != thread_id
+            or (thread.get("status") or {}).get("type") != "idle"
+        ):
+            raise RuntimeError("Cannot verify idle model probe thread")
+        features = await client.request("experimentalFeature/list", {}, timeout=10)
+        if not isinstance(features, dict) or features.get("nextCursor"):
+            raise RuntimeError("Cannot verify model probe startup features")
+        actual = {row["name"]: row.get("enabled") for row in features.get("data", [])}
+        required = ("multi_agent", "multi_agent_v2", "goals")
+        if any(actual.get(name) is not False for name in required):
+            raise RuntimeError("Sandbox startup permits extra autonomous tools")
+        configuration = await client.request("config/read", {}, timeout=10)
+        config_data = (configuration or {}).get("config")
+        if not isinstance(config_data, dict) or not isinstance(
+            config_data.get("mcp_servers", {}), dict
+        ):
+            raise RuntimeError("Cannot verify configured MCP servers")
+        servers = set(config_data.get("mcp_servers", {}))
+        servers.update(row["name"] for row in await probe_inventory(client, thread_id))
+        config = {
+            **THREAD_CONFIG,
+            **PROBE_CONFIG,
+            **{
+                f"mcp_servers.{name}.enabled": False
+                for name in servers
+                if name != PROBE_SERVER
+            },
+            **self.capability_config.get(thread_id, {}),
+        }
+        if "mcp_servers." + PROBE_SERVER not in config:
+            raise RuntimeError("No authenticated candidate tool scope")
+        detached = await client.request(
+            "thread/unsubscribe", {"threadId": thread_id}, timeout=10
+        )
+        self.live_threads.discard(thread_id)
+        self.search_scopes.pop(thread_id, None)
+        if (detached or {}).get("status") not in ("unsubscribed", "notLoaded"):
+            raise RuntimeError("Candidate thread could not be released")
+        resumed = await client.request(
+            "thread/resume", {"threadId": thread_id, "config": config}, timeout=60
+        )
+        if ((resumed or {}).get("thread") or {}).get("id") != thread_id:
+            raise RuntimeError("Candidate configuration resumed another thread")
+        self.remember_model(thread_id, resumed)
+        self.live_threads.add(thread_id)
+        inventory = await probe_inventory(client, thread_id)
+        verify_probe_inventory(inventory)
+        safe_inventory = [
+            {
+                "name": row["name"],
+                "tools": [
+                    {"name": tool["name"], "inputSchema": tool.get("inputSchema")}
+                    for tool in row["tools"].values()
+                ],
+                "resources": [],
+                "resourceTemplates": [],
+                "runtimeStatus": row.get("runtimeStatus"),
+                "toolsError": row.get("toolsError"),
+            }
+            for row in inventory
+        ]
+        async with self.runner.stores() as repo, repo.transaction():
+            session = await repo.get_session_by_thread(thread_id)
+            if session is None:
+                raise RuntimeError("Candidate thread no longer has a session")
+            task = await repo.get_task(str(session["active_task_id"]), for_update=True)
+            attempt = await repo.get_attempt(
+                str(task["active_attempt_id"]), for_update=True
+            )
+            refs = attempt.get("refs") or {}
+            selected = await repo.capability_selection(
+                str(task["owner_actor_id"]), str(task["session_id"])
+            )
+            candidate = next(
+                row for row in safe_inventory if row["name"] == PROBE_SERVER
+            )
+            if (
+                candidate["tools"][0]["inputSchema"]
+                != selected["runtime"]["tools"][PROBE_TOOL]["tool"]["inputSchema"]
+            ):
+                raise RuntimeError(
+                    "Candidate tool schema differs from its pinned scope"
+                )
+            await repo.update_attempt(
+                attempt["id"],
+                refs={
+                    **refs,
+                    "formal_model_probe": {
+                        **refs.get("formal_model_probe", {}),
+                        "isolation": {
+                            "version": PROBE_ISOLATION,
+                            "tools": [PROBE_TOOL],
+                            "startup_features": {
+                                name: actual[name] for name in required
+                            },
+                            "disabled_servers": sorted(servers - {PROBE_SERVER}),
+                            "codex_version": "0.155.1",
+                            "inventory": safe_inventory,
+                            "applied_config": dict(PROBE_CONFIG),
+                            "scope_id": selected["runtime"]["scope_id"],
+                            "selection_revision": selected["revision"],
+                            "thread_id": thread_id,
+                            "attempt_id": str(attempt["id"]),
+                            "snapshot_digest": task["pack_digest"],
+                        },
+                    },
+                },
+            )
+
     def require_idle(self, thread_id: str, state: Any) -> None:
         thread = (state or {}).get("thread")
         if not isinstance(thread, dict):
@@ -617,6 +751,11 @@ class SandboxLink:
         w = self.turn_waiters.get(turn_id) if turn_id else None
         if w is None or thread_id_of(params) != w["thread_id"]:
             return
+        if guard := w.get("probe_guard"):
+            if method in ("item/started", "item/completed"):
+                guard.observe(params.get("item") or {})
+            elif method.startswith("thread/tokenUsage"):
+                guard.usage((params.get("cost") or {}).get("turn"))
         if guard := w.get("idle_guard"):
             guard.observe(
                 method,
@@ -688,7 +827,14 @@ class SandboxLink:
             )
             planning = bool(active and active["step_id"] == DATA_STEP_ID)
             lookup = bool(task and task["profile_id"] == LOOKUP_PROFILE)
+            from app.domain.workbench.formal_execution import is_formal_model
+            from app.domain.workbench.formal_model import FormalProbeGuard
+
+            probe = bool(task and is_formal_model(task))
             remaining = None
+            if probe:
+                assert active is not None
+                remaining = Decimal(str(active["budget_allocated"]["amount"]))
             if lookup:
                 assert task is not None
                 if LOOKUP_SECONDS is not None:
@@ -724,9 +870,12 @@ class SandboxLink:
             capability_inputs = await self.prepare_capabilities(
                 thread_id, scene=ExecutionScene.METHOD
             )
-            await self.configure_search_scope(
-                thread_id, restricted=planning or lookup or bool(required_data)
-            )
+            if probe:
+                await self.configure_formal_probe(thread_id)
+            else:
+                await self.configure_search_scope(
+                    thread_id, restricted=planning or lookup or bool(required_data)
+                )
         except Exception:
             log.warning("stage tool configuration failed thread=%s", thread_id)
             return TurnResult(
@@ -785,13 +934,24 @@ class SandboxLink:
             "lookup_guard": LookupGuard(remaining) if lookup else None,
             "lookup_failure": None,
             "lookup_stop_unconfirmed": False,
+            "probe_guard": FormalProbeGuard(remaining)
+            if probe and remaining is not None
+            else None,
             "compute_guard": ComputeProgressGuard()
-            if active and not planning and not lookup and active["step_id"] != PLAN_STEP
+            if active
+            and not planning
+            and not lookup
+            and not probe
+            and active["step_id"] != PLAN_STEP
             else None,
             "idle_guard": StepProgressGuard(
                 asyncio.get_running_loop().time() - self.waited(thread_id)
             )
-            if active and not planning and not lookup and active["step_id"] != PLAN_STEP
+            if active
+            and not planning
+            and not lookup
+            and not probe
+            and active["step_id"] != PLAN_STEP
             else None,
             "idle_failure": None,
             "idle_stop_unconfirmed": False,
@@ -873,6 +1033,7 @@ class SandboxLink:
                     or (lookup and waiter["lookup_guard"].failure)
                     or (waiter["compute_guard"] and waiter["compute_guard"].failure)
                     or (waiter["idle_guard"] and waiter["idle_guard"].failure)
+                    or (waiter["probe_guard"] and waiter["probe_guard"].failure)
                 ):
                     break
                 left = (
@@ -888,14 +1049,24 @@ class SandboxLink:
                         min(
                             left,
                             0.25
-                            if planning or lookup or waiter["compute_guard"]
+                            if planning or lookup or probe or waiter["compute_guard"]
                             else 5.0,
                         ),
                     )
                     break
                 except TimeoutError:
                     continue
-            if planning and waiter["planning_guard"].failure:
+            if probe and waiter["probe_guard"].failure:
+                await self._stop_guarded_turn(
+                    client,
+                    thread_id,
+                    turn_id,
+                    waiter,
+                    waiter["probe_guard"].failure,
+                    stage="tool",
+                )
+                waiter["error"] = waiter["probe_guard"].failure
+            elif planning and waiter["planning_guard"].failure:
                 await self._stop_guarded_turn(
                     client,
                     thread_id,
@@ -940,7 +1111,11 @@ class SandboxLink:
                 await asyncio.sleep(0.1)
         except TimeoutError:
             waiter["timed_out"] = True
-            if planning or lookup:
+            if probe:
+                await self._stop_guarded_turn(
+                    client, thread_id, turn_id, waiter, "time_limit", stage="tool"
+                )
+            elif planning or lookup:
                 await self._stop_guarded_turn(
                     client,
                     thread_id,
@@ -977,6 +1152,12 @@ class SandboxLink:
         stop = self.user_stops.pop(thread_id, None)
         return TurnResult(
             turn_id=turn_id,
+            completion_confirmed=waiter["future"].done()
+            or bool(waiter["tool_failure"] and not waiter["tool_stop_unconfirmed"])
+            or bool(
+                waiter["permission_failure"]
+                and not waiter["permission_stop_unconfirmed"]
+            ),
             final_text=waiter["text"],
             tokens=used.as_json(),
             usage_known=waiter["reported"],
@@ -1175,6 +1356,23 @@ class SandboxLink:
         client = self.client
         assert client is not None
         mode = params.get("mode")
+        from app.domain.workbench.formal_execution import is_formal_model
+
+        async with self.runner.stores() as repo:
+            thread_id = thread_id_of(params)
+            session = await repo.get_session_by_thread(thread_id) if thread_id else None
+            if (
+                session
+                and session.get("active_task_id")
+                and is_formal_model(await repo.get_task(str(session["active_task_id"])))
+            ):
+                for waiter in self.turn_waiters.values():
+                    if waiter["thread_id"] == session.get("thread_id") and waiter.get(
+                        "probe_guard"
+                    ):
+                        waiter["probe_guard"].failure = "unexpected_elicitation"
+                await client.respond(rid, {"action": "decline"})
+                return
         log.info(
             "mcp elicitation sandbox=%s mode=%s message=%s meta=%s",
             self.sandbox_id,
@@ -1241,6 +1439,18 @@ class SandboxLink:
                 await client.respond(rid, {"decision": "decline"})
                 return
             session = await repo.get_session(session_id)
+            from app.domain.workbench.formal_execution import is_formal_model
+
+            if session.get("active_task_id") and is_formal_model(
+                await repo.get_task(str(session["active_task_id"]))
+            ):
+                for waiter in self.turn_waiters.values():
+                    if waiter["thread_id"] == session.get("thread_id") and waiter.get(
+                        "probe_guard"
+                    ):
+                        waiter["probe_guard"].failure = "unexpected_native_approval"
+                await client.respond(rid, {"decision": "decline"})
+                return
             where = await self._where(repo, session)
             wheel, task, pack, step = (
                 where["wheel"],
@@ -1727,6 +1937,18 @@ class SandboxLink:
                 await client.respond(rid, empty)
                 return
             session = await repo.get_session(session_id)
+            from app.domain.workbench.formal_execution import is_formal_model
+
+            if session.get("active_task_id") and is_formal_model(
+                await repo.get_task(str(session["active_task_id"]))
+            ):
+                for waiter in self.turn_waiters.values():
+                    if waiter["thread_id"] == session.get("thread_id") and waiter.get(
+                        "probe_guard"
+                    ):
+                        waiter["probe_guard"].failure = "unexpected_question"
+                await client.respond(rid, empty)
+                return
             where = await self._where(repo, session)
             wheel, task, pack, step = (
                 where["wheel"],
@@ -2113,11 +2335,14 @@ class Runner:
         """没人推的委托：先停下 Codex 里可能还在跑的那一轮、再确认它停了，然后收尾（失败，记着取消的收成
         已取消）。确认停了才放行下一位；确认不了先占着项目，最多 TURN_HOLD_SECONDS（0034 §三.1、§三.2）。"""
         task_id = task["id"]
-        from app.domain.workbench.formal_execution import is_formal
+        from app.domain.workbench.formal_execution import (
+            is_formal_host,
+            is_formal_model,
+        )
 
         async with self.stores() as repo:
             current = await repo.get_task(task_id)
-        if is_formal(current):
+        if is_formal_host(current):
             await self._drive_formal(task_id)
             return
         leftover, stopped = None, False
@@ -2142,6 +2367,15 @@ class Runner:
             )
         except Exception:  # noqa: BLE001 - 停不下、确认不了也照样收尾，只是先不放行下一位
             log.warning("could not stop the leftover turn task=%s", task_id)
+        if is_formal_model(current):
+            from app.application.workbench.formal_model_execution import (
+                FormalModelExecution,
+            )
+
+            await FormalModelExecution(self.stores, None, self.capabilities).recover(
+                task_id, stopped=stopped
+            )
+            return
         try:
             async with self.stores() as repo:
                 from app.application.workbench.method_permission_recovery import (
@@ -2252,14 +2486,14 @@ class Runner:
                 "task.reconnect",
                 "turn.interrupt",
             ) and payload.get("task_id"):
-                from app.domain.workbench.formal_execution import is_formal
+                from app.domain.workbench.formal_execution import is_formal_host
 
                 task = await repo.get_task(
                     payload["task_id"], owner_actor_id=str(session["owner_actor_id"])
                 )
                 if str(task["session_id"]) != str(session_id):
                     raise RuntimeError("Task command belongs to another session")
-                if is_formal(task):
+                if is_formal_host(task):
                     if kind == "task.drive" and not self._busy(task["id"]):
                         self.driving[task["id"]] = asyncio.create_task(
                             self._drive_formal(task["id"]), name=f"drive:{task['id']}"
@@ -2405,6 +2639,20 @@ class Runner:
                 if session.get("active_task_id")
                 else None
             )
+            from app.domain.workbench.formal_execution import is_formal_model
+
+            if task and is_formal_model(task):
+                return TurnPlan(
+                    settings={
+                        "environments": [],
+                        "sandboxPolicy": {"type": "readOnly", "networkAccess": False},
+                        "approvalPolicy": "never",
+                    },
+                    mode="chat",
+                    directory=None,
+                    session_id=str(session["id"]),
+                    facts="[workbench] Isolated candidate-method verification. Only the explicitly supplied candidate call is available.",
+                )
             if task and task["profile_id"] == LOOKUP_PROFILE:
                 # Independent read-only thread: no local machine, project files or memory.
                 return TurnPlan(
@@ -2625,7 +2873,10 @@ class Runner:
                 else None
             )
             lookup = bool(task and task["profile_id"] == LOOKUP_PROFILE)
-        if lookup:
+            from app.domain.workbench.formal_execution import is_formal_model
+
+            probe = bool(task and is_formal_model(task))
+        if lookup or probe:
             async with self.stores() as repo:
                 prefs = await repo.get_prefs(str(session["owner_actor_id"]))
             params = thread_settings(

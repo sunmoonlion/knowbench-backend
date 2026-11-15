@@ -308,8 +308,19 @@ for model, value in [
 examples["FormalCall"] = Call.model_validate(formal_call).model_dump(
     mode="json", exclude_unset=True
 )
+probe_call = {
+    **call,
+    "id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    "detail": {
+        **{k: v for k, v in call["detail"].items() if k != "method"},
+        "execution_kind": "formal_probe",
+    },
+}
+examples["FormalProbeCall"] = Call.model_validate(probe_call).model_dump(
+    mode="json", exclude_unset=True
+)
 examples["Calls"] = Calls.model_validate(
-    {"calls": [call, host, formal_call]}
+    {"calls": [call, host, formal_call, probe_call]}
 ).model_dump(mode="json", exclude_unset=True)
 text = json.dumps(examples, ensure_ascii=False, indent=2) + "\n"
 (b / "contracts/capabilities-v1.samples.json").write_text(text)

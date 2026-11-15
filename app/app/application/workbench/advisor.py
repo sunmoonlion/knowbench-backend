@@ -125,10 +125,19 @@ class Advisor:
     # ---------------- 入口 ----------------
     async def drive(self, task_id: str) -> str:
         """把一个 Task 推到停下为止：终态，或 WAITING（等人 / 等预算 / 等环境）。返回停下时的状态。"""
-        from app.domain.workbench.formal_execution import is_formal
+        from app.domain.workbench.formal_execution import is_formal, is_formal_model
 
         async with self.stores() as repo:
-            formal = is_formal(await repo.get_task(task_id))
+            formal_task = await repo.get_task(task_id)
+            formal = is_formal(formal_task)
+        if is_formal_model(formal_task):
+            from app.application.workbench.formal_model_execution import (
+                FormalModelExecution,
+            )
+
+            return await FormalModelExecution(
+                self.stores, self.driver, self.capabilities
+            ).drive(task_id)
         if formal:
             from app.application.workbench.formal_execution import FormalExecution
 

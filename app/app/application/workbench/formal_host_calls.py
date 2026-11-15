@@ -15,7 +15,12 @@ from app.application.workbench.method_calls import root_call
 from app.application.workbench.tool_registry import registered_call
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden
-from app.domain.workbench.formal_execution import case_key, snapshot_for_task
+from app.domain.workbench.formal_execution import (
+    case_key,
+    direct_procedure,
+    snapshot_for_task,
+    validate_values,
+)
 from app.domain.workbench.formal_host import (
     check_host_inputs,
     host_call_key,
@@ -26,7 +31,9 @@ from app.domain.workbench.formal_method_admission_generated import (
 )
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
+    bounded_json,
 )
+from app.domain.workbench.formal_model import model_call_key, model_intent_digest
 from app.domain.workbench.method_authorization import (
     MethodAuthorization,
     PermissionGrant,
@@ -51,7 +58,11 @@ class HostContext:
     def identity(self):
         # The Attempt is evidence of who dispatched this logical action, not
         # an excuse to duplicate it after a worker restart or a new Attempt.
-        return host_intent_digest(self.intent)
+        return (
+            model_intent_digest(self.intent)
+            if self.intent.get("execution_kind") == "formal_probe"
+            else host_intent_digest(self.intent)
+        )
 
 
 class FormalHostCalls:
@@ -59,13 +70,19 @@ class FormalHostCalls:
         self.capabilities = capabilities
         self.repo = capabilities.repo
 
-    async def context(self, owner, task_id, attempt_id) -> HostContext:
+    async def context(
+        self, owner, task_id, attempt_id, *, caller="host"
+    ) -> HostContext:
         """Caller owns a transaction; lock the authoritative Task before its work."""
         task = await self.repo.get_task(task_id, owner_actor_id=owner, for_update=True)
         try:
             snapshot = snapshot_for_task(task)
         except ValueError as exc:
             raise CapabilityError("Formal execution snapshot is invalid") from exc
+        if snapshot.caller != caller:
+            raise CapabilityError(
+                "Formal execution caller differs from its admitted test"
+            )
         attempt = await self.repo.get_attempt(attempt_id, for_update=True)
         refs = attempt.get("refs") or {}
         if (
@@ -140,11 +157,27 @@ class FormalHostCalls:
         if (
             len(persisted) != 1
             or case is None
+            or case.caller != snapshot.caller
+            or case.input.model_prompt != snapshot.model_prompt
             or not 1 <= snapshot.repetition <= case.repetitions
             or digest(case.input.values) != digest(snapshot.arguments)
         ):
             raise CapabilityError("Formal Task is not its persisted case repetition")
-        check_host_inputs(snapshot)
+        if caller == "host":
+            check_host_inputs(snapshot)
+        else:
+            bounded_json(snapshot.arguments)
+            validate_values(
+                direct_procedure(snapshot.draft, caller="model").inputs,
+                snapshot.arguments,
+            )
+            if (
+                len(snapshot.draft.definition.access_requirements) != 1
+                or request.execution.model_probe != snapshot.model_probe
+            ):
+                raise CapabilityError(
+                    "Model probe limits or permissions differ from its test"
+                )
         source = snapshot.draft.source
         if source is None or not await self.capabilities.formal_sources._source(
             owner, request.owner_subject, source
@@ -208,12 +241,19 @@ class FormalHostCalls:
             task, attempt, asset, registration, access, decision.operation, intent
         )
 
-    async def request(self, owner, task_id, attempt_id):
+    async def request(self, owner, task_id, attempt_id, *, model=None):
         async with self.repo.transaction():
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
             )
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
+            snapshot = snapshot_for_task(task)
+            caller = "model" if model is not None else "host"
+            if snapshot.caller != caller:
+                raise CapabilityError("This test requires its own caller entry")
+            key = (
+                model_call_key(task_id) if model is not None else host_call_key(task_id)
+            )
             refs = attempt.get("refs") or {}
             if (
                 str(attempt["task_id"]) != task_id
@@ -226,9 +266,7 @@ class FormalHostCalls:
                     "Formal host Attempt no longer owns the operation"
                 )
             await self.repo.recover_calls(owner, str(task["session_id"]))
-            existing = await self.repo.call_by_key(
-                owner, str(task["session_id"]), host_call_key(task_id)
-            )
+            existing = await self.repo.call_by_key(owner, str(task["session_id"]), key)
             if existing:
                 # Returning persisted facts does not require renewed authority.
                 # It must never create another operation after source revocation,
@@ -237,10 +275,21 @@ class FormalHostCalls:
                     snapshot_for_task(task)
                 except ValueError as exc:
                     raise CapabilityError("Formal execution snapshot changed") from exc
-                host = existing["detail"].get("formal_host") or {}
+                host = (
+                    existing["detail"].get(
+                        "formal_probe" if model is not None else "formal_host"
+                    )
+                    or {}
+                )
                 if (
                     existing["origin"] != "managed"
-                    or existing["detail"].get("execution_kind") != "formal_mcp"
+                    or existing["detail"].get("execution_kind")
+                    != ("formal_probe" if model is not None else "formal_mcp")
+                    or (
+                        model is not None
+                        and existing["detail"].get("invocation")
+                        != model["invocation"].snapshot()
+                    )
                     or str(existing.get("task_id")) != task_id
                     or host.get("task_id") != task_id
                     or host.get("slot") != "direct"
@@ -248,10 +297,15 @@ class FormalHostCalls:
                 ):
                     raise Forbidden("Host logical action was reused for different work")
                 return public_call(existing)
-            context = await self.context(owner, task_id, attempt_id)
+            context = await self.context(owner, task_id, attempt_id, caller=caller)
+            if model is not None:
+                from app.application.workbench.formal_model_calls import (
+                    bind_model_intent,
+                )
+
+                bind_model_intent(context, model)
             session_id = str(context.task["session_id"])
             await self.repo.recover_calls(owner, session_id)
-            key = host_call_key(task_id)
             existing = await self.repo.call_by_key(owner, session_id, key)
             if existing:
                 if (
@@ -335,6 +389,19 @@ class FormalHostCalls:
                 refs={
                     **(context.attempt.get("refs") or {}),
                     "capability_call_id": call_id,
+                    **(
+                        {
+                            "formal_model_probe": {
+                                **(context.attempt.get("refs") or {}).get(
+                                    "formal_model_probe", {}
+                                ),
+                                "invocation_key": model["invocation"].key,
+                                "call_id": call_id,
+                            }
+                        }
+                        if model is not None
+                        else {}
+                    ),
                 },
             )
             return public_call(call)
@@ -351,12 +418,18 @@ class FormalHostCalls:
             if body.subject_digest != call["digest"]:
                 raise Forbidden("Approval does not match the operation")
             intent = call["detail"]
-            host = intent.get("formal_host") or {}
+            is_model = intent.get("execution_kind") == "formal_probe"
+            host = intent.get("formal_probe" if is_model else "formal_host") or {}
             if (
-                intent.get("execution_kind") != "formal_mcp"
+                intent.get("execution_kind") not in ("formal_mcp", "formal_probe")
                 or str(call["task_id"]) != host.get("task_id")
                 or str(call["attempt_id"]) != host.get("attempt_id")
-                or call["call_key"] != host_call_key(host["task_id"])
+                or call["call_key"]
+                != (
+                    model_call_key(host["task_id"])
+                    if is_model
+                    else host_call_key(host["task_id"])
+                )
             ):
                 raise Forbidden("Formal action has no trusted host identity")
             task = await self.repo.get_task(host["task_id"])
@@ -371,14 +444,30 @@ class FormalHostCalls:
                 )
             context = None
             if body.decision == "accept":
-                context = await self.context(owner, host["task_id"], host["attempt_id"])
+                context = await self.context(
+                    owner,
+                    host["task_id"],
+                    host["attempt_id"],
+                    caller="model" if is_model else "host",
+                )
+                if is_model:
+                    from app.application.workbench.formal_model_calls import (
+                        FormalModelCalls,
+                        bind_model_intent,
+                    )
+
+                    model = await FormalModelCalls(self.capabilities).existing_model(
+                        owner, call
+                    )
+                    bind_model_intent(context, model)
                 if (
                     context.identity != call["digest"]
                     or digest(context.intent)
                     != digest(
                         {k: v for k, v in intent.items() if k != "approval_token"}
                     )
-                    or context.intent["formal_host"] != host
+                    or context.intent["formal_probe" if is_model else "formal_host"]
+                    != host
                     or call["source_asset_id"] != context.asset["id"]
                     or call["connection_id"] != context.asset["id"]
                     or call["registration_id"] != context.registration.tool_id
@@ -435,7 +524,11 @@ class FormalHostCalls:
                 },
             }
         )
-        host = context.intent["formal_host"]
+        host = context.intent[
+            "formal_probe"
+            if context.intent.get("execution_kind") == "formal_probe"
+            else "formal_host"
+        ]
         grant = PermissionGrant(
             grant_id=digest([call["id"], call["digest"]]),
             confirmation_context=host["snapshot_digest"],

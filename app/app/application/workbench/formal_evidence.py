@@ -77,7 +77,9 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             and task.get("active_attempt_id") is None,
             "execution_not_terminal",
         )
-        require(attempt.get("turn_ids") == [], "unexpected_model_turns")
+        model = case.caller == "model"
+        if not model:
+            require(attempt.get("turn_ids") == [], "unexpected_model_turns")
         require(
             refs.get("kind") == "formal_method"
             and refs.get("slot") == "direct"
@@ -91,6 +93,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             and snapshot.request_digest == request.fingerprint()
             and snapshot.method_id == request.method_id
             and snapshot.draft == request.draft
+            and snapshot.caller == case.caller == result.get("caller", "host")
             and fingerprint(snapshot.arguments) == fingerprint(case.input.values),
             "case_snapshot_mismatch",
         )
@@ -169,6 +172,9 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         )
         call_id = result.get("call_id")
         if call_id is None:
+            if model:
+                errors.append("model_call_evidence_missing")
+                return evidence
             existing = await repo.call_by_key(
                 owner, str(task["session_id"]), host_call_key(str(task["id"]))
             )
@@ -196,15 +202,17 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             return evidence
 
         call = await repo.capability_call(owner, call_id)
-        intent, host = call["detail"], call["detail"].get("formal_host") or {}
+        context_key = "formal_probe" if model else "formal_host"
+        intent, host = call["detail"], call["detail"].get(context_key) or {}
         original_intent = {
             k: v
             for k, v in intent.items()
             if k not in {"approval_token", "authorization", "result"}
         }
-        original_intent["formal_host"] = {
-            k: v for k, v in host.items() if k != "attempt_id"
-        }
+        if not model:
+            original_intent["formal_host"] = {
+                k: v for k, v in host.items() if k != "attempt_id"
+            }
         require(call["digest"] == digest(original_intent), "call_digest_mismatch")
         source = request.draft.source
         require(source is not None, "source_missing")
@@ -217,8 +225,9 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             and str(call["session_id"]) == str(task["session_id"])
             and call.get("kind") == "tool"
             and call.get("origin") == "managed"
-            and call.get("call_key") == host_call_key(result["task_id"])
-            and intent.get("execution_kind") == "formal_mcp",
+            and (model or call.get("call_key") == host_call_key(result["task_id"]))
+            and intent.get("execution_kind")
+            == ("formal_probe" if model else "formal_mcp"),
             "call_identity_mismatch",
         )
         require(
@@ -269,6 +278,17 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             and parent.get("call_key") == "task:" + result["task_id"],
             "parent_identity_mismatch",
         )
+        if model:
+            from app.application.workbench.formal_model_evidence import (
+                collect_model_provenance,
+            )
+
+            provenance = await collect_model_provenance(
+                repo, request, case, task, attempt, call, parent, result
+            )
+            evidence["model_provenance"] = provenance
+            errors.extend(provenance["errors"])
+            require(provenance["validated"], "model_provenance_unqualified")
         interaction = await repo.get_interaction(str(call["interaction_id"]))
         require(
             str(interaction.get("task_id")) == result["task_id"]
@@ -317,6 +337,8 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
                 "expires_at": interaction["expires_at"].isoformat(),
             },
         )
+        if model:
+            governance["formal_probe"] = governance.pop("formal_host")
         evidence["governance"] = governance
         if outcome == "rejected":
             declined = (

@@ -17,6 +17,7 @@ from uuid import UUID
 from pydantic import Field, JsonValue, model_validator
 
 from app.domain.workbench.formal_method_admission_generated import (
+    Caller,
     FormalMethodDraft,
     FormalMethodValidationRequest,
     FormalMethodValidationResult,
@@ -99,6 +100,12 @@ Assertion = Annotated[
 
 class FormalCaseInput(Strict):
     values: dict[str, JsonValue] = Field(max_length=100)
+    model_prompt: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=4000,
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def finite(self):
@@ -125,6 +132,7 @@ class FormalCaseExpectation(Strict):
 
 class FormalExecutionCase(Strict):
     case_id: CaseId
+    caller: Caller = Field(default="host", exclude_if=lambda value: value == "host")
     input: FormalCaseInput
     repetitions: int = Field(strict=True, ge=1, le=10)
     minimum_passes: int = Field(strict=True, ge=1, le=10)
@@ -134,6 +142,16 @@ class FormalExecutionCase(Strict):
     def threshold(self):
         if self.minimum_passes > self.repetitions:
             raise ValueError("Minimum passes exceeds repetitions")
+        if (self.caller == "model") != (self.input.model_prompt is not None):
+            raise ValueError("Only model cases require a model prompt")
+        if self.input.model_prompt is not None and not self.input.model_prompt.strip():
+            raise ValueError("Model prompt must be nonblank")
+        if (
+            self.caller == "model"
+            and self.expected.outcome == "rejected"
+            and self.expected.rejection_code != "approval_denied"
+        ):
+            raise ValueError("Model probes support only explicit approval rejection")
         return self
 
     def execution_input(self) -> dict:
@@ -185,12 +203,33 @@ class FormalTestSuite(FormalTestSuiteDraft):
         return self
 
 
+class ModelProbeLimits(Strict):
+    """Outer caller limits, independent of the method's zero internal model turns.
+
+    A Codex turn can contain several inference requests; every usage report counts.
+    """
+
+    max_turns: int = Field(strict=True, ge=1, le=1)
+    max_method_calls: int = Field(strict=True, ge=1, le=1)
+
+
 class FormalExecutionSpec(Strict):
     suite: FormalTestSuite
     runner: Runner
     budget: Budget
     timeout_seconds: int = Field(strict=True, ge=60, le=86400)
     max_wait_seconds: int = Field(strict=True, ge=60, le=604800)
+    model_probe: ModelProbeLimits | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def probe_scope(self):
+        if any(c.caller == "model" for c in self.suite.cases) != (
+            self.model_probe is not None
+        ):
+            raise ValueError("Model limits are required exactly when model cases exist")
+        return self
 
 
 class FormalExecutionInput(Strict):
@@ -199,6 +238,17 @@ class FormalExecutionInput(Strict):
     budget: Budget
     timeout_seconds: int = Field(strict=True, ge=60, le=86400)
     max_wait_seconds: int = Field(strict=True, ge=60, le=604800)
+    model_probe: ModelProbeLimits | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def probe_scope(self):
+        if any(c.caller == "model" for c in self.suite.cases) != (
+            self.model_probe is not None
+        ):
+            raise ValueError("Model limits are required exactly when model cases exist")
+        return self
 
     def freeze(self) -> FormalExecutionSpec:
         return FormalExecutionSpec.model_validate(
@@ -246,10 +296,18 @@ class FormalMethodExecutionRequest(Strict):
             or p.implementation.kind != "mcp"
             or p.max_model_turns != 0
             or self.dependencies
-            or self.draft.allowed_callers != ("host",)
         ):
             raise ValueError(
-                "Execution currently supports host-only direct MCP methods"
+                "Execution supports direct MCP methods without internal model turns"
+            )
+        callers = set(self.draft.allowed_callers)
+        if {c.caller for c in self.execution.suite.cases} != callers or {
+            c.caller
+            for c in self.execution.suite.cases
+            if c.expected.outcome == "succeeded"
+        } != callers:
+            raise ValueError(
+                "Every allowed caller needs its own positive execution case"
             )
         return self
 
@@ -302,8 +360,21 @@ class FormalAssertionResult(Strict):
     detail: str = Field(max_length=2000)
 
 
+class FormalModelTrace(Strict):
+    """References to runtime facts, never client-submittable execution evidence."""
+
+    thread_id: str = Field(min_length=1, max_length=200)
+    turn_id: str = Field(min_length=1, max_length=200)
+    tool_call_id: str = Field(min_length=1, max_length=200)
+    method_call_id: UUID
+
+
 class FormalExecutionCaseResult(Strict):
     case_id: CaseId
+    caller: Caller = Field(default="host", exclude_if=lambda value: value == "host")
+    model_trace: FormalModelTrace | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     repetition: int = Field(strict=True, ge=1, le=10)
     status: Literal["pending", "running", "waiting", "passed", "failed", "cancelled"]
     outcome: Literal[
@@ -315,6 +386,23 @@ class FormalExecutionCaseResult(Strict):
     call_id: UUID | None
     assertions: tuple[FormalAssertionResult, ...] = Field(max_length=64)
     detail: str = Field(max_length=2000)
+
+    @model_validator(mode="after")
+    def caller_trace(self):
+        if self.caller == "host" and self.model_trace is not None:
+            raise ValueError("Host cases cannot claim a model trace")
+        if (
+            self.caller == "model"
+            and self.status == "passed"
+            and (
+                self.model_trace is None
+                or self.task_id is None
+                or self.attempt_id is None
+                or self.call_id is None
+            )
+        ):
+            raise ValueError("Passed model cases require exact runtime call references")
+        return self
 
 
 class FormalMethodExecutionResult(Strict):
@@ -360,6 +448,20 @@ class FormalMethodExecutionResult(Strict):
             )
         ):
             raise ValueError("Passed execution needs complete, known runtime evidence")
+        if self.status == "passed":
+            assert self.admission.receipt is not None
+            evidence = self.admission.receipt.execution
+            assert evidence is not None
+            callers: set[Caller] = {case.caller for case in self.cases}
+            positive = {
+                case.caller
+                for case in self.cases
+                if case.status == "passed" and case.outcome == "succeeded"
+            }
+            if not evidence.covers_callers(tuple(callers)) or positive != callers:
+                raise ValueError(
+                    "Execution receipt lacks positive results for every caller"
+                )
         return self
 
 

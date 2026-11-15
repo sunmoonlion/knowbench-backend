@@ -45,6 +45,8 @@ class TurnResult:
     # Only an authoritative complete receipt may settle a pending interrupted turn.
     # Current app-server usage notifications are incremental, never final receipts.
     usage_final: bool = False
+    # A matching completion event or verified idle state, never just an RPC ack.
+    completion_confirmed: bool = False
 
 
 class TurnDriver(Protocol):

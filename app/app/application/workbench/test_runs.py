@@ -75,6 +75,7 @@ from app.domain.workbench.errors import (
     KnowbotTestNoComputer,
     NotFound,
     QuestionNotOpen,
+    TestCleanupPending,
     WorkbenchError,
 )
 from app.domain.workbench.formal_method_execution_generated import (
@@ -1601,9 +1602,15 @@ class KnowbotTestConductor:
         """测试产出保留期满：删委托、对话、交回物；取好的产出 30 天后清空；测试结果留着。"""
         async with self.stores() as repo:
             expired = await repo.expired_test_runs(self.now())
+            cleaned = 0
             for run in expired:
-                async with repo.transaction():
-                    await repo.purge_test_run(run["run_id"])
+                try:
+                    async with repo.transaction():
+                        await repo.purge_test_run(run["run_id"])
+                except TestCleanupPending:
+                    log.info("test cleanup deferred run=%s", run["run_id"])
+                    continue
+                cleaned += 1
             # 过期产出每小时清一次就够（审读 10-19）
             now = self.now()
             last = self._outputs_cleared_at
@@ -1611,4 +1618,4 @@ class KnowbotTestConductor:
                 async with repo.transaction():
                     await repo.clear_test_outputs(now - KEEP_OUTPUTS)
                 self._outputs_cleared_at = now
-        return len(expired)
+        return cleaned
