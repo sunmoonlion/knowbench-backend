@@ -36,6 +36,14 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
     An authorization_denied result remains unqualified until the driver records
     a structured denial proof; its text and its failure code are insufficient.
     """
+    from app.domain.workbench.formal_method_generated import Orchestration
+
+    if isinstance(request.draft.definition.procedure, Orchestration):
+        from app.application.workbench.formal_orchestration_evidence import (
+            collect_plan_evidence,
+        )
+
+        return await collect_plan_evidence(repo, request, case, repetition, result)
     evidence = {"result": result, "governance": None, "validated": False, "errors": []}
     errors = evidence["errors"]
 

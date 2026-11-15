@@ -18,6 +18,7 @@ from app.domain.workbench.errors import Forbidden
 from app.domain.workbench.formal_execution import (
     case_key,
     direct_procedure,
+    orchestration_plan,
     snapshot_for_task,
     validate_values,
 )
@@ -37,6 +38,7 @@ from app.domain.workbench.formal_model import model_call_key, model_intent_diges
 from app.domain.workbench.method_authorization import (
     MethodAuthorization,
     PermissionGrant,
+    delegate,
 )
 from app.domain.workbench.method_capabilities import AccessRequirement
 from app.domain.workbench.models import InteractionPrompt
@@ -53,6 +55,7 @@ class HostContext:
     access: dict
     operation: dict
     intent: dict
+    method_call: dict | None = None
 
     @property
     def identity(self):
@@ -85,13 +88,49 @@ class FormalHostCalls:
             )
         attempt = await self.repo.get_attempt(attempt_id, for_update=True)
         refs = attempt.get("refs") or {}
+        step = frozen = child = None
+        draft, arguments, slot = snapshot.draft, snapshot.arguments, "direct"
+        if snapshot.dependencies:
+            from app.application.workbench.formal_orchestration import resolve_plan
+            from app.application.workbench.formal_orchestration_execution import (
+                step_call_key,
+                step_context,
+                step_identity,
+            )
+
+            if caller != "host":
+                raise CapabilityError("Formal orchestration cannot use a model probe")
+            _, step, frozen, arguments = await step_context(self.repo, task, attempt)
+            live = await resolve_plan(
+                self.capabilities, owner, snapshot.draft, snapshot.method_id
+            )
+            if live != snapshot.dependencies:
+                raise CapabilityError("Formal dependency admission changed")
+            draft, slot = frozen.draft, step.id
+            child = await self.repo.call_by_key(
+                owner, str(task["session_id"]), step_call_key(task_id, slot)
+            )
+            root = await self.repo.call_by_key(
+                owner, str(task["session_id"]), "task:" + task_id
+            )
+            identity = step_identity(task, step, int(task["current_step"]))
+            if (
+                child is None
+                or root is None
+                or child["id"] != refs.get("method_call_id")
+                or child["parent_call_id"] != root["id"]
+                or child["digest"] != digest(identity)
+                or any(child["detail"].get(k) != v for k, v in identity.items())
+            ):
+                raise CapabilityError("Formal child method differs from its host plan")
         if (
             str(attempt["task_id"]) != task_id
             or str(task.get("active_attempt_id")) != attempt_id
             or attempt["status"] not in (AttemptState.CREATED, AttemptState.RUNNING)
-            or refs.get("kind") != "formal_method"
+            or refs.get("kind")
+            != ("formal_orchestration_step" if step else "formal_method")
             or refs.get("snapshot_digest") != task["pack_digest"]
-            or refs.get("slot") != "direct"
+            or refs.get("slot") != slot
             or refs.get("permission_revocation")
             or task["state"] not in (TaskState.RUNNING, TaskState.WAITING)
             or task.get("cancel_requested_at")
@@ -163,7 +202,13 @@ class FormalHostCalls:
             or digest(case.input.values) != digest(snapshot.arguments)
         ):
             raise CapabilityError("Formal Task is not its persisted case repetition")
-        if caller == "host":
+        if step is not None:
+            validate_values(direct_procedure(draft).inputs, arguments)
+            if len(draft.definition.access_requirements) != 1:
+                raise CapabilityError(
+                    "Formal leaves require one exact operation permission"
+                )
+        elif caller == "host":
             check_host_inputs(snapshot)
         else:
             bounded_json(snapshot.arguments)
@@ -178,7 +223,7 @@ class FormalHostCalls:
                 raise CapabilityError(
                     "Model probe limits or permissions differ from its test"
                 )
-        source = snapshot.draft.source
+        source = draft.source
         if source is None or not await self.capabilities.formal_sources._source(
             owner, request.owner_subject, source
         ):
@@ -197,14 +242,14 @@ class FormalHostCalls:
                 "Formal execution requires reviewed zero incremental provider cost"
             )
         access = {
-            "requirement": snapshot.draft.definition.access_requirements[0].model_dump(
+            "requirement": draft.definition.access_requirements[0].model_dump(
                 mode="json"
             ),
             "operation_digest": policy.policy_digest,
         }
         decision = authorize_operation(
             registration,
-            snapshot.arguments,
+            arguments,
             operations=self.capabilities.operations,
             method=True,
             access=access,
@@ -216,13 +261,22 @@ class FormalHostCalls:
             "task_id": task_id,
             "attempt_id": attempt_id,
             "snapshot_digest": task["pack_digest"],
-            "slot": "direct",
-            "method_id": str(snapshot.method_id),
+            "slot": slot,
+            "method_id": str(frozen.reference.method_id)
+            if frozen
+            else str(snapshot.method_id),
             "run_id": str(snapshot.run_id),
             "case_id": snapshot.case_id,
             "repetition": snapshot.repetition,
             "source_digest": source.fingerprint(),
         }
+        if frozen is not None and child is not None:
+            host.update(
+                parent_method_id=str(snapshot.method_id),
+                reference=frozen.reference.model_dump(mode="json"),
+                method_call_id=child["id"],
+                inputs_digest=digest(arguments),
+            )
         intent = {
             "execution_kind": "formal_mcp",
             "formal_host": host,
@@ -233,12 +287,19 @@ class FormalHostCalls:
             "account_label": asset["detail"].get("account_label", ""),
             "purpose": access["requirement"]["data_transfer"]["purpose"],
             "tool": tool,
-            "arguments": snapshot.arguments,
+            "arguments": arguments,
             "operation": decision.operation,
             "access": access,
         }
         return HostContext(
-            task, attempt, asset, registration, access, decision.operation, intent
+            task,
+            attempt,
+            asset,
+            registration,
+            access,
+            decision.operation,
+            intent,
+            child,
         )
 
     async def request(self, owner, task_id, attempt_id, *, model=None):
@@ -251,15 +312,27 @@ class FormalHostCalls:
             caller = "model" if model is not None else "host"
             if snapshot.caller != caller:
                 raise CapabilityError("This test requires its own caller entry")
+            slot = (
+                orchestration_plan(snapshot)[int(task["current_step"])].id
+                if snapshot.dependencies
+                else "direct"
+            )
             key = (
-                model_call_key(task_id) if model is not None else host_call_key(task_id)
+                model_call_key(task_id)
+                if model is not None
+                else host_call_key(task_id, slot)
             )
             refs = attempt.get("refs") or {}
             if (
                 str(attempt["task_id"]) != task_id
                 or str(task.get("active_attempt_id")) != attempt_id
-                or refs.get("kind") != "formal_method"
-                or refs.get("slot") != "direct"
+                or refs.get("kind")
+                != (
+                    "formal_orchestration_step"
+                    if snapshot.dependencies
+                    else "formal_method"
+                )
+                or refs.get("slot") != slot
                 or refs.get("snapshot_digest") != task.get("pack_digest")
             ):
                 raise CapabilityError(
@@ -292,10 +365,14 @@ class FormalHostCalls:
                     )
                     or str(existing.get("task_id")) != task_id
                     or host.get("task_id") != task_id
-                    or host.get("slot") != "direct"
+                    or host.get("slot") != slot
                     or host.get("snapshot_digest") != task["pack_digest"]
                 ):
                     raise Forbidden("Host logical action was reused for different work")
+                if snapshot.dependencies:
+                    from app.domain.workbench.formal_host import validate_host_call
+
+                    validate_host_call(task, attempt, existing)
                 return public_call(existing)
             context = await self.context(owner, task_id, attempt_id, caller=caller)
             if model is not None:
@@ -321,7 +398,12 @@ class FormalHostCalls:
                     "Resolve the existing interaction before requesting an operation"
                 )
             root = await root_call(self.repo, context.task)
-            if await self.repo.method_authorization(owner, root["id"], lock=True):
+            prior_authority = await self.repo.method_authorization(
+                owner, root["id"], lock=True
+            )
+            if prior_authority and (
+                context.method_call is None or prior_authority["revoked"]
+            ):
                 raise CapabilityError(
                     "Formal action already has an authorization history"
                 )
@@ -368,7 +450,9 @@ class FormalHostCalls:
                     "session_id": session_id,
                     "task_id": task_id,
                     "attempt_id": attempt_id,
-                    "parent_call_id": root["id"],
+                    "parent_call_id": context.method_call["id"]
+                    if context.method_call
+                    else root["id"],
                     "kind": "tool",
                     "origin": "managed",
                     "call_key": key,
@@ -428,7 +512,7 @@ class FormalHostCalls:
                 != (
                     model_call_key(host["task_id"])
                     if is_model
-                    else host_call_key(host["task_id"])
+                    else host_call_key(host["task_id"], host.get("slot", "direct"))
                 )
             ):
                 raise Forbidden("Formal action has no trusted host identity")
@@ -502,9 +586,12 @@ class FormalHostCalls:
     async def authorize(self, owner, call, context):
         """An authenticated owner approved this exact action in this transaction."""
         root = await root_call(self.repo, context.task)
-        if root["id"] != call["parent_call_id"]:
+        recipient = context.method_call["id"] if context.method_call else root["id"]
+        if recipient != call["parent_call_id"]:
             raise Forbidden("Formal action parent changed")
-        if await self.repo.method_authorization(owner, root["id"], lock=True):
+        raw = await self.repo.method_authorization(owner, root["id"], lock=True)
+        current = MethodAuthorization.model_validate(raw) if raw else None
+        if current and (context.method_call is None or current.revoked):
             raise CapabilityError(
                 "Formal action authority was already confirmed or revoked"
             )
@@ -537,26 +624,47 @@ class FormalHostCalls:
             operation_digest=context.access["operation_digest"],
             requirement=exact,
             delegable=False,
-            recipient_call_id=root["id"],
+            recipient_call_id=recipient,
             expires_at=expiry,
             method_ids=(host["method_id"],),
         )
         authorization = MethodAuthorization(
             call_id=root["id"],
-            revision=1,
+            revision=current.revision + 1 if current else 1,
             parent_call_id=None,
             parent_revision=None,
-            method_id=host["method_id"],
+            method_id=host.get("parent_method_id", host["method_id"]),
             revoked=False,
-            expires_at=expiry,
-            grants=(grant,),
+            expires_at=max(current.expires_at, expiry) if current else expiry,
+            grants=(*(current.grants if current else ()), grant),
         )
         await self.repo.save_method_authorization(
             owner,
             str(context.task["session_id"]),
             authorization.model_dump(mode="json"),
-            previous=0,
+            previous=current.revision if current else 0,
         )
+        parent_authorization = None
+        if context.method_call is not None:
+            from uuid import UUID
+
+            if await self.repo.method_authorization(owner, recipient, lock=True):
+                raise CapabilityError(
+                    "Formal child already has an authorization history"
+                )
+            parent_authorization = authorization
+            authorization = delegate(
+                authorization,
+                call_id=UUID(recipient),
+                method_id=host["method_id"],
+                requirements=(grant,),
+            ).model_copy(update={"expires_at": expiry})
+            await self.repo.save_method_authorization(
+                owner,
+                str(context.task["session_id"]),
+                authorization.model_dump(mode="json"),
+                previous=0,
+            )
         await self.repo.append_event(
             session_id=str(context.task["session_id"]),
             task_id=str(context.task["id"]),
@@ -568,9 +676,21 @@ class FormalHostCalls:
                 "context": host["snapshot_digest"],
                 "interaction_id": str(call["interaction_id"]),
                 "action_digest": call["digest"],
+                **(
+                    {
+                        "parent_authorization": parent_authorization.model_dump(
+                            mode="json"
+                        )
+                    }
+                    if parent_authorization
+                    else {}
+                ),
             },
         )
         return {
             **call["detail"],
-            "authorization": {"call_id": root["id"], "revision": 1},
+            "authorization": {
+                "call_id": str(authorization.call_id),
+                "revision": authorization.revision,
+            },
         }

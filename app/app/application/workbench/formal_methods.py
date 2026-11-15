@@ -265,6 +265,13 @@ class FormalMethods:
             ).model_dump(mode="json")
 
     async def register(self, frozen: FrozenFormalMethod, *, caller: str):
+        if (
+            isinstance(frozen.draft.definition.procedure, Orchestration)
+            and frozen.visibility != "private"
+        ):
+            raise Forbidden(
+                "Formal expert execution currently qualifies private use only"
+            )
         async with self.repo.transaction():
             owner = await self._owner(frozen.owner_subject)
             existing = await self.repo.formal_method(
@@ -316,6 +323,27 @@ class FormalMethods:
                     raise Forbidden(
                         "Execution evidence is missing or differs from the receipt"
                     )
+            if isinstance(frozen.draft.definition.procedure, Orchestration):
+                from app.application.workbench.formal_orchestration import (
+                    resolve_owned_plan,
+                )
+
+                if (
+                    frozen.validation.execution is None
+                    or (run.get("execution_evidence") or {}).get("adapter")
+                    != "knowbench/formal-orchestration-host/v1"
+                ):
+                    raise Forbidden(
+                        "Formal experts require actual orchestration execution evidence"
+                    )
+                await resolve_owned_plan(
+                    self.repo,
+                    self,
+                    self.operations,
+                    owner,
+                    frozen.draft,
+                    frozen.reference.method_id,
+                )
             if not await self._source(owner, frozen.owner_subject, frozen.draft.source):
                 raise Forbidden("Source execution rights have not been verified")
             compilation = await self._compile(

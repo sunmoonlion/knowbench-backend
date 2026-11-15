@@ -27,6 +27,18 @@ class FormalExecution:
         self.stores, self.capabilities = stores, capabilities
 
     async def drive(self, task_id: str) -> str:
+        async with self.stores() as repo:
+            task = await repo.get_task(task_id)
+            if (task.get("pack_snapshot") or {}).get("draft", {}).get(
+                "definition", {}
+            ).get("procedure", {}).get("kind") == "orchestration":
+                from app.application.workbench.formal_orchestration_execution import (
+                    FormalOrchestrationExecution,
+                )
+
+                return await FormalOrchestrationExecution(
+                    self.stores, self.capabilities
+                ).drive(task_id)
         async with self.stores() as repo, repo.transaction():
             led = Ledger(repo)
             task = await repo.get_task(task_id, for_update=True)

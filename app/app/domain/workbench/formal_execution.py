@@ -12,9 +12,16 @@ from jsonschema import Draft202012Validator
 from pydantic import Field, model_validator
 
 from app.domain.workbench.capabilities import digest
-from app.domain.workbench.formal_method_admission_generated import FormalMethodDraft
+from app.domain.workbench.formal_method_admission_generated import (
+    FormalMethodDraft,
+    FrozenFormalMethod,
+)
 from app.domain.workbench.formal_method_execution_generated import ModelProbeLimits
-from app.domain.workbench.formal_method_generated import Strict, ToolProcedure
+from app.domain.workbench.formal_method_generated import (
+    Orchestration,
+    Strict,
+    ToolProcedure,
+)
 
 FORMAL_RUNTIME = "knowlab/formal-method-execution/v1"
 FORMAL_SOURCE = "formal-test"
@@ -30,6 +37,9 @@ class FormalTaskSnapshot(Strict):
     draft: FormalMethodDraft
     arguments: dict[str, Any]
     definition_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    dependencies: tuple[FrozenFormalMethod, ...] = Field(
+        default=(), max_length=100, exclude_if=lambda value: not value
+    )
     caller: Literal["host", "model"] = Field(
         default="host", exclude_if=lambda value: value == "host"
     )
@@ -54,6 +64,10 @@ class FormalTaskSnapshot(Strict):
                 raise ValueError("Model cases require a bounded caller probe")
         elif self.model_prompt is not None or self.model_probe is not None:
             raise ValueError("Host cases cannot contain model probe inputs")
+        if isinstance(self.draft.definition.procedure, Orchestration):
+            orchestration_plan(self)
+        elif self.dependencies:
+            raise ValueError("Direct methods cannot contain dependency snapshots")
         return self
 
     def document(self) -> dict:
@@ -75,6 +89,50 @@ def is_formal_model(task: dict) -> bool:
 
 def is_formal_host(task: dict) -> bool:
     return is_formal(task) and not is_formal_model(task)
+
+
+def orchestration_plan(snapshot: FormalTaskSnapshot):
+    """A fixed, one-level formal plan; never an accepted-plan/pack projection."""
+    from app.domain.workbench.formal_method_compiler_generated import (
+        FrozenMethod,
+        compile_method,
+    )
+    from app.domain.workbench.formal_method_plan_generated import unique_plan
+
+    if snapshot.caller != "host" or snapshot.draft.allowed_callers != ("host",):
+        raise ValueError("Formal orchestration currently supports the host caller only")
+    steps = unique_plan(snapshot.draft.definition)
+    refs = [
+        (f.reference.method_id, f.reference.version, f.reference.digest)
+        for f in snapshot.dependencies
+    ]
+    wanted = {
+        (
+            step.candidates[0].method_id,
+            step.candidates[0].version,
+            step.candidates[0].digest,
+        )
+        for step in steps
+    }
+    if len(set(refs)) != len(refs) or set(refs) != wanted:
+        raise ValueError("Formal orchestration requires exact frozen dependency pins")
+    for frozen in snapshot.dependencies:
+        direct_procedure(frozen.draft, caller="host")
+    compile_method(
+        snapshot.method_id,
+        snapshot.draft.definition,
+        {
+            (f.reference.method_id, f.reference.version): FrozenMethod(
+                f.reference, f.draft.definition
+            )
+            for f in snapshot.dependencies
+        },
+    )
+    return steps
+
+
+def dependency_for_step(snapshot: FormalTaskSnapshot, step):
+    return next(f for f in snapshot.dependencies if f.reference == step.candidates[0])
 
 
 def snapshot_for_task(task: dict) -> FormalTaskSnapshot:

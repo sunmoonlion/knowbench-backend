@@ -28,6 +28,7 @@ from app.domain.workbench.formal_method_generated import (
     Strict,
     ToolProcedure,
 )
+from app.domain.workbench.formal_method_plan_generated import unique_plan
 from app.domain.workbench.test_runs import Budget, Runner
 
 EXECUTION_CONTRACT = "knowlab/formal-method-execution/v1"
@@ -291,15 +292,31 @@ class FormalMethodExecutionRequest(Strict):
     @model_validator(mode="after")
     def supported(self):
         p = self.draft.definition.procedure
-        if (
-            not isinstance(p, ToolProcedure)
-            or p.implementation.kind != "mcp"
-            or p.max_model_turns != 0
-            or self.dependencies
-        ):
-            raise ValueError(
-                "Execution supports direct MCP methods without internal model turns"
-            )
+        if isinstance(p, ToolProcedure):
+            if (
+                p.implementation.kind != "mcp"
+                or p.max_model_turns != 0
+                or self.dependencies
+            ):
+                raise ValueError(
+                    "Execution supports direct MCP methods without internal model turns"
+                )
+        else:
+            plan = unique_plan(self.draft.definition)
+            if self.draft.allowed_callers != ("host",):
+                raise ValueError("Unique plan execution supports only the host caller")
+            references = {
+                (ref.method_id, ref.version, ref.digest)
+                for step in plan
+                for ref in step.candidates
+            }
+            supplied = {
+                (ref.method_id, ref.version, ref.digest) for ref in self.dependencies
+            }
+            if len(self.dependencies) != len(references) or supplied != references:
+                raise ValueError(
+                    "Unique plan dependencies must match every exact candidate"
+                )
         callers = set(self.draft.allowed_callers)
         if {c.caller for c in self.execution.suite.cases} != callers or {
             c.caller

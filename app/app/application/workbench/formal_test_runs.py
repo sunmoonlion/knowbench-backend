@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from app.application.workbench.formal_evidence import collect_case_evidence
 from app.application.workbench.formal_execution import FormalExecution
+from app.application.workbench.formal_orchestration import resolve_plan
 from app.application.workbench.interactions import cancel_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
@@ -42,6 +43,7 @@ from app.domain.workbench.formal_method_execution_generated import (
     evaluate_assertions,
     fingerprint,
 )
+from app.domain.workbench.formal_method_generated import Orchestration
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.states import TASK_TERMINAL, TaskState
 
@@ -140,7 +142,10 @@ class FormalExecutions:
                     raise CapabilityError(
                         "The execution environment or workspace is not the author's"
                     )
-                if len(request.draft.definition.access_requirements) != 1:
+                if (
+                    not isinstance(request.draft.definition.procedure, Orchestration)
+                    and len(request.draft.definition.access_requirements) != 1
+                ):
                     raise CapabilityError(
                         "Direct MCP execution currently requires one exact access requirement"
                     )
@@ -160,7 +165,12 @@ class FormalExecutions:
                     raise CapabilityError(
                         "Execution requires a licensed source and a pending admission"
                     )
-                await self.reviewed_policy(owner, request)
+                if isinstance(request.draft.definition.procedure, Orchestration):
+                    await resolve_plan(
+                        self.capabilities, owner, request.draft, request.method_id
+                    )
+                else:
+                    await self.reviewed_policy(owner, request)
                 await self.repo.insert_test_run(
                     dict(
                         run_id=run_id,
@@ -315,6 +325,16 @@ class FormalExecutions:
         outcome = actual.get("outcome") or (
             "cancelled" if task["state"] == TaskState.CANCELLED else "failed"
         )
+        if (
+            isinstance(request.draft.definition.procedure, Orchestration)
+            and outcome == "succeeded"
+        ):
+            exports = refs.get("formal_exports")
+            if task["state"] != TaskState.SUCCEEDED or not exports:
+                outcome = "failed"
+                actual = {"detail": "The expert did not complete its declared exports"}
+            else:
+                actual = {**actual, **exports}
         assertions = (
             evaluate_assertions(case, actual.get("outputs") or {})
             if outcome == "succeeded"
@@ -417,12 +437,32 @@ class FormalExecutions:
             licensed = await self.formal._source(
                 owner, request.owner_subject, request.draft.source
             )
-            policy = await self.reviewed_policy(owner, request)
-            licensed = licensed and all(
-                not e["governance"]
-                or e["governance"]["operation"]["policy_digest"] == policy.policy_digest
-                for e in evidence_cases
-            )
+            if isinstance(request.draft.definition.procedure, Orchestration):
+                leaves = await resolve_plan(
+                    self.capabilities, owner, request.draft, request.method_id
+                )
+                policies = {}
+                for leaf in leaves:
+                    policy = await self.reviewed_policy(owner, leaf)
+                    policies[fingerprint(leaf.reference.model_dump(mode="json"))] = (
+                        policy.policy_digest
+                    )
+                licensed = licensed and all(
+                    isinstance(step.get("governance"), dict)
+                    and isinstance(step["governance"].get("operation"), dict)
+                    and step["governance"]["operation"].get("policy_digest")
+                    == policies.get(fingerprint(step.get("reference")))
+                    for evidence_case in evidence_cases
+                    for step in evidence_case.get("steps", [])
+                )
+            else:
+                policy = await self.reviewed_policy(owner, request)
+                licensed = licensed and all(
+                    not e["governance"]
+                    or e["governance"]["operation"]["policy_digest"]
+                    == policy.policy_digest
+                    for e in evidence_cases
+                )
         except WorkbenchError:
             licensed = False
         passed = (
@@ -449,7 +489,9 @@ class FormalExecutions:
             request_digest=request.fingerprint(),
             suite=request.execution.suite.reference().model_dump(mode="json"),
             definition_digest=request.draft.definition.digest(),
-            adapter="knowbench/formal-mcp-caller-probe/v1"
+            adapter="knowbench/formal-orchestration-host/v1"
+            if isinstance(request.draft.definition.procedure, Orchestration)
+            else "knowbench/formal-mcp-caller-probe/v1"
             if "model" in request.draft.allowed_callers
             else "knowbench/formal-mcp-host/v1",
             cases=evidence_cases,
@@ -575,7 +617,34 @@ async def advance_formal(conductor, run_id):
             refs = (attempts[-1].get("refs") or {}) if attempts else {}
             call_id = refs.get("capability_call_id")
             elapsed_wait = int(current["waited_seconds"] or 0)
-            if call_id:
+            if (
+                isinstance(request.draft.definition.procedure, Orchestration)
+                and call_id
+            ):
+                # Sum each real approval interval once across completed steps.
+                # Replacing the current call must not erase earlier waiting time.
+                total_wait = timedelta()
+                seen_calls = set()
+                for prior in attempts:
+                    prior_call = (prior.get("refs") or {}).get("capability_call_id")
+                    if not prior_call or prior_call in seen_calls:
+                        continue
+                    seen_calls.add(prior_call)
+                    observed = await repo.capability_call(
+                        str(task["owner_actor_id"]), prior_call
+                    )
+                    if observed.get("interaction_id"):
+                        interaction = await repo.get_interaction(
+                            str(observed["interaction_id"])
+                        )
+                        until = min(now, interaction["consumed_at"] or now)
+                        total_wait += max(
+                            timedelta(), until - interaction["created_at"]
+                        )
+                # Keep sub-second intervals until after the complete sum. Taking
+                # int per step lets many short waits evade the run's wait limit.
+                elapsed_wait = int(total_wait.total_seconds())
+            elif call_id:
                 call = await repo.capability_call(str(task["owner_actor_id"]), call_id)
                 if call.get("interaction_id"):
                     interaction = await repo.get_interaction(
@@ -656,6 +725,20 @@ async def advance_formal(conductor, run_id):
         if current.get("task_id"):
             task_id = str(current["task_id"])
         else:
+            dependencies = ()
+            if isinstance(request.draft.definition.procedure, Orchestration):
+                try:
+                    dependencies = await resolve_plan(
+                        factory(repo),
+                        account.actor_id,
+                        request.draft,
+                        request.method_id,
+                    )
+                except WorkbenchError as exc:
+                    await svc.finish(
+                        run, request, forced="failed", detail=str(exc)[:1000]
+                    )
+                    return
             session = await SessionService(repo).start(
                 owner_actor_id=account.actor_id,
                 kind="expert",
@@ -672,6 +755,7 @@ async def advance_formal(conductor, run_id):
                 method_id=request.method_id,
                 draft=request.draft,
                 arguments=case.input.values,
+                dependencies=dependencies,
                 definition_digest=request.draft.definition.digest(),
                 caller=case.caller,
                 model_prompt=case.input.model_prompt,
