@@ -114,7 +114,9 @@ def _test_session(alias: str) -> str:
 
 
 class WorkbenchRepository(
-    CapabilityRepositoryMixin, CallRepositoryMixin, AuthorizationRepositoryMixin,
+    CapabilityRepositoryMixin,
+    CallRepositoryMixin,
+    AuthorizationRepositoryMixin,
     FormalMethodRepositoryMixin,
 ):
     def __init__(self, session: AsyncSession, *, browser_view: bool = False):
@@ -2155,6 +2157,16 @@ class WorkbenchRepository(
         )
 
     async def purge_test_run(self, run_id: str) -> None:
+        run = await self.get_test_run(run_id, for_update=True)
+        if (
+            run
+            and (run.get("request") or {}).get("contract")
+            == "knowlab/formal-method-execution/v1"
+        ):
+            owner = await self.actor_for_subject(run["owner_subject"])
+            validation = await self.formal_validation(owner, run_id) if owner else None
+            if not validation or validation.get("execution_evidence") is None:
+                raise ValueError("Formal test evidence must be sealed before cleanup")
         # Preserve the cost of historical timeouts before their task rows expire.
         await self.reconcile_test_run_spent(run_id)
         sessions = [
@@ -2934,6 +2946,9 @@ class WorkbenchRepository(
                 """update workbench_interactions i set status = 'expired', response = cast(:resp as jsonb), consumed_at = now()
                    from workbench_sessions s
                    where i.session_id = s.id and s.sandbox_id = :sb and i.kind = 'tool_approval' and i.status = 'pending'
+                     and not exists (select 1 from workbench_tasks t where t.id=i.task_id
+                       and (t.pack_source='formal-test'
+                         or t.pack_snapshot->>'runtime_contract'='knowlab/formal-method-execution/v1'))
                    returning i.id, i.session_id, i.task_id"""
             ),
             {"sb": sandbox_id, "resp": _j({"expired": reason})},

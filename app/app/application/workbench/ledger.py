@@ -31,6 +31,7 @@ from app.domain.workbench.errors import (
     StaleStateVersion,
     WheelHeldByOther,
 )
+from app.domain.workbench.formal_execution import PinnedFormalMethod, is_formal
 from app.domain.workbench.knowbots import is_knowbot
 from app.domain.workbench.method_catalog import CapabilityMethodCatalog
 from app.domain.workbench.method_plan import AnyMethodPlan
@@ -81,6 +82,8 @@ def _revoked_usage(attempt: dict[str, Any]) -> dict[str, Any]:
 
 def writes_files(task: dict[str, Any]) -> bool:
     """这件委托的专家会不会往项目里写成稿文件（0015 §3.3）。认不出专家包时按会写算，照旧指向底稿。"""
+    if is_formal(task):
+        return False
     try:
         pack = pack_for_task(task)
     except ValueError:
@@ -152,7 +155,7 @@ class Ledger:
         tenant: str = "default",
         profile_version: str | None = None,
         expert_pack_version: str | None = None,
-        snapshot: PinnedPack | PinnedTestCatalog | None = None,
+        snapshot: PinnedPack | PinnedTestCatalog | PinnedFormalMethod | None = None,
         pins: list[dict[str, Any]] | None = None,
         resolution: dict[str, Any] | None = None,
         task_requirements: TaskRequirements | None = None,
@@ -174,6 +177,12 @@ class Ledger:
                 idempotency_key=req.idempotency_key,
             )
             if prior is not None:
+                if isinstance(snapshot, PinnedFormalMethod) and (
+                    prior.get("pack_digest") != snapshot.task_columns()["pack_digest"]
+                    or prior.get("pack_source")
+                    != snapshot.task_columns()["pack_source"]
+                ):
+                    raise IdempotencyConflict("Formal task snapshot changed")
                 prior_input = prior.get("original_input") or {}
                 author_scope = (
                     prior.get("pack_source") == "knowlab-test"
@@ -245,7 +254,7 @@ class Ledger:
                 pinned.pack
                 if isinstance(pinned, PinnedTestCatalog)
                 else pinned.catalog
-                if pinned
+                if isinstance(pinned, PinnedPack)
                 else None
             )
             author_request = False
@@ -301,7 +310,9 @@ class Ledger:
                     "idempotency_key": req.idempotency_key,
                     "request_digest": digest,
                     "profile_id": req.profile_id,
-                    "profile_version": pinned.pack.version
+                    "profile_version": pinned.version
+                    if isinstance(pinned, PinnedFormalMethod)
+                    else pinned.pack.version
                     if pinned
                     else (
                         req.profile_version
@@ -429,6 +440,10 @@ class Ledger:
             # All task/attempt writers lock the task first. A cancellation or
             # new dispatch cannot change the active attempt between these reads.
             task = await self.repo.get_task(task_id, for_update=True)
+            if is_formal(task):
+                # Formal actions recover from their durable common-call receipt,
+                # never a model watchdog's stopped/unknown-turn inference.
+                return None
             attempt = (
                 await self.repo.get_attempt(
                     str(task["active_attempt_id"]), for_update=True
@@ -745,7 +760,9 @@ class Ledger:
                 task_id=task_id,
             )
             state = TaskState(task["state"])
-            live = state is TaskState.RUNNING or await self._waits_on_codex(task)
+            live = not is_formal(task) and (
+                state is TaskState.RUNNING or await self._waits_on_codex(task)
+            )
             if (
                 attempt is not None
                 and str(attempt["id"]) == str(task.get("active_attempt_id"))
@@ -770,7 +787,8 @@ class Ledger:
             return {
                 **done,
                 "cancel_requested": True,
-                "interrupt": live or state is TaskState.WAITING,
+                "interrupt": not is_formal(task)
+                and (live or state is TaskState.WAITING),
             }
 
     async def end_turn_waits(

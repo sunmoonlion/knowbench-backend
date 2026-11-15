@@ -77,6 +77,9 @@ from app.domain.workbench.errors import (
     QuestionNotOpen,
     WorkbenchError,
 )
+from app.domain.workbench.formal_method_execution_generated import (
+    FormalMethodExecutionRequest,
+)
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.states import TASK_TERMINAL, TaskState, WaitingReason
 from app.domain.workbench.test_runs import (
@@ -159,7 +162,9 @@ def _request(run: dict[str, Any]) -> RunRequest:
 def place(run: dict[str, Any]) -> tuple[str, str, str]:
     """这次测试在哪跑：谁、哪台电脑、哪个根目录。同一处一次只跑一个（账 129）。"""
     request = run.get("request") or {}
-    runner = request.get("runner") or {}
+    runner = (
+        request.get("runner") or (request.get("execution") or {}).get("runner") or {}
+    )
     return (
         str(request.get("owner_subject") or ""),
         str(runner.get("environment_id") or ""),
@@ -319,7 +324,10 @@ class KnowbotTestService:
         状态（重复调幂等）。"""
         async with self.repo.transaction():
             run = await self.repo.get_test_run(run_id, for_update=True)
-            if run is None:
+            if run is None or (run.get("request") or {}).get("contract") not in (
+                CONTRACT,
+                "knowbot-test-run/v2",
+            ):
                 raise NotFound("no such test run", run_id=run_id)
             if run["status"] in FINAL:
                 return await self.status(run_id)
@@ -503,7 +511,10 @@ class KnowbotTestService:
 
     async def status(self, run_id: str) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
-        if run is None:
+        if run is None or (run.get("request") or {}).get("contract") not in (
+            CONTRACT,
+            "knowbot-test-run/v2",
+        ):
             raise NotFound("no such test run", run_id=run_id)
         cases = await self.repo.list_test_cases(run_id)
         questions: list[dict[str, Any]] = []
@@ -658,7 +669,11 @@ class KnowbotTestService:
 
     async def outputs(self, run_id: str, case_id: str) -> dict[str, Any]:
         """一条用例跑完时取好的产出（SDD 0037）。还没跑完、这次没取、已清空的都是 404。"""
-        if await self.repo.get_test_run(run_id) is None:
+        run = await self.repo.get_test_run(run_id)
+        if run is None or (run.get("request") or {}).get("contract") not in (
+            CONTRACT,
+            "knowbot-test-run/v2",
+        ):
             raise NotFound("no such test run", run_id=run_id)
         found = await self.repo.get_test_case_outputs(run_id, case_id)
         if not found:
@@ -667,7 +682,10 @@ class KnowbotTestService:
 
     async def answer(self, run_id: str, answers: Answers) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
-        if run is None:
+        if run is None or (run.get("request") or {}).get("contract") not in (
+            CONTRACT,
+            "knowbot-test-run/v2",
+        ):
             raise NotFound("no such test run", run_id=run_id)
         cases = await self.repo.list_test_cases(run_id)
         open_ids = (
@@ -738,8 +756,10 @@ class KnowbotTestConductor:
         folders: TestFolders | None = None,
         reader: DeliverableReader | None = None,
         release_grant: Callable[[str], Awaitable[None]] | None = None,
+        formal_capabilities=None,
     ) -> None:
         self.stores = stores
+        self.formal_capabilities = formal_capabilities
         self.now = now
         # 开到一半测试被取消了：刚开的用例委托停下、交还它凭的测试授权
         self.release_grant = release_grant
@@ -773,7 +793,10 @@ class KnowbotTestConductor:
         return moved
 
     async def _account(
-        self, repo: WorkbenchStore, folder: str, request: RunRequest
+        self,
+        repo: WorkbenchStore,
+        folder: str,
+        request: RunRequest | FormalMethodExecutionRequest,
     ) -> Account:
         # 作者的账号、他选的电脑与根目录（SDD 0046 第三节，decisions ⑯）
         runner = request.runner
@@ -851,6 +874,16 @@ class KnowbotTestConductor:
         run["blocked_reason"], run["blocked_logged_at"] = reason, now
 
     async def advance(self, run_id: str) -> None:
+        from app.application.workbench.formal_test_runs import (
+            advance_formal,
+            formal_run,
+        )
+
+        async with self.stores() as repo:
+            found = await repo.get_test_run(run_id)
+        if found is not None and formal_run(found):
+            await advance_formal(self, run_id)
+            return
         async with self.stores() as repo:
             run = await repo.get_test_run(run_id)
             if run is None or run["status"] not in ACTIVE:

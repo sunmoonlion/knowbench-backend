@@ -214,7 +214,6 @@
     "created_at": "2026-11-13T00:00:00Z",
     "updated_at": "2026-11-13T00:00:00Z",
     "detail": {
-      "source_asset_id": "11111111-1111-4111-8111-111111111111",
       "connection_id": "11111111-1111-4111-8111-111111111111",
       "revision": 1,
       "connection_name": "Office mail",
@@ -239,10 +238,11 @@
       "arguments": {
         "to": "reader@example.test"
       },
-      "selection_revision": 1,
-      "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
       "approval_token": "synthetic-approval-only",
-      "result": null
+      "result": null,
+      "source_asset_id": "11111111-1111-4111-8111-111111111111",
+      "selection_revision": 1,
+      "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     }
   },
   "Calls": {
@@ -259,7 +259,6 @@
         "created_at": "2026-11-13T00:00:00Z",
         "updated_at": "2026-11-13T00:00:00Z",
         "detail": {
-          "source_asset_id": "11111111-1111-4111-8111-111111111111",
           "connection_id": "11111111-1111-4111-8111-111111111111",
           "revision": 1,
           "connection_name": "Office mail",
@@ -284,12 +283,97 @@
           "arguments": {
             "to": "reader@example.test"
           },
-          "selection_revision": 1,
-          "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
           "approval_token": "synthetic-approval-only",
-          "result": null
+          "result": null,
+          "source_asset_id": "11111111-1111-4111-8111-111111111111",
+          "selection_revision": 1,
+          "runtime": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        }
+      },
+      {
+        "id": "66666666-6666-4666-8666-666666666666",
+        "owner_actor_id": "55555555-5555-4555-8555-555555555555",
+        "session_id": "22222222-2222-4222-8222-222222222222",
+        "source_asset_id": "11111111-1111-4111-8111-111111111111",
+        "connection_id": "11111111-1111-4111-8111-111111111111",
+        "interaction_id": "33333333-3333-4333-8333-333333333333",
+        "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "status": "awaiting_approval",
+        "created_at": "2026-11-13T00:00:00Z",
+        "updated_at": "2026-11-13T00:00:00Z",
+        "detail": {
+          "connection_id": "11111111-1111-4111-8111-111111111111",
+          "revision": 1,
+          "connection_name": "Office mail",
+          "account_label": "office@example.test",
+          "purpose": "Notify reader",
+          "tool": {
+            "name": "send",
+            "description": "Send one notice",
+            "inputSchema": {
+              "type": "object",
+              "properties": {
+                "to": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "to"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "arguments": {
+            "to": "reader@example.test"
+          },
+          "approval_token": "synthetic-approval-only",
+          "result": null,
+          "execution_kind": "formal_mcp",
+          "source_asset_id": "11111111-1111-4111-8111-111111111111"
         }
       }
     ]
+  },
+  "HostCall": {
+    "id": "66666666-6666-4666-8666-666666666666",
+    "owner_actor_id": "55555555-5555-4555-8555-555555555555",
+    "session_id": "22222222-2222-4222-8222-222222222222",
+    "source_asset_id": "11111111-1111-4111-8111-111111111111",
+    "connection_id": "11111111-1111-4111-8111-111111111111",
+    "interaction_id": "33333333-3333-4333-8333-333333333333",
+    "digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "status": "awaiting_approval",
+    "created_at": "2026-11-13T00:00:00Z",
+    "updated_at": "2026-11-13T00:00:00Z",
+    "detail": {
+      "connection_id": "11111111-1111-4111-8111-111111111111",
+      "revision": 1,
+      "connection_name": "Office mail",
+      "account_label": "office@example.test",
+      "purpose": "Notify reader",
+      "tool": {
+        "name": "send",
+        "description": "Send one notice",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "to": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "to"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "arguments": {
+        "to": "reader@example.test"
+      },
+      "approval_token": "synthetic-approval-only",
+      "result": null,
+      "execution_kind": "formal_mcp",
+      "source_asset_id": "11111111-1111-4111-8111-111111111111"
+    }
   }
 }

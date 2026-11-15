@@ -373,6 +373,7 @@ def build_test_conductor(
     """推进在跑的测试（在作者的电脑上）；不再要平台的测试账号与测试电脑（decisions ⑯）。"""
     return KnowbotTestConductor(
         workbench_stores(session_factory),
+        formal_capabilities=capability_service,
         folders=build_test_folders(session_factory, settings),
         reader=build_deliverable_reader(
             session_factory,
@@ -460,6 +461,7 @@ def capability_service(repo):
         cipher,
         runtime_url=settings.workbench_capability_mcp_url,
         operations=settings.workbench_capability_operations,
+        source_licenses=settings.workbench_source_licenses,
         skill_source=GitHubSkills(),
         script_executor=SkillExecutor(
             settings.workbench_provisioner_url, settings.workbench_provisioner_token

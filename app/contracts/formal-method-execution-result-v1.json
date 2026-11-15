@@ -1,0 +1,648 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/execution-result.schema.json",
+  "$defs": {
+    "FormalAssertionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "maximum": 63,
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "detail": {
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "passed",
+        "detail"
+      ],
+      "title": "FormalAssertionResult",
+      "type": "object"
+    },
+    "FormalExecutionAction": {
+      "additionalProperties": false,
+      "properties": {
+        "call_id": {
+          "format": "uuid",
+          "title": "Call Id",
+          "type": "string"
+        },
+        "case_id": {
+          "pattern": "^[A-Za-z0-9_-]{1,48}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "repetition": {
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Repetition",
+          "type": "integer"
+        },
+        "interaction_id": {
+          "format": "uuid",
+          "title": "Interaction Id",
+          "type": "string"
+        },
+        "token": {
+          "maxLength": 256,
+          "minLength": 1,
+          "title": "Token",
+          "type": "string"
+        },
+        "subject_digest": {
+          "maxLength": 128,
+          "minLength": 1,
+          "title": "Subject Digest",
+          "type": "string"
+        },
+        "expires_at": {
+          "format": "date-time",
+          "title": "Expires At",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 200,
+          "title": "Title",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 2000,
+          "title": "Question",
+          "type": "string"
+        },
+        "subject": {
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          },
+          "title": "Subject",
+          "type": "object"
+        }
+      },
+      "required": [
+        "call_id",
+        "case_id",
+        "repetition",
+        "interaction_id",
+        "token",
+        "subject_digest",
+        "expires_at",
+        "title",
+        "question",
+        "subject"
+      ],
+      "title": "FormalExecutionAction",
+      "type": "object"
+    },
+    "FormalExecutionCaseResult": {
+      "additionalProperties": false,
+      "properties": {
+        "case_id": {
+          "pattern": "^[A-Za-z0-9_-]{1,48}$",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "repetition": {
+          "maximum": 10,
+          "minimum": 1,
+          "title": "Repetition",
+          "type": "integer"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "waiting",
+            "passed",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "outcome": {
+          "enum": [
+            "pending",
+            "succeeded",
+            "rejected",
+            "failed",
+            "unknown",
+            "cancelled"
+          ],
+          "title": "Outcome",
+          "type": "string"
+        },
+        "rejection_code": {
+          "anyOf": [
+            {
+              "enum": [
+                "authorization_denied",
+                "approval_denied",
+                "input_invalid"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Rejection Code"
+        },
+        "task_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Task Id"
+        },
+        "attempt_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Attempt Id"
+        },
+        "call_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Call Id"
+        },
+        "assertions": {
+          "items": {
+            "$ref": "#/$defs/FormalAssertionResult"
+          },
+          "maxItems": 64,
+          "title": "Assertions",
+          "type": "array"
+        },
+        "detail": {
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "repetition",
+        "status",
+        "outcome",
+        "rejection_code",
+        "task_id",
+        "attempt_id",
+        "call_id",
+        "assertions",
+        "detail"
+      ],
+      "title": "FormalExecutionCaseResult",
+      "type": "object"
+    },
+    "FormalExecutionEvidenceRef": {
+      "additionalProperties": false,
+      "description": "Digest of the runtime's complete immutable minimal evidence package.\n\nIncludes original request identity, suite, actual task/attempt/call identity,\ngovernance facts and case outcomes. Secrets and credentials are excluded.\nA digest of an empty report or a client-provided check list is not evidence.",
+      "properties": {
+        "contract": {
+          "const": "knowlab/formal-method-execution/v1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "request_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Request Digest",
+          "type": "string"
+        },
+        "suite_id": {
+          "format": "uuid",
+          "title": "Suite Id",
+          "type": "string"
+        },
+        "suite_version": {
+          "minimum": 1,
+          "title": "Suite Version",
+          "type": "integer"
+        },
+        "suite_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Suite Digest",
+          "type": "string"
+        },
+        "evidence_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Evidence Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract",
+        "request_digest",
+        "suite_id",
+        "suite_version",
+        "suite_digest",
+        "evidence_digest"
+      ],
+      "title": "FormalExecutionEvidenceRef",
+      "type": "object"
+    },
+    "FormalMethodValidationReceipt": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "knowlab/formal-method-validation/v1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "owner_subject": {
+          "maxLength": 512,
+          "minLength": 1,
+          "title": "Owner Subject",
+          "type": "string"
+        },
+        "request_id": {
+          "format": "uuid",
+          "title": "Request Id",
+          "type": "string"
+        },
+        "workdraft_id": {
+          "format": "uuid",
+          "title": "Workdraft Id",
+          "type": "string"
+        },
+        "revision": {
+          "minimum": 1,
+          "title": "Revision",
+          "type": "integer"
+        },
+        "method_id": {
+          "format": "uuid",
+          "title": "Method Id",
+          "type": "string"
+        },
+        "definition_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Definition Digest",
+          "type": "string"
+        },
+        "source_digest": {
+          "anyOf": [
+            {
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Source Digest"
+        },
+        "dependencies": {
+          "items": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "maxItems": 1000,
+          "title": "Dependencies",
+          "type": "array"
+        },
+        "checks": {
+          "items": {
+            "enum": [
+              "definition",
+              "source",
+              "dependencies",
+              "authorization",
+              "approval",
+              "isolation",
+              "outcome",
+              "business"
+            ],
+            "type": "string"
+          },
+          "maxItems": 8,
+          "minItems": 1,
+          "title": "Checks",
+          "type": "array"
+        },
+        "uncovered": {
+          "items": {
+            "$ref": "#/$defs/UncoveredScenario"
+          },
+          "maxItems": 30,
+          "title": "Uncovered",
+          "type": "array"
+        },
+        "completed_at": {
+          "format": "date-time",
+          "title": "Completed At",
+          "type": "string"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormalExecutionEvidenceRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "contract",
+        "run_id",
+        "owner_subject",
+        "request_id",
+        "workdraft_id",
+        "revision",
+        "method_id",
+        "definition_digest",
+        "source_digest",
+        "dependencies",
+        "checks",
+        "uncovered",
+        "completed_at"
+      ],
+      "title": "FormalMethodValidationReceipt",
+      "type": "object"
+    },
+    "FormalMethodValidationResult": {
+      "additionalProperties": false,
+      "properties": {
+        "contract": {
+          "const": "knowlab/formal-method-validation/v1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "run_id": {
+          "format": "uuid",
+          "title": "Run Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "passed",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "receipt": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormalMethodValidationReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "missing_checks": {
+          "items": {
+            "enum": [
+              "definition",
+              "source",
+              "dependencies",
+              "authorization",
+              "approval",
+              "isolation",
+              "outcome",
+              "business"
+            ],
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Missing Checks",
+          "type": "array"
+        },
+        "details": {
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 30,
+          "title": "Details",
+          "type": "array"
+        }
+      },
+      "required": [
+        "contract",
+        "run_id",
+        "status",
+        "receipt",
+        "missing_checks",
+        "details"
+      ],
+      "title": "FormalMethodValidationResult",
+      "type": "object"
+    },
+    "FormalTestSuiteRef": {
+      "additionalProperties": false,
+      "properties": {
+        "suite_id": {
+          "format": "uuid",
+          "title": "Suite Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "suite_id",
+        "version",
+        "digest"
+      ],
+      "title": "FormalTestSuiteRef",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "MethodRef": {
+      "additionalProperties": false,
+      "properties": {
+        "method_id": {
+          "format": "uuid",
+          "title": "Method Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "method_id",
+        "version",
+        "digest"
+      ],
+      "title": "MethodRef",
+      "type": "object"
+    },
+    "UncoveredScenario": {
+      "additionalProperties": false,
+      "properties": {
+        "scenario": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Scenario",
+          "type": "string"
+        },
+        "reason": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Reason",
+          "type": "string"
+        },
+        "scope": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Scope",
+          "type": "string"
+        }
+      },
+      "required": [
+        "scenario",
+        "reason",
+        "scope"
+      ],
+      "title": "UncoveredScenario",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "contract": {
+      "const": "knowlab/formal-method-execution/v1",
+      "title": "Contract",
+      "type": "string"
+    },
+    "run_id": {
+      "format": "uuid",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "method_id": {
+      "format": "uuid",
+      "title": "Method Id",
+      "type": "string"
+    },
+    "request_digest": {
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "title": "Request Digest",
+      "type": "string"
+    },
+    "suite": {
+      "$ref": "#/$defs/FormalTestSuiteRef"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "running",
+        "waiting",
+        "passed",
+        "failed",
+        "cancelled"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "admission": {
+      "$ref": "#/$defs/FormalMethodValidationResult"
+    },
+    "cases": {
+      "items": {
+        "$ref": "#/$defs/FormalExecutionCaseResult"
+      },
+      "maxItems": 50,
+      "title": "Cases",
+      "type": "array"
+    },
+    "spent": {
+      "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
+      "title": "Spent",
+      "type": "string"
+    },
+    "currency": {
+      "const": "CNY",
+      "title": "Currency",
+      "type": "string"
+    },
+    "actions": {
+      "items": {
+        "$ref": "#/$defs/FormalExecutionAction"
+      },
+      "maxItems": 50,
+      "title": "Actions",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contract",
+    "run_id",
+    "request_id",
+    "method_id",
+    "request_digest",
+    "suite",
+    "status",
+    "admission",
+    "cases",
+    "spent",
+    "currency",
+    "actions"
+  ],
+  "title": "formal-method execution v1 result",
+  "type": "object"
+}

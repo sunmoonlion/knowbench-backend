@@ -12,6 +12,35 @@ from app.domain.workbench.errors import IdempotencyConflict
 class FormalMethodRepositoryMixin:
     session: AsyncSession
 
+    async def lock_formal_execution(self, run_id: str):
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 45))"),
+            {"key": run_id},
+        )
+
+    async def seal_formal_execution(
+        self, owner: str, run_id: str, result: dict, evidence: dict
+    ):
+        """Caller holds the admission/run locks; evidence survives task cleanup."""
+        prior = await self.formal_validation(owner, run_id, lock=True)
+        if prior is None:
+            raise IdempotencyConflict("Formal validation disappeared")
+        if prior.get("execution_evidence") is not None:
+            if prior["execution_evidence"] != evidence or prior["result"] != result:
+                raise IdempotencyConflict("Formal execution evidence is immutable")
+            return
+        await self.session.execute(
+            text("""UPDATE workbench_formal_validations
+              SET result=cast(:result as jsonb), execution_evidence=cast(:evidence as jsonb), updated_at=now()
+              WHERE run_id=:run_id AND owner_actor_id=:owner"""),
+            {
+                "owner": owner,
+                "run_id": run_id,
+                "result": json.dumps(result),
+                "evidence": json.dumps(evidence),
+            },
+        )
+
     async def formal_validation(self, owner: str, run_id: str, *, lock=False):
         row = (
             (

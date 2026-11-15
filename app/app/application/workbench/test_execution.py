@@ -20,7 +20,12 @@ async def execution_view(
     case_id: str | None = None,
 ) -> dict[str, Any]:
     run = await repo.get_test_run(run_id)
-    if run is None or (run.get("request") or {}).get("owner_subject") != owner_subject:
+    if (
+        run is None
+        or (run.get("request") or {}).get("contract")
+        not in ("knowbot-test-run/v1", "knowbot-test-run/v2")
+        or (run.get("request") or {}).get("owner_subject") != owner_subject
+    ):
         raise NotFound("no such test run")
     actor = await repo.actor_for_subject(owner_subject)
     if actor is None:

@@ -615,6 +615,7 @@ async def test_migration_down_up_preserves_existing_sessions(db):
     for filename in (
         "20261114_0043_formal_methods.py",
         "20261115_0044_direct_method_grants.py",
+        "20261115_0045_formal_execution_evidence.py",
     ):
         later_spec = importlib.util.spec_from_file_location(
             filename[:-3], path.with_name(filename)

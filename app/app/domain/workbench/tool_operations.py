@@ -60,6 +60,20 @@ class ResourceBinding(BaseModel):
         }
 
 
+class FormalExecutionCost(BaseModel):
+    """Operator-reviewed absence of incremental provider fees for this adapter.
+
+    Formal execution has no external billing ledger yet; an absent record closes
+    that entry. Discovery, authors and remote annotations cannot supply it.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    incremental_cost: Literal["0"]
+    currency: Literal["CNY"]
+    evidence_reference: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}$")
+    evidence_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+
+
 class McpOperation(BaseModel):
     """A reviewed adapter definition, supplied only through operator settings.
 
@@ -78,6 +92,7 @@ class McpOperation(BaseModel):
     operation: Name
     effect: Literal["read", "write", "send"]
     resources: tuple[ResourceBinding, ...] = Field(max_length=30)
+    formal_execution_cost: FormalExecutionCost | None = None
 
     @model_validator(mode="after")
     def valid_definition(self):
@@ -99,10 +114,22 @@ class McpOperation(BaseModel):
 
     @property
     def policy_digest(self) -> str:
-        return digest(self.model_dump(mode="json"))
+        document = self.model_dump(mode="json")
+        if self.formal_execution_cost is None:
+            document.pop("formal_execution_cost")
+        return digest(document)
 
     def resolve(self, arguments: dict[str, Any]) -> dict[str, Any]:
         return {
+            **(
+                {
+                    "formal_execution_cost": self.formal_execution_cost.model_dump(
+                        mode="json"
+                    )
+                }
+                if self.formal_execution_cost
+                else {}
+            ),
             "policy_digest": self.policy_digest,
             "capability_ref": self.capability_ref,
             "version": self.version,

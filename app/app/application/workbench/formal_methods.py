@@ -302,6 +302,20 @@ class FormalMethods:
                 raise Forbidden(
                     "Frozen method does not match a completed trusted validation"
                 )
+            if frozen.validation.execution is not None:
+                from app.domain.workbench.formal_method_execution_generated import (
+                    fingerprint,
+                )
+
+                evidence = run.get("execution_evidence")
+                if not evidence or (
+                    fingerprint(evidence) != frozen.validation.execution.evidence_digest
+                    or evidence.get("request_digest")
+                    != frozen.validation.execution.request_digest
+                ):
+                    raise Forbidden(
+                        "Execution evidence is missing or differs from the receipt"
+                    )
             if not await self._source(owner, frozen.owner_subject, frozen.draft.source):
                 raise Forbidden("Source execution rights have not been verified")
             compilation = await self._compile(

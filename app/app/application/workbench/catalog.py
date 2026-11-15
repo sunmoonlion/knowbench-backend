@@ -15,6 +15,7 @@ from app.application.workbench.plan_receipts import catalog_for_task
 from app.domain.workbench import knowbots
 from app.domain.workbench.errors import ExpertNotReady, KnowbotInvalid, NoSuchExpert
 from app.domain.workbench.execution_plan import catalog_header
+from app.domain.workbench.formal_execution import is_formal
 from app.domain.workbench.method_catalog import MethodCatalog
 from app.domain.workbench.packs import ExpertPack, find_pack
 
@@ -65,6 +66,8 @@ class PinnedTestCatalog:
 
 def pack_for_task(task: dict[str, Any]) -> ExpertPack | None:
     """这件委托用的专家包。分身读委托上的快照（同一份快照只解析一次）。"""
+    if is_formal(task):
+        return None
     if task.get("pack_source") in SNAPSHOT_SOURCES:
         snapshot, digest = task.get("pack_snapshot"), task.get("pack_digest")
         if not isinstance(snapshot, dict) or not digest:
@@ -80,6 +83,15 @@ def pack_for_task(task: dict[str, Any]) -> ExpertPack | None:
 
 def expert_name(row: dict[str, Any]) -> str:
     """给用户看的专家名字。row 可以是整条委托，也可以是带 pack_source、pack_name 的列表行。"""
+    if is_formal(row):
+        snapshot = row.get("pack_snapshot") or {}
+        title = (
+            snapshot.get("draft", {})
+            .get("definition", {})
+            .get("capability_declaration", {})
+            .get("title")
+        )
+        return str(title or row.get("pack_name") or "正式方法测试")
     if row.get("pack_source") in SNAPSHOT_SOURCES:
         if row.get("pack_name"):
             return str(row["pack_name"])

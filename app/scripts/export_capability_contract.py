@@ -183,6 +183,24 @@ examples = {
         (Calls, {"calls": [call]}),
     ]
 }
+host = {
+    **call,
+    "id": "66666666-6666-4666-8666-666666666666",
+    "detail": {
+        **{
+            k: v
+            for k, v in call["detail"].items()
+            if k not in ("runtime", "selection_revision", "method")
+        },
+        "execution_kind": "formal_mcp",
+    },
+}
+examples["HostCall"] = Call.model_validate(host).model_dump(
+    mode="json", exclude_unset=True
+)
+examples["Calls"] = Calls.model_validate({"calls": [call, host]}).model_dump(
+    mode="json", exclude_unset=True
+)
 text = json.dumps(examples, ensure_ascii=False, indent=2) + "\n"
 (b / "contracts/capabilities-v1.samples.json").write_text(text)
 if f is None:

@@ -86,29 +86,12 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261114_0042_authorizations.py",
         "20261114_0043_formal_methods.py",
         "20261115_0044_direct_method_grants.py",
+        "20261115_0045_formal_execution_evidence.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert sum("down_revision = None" in content for content in contents) == 1
-    assert 'down_revision = "20261103_0036"' in contents[-7]
-    assert 'down_revision = "20261104_0038"' in contents[-6]
-    assert 'down_revision = "20261106_0039"' in contents[-5]
-    assert 'down_revision = "20261113_0040"' in contents[-4]
-    assert 'down_revision = "20261114_0041"' in contents[-3]
-    assert 'down_revision = "20261114_0042"' in contents[-2]
-    assert 'down_revision = "20261114_0043"' in contents[-1]
-    assert 'down_revision = "20260708_0001"' in contents[1]
-    assert 'down_revision = "20260712_0002"' in contents[2]
-    assert 'down_revision = "20260729_0003"' in contents[3]
-    assert 'down_revision = "20260809_0004"' in contents[4]
-    assert 'down_revision = "20260811_0005"' in contents[5]
-    assert 'down_revision = "20260910_0006"' in contents[6]
-    assert 'down_revision = "20260911_0007"' in contents[7]
-    assert 'down_revision = "20260924_0008"' in contents[8]
-    assert 'down_revision = "20260924_0009"' in contents[9]
-    assert 'down_revision = "20260925_0010"' in contents[10]
-    assert 'down_revision = "20260925_0011"' in contents[11]
-    assert 'down_revision = "20260929_0012"' in contents[12]
-    assert 'down_revision = "20261007_0013"' in contents[13]
+    for previous, content in zip(revisions[:-1], contents[1:], strict=True):
+        assert f'down_revision = "{previous.name[:13]}"' in content
 
 
 def test_uuid_mixin_has_client_and_database_defaults() -> None:

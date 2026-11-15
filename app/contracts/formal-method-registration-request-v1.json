@@ -270,6 +270,52 @@
       "title": "Export",
       "type": "object"
     },
+    "FormalExecutionEvidenceRef": {
+      "additionalProperties": false,
+      "description": "Digest of the runtime's complete immutable minimal evidence package.\n\nIncludes original request identity, suite, actual task/attempt/call identity,\ngovernance facts and case outcomes. Secrets and credentials are excluded.\nA digest of an empty report or a client-provided check list is not evidence.",
+      "properties": {
+        "contract": {
+          "const": "knowlab/formal-method-execution/v1",
+          "title": "Contract",
+          "type": "string"
+        },
+        "request_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Request Digest",
+          "type": "string"
+        },
+        "suite_id": {
+          "format": "uuid",
+          "title": "Suite Id",
+          "type": "string"
+        },
+        "suite_version": {
+          "minimum": 1,
+          "title": "Suite Version",
+          "type": "integer"
+        },
+        "suite_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Suite Digest",
+          "type": "string"
+        },
+        "evidence_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Evidence Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract",
+        "request_digest",
+        "suite_id",
+        "suite_version",
+        "suite_digest",
+        "evidence_digest"
+      ],
+      "title": "FormalExecutionEvidenceRef",
+      "type": "object"
+    },
     "FormalMethodDefinition": {
       "additionalProperties": false,
       "properties": {
@@ -553,6 +599,17 @@
           "format": "date-time",
           "title": "Completed At",
           "type": "string"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FormalExecutionEvidenceRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [

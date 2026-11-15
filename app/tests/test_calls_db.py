@@ -142,9 +142,13 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
 
         def migrate_existing(sync):
             with Operations.context(MigrationContext.configure(sync)):
+                execution_migration = migration(
+                    "20261115_0045_formal_execution_evidence.py"
+                )
                 direct_migration = migration("20261115_0044_direct_method_grants.py")
                 formal_migration = migration("20261114_0043_formal_methods.py")
                 authorization_migration = migration("20261114_0042_authorizations.py")
+                execution_migration.downgrade()
                 direct_migration.downgrade()
                 formal_migration.downgrade()
                 authorization_migration.downgrade()
@@ -166,6 +170,7 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
                 authorization_migration.upgrade()
                 formal_migration.upgrade()
                 direct_migration.upgrade()
+                execution_migration.upgrade()
                 assert (
                     sync.execute(
                         text("SELECT to_regclass('workbench_capability_calls')")

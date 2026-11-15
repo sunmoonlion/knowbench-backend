@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/execution-decision.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "owner_subject": {
+      "maxLength": 512,
+      "minLength": 1,
+      "title": "Owner Subject",
+      "type": "string"
+    },
+    "case_id": {
+      "pattern": "^[A-Za-z0-9_-]{1,48}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "repetition": {
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Repetition",
+      "type": "integer"
+    },
+    "token": {
+      "maxLength": 256,
+      "minLength": 1,
+      "title": "Token",
+      "type": "string"
+    },
+    "subject_digest": {
+      "maxLength": 128,
+      "minLength": 1,
+      "title": "Subject Digest",
+      "type": "string"
+    },
+    "decision": {
+      "enum": [
+        "accept",
+        "decline"
+      ],
+      "title": "Decision",
+      "type": "string"
+    }
+  },
+  "required": [
+    "owner_subject",
+    "case_id",
+    "repetition",
+    "token",
+    "subject_digest",
+    "decision"
+  ],
+  "title": "formal-method execution v1 decision",
+  "type": "object"
+}

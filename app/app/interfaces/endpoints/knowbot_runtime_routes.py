@@ -19,14 +19,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.errors.exceptions import AppException
 from app.application.workbench.formal_methods import FormalMethods
+from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.incubations import IncubationService
 from app.application.workbench.test_execution import execution_view
 from app.application.workbench.test_runs import KnowbotTestService
-from app.bootstrap.workbench import incubation_service, test_run_service
+from app.bootstrap.workbench import (
+    capability_service,
+    incubation_service,
+    test_run_service,
+)
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodValidationRequest,
     FrozenFormalMethod,
+)
+from app.domain.workbench.formal_method_execution_generated import (
+    FormalExecutionDecision,
+    FormalMethodExecutionRequest,
 )
 from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
 from app.domain.workbench.test_runs import CASE_ID, RUN_ID, Answers, RunRequest
@@ -97,6 +106,70 @@ def formal_caller(caller: Caller) -> ServiceCaller:
 
 
 FormalCaller = Annotated[ServiceCaller, Depends(formal_caller)]
+
+
+def formal_executions(
+    session: Annotated[AsyncSession, Depends(get_db_session)],
+) -> FormalExecutions:
+    repo = WorkbenchRepository(session)
+    return FormalExecutions(repo, capability_service(repo))
+
+
+FormalExecutionService = Annotated[FormalExecutions, Depends(formal_executions)]
+
+
+@router.post("/formal-method-executions")
+async def submit_formal_execution(
+    caller: FormalCaller,
+    body: FormalMethodExecutionRequest,
+    svc: FormalExecutionService,
+):
+    try:
+        return _out(await svc.accept(body, caller=caller.caller), status_code=202)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/formal-method-executions/{run_id}")
+async def formal_execution(
+    caller: FormalCaller, run_id: UUID, owner_subject: str, svc: FormalExecutionService
+):
+    try:
+        return _out(await svc.status(owner_subject, str(run_id), caller=caller.caller))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-executions/{run_id}/cancel")
+async def cancel_formal_execution(
+    caller: FormalCaller, run_id: UUID, owner_subject: str, svc: FormalExecutionService
+):
+    try:
+        return _out(await svc.cancel(owner_subject, str(run_id), caller=caller.caller))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-executions/{run_id}/actions/{call_id}")
+async def decide_formal_execution(
+    caller: FormalCaller,
+    run_id: UUID,
+    call_id: UUID,
+    body: FormalExecutionDecision,
+    svc: FormalExecutionService,
+):
+    try:
+        return _out(
+            await svc.decide(
+                body.owner_subject,
+                str(run_id),
+                str(call_id),
+                body,
+                caller=caller.caller,
+            )
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/users/{subject}/formal-method-sources")

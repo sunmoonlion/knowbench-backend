@@ -27,6 +27,7 @@ from app.domain.workbench.execution_plan import (
     project_plan,
 )
 from app.domain.workbench.fixed_plan import fixed_pack_digest
+from app.domain.workbench.formal_execution import is_formal
 from app.domain.workbench.method_plan import FixedMethodPlan
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState, Wheel
 
@@ -35,6 +36,8 @@ if TYPE_CHECKING:
 
 
 def is_dynamic(task: dict[str, Any]) -> bool:
+    if is_formal(task):
+        return False
     snapshot = task.get("pack_snapshot")
     # Unknown future runtimes must also fail closed rather than fall back to a
     # similarly named built-in expert.

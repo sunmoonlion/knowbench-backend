@@ -88,6 +88,7 @@ class Capabilities:
         skill_source: Any = None,
         script_executor: Any = None,
         operations: tuple[McpOperation, ...] = (),
+        source_licenses=(),
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
             repo,
@@ -98,6 +99,11 @@ class Capabilities:
         self.skill_source = skill_source
         self.script_executor = script_executor
         self.operations = OperationCatalog(operations)
+        from app.application.workbench.formal_methods import FormalMethods
+
+        self.formal_sources = FormalMethods(
+            repo, operations=operations, source_licenses=source_licenses
+        )
 
     def operation(self, asset, tool):
         return self.operations.require(
@@ -1065,6 +1071,11 @@ class Capabilities:
             await asyncio.sleep(0.05)
         return invocation
 
+    async def request_host_call(self, owner, task_id, attempt_id):
+        from app.application.workbench.formal_host_calls import FormalHostCalls
+
+        return await FormalHostCalls(self).request(owner, task_id, attempt_id)
+
     async def request_call(self, session_id, token, key, arguments, *, meta=None):
         invocation = await self.verify_invocation(
             session_id, token, key, arguments, meta
@@ -1323,6 +1334,13 @@ class Capabilities:
             }
 
     async def decide(self, owner, call_id, body):
+        # The caller supplies only the common approval decision. Dispatch identity
+        # comes from the persisted call, never a browser-selected execution mode.
+        peek = await self.repo.capability_call(owner, call_id)
+        if peek["detail"].get("execution_kind") == "formal_mcp":
+            from app.application.workbench.formal_host_calls import FormalHostCalls
+
+            return await FormalHostCalls(self).decide(owner, peek, body)
         async with self.repo.transaction():
             call = await self.repo.capability_call(owner, call_id, lock=True)
             if call["status"] != "awaiting_approval":
@@ -1410,46 +1428,52 @@ class Capabilities:
             status = "dispatching" if body.decision == "accept" else "declined"
             await self.repo.update_call(owner, call_id, status, intent)
         if status == "dispatching":
-            # Receipt is committed before outbound I/O. No automatic retry after a crash.
-            try:
-                if intent.get("execution_kind") == "skill_script":
-                    if self.script_executor is None:
-                        raise CapabilityError("Script execution is unavailable")
-                    await self.script_executor.start(
-                        owner, call_id, execution_input(connection, intent["arguments"])
-                    )
-                    # The runner reconciles the asynchronous Job into this same call.
-                    return public_call(await self.repo.capability_call(owner, call_id))
-                else:
-                    result = await self.remote.call(
-                        connection["detail"]["url"],
-                        self.secret(connection),
-                        intent["tool"]["name"],
-                        intent["arguments"],
-                    )
-                    status = "failed" if result.get("isError") else "succeeded"
-                    intent["result"] = result
-            except CapabilityOutcomeUnknown as exc:
-                status = "unknown"
-                intent["result"] = {"message": exc.message}
-            except CapabilityError as exc:
-                status = "failed"
-                intent["result"] = {"isError": True, "message": exc.message}
-            except Exception:
-                status = "unknown"
-                intent["result"] = {
-                    "message": "Script submission outcome is unknown; it was not retried. Any created container is bounded by its execution deadline."
-                    if intent.get("execution_kind") == "skill_script"
-                    else "External outcome is unknown. Check the provider before retrying."
-                }
-            async with self.repo.transaction():
-                await self.repo.update_call(owner, call_id, status, intent)
-                await self.repo.append_event(
-                    session_id=call["session_id"],
-                    kind="tool",
-                    event_type="capability/action_completed",
-                    payload={"call_id": call_id, "status": status},
+            return await self._dispatch_call(owner, call, connection, intent)
+        return public_call(await self.repo.capability_call(owner, call_id))
+
+    async def _dispatch_call(self, owner, call, connection, intent):
+        """One adapter path; callers must have committed exact approved dispatch."""
+        call_id = call["id"]
+        # Receipt is committed before outbound I/O. No automatic retry after a crash.
+        try:
+            if intent.get("execution_kind") == "skill_script":
+                if self.script_executor is None:
+                    raise CapabilityError("Script execution is unavailable")
+                await self.script_executor.start(
+                    owner, call_id, execution_input(connection, intent["arguments"])
                 )
+                # The runner reconciles the asynchronous Job into this same call.
+                return public_call(await self.repo.capability_call(owner, call_id))
+            else:
+                result = await self.remote.call(
+                    connection["detail"]["url"],
+                    self.secret(connection),
+                    intent["tool"]["name"],
+                    intent["arguments"],
+                )
+                status = "failed" if result.get("isError") else "succeeded"
+                intent["result"] = result
+        except CapabilityOutcomeUnknown as exc:
+            status = "unknown"
+            intent["result"] = {"message": exc.message}
+        except CapabilityError as exc:
+            status = "failed"
+            intent["result"] = {"isError": True, "message": exc.message}
+        except Exception:
+            status = "unknown"
+            intent["result"] = {
+                "message": "Script submission outcome is unknown; it was not retried. Any created container is bounded by its execution deadline."
+                if intent.get("execution_kind") == "skill_script"
+                else "External outcome is unknown. Check the provider before retrying."
+            }
+        async with self.repo.transaction():
+            await self.repo.update_call(owner, call_id, status, intent)
+            await self.repo.append_event(
+                session_id=call["session_id"],
+                kind="tool",
+                event_type="capability/action_completed",
+                payload={"call_id": call_id, "status": status},
+            )
         return public_call(await self.repo.capability_call(owner, call_id))
 
     async def cancel_script(self, owner, call_id):

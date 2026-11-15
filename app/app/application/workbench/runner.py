@@ -2113,6 +2113,13 @@ class Runner:
         """没人推的委托：先停下 Codex 里可能还在跑的那一轮、再确认它停了，然后收尾（失败，记着取消的收成
         已取消）。确认停了才放行下一位；确认不了先占着项目，最多 TURN_HOLD_SECONDS（0034 §三.1、§三.2）。"""
         task_id = task["id"]
+        from app.domain.workbench.formal_execution import is_formal
+
+        async with self.stores() as repo:
+            current = await repo.get_task(task_id)
+        if is_formal(current):
+            await self._drive_formal(task_id)
+            return
         leftover, stopped = None, False
         try:
             async with self.stores() as repo:
@@ -2240,6 +2247,26 @@ class Runner:
         kind, payload, session_id = cmd["kind"], cmd["payload"], cmd["session_id"]
         async with self.stores() as repo:
             session = await repo.get_session(session_id)
+            if kind in (
+                "task.drive",
+                "task.reconnect",
+                "turn.interrupt",
+            ) and payload.get("task_id"):
+                from app.domain.workbench.formal_execution import is_formal
+
+                task = await repo.get_task(
+                    payload["task_id"], owner_actor_id=str(session["owner_actor_id"])
+                )
+                if str(task["session_id"]) != str(session_id):
+                    raise RuntimeError("Task command belongs to another session")
+                if is_formal(task):
+                    if kind == "task.drive" and not self._busy(task["id"]):
+                        self.driving[task["id"]] = asyncio.create_task(
+                            self._drive_formal(task["id"]), name=f"drive:{task['id']}"
+                        )
+                    # Host work has neither a Codex environment to reconnect
+                    # nor a model turn to interrupt, even for stale commands.
+                    return
             link = await self.link_for(str(session["sandbox_id"]), repo)
         if kind == "task.reconnect":
             await self._reconnect_task(payload, session, link)
@@ -2499,6 +2526,19 @@ class Runner:
                     expected_version=int(task["state_version"]),
                     thread_id=session["thread_id"],
                 )
+
+    async def _drive_formal(self, task_id: str) -> None:
+        from app.application.workbench.formal_execution import FormalExecution
+
+        try:
+            await FormalExecution(self.stores, self.capabilities).drive(task_id)
+        except Exception:  # noqa: BLE001
+            # Keep the persisted call/approval as authority. The same driver or
+            # test deadline can recover it; a model crash handler cannot infer
+            # whether an external action ran or replace its uncertain outcome.
+            log.exception("formal host drive failed task=%s", task_id)
+        finally:
+            self.driving.pop(task_id, None)
 
     async def _drive(self, task_id: str, link: SandboxLink) -> None:
         advisor = Advisor(

@@ -126,6 +126,22 @@ class FormalMethodValidationRequest(Strict):
     dependencies: tuple[MethodRef, ...] = Field(max_length=1000)
 
 
+class FormalExecutionEvidenceRef(Strict):
+    """Digest of the runtime's complete immutable minimal evidence package.
+
+    Includes original request identity, suite, actual task/attempt/call identity,
+    governance facts and case outcomes. Secrets and credentials are excluded.
+    A digest of an empty report or a client-provided check list is not evidence.
+    """
+
+    contract: Literal["knowlab/formal-method-execution/v1"]
+    request_digest: Digest
+    suite_id: UUID
+    suite_version: int = Field(ge=1, strict=True)
+    suite_digest: Digest
+    evidence_digest: Digest
+
+
 class FormalMethodValidationReceipt(Strict):
     contract: Literal["knowlab/formal-method-validation/v1"]
     run_id: UUID
@@ -140,6 +156,9 @@ class FormalMethodValidationReceipt(Strict):
     checks: tuple[Check, ...] = Field(min_length=1, max_length=8)
     uncovered: tuple[UncoveredScenario, ...] = Field(max_length=30)
     completed_at: datetime
+    execution: FormalExecutionEvidenceRef | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def complete(self):

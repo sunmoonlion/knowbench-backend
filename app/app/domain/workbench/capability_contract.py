@@ -123,9 +123,7 @@ class Selection(Strict):
     available_skills: list[Asset]
 
 
-class CallDetail(Strict):
-    execution_kind: Literal["skill_script"] | None = None
-    source_asset_id: UUID | None = None
+class CommonCallDetail(Strict):
     connection_id: UUID | None
     revision: int
     connection_name: str
@@ -133,11 +131,22 @@ class CallDetail(Strict):
     purpose: str
     tool: Tool
     arguments: dict[str, Any]
-    selection_revision: int
-    runtime: str
     approval_token: str = Field(repr=False)
     result: Any = None
+
+
+class CallDetail(CommonCallDetail):
+    source_asset_id: UUID | None = None
+    execution_kind: Literal["skill_script"] | None = None
+    selection_revision: int
+    runtime: str
     method: dict[str, str] | None = None
+
+
+class HostCallDetail(CommonCallDetail):
+    execution_kind: Literal["formal_mcp"]
+    source_asset_id: UUID
+    connection_id: UUID
 
 
 class Call(Strict):
@@ -159,7 +168,7 @@ class Call(Strict):
     ]
     created_at: datetime
     updated_at: datetime
-    detail: CallDetail
+    detail: CallDetail | HostCallDetail
 
 
 class Calls(Strict):
