@@ -319,8 +319,39 @@ probe_call = {
 examples["FormalProbeCall"] = Call.model_validate(probe_call).model_dump(
     mode="json", exclude_unset=True
 )
+model_call = {
+    **call,
+    "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "detail": {
+        **{key: value for key, value in call["detail"].items() if key != "method"},
+        "execution_kind": "formal_method_model",
+        "reference": reference,
+        "method_title": "Validated private notice",
+    },
+}
+examples["FormalModelCall"] = Call.model_validate(model_call).model_dump(
+    mode="json", exclude_unset=True
+)
+examples["FormalModelSelection"] = Selection.model_validate(
+    {**selection, "formal_methods": [reference]}
+).model_dump(mode="json")
+examples["FormalModelSelectionPut"] = SelectionPut.model_validate(
+    {"revision": 1, "formal_methods": [reference]}
+).model_dump(mode="json")
+model_invocation = {
+    **invocation,
+    "request_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    "method_call_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    "call": model_call,
+}
+examples["FormalModelInvocation"] = FormalMethodInvocation.model_validate(
+    model_invocation
+).model_dump(mode="json")
+examples["FormalMethodInvocations"] = FormalMethodInvocations.model_validate(
+    {"calls": [invocation, model_invocation]}
+).model_dump(mode="json")
 examples["Calls"] = Calls.model_validate(
-    {"calls": [call, host, formal_call, probe_call]}
+    {"calls": [call, host, formal_call, probe_call, model_call]}
 ).model_dump(mode="json", exclude_unset=True)
 text = json.dumps(examples, ensure_ascii=False, indent=2) + "\n"
 (b / "contracts/capabilities-v1.samples.json").write_text(text)

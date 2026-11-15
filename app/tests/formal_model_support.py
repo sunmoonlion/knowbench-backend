@@ -39,6 +39,8 @@ class ModelServer(ScriptedAppServer):
         super().__init__()
         self.app = None
         self.config = {}
+        self.tool_name = PROBE_TOOL
+        self.repeat_identity = False
         self.thread_configs = {}
         self.responses = []
         self.failures = []
@@ -155,10 +157,10 @@ class ModelServer(ScriptedAppServer):
             connection = self.thread_configs[thread]["mcp_servers." + PROBE_SERVER]
             for index in range(2 if self.twice else 1):
                 item = {
-                    "id": "candidate-" + str(index),
+                    "id": "candidate-" + str(0 if self.repeat_identity else index),
                     "type": "mcpToolCall",
                     "server": PROBE_SERVER,
-                    "tool": PROBE_TOOL,
+                    "tool": self.tool_name,
                     "arguments": {"to": "test@example.test"},
                     "status": "inProgress",
                 }
@@ -175,7 +177,7 @@ class ModelServer(ScriptedAppServer):
                             "id": index + 2,
                             "method": "tools/call",
                             "params": {
-                                "name": PROBE_TOOL,
+                                "name": self.tool_name,
                                 "arguments": item["arguments"],
                                 "_meta": {
                                     "threadId": thread,

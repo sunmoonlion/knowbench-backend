@@ -255,9 +255,26 @@ class CapabilityRepositoryMixin:
             {"s": session_id, "scope": scope, "t": turn_id, "patch": json.dumps(patch)},
         )
 
+    async def lock_capability_sandbox_scope(self, sandbox_id):
+        # Match task cancellation and capability actions: Task -> Session ->
+        # scope/interaction/call. Stable ordering also serializes bulk recovery.
+        await self.session.execute(
+            text("""SELECT t.id FROM workbench_tasks t
+                JOIN workbench_sessions s ON s.id=t.session_id
+                WHERE s.sandbox_id=:sandbox ORDER BY t.id FOR NO KEY UPDATE OF t"""),
+            {"sandbox": sandbox_id},
+        )
+        await self.session.execute(
+            text(
+                "SELECT id FROM workbench_sessions WHERE sandbox_id=:sandbox ORDER BY id FOR NO KEY UPDATE"
+            ),
+            {"sandbox": sandbox_id},
+        )
+
     async def capability_revoke_sandbox(self, sandbox_id):
         # A new runner/transport cannot prove continuity of an old turn. Close
         # its authority before accepting more requests, including Skill reads.
+        await self.lock_capability_sandbox_scope(sandbox_id)
         await self.session.execute(
             text("""UPDATE workbench_capability_selections c
                 SET runtime=runtime || cast(:patch as jsonb)

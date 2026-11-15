@@ -63,8 +63,18 @@ class FormalMethodInvocation(Strict):
 
     @model_validator(mode="after")
     def outcome(self):
-        if self.call.detail.execution_kind != "formal_method":
+        if self.call.detail.execution_kind not in (
+            "formal_method",
+            "formal_method_model",
+        ):
             raise ValueError("Formal invocation requires its own dispatch kind")
+        if self.call.detail.execution_kind == "formal_method_model" and (
+            self.call.detail.reference != self.reference
+            or self.call.detail.method_title != self.title
+        ):
+            raise ValueError(
+                "Model method result must identify its exact frozen version"
+            )
         if self.method_call_id == self.call.id:
             raise ValueError("Method identity and implementation call are distinct")
         if (self.status == "succeeded") != (self.outputs is not None):

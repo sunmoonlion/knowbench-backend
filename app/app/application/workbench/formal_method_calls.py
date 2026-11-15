@@ -7,11 +7,13 @@ compose another method or to retry an uncertain external action.
 
 import secrets
 from datetime import UTC, datetime, timedelta
-from uuid import uuid4
+from typing import Literal
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from app.application.workbench.call_policy import authorize_operation
 from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.tool_invocation import verify_tool_invocation
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden, IdempotencyConflict, NotFound
 from app.domain.workbench.formal_execution import (
@@ -52,10 +54,15 @@ class FormalMethodCalls:
             self.repo, capabilities.formal_sources, capabilities.operations
         )
 
-    async def catalog(self, owner, session_id):
+    async def catalog(
+        self, owner, session_id, *, caller: Literal["host", "model"] = "host"
+    ):
         async with self.repo.transaction():
             await self._session(owner, session_id, active=True)
-            return {"items": await self._catalog.list_owned(owner)}
+            # A directory may resolve several sources; match selection/prepare's
+            # stable asset order across concurrent conversations of this owner.
+            await self.repo.capability_assets(owner, lock=True)
+            return {"items": await self._catalog.list_owned(owner, caller=caller)}
 
     async def _session(self, owner, session_id, *, active=False):
         session = await self.repo.get_session(
@@ -72,15 +79,18 @@ class FormalMethodCalls:
             )
         return session
 
-    async def _intent(self, owner, request, root_id):
-        resolved = await self._catalog.resolve_owned(owner, request.reference)
+    async def _intent(self, owner, request, root_id, *, model=None):
+        caller = "model" if model else "host"
+        resolved = await self._catalog.resolve_owned(
+            owner, request.reference, caller=caller
+        )
         frozen, asset, registration, policy = (
             resolved.frozen,
             resolved.asset,
             resolved.registration,
             resolved.policy,
         )
-        procedure = direct_procedure(frozen.draft)
+        procedure = direct_procedure(frozen.draft, caller=caller)
         try:
             validate_values(procedure.inputs, request.values)
         except ValueError as exc:
@@ -137,12 +147,123 @@ class FormalMethodCalls:
             "operation": decision.operation,
             "access": access,
         }
+        if model:
+            intent.update(
+                execution_kind="formal_method_model",
+                invocation=model["invocation"],
+                runtime=model["runtime"],
+                selection_revision=model["selection_revision"],
+                reference=request.reference.model_dump(mode="json"),
+                method_title=frozen.draft.definition.capability_declaration.title,
+            )
+            intent["formal_method"].update(
+                caller="model",
+                model_tool_key=model["tool_key"],
+                scope_id=model["scope_id"],
+            )
         return resolved, intent
 
     async def request(self, owner, session_id, body):
+        return await self._request(owner, session_id, body)
+
+    async def request_model(self, session_id, token, key, arguments, *, meta):
+        from app.domain.workbench.formal_method_calls import FormalMethodCallRequest
+
+        selected = await self.capabilities.runtime(session_id, token)
+        owner = selected["owner_actor_id"]
+        spec = selected["runtime"].get("tools", {}).get(key) or {}
+        if spec.get("execution_kind") != "formal_method_model":
+            raise Forbidden("Formal method is not selected for this model turn")
+        invocation = await self.capabilities.verify_invocation(
+            session_id, token, key, arguments, meta
+        )
+        # Bind to host-observed identity, not a model-chosen request UUID.
+        body = FormalMethodCallRequest(
+            request_id=uuid5(
+                NAMESPACE_URL, "sunmoon/formal-session-model/" + invocation.key
+            ),
+            reference=spec["formal_method"]["reference"],
+            values=arguments,
+        )
+        model = {
+            "invocation": invocation.snapshot(),
+            "runtime": selected["runtime"]["token_hash"],
+            "scope_id": selected["runtime"]["scope_id"],
+            "selection_revision": selected["revision"],
+            "tool_key": key,
+        }
+        result = await self._request(owner, session_id, body, model=model)
+        return {"call_id": str(result["call"]["id"]), "status": result["status"]}
+
+    async def _check_model(self, owner, session_id, body, model):
+        from app.application.workbench.formal_session_tools import FormalSessionTools
+
+        session = await self._session(owner, session_id, active=True)
+        selected = await self.repo.capability_selection(owner, session_id, lock=True)
+        runtime = selected["runtime"]
+        invocation = model["invocation"]
+        if (
+            runtime.get("status") != "applied"
+            or runtime.get("aborted")
+            or runtime.get("method")
+            or runtime.get("formal_probe")
+            or runtime.get("token_hash") != model["runtime"]
+            or runtime.get("scope_id") != model["scope_id"]
+            or selected["revision"] != model["selection_revision"]
+            or runtime.get("selection_revision") != selected["revision"]
+            or runtime.get("turn_id") != invocation["turn_id"]
+            or session.get("thread_id") != invocation["thread_id"]
+            or invocation["session_id"] != session_id
+            or invocation["server"] != "sunmoon_capabilities"
+            or datetime.fromisoformat(
+                runtime.get("expires_at", "1970-01-01T00:00:00+00:00")
+            )
+            <= datetime.now(UTC)
+            or str(body.request_id)
+            != str(
+                uuid5(
+                    NAMESPACE_URL, "sunmoon/formal-session-model/" + invocation["key"]
+                )
+            )
+            or not await self.repo.is_accepted_user_turn(
+                session_id=session_id, turn_id=invocation["turn_id"]
+            )
+        ):
+            raise Forbidden(
+                "The model method call no longer belongs to this active user turn"
+            )
+        current = await FormalSessionTools(self.capabilities).resolve(
+            owner, body.reference
+        )
+        if runtime.get("tools", {}).get(model["tool_key"]) != current:
+            raise Forbidden("The selected method or its current authority changed")
+        actual = await verify_tool_invocation(
+            self.repo,
+            owner=owner,
+            sandbox=str(session["sandbox_id"]),
+            server="sunmoon_capabilities",
+            name=model["tool_key"],
+            arguments=body.values,
+            meta={
+                "threadId": invocation["thread_id"],
+                "callId": invocation["call_id"],
+                "x-codex-turn-metadata": {
+                    "thread_id": invocation["thread_id"],
+                    "turn_id": invocation["turn_id"],
+                },
+            },
+            session_id=session_id,
+            observe_seconds=0,
+        )
+        if actual.snapshot() != invocation:
+            raise Forbidden("The retained method invocation changed")
+
+    async def _request(self, owner, session_id, body, *, model=None):
         document = body.model_dump(mode="json", by_alias=True)
         async with self.repo.transaction():
             await self._session(owner, session_id)
+            if model:
+                await self._check_model(owner, session_id, body, model)
             await self.repo.recover_calls(owner, session_id)
             root = await self.repo.call_by_key(
                 owner, session_id, _root_key(body.request_id)
@@ -151,6 +272,7 @@ class FormalMethodCalls:
                 if (
                     root["digest"] != digest(document)
                     or root["detail"].get("request") != document
+                    or (model is not None and root["detail"].get("model") != model)
                 ):
                     raise IdempotencyConflict(
                         "This request identity already names different method inputs"
@@ -158,7 +280,7 @@ class FormalMethodCalls:
                 return await self._project(owner, session_id, root)
             await self._session(owner, session_id, active=True)
             root_id, child_id = str(uuid4()), str(uuid4())
-            resolved, intent = await self._intent(owner, body, root_id)
+            resolved, intent = await self._intent(owner, body, root_id, model=model)
             frozen = resolved.frozen
             identity = _intent_digest(intent)
             token = secrets.token_urlsafe(32)
@@ -218,6 +340,7 @@ class FormalMethodCalls:
                         "frozen": frozen.model_dump(mode="json", by_alias=True),
                         "child_call_id": child_id,
                         "intent_digest": identity,
+                        **({"model": model} if model else {}),
                     },
                 }
             )
@@ -264,6 +387,7 @@ class FormalMethodCalls:
         frozen = FrozenFormalMethod.model_validate(data["frozen"])
         request = data["request"]
         host = child["detail"].get("formal_method") or {}
+        model = data.get("model")
         if (
             root["kind"] != "method"
             or root["origin"] != "method"
@@ -285,14 +409,39 @@ class FormalMethodCalls:
             or child["session_id"] != session_id
             or child["call_key"] != root["id"] + ":direct"
             or child["interaction_id"] != root["interaction_id"]
-            or child["detail"].get("execution_kind") != "formal_method"
+            or child["detail"].get("execution_kind")
+            != ("formal_method_model" if model else "formal_method")
             or host
             != {
                 "request_id": request["request_id"],
                 "method_call_id": root["id"],
                 "reference": request["reference"],
                 "frozen_digest": digest(data["frozen"]),
+                **(
+                    {
+                        "caller": "model",
+                        "model_tool_key": model["tool_key"],
+                        "scope_id": model["scope_id"],
+                    }
+                    if model
+                    else {}
+                ),
             }
+            or (
+                model is not None
+                and any(
+                    child["detail"].get(k) != model[k]
+                    for k in ("invocation", "runtime", "selection_revision")
+                )
+            )
+            or (
+                model is not None
+                and (
+                    child["detail"].get("reference") != request["reference"]
+                    or child["detail"].get("method_title")
+                    != frozen.draft.definition.capability_declaration.title
+                )
+            )
             or child["detail"].get("arguments") != request["values"]
             or child["digest"] != data["intent_digest"]
             or _intent_digest(child["detail"]) != child["digest"]
@@ -358,15 +507,65 @@ class FormalMethodCalls:
             )
             return [await self._project(owner, session_id, root) for root in roots]
 
+    async def model_result(self, session_id, token, child_id):
+        async with self.repo.transaction():
+            selected = await self.capabilities.runtime(session_id, token)
+            owner = selected["owner_actor_id"]
+            session = await self._session(owner, session_id, active=True)
+            await self.repo.capability_selection(owner, session_id, lock=True)
+            selected = await self.capabilities.runtime(session_id, token)
+            await self.repo.recover_calls(owner, session_id)
+            child = await self.repo.capability_call(owner, child_id)
+            if (
+                child["session_id"] != session_id
+                or child["detail"].get("execution_kind") != "formal_method_model"
+            ):
+                raise Forbidden(
+                    "This is not a model method result for the conversation"
+                )
+            root = await self.repo.call_by_key(
+                owner,
+                session_id,
+                _root_key(child["detail"]["formal_method"]["request_id"]),
+            )
+            if root is None:
+                raise Forbidden("Model method has no retained invocation")
+            self._check_pair(owner, session_id, root, child)
+            model = root["detail"]["model"]
+            if (
+                model["runtime"] != selected["runtime"].get("token_hash")
+                or model["scope_id"] != selected["runtime"].get("scope_id")
+                or model["selection_revision"] != selected["revision"]
+                or model["invocation"]["turn_id"] != selected["runtime"].get("turn_id")
+                or model["invocation"]["thread_id"] != session.get("thread_id")
+            ):
+                raise Forbidden("Model result belongs to another execution scope")
+            value = await self._project(owner, session_id, root)
+            return {
+                "call_id": child_id,
+                "status": value["status"],
+                "result": {
+                    k: value[k]
+                    for k in (
+                        "method_call_id",
+                        "reference",
+                        "title",
+                        "outputs",
+                        "detail",
+                    )
+                },
+            }
+
     async def decide(self, owner, child_call_id, body):
         peek = await self.repo.capability_call(owner, child_call_id)
         session_id = peek["session_id"]
         async with self.repo.transaction():
             await self._session(owner, session_id)
             await self.repo.recover_calls(owner, session_id)
-            if peek["detail"].get("execution_kind") != "formal_method" or not peek.get(
-                "parent_call_id"
-            ):
+            if peek["detail"].get("execution_kind") not in (
+                "formal_method",
+                "formal_method_model",
+            ) or not peek.get("parent_call_id"):
                 raise Forbidden("This is not a formal conversation action")
             request_id = peek["detail"].get("formal_method", {}).get("request_id")
             root = await self.repo.call_by_key(owner, session_id, _root_key(request_id))
@@ -389,7 +588,12 @@ class FormalMethodCalls:
                 request = FormalMethodCallRequest.model_validate(
                     root["detail"]["request"]
                 )
-                resolved, current = await self._intent(owner, request, root["id"])
+                model = root["detail"].get("model")
+                if model:
+                    await self._check_model(owner, session_id, request, model)
+                resolved, current = await self._intent(
+                    owner, request, root["id"], model=model
+                )
                 if (
                     resolved.frozen != frozen
                     or _intent_digest(current) != child["digest"]

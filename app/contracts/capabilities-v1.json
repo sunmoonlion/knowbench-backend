@@ -448,6 +448,35 @@
     "type": "object"
   },
   "SelectionPut": {
+    "$defs": {
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
+        "type": "object"
+      }
+    },
     "additionalProperties": false,
     "properties": {
       "revision": {
@@ -469,6 +498,15 @@
         },
         "maxItems": 10,
         "title": "Skills",
+        "type": "array"
+      },
+      "formal_methods": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/MethodRef"
+        },
+        "maxItems": 20,
+        "title": "Formal Methods",
         "type": "array"
       },
       "purpose": {
@@ -1902,6 +1940,33 @@
         "title": "MethodContext",
         "type": "object"
       },
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
+        "type": "object"
+      },
       "MethodToolBinding": {
         "additionalProperties": false,
         "properties": {
@@ -2259,6 +2324,15 @@
         "title": "Skills",
         "type": "array"
       },
+      "formal_methods": {
+        "default": [],
+        "items": {
+          "$ref": "#/$defs/MethodRef"
+        },
+        "maxItems": 20,
+        "title": "Formal Methods",
+        "type": "array"
+      },
       "skill_mode": {
         "enum": [
           "auto",
@@ -2444,6 +2518,91 @@
         "title": "CallDetail",
         "type": "object"
       },
+      "FormalModelCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_method_model",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "method_title": {
+            "title": "Method Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime",
+          "reference",
+          "method_title"
+        ],
+        "title": "FormalModelCallDetail",
+        "type": "object"
+      },
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
@@ -2511,6 +2670,33 @@
           "source_asset_id"
         ],
         "title": "HostCallDetail",
+        "type": "object"
+      },
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
         "type": "object"
       },
       "ModelProbeCallDetail": {
@@ -2706,6 +2892,9 @@
           },
           {
             "$ref": "#/$defs/ModelProbeCallDetail"
+          },
+          {
+            "$ref": "#/$defs/FormalModelCallDetail"
           }
         ],
         "title": "Detail"
@@ -2820,6 +3009,9 @@
               },
               {
                 "$ref": "#/$defs/ModelProbeCallDetail"
+              },
+              {
+                "$ref": "#/$defs/FormalModelCallDetail"
               }
             ],
             "title": "Detail"
@@ -2952,6 +3144,91 @@
         "title": "CallDetail",
         "type": "object"
       },
+      "FormalModelCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_method_model",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "method_title": {
+            "title": "Method Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime",
+          "reference",
+          "method_title"
+        ],
+        "title": "FormalModelCallDetail",
+        "type": "object"
+      },
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
@@ -3019,6 +3296,33 @@
           "source_asset_id"
         ],
         "title": "HostCallDetail",
+        "type": "object"
+      },
+      "MethodRef": {
+        "additionalProperties": false,
+        "properties": {
+          "method_id": {
+            "format": "uuid",
+            "title": "Method Id",
+            "type": "string"
+          },
+          "version": {
+            "minimum": 1,
+            "title": "Version",
+            "type": "integer"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method_id",
+          "version",
+          "digest"
+        ],
+        "title": "MethodRef",
         "type": "object"
       },
       "ModelProbeCallDetail": {
@@ -3635,6 +3939,9 @@
               },
               {
                 "$ref": "#/$defs/ModelProbeCallDetail"
+              },
+              {
+                "$ref": "#/$defs/FormalModelCallDetail"
               }
             ],
             "title": "Detail"
@@ -3765,6 +4072,91 @@
           "runtime"
         ],
         "title": "CallDetail",
+        "type": "object"
+      },
+      "FormalModelCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_method_model",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "method_title": {
+            "title": "Method Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime",
+          "reference",
+          "method_title"
+        ],
+        "title": "FormalModelCallDetail",
         "type": "object"
       },
       "HostCallDetail": {
@@ -4130,6 +4522,9 @@
               },
               {
                 "$ref": "#/$defs/ModelProbeCallDetail"
+              },
+              {
+                "$ref": "#/$defs/FormalModelCallDetail"
               }
             ],
             "title": "Detail"
@@ -4331,6 +4726,91 @@
           "detail"
         ],
         "title": "FormalMethodInvocation",
+        "type": "object"
+      },
+      "FormalModelCallDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "connection_id": {
+            "format": "uuid",
+            "title": "Connection Id",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_method_model",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          },
+          "reference": {
+            "$ref": "#/$defs/MethodRef"
+          },
+          "method_title": {
+            "title": "Method Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "selection_revision",
+          "runtime",
+          "reference",
+          "method_title"
+        ],
+        "title": "FormalModelCallDetail",
         "type": "object"
       },
       "HostCallDetail": {

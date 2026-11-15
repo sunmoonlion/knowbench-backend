@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import Field
 
 from app.domain.workbench.capabilities import Strict
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_capabilities import (
     AccessRequirement,
     McpRequirement,
@@ -113,6 +114,7 @@ class Selection(Strict):
     revision: int
     tools: list[str]
     skills: list[str]
+    formal_methods: tuple[MethodRef, ...] = Field(default=(), max_length=20)
     skill_mode: Literal["auto", "explicit"]
     purpose: str
     editable: bool
@@ -157,6 +159,16 @@ class ModelProbeCallDetail(CommonCallDetail):
     runtime: str
 
 
+class FormalModelCallDetail(CommonCallDetail):
+    execution_kind: Literal["formal_method_model"]
+    source_asset_id: UUID
+    connection_id: UUID
+    selection_revision: int
+    runtime: str
+    reference: MethodRef
+    method_title: str
+
+
 class Call(Strict):
     id: UUID
     owner_actor_id: UUID
@@ -176,7 +188,7 @@ class Call(Strict):
     ]
     created_at: datetime
     updated_at: datetime
-    detail: CallDetail | HostCallDetail | ModelProbeCallDetail
+    detail: CallDetail | HostCallDetail | ModelProbeCallDetail | FormalModelCallDetail
 
 
 class Calls(Strict):

@@ -703,7 +703,14 @@ class SandboxLink:
                     return
                 params = priced
             async with repo.transaction():
+                # Events take a Session FK lock as well as the cursor advisory
+                # lock. Acquire Session first even for ordinary item/usage
+                # events so concurrent approvals cannot invert those locks.
+                await repo.get_session(session_id, for_update=True)
                 if self.runner.capabilities is not None and method == "turn/completed":
+                    # Scope revocation updates the selection; append_event below
+                    # also writes the session cursor. Match approvals/selection
+                    # changes by locking the session before either mutation.
                     turn = params.get("turn") or {}
                     tid = turn.get("id") or params.get("turnId")
                     if tid:

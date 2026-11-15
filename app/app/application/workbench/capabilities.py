@@ -123,7 +123,11 @@ class Capabilities:
                             spec.get("implementation_tool", spec["tool"]),
                         )
                     )
-                    if runtime.get("method") or runtime.get("formal_probe"):
+                    if (
+                        runtime.get("method")
+                        or runtime.get("formal_probe")
+                        or spec.get("execution_kind") == "formal_method_model"
+                    ):
                         check_access(spec.get("access"), policy)
                 except CapabilityError:
                     continue
@@ -363,6 +367,7 @@ class Capabilities:
 
     async def selection(self, owner, session_id):
         async with self.repo.transaction():
+            await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
@@ -376,6 +381,54 @@ class Capabilities:
                 )
         return await self.view(owner, session_id, selected)
 
+    async def _conversation_session(self, owner, session_id):
+        """Ordinary mutation order: session, then selection, then assets/calls.
+
+        Task-owned paths retain their existing Task locking discipline. A wheel
+        change while this lock was awaited must not switch into that lock order.
+        """
+        session = await self.repo.get_session(
+            session_id, owner_actor_id=owner, for_update=True
+        )
+        if session["wheel"] != "user" or session.get("active_task_id"):
+            raise CapabilityError(
+                "Conversation execution changed; reload its capability scope"
+            )
+        return session
+
+    async def _locked_session(self, owner, session_id):
+        """Task (when present) precedes Session, then capability rows.
+
+        Recheck the wheel after waiting: a stale session read cannot cause a
+        second Task lock below an already-held Session or Selection lock.
+        """
+        before = await self.repo.get_session(session_id, owner_actor_id=owner)
+        task_id = before.get("active_task_id")
+        if task_id:
+            await self.repo.get_task(
+                str(task_id), owner_actor_id=owner, for_update=True
+            )
+        session = await self.repo.get_session(
+            session_id, owner_actor_id=owner, for_update=True
+        )
+        if (
+            str(session.get("active_task_id")) != str(task_id)
+            or session["wheel"] != before["wheel"]
+        ):
+            raise CapabilityError(
+                "Execution ownership changed while locking its capability scope"
+            )
+        return session
+
+    async def _locked_call_session(self, owner, call):
+        if call.get("task_id"):
+            await self.repo.get_task(
+                str(call["task_id"]), owner_actor_id=owner, for_update=True
+            )
+        return await self.repo.get_session(
+            call["session_id"], owner_actor_id=owner, for_update=True
+        )
+
     async def view(self, owner, session_id, selected):
         session = await self.repo.get_session(session_id, owner_actor_id=owner)
         assets = await self.repo.capability_assets(owner)
@@ -387,6 +440,20 @@ class Capabilities:
                 {"tools": [], "skills": [], "skill_mode": "explicit", "bindings": {}},
             )
         issues = selection_issues(scope, detail, assets) if scope else []
+        formal_methods = (
+            detail.get("formal_methods", [])
+            if not scope
+            and session.get("kind") in ("chat", "work")
+            and session["wheel"] == "user"
+            and not session.get("active_task_id")
+            else []
+        )
+        if formal_methods:
+            from app.application.workbench.formal_session_tools import (
+                FormalSessionTools,
+            )
+
+            issues.extend(await FormalSessionTools(self).issues(owner, formal_methods))
         by_tool = {
             tool_key(a["id"], t["name"]): (a, t)
             for a in assets
@@ -440,7 +507,9 @@ class Capabilities:
                 asset, assets, detail.get("tools", [])
             ):
                 issues.append({"ref": key, "code": "missing_dependencies"})
-        if (detail.get("tools") or skill_ids) and not self.runtime_url:
+        if (
+            detail.get("tools") or skill_ids or formal_methods
+        ) and not self.runtime_url:
             issues.append({"ref": "runtime", "code": "runtime_unconfigured"})
         runtime = selected["runtime"]
         method = None
@@ -484,6 +553,7 @@ class Capabilities:
             "revision": selected["revision"],
             "tools": detail.get("tools", []),
             "skills": skill_ids,
+            "formal_methods": formal_methods,
             "skill_mode": "explicit" if method else skill_mode,
             "purpose": detail.get("purpose", ""),
             "issues": issues,
@@ -517,11 +587,20 @@ class Capabilities:
 
     async def save_selection(self, owner, session_id, body):
         async with self.repo.transaction():
+            session = await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
-            session = await self.repo.get_session(session_id, owner_actor_id=owner)
             scope = await method_scope(self.repo, owner, session, lock=True)
+            if body.formal_methods and (
+                scope
+                or session.get("kind") not in ("chat", "work")
+                or session.get("active_task_id")
+                or session.get("archived_at")
+            ):
+                raise CapabilityError(
+                    "Formal model selections require an active chat or work conversation"
+                )
             if scope:
                 if not scope["editable"] or body.method_context != scope["context"]:
                     raise CapabilityError(
@@ -534,6 +613,13 @@ class Capabilities:
                     "Method execution owns this session; frozen method requirements cannot be changed here"
                 )
             assets = await self.repo.capability_assets(owner, lock=True)
+            if body.formal_methods:
+                from app.application.workbench.formal_session_tools import (
+                    FormalSessionTools,
+                )
+
+                for reference in body.formal_methods:
+                    await FormalSessionTools(self).resolve(owner, reference)
             if scope and selection_issues(scope, body.model_dump(), assets):
                 raise CapabilityError(
                     "Bind exactly the declared method capabilities",
@@ -575,7 +661,9 @@ class Capabilities:
                 raise CapabilityError(
                     "Select every required tool before selecting this skill"
                 )
-            detail = body.model_dump(exclude={"revision", "method_context"})
+            detail = body.model_dump(
+                mode="json", exclude={"revision", "method_context"}
+            )
             detail["bindings"] = {a["id"]: a["revision"] for a in chosen}
             if scope:
                 # This context-bound user action confirms the displayed declaration
@@ -600,10 +688,10 @@ class Capabilities:
 
     async def revoke_method_permissions(self, owner, session_id, body):
         async with self.repo.transaction():
+            session = await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
-            session = await self.repo.get_session(session_id, owner_actor_id=owner)
             scope = await method_scope(self.repo, owner, session, lock=True)
             if not scope or scope["context"] != body.method_context:
                 raise CapabilityError(
@@ -659,10 +747,10 @@ class Capabilities:
     async def hold_method(self, owner, session_id):
         """Pause before opening an attempt or reserving model budget for missing bindings."""
         async with self.repo.transaction():
+            session = await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
-            session = await self.repo.get_session(session_id, owner_actor_id=owner)
             scope = await method_scope(self.repo, owner, session, lock=True)
             if not scope:
                 raise CapabilityError("Method task is no longer active")
@@ -707,6 +795,7 @@ class Capabilities:
         # chat's extra authority into a frozen method. Requirements support is explicit.
         if scene == ExecutionScene.METHOD and not current["method"]:
             async with self.repo.transaction():
+                await self._locked_session(owner, session_id)
                 await self.repo.capability_selection(owner, session_id, lock=True)
                 await self.repo.capability_runtime(
                     owner, session_id, {"status": "method_managed"}
@@ -723,6 +812,10 @@ class Capabilities:
             )
         token = secrets.token_urlsafe(32)
         async with self.repo.transaction():
+            if scene == ExecutionScene.CONVERSATION:
+                await self._conversation_session(owner, session_id)
+            else:
+                await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
@@ -738,10 +831,23 @@ class Capabilities:
             tools = {}
             inputs = []
             packages = {}
+            formal_methods = (
+                fresh["formal_methods"] if scene == ExecutionScene.CONVERSATION else []
+            )
             if fresh["issues"]:
                 # Conversation can continue without unusable capabilities. Never
                 # rewrite the user's selection or silently rebind a changed account.
                 blocked = {issue["ref"] for issue in fresh["issues"]}
+                from app.application.workbench.formal_session_tools import (
+                    formal_tool_key,
+                )
+                from app.domain.workbench.formal_method_generated import MethodRef
+
+                formal_methods = [
+                    ref
+                    for ref in formal_methods
+                    if formal_tool_key(MethodRef.model_validate(ref)) not in blocked
+                ]
                 fresh["tools"] = [key for key in fresh["tools"] if key not in blocked]
                 fresh["skills"] = [key for key in fresh["skills"] if key not in blocked]
                 if fresh["skill_mode"] == "explicit":
@@ -753,6 +859,7 @@ class Capabilities:
                     ]
                 if "runtime" in blocked:
                     fresh["tools"], fresh["skills"] = [], []
+                    formal_methods = []
                 inputs.append(
                     {
                         "type": "text",
@@ -831,6 +938,16 @@ class Capabilities:
                             "tool": tool,
                             "execution_kind": "skill_script",
                         }
+            if formal_methods:
+                from app.application.workbench.formal_session_tools import (
+                    FormalSessionTools,
+                )
+
+                for reference in formal_methods:
+                    spec = await FormalSessionTools(self).resolve(owner, reference)
+                    if spec["tool"]["name"] in tools:
+                        raise CapabilityError("Formal method tool identity collided")
+                    tools[spec["tool"]["name"]] = spec
             if len(packages) > 100:
                 raise CapabilityError(
                     "More than 100 enabled Skills; limit this conversation's Skill scope"
@@ -925,7 +1042,8 @@ class Capabilities:
                     "tool_timeout_sec": 960
                     if method_binding
                     or any(
-                        spec.get("execution_kind") == "skill_script"
+                        spec.get("execution_kind")
+                        in ("skill_script", "formal_method_model")
                         for spec in tools.values()
                     )
                     else 60,
@@ -978,6 +1096,7 @@ class Capabilities:
         async with self.repo.transaction():
             selected = await self.runtime(session_id, token)
             owner = selected["owner_actor_id"]
+            await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
@@ -1110,6 +1229,15 @@ class Capabilities:
 
     async def request_call(self, session_id, token, key, arguments, *, meta=None):
         selected = await self.runtime(session_id, token)
+        if (
+            selected["runtime"].get("tools", {}).get(key, {}).get("execution_kind")
+            == "formal_method_model"
+        ):
+            from app.application.workbench.formal_method_calls import FormalMethodCalls
+
+            return await FormalMethodCalls(self).request_model(
+                session_id, token, key, arguments, meta=meta
+            )
         if selected["runtime"].get("formal_probe"):
             from app.application.workbench.formal_model_calls import FormalModelCalls
 
@@ -1185,6 +1313,7 @@ class Capabilities:
         }
         identity = digest(intent)
         async with self.repo.transaction():
+            await self._locked_session(owner, session_id)
             # Serializes duplicate model requests on this session before opening approval.
             await self.repo.capability_selection(owner, session_id, lock=True)
             # Revalidate the scope after acquiring the serialization lock.
@@ -1333,7 +1462,16 @@ class Capabilities:
 
     async def method_call_result(self, session_id, token, call_id):
         """Short polling transaction; no connection is held while the HTTP stream sleeps."""
+        selected = await self.runtime(session_id, token)
+        call = await self.repo.capability_call(selected["owner_actor_id"], call_id)
+        if call["detail"].get("execution_kind") == "formal_method_model":
+            from app.application.workbench.formal_method_calls import FormalMethodCalls
+
+            return await FormalMethodCalls(self).model_result(
+                session_id, token, call_id
+            )
         async with self.repo.transaction():
+            await self._locked_call_session(selected["owner_actor_id"], call)
             selected = await self.runtime(session_id, token)
             owner = selected["owner_actor_id"]
             await self.repo.recover_calls(owner, session_id)
@@ -1392,7 +1530,10 @@ class Capabilities:
         # The caller supplies only the common approval decision. Dispatch identity
         # comes from the persisted call, never a browser-selected execution mode.
         peek = await self.repo.capability_call(owner, call_id)
-        if peek["detail"].get("execution_kind") == "formal_method":
+        if peek["detail"].get("execution_kind") in (
+            "formal_method",
+            "formal_method_model",
+        ):
             from app.application.workbench.formal_method_calls import FormalMethodCalls
 
             return (await FormalMethodCalls(self).decide(owner, call_id, body))["call"]
@@ -1401,6 +1542,7 @@ class Capabilities:
 
             return await FormalHostCalls(self).decide(owner, peek, body)
         async with self.repo.transaction():
+            await self._locked_call_session(owner, peek)
             call = await self.repo.capability_call(owner, call_id, lock=True)
             if call["status"] != "awaiting_approval":
                 return public_call(call)
@@ -1430,6 +1572,11 @@ class Capabilities:
                     or selected["revision"] != intent["selection_revision"]
                     or selected["runtime"].get("token_hash") != intent["runtime"]
                     or selected["runtime"].get("aborted")
+                    or (
+                        intent.get("method")
+                        and intent["method"]["task_id"]
+                        != str(session.get("active_task_id"))
+                    )
                     or (
                         intent.get("method")
                         and selected["runtime"].get("status")
@@ -1526,13 +1673,7 @@ class Capabilities:
                 else "External outcome is unknown. Check the provider before retrying."
             }
         async with self.repo.transaction():
-            if intent.get("execution_kind") == "formal_method":
-                # Conversation formal approval/projection locks session before
-                # child. Receipt events also write that session's cursor; take
-                # the same order before acquiring the child's update lock.
-                await self.repo.get_session(
-                    call["session_id"], owner_actor_id=owner, for_update=True
-                )
+            await self._locked_call_session(owner, call)
             await self.repo.update_call(owner, call_id, status, intent)
             await self.repo.append_event(
                 session_id=call["session_id"],
@@ -1554,6 +1695,7 @@ class Capabilities:
             )
         await self.script_executor.cancel(owner, call_id)
         async with self.repo.transaction():
+            await self._locked_call_session(owner, call)
             current = await self.repo.capability_call(owner, call_id, lock=True)
             if current["status"] == "dispatching":
                 await self.repo.update_call(
@@ -1658,6 +1800,7 @@ class Capabilities:
             if not status:
                 continue
             async with self.repo.transaction():
+                await self._locked_call_session(owner, call)
                 current = await self.repo.capability_call(owner, call_id, lock=True)
                 if current["status"] != "dispatching":
                     continue

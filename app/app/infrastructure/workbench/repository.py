@@ -615,8 +615,10 @@ class WorkbenchRepository(
         owner_actor_id: str | None = None,
         for_update: bool = False,
     ) -> dict[str, Any]:
+        # Serialize state changes without blocking foreign-key references from
+        # event writers holding the cursor advisory lock. Session IDs are stable.
         sql = "select * from workbench_sessions where id = :id" + (
-            " for update" if for_update else ""
+            " for no key update" if for_update else ""
         )
         r = await self.session.execute(text(sql), {"id": session_id})
         row = r.mappings().first()
@@ -2964,6 +2966,7 @@ class WorkbenchRepository(
         self, *, sandbox_id: str, reason: str
     ) -> list[dict[str, Any]]:
         """接管一个沙箱时：上一个 runner 手里未决的工具审批作废（app-server 那边的请求已随连接消失，Codex 会重发）。"""
+        await self.lock_capability_sandbox_scope(sandbox_id)
         r = await self.session.execute(
             text(
                 """update workbench_interactions i set status = 'expired', response = cast(:resp as jsonb), consumed_at = now()

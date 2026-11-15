@@ -9,6 +9,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_capabilities import McpRequirement
 
 
@@ -101,12 +102,17 @@ class SelectionPut(Strict):
     revision: int = Field(ge=0)
     tools: list[str] = Field(default_factory=list, max_length=50)
     skills: list[str] = Field(default_factory=list, max_length=10)
+    formal_methods: tuple[MethodRef, ...] = Field(default=(), max_length=20)
     purpose: str = Field(default="", max_length=1000)
     skill_mode: Literal["auto", "explicit"] = "explicit"
     method_context: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
     def unique(self):
+        if len({ref.method_id for ref in self.formal_methods}) != len(
+            self.formal_methods
+        ):
+            raise ValueError("Select one exact version per formal method")
         if len(set(self.tools)) != len(self.tools) or len(set(self.skills)) != len(
             self.skills
         ):

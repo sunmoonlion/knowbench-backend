@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 from pathlib import PurePosixPath
+from typing import Literal
 from urllib.parse import quote
 from uuid import UUID
 
@@ -77,12 +78,13 @@ def formal_service(svc=Depends(service)):
 async def available_formal_methods(
     session_id: UUID,
     response: Response,
+    caller: Literal["host", "model"] = "host",
     user: Principal = Depends(get_web_current_user),
     svc=Depends(formal_service),
 ):
     response.headers["Cache-Control"] = "private, no-store"
     try:
-        return await svc.catalog(_actor(user), str(session_id))
+        return await svc.catalog(_actor(user), str(session_id), caller=caller)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 
@@ -442,7 +444,13 @@ async def capability_rpc(
                 "serverInfo": {"name": "sunmoon-capabilities", "version": "1"},
             }
         elif method == "tools/list":
-            tools = svc.runtime_tools(selected["runtime"])
+            from app.application.workbench.formal_session_tools import (
+                FormalSessionTools,
+            )
+
+            tools = await FormalSessionTools(svc).available(
+                selected["owner_actor_id"], selected["runtime"]
+            )
             result = {
                 "tools": [
                     {
@@ -455,7 +463,7 @@ async def capability_rpc(
                             " This call waits for user approval and returns the actual operation result. Never claim success before receiving it."
                             if selected["runtime"].get("method")
                             or spec.get("execution_kind")
-                            in {"skill_script", "formal_probe"}
+                            in {"skill_script", "formal_probe", "formal_method_model"}
                             else " This stages the operation only; use action_result after approval. Never claim success while awaiting approval."
                         ),
                         "inputSchema": spec["tool"]["inputSchema"],
@@ -556,11 +564,18 @@ async def capability_rpc(
                     and call["detail"].get("method") != selected["runtime"]["method"]
                 ):
                     raise Forbidden("Call belongs to another method execution")
-                value = {
-                    "call_id": call["id"],
-                    "status": call["status"],
-                    "result": public_result(call["detail"].get("result"), call["id"]),
-                }
+                if call["detail"].get("execution_kind") == "formal_method_model":
+                    value = await svc.method_call_result(
+                        str(session_id), token, call["id"]
+                    )
+                else:
+                    value = {
+                        "call_id": call["id"],
+                        "status": call["status"],
+                        "result": public_result(
+                            call["detail"].get("result"), call["id"]
+                        ),
+                    }
             else:
                 value = await svc.request_call(
                     str(session_id),
@@ -573,6 +588,7 @@ async def capability_rpc(
                 if selected["runtime"].get("method") or spec.get("execution_kind") in {
                     "skill_script",
                     "formal_probe",
+                    "formal_method_model",
                 }:
                     # Keep the standard tools/call open while the user approves.
                     # SSE comments keep intermediaries alive; the final JSON-RPC
