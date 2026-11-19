@@ -317,8 +317,7 @@ class FormalHostCalls:
 
             material = arguments.get("material_id")
             if (
-                caller != "host"
-                or source.entry != TOOL
+                source.entry != TOOL
                 or policy.effect != "read"
                 or not any(
                     r.resource_role == "material"
@@ -557,10 +556,72 @@ class FormalHostCalls:
             )
             return public_call(call)
 
+    @staticmethod
+    def pending_invocation(task, call):
+        intent = call["detail"]
+        is_model = intent.get("execution_kind") == "formal_probe"
+        host = intent.get("formal_probe" if is_model else "formal_host") or {}
+        if (
+            intent.get("execution_kind") not in ("formal_mcp", "formal_probe")
+            or str(task["id"]) != host.get("task_id")
+            or str(call["task_id"]) != host.get("task_id")
+            or str(call["attempt_id"]) != host.get("attempt_id")
+            or call["call_key"]
+            != (
+                model_call_key(host["task_id"])
+                if is_model
+                else host_call_key(host["task_id"], host.get("slot", "direct"))
+            )
+        ):
+            raise Forbidden("Formal action has no trusted host identity")
+        if (
+            str(task.get("active_attempt_id")) != host["attempt_id"]
+            or task["state"] != TaskState.WAITING
+            or str(task.get("active_interaction_id")) != str(call["interaction_id"])
+            or task.get("cancel_requested_at")
+        ):
+            raise CapabilityError("Formal approval no longer belongs to active work")
+        return host
+
+    async def approval_context(self, owner, call, host):
+        is_model = call["detail"]["execution_kind"] == "formal_probe"
+        context = await self.context(
+            owner,
+            host["task_id"],
+            host["attempt_id"],
+            caller="model" if is_model else "host",
+        )
+        if is_model:
+            from app.application.workbench.formal_model_calls import (
+                FormalModelCalls,
+                bind_model_intent,
+            )
+
+            model = await FormalModelCalls(self.capabilities).existing_model(
+                owner, call
+            )
+            bind_model_intent(context, model)
+        if (
+            context.identity != call["digest"]
+            or digest(context.intent)
+            != digest(
+                {k: v for k, v in call["detail"].items() if k != "approval_token"}
+            )
+            or context.intent["formal_probe" if is_model else "formal_host"] != host
+            or call["source_asset_id"] != context.asset["id"]
+            or call["connection_id"] != context.asset["id"]
+            or call["registration_id"] != context.registration.tool_id
+            or call["registration_digest"] != context.registration.descriptor_digest
+        ):
+            raise CapabilityError(
+                "Formal action changed; existing approval cannot authorize it"
+            )
+        return context
+
     async def decide(self, owner, peek, body):
         async with self.repo.transaction():
             # The lock order agrees with request/cancel: Task before Attempt/call.
-            await self.repo.get_task(
+            task = await self.repo.get_task(
                 str(peek["task_id"]), owner_actor_id=owner, for_update=True
             )
             call = await self.repo.capability_call(owner, peek["id"], lock=True)
@@ -568,66 +629,11 @@ class FormalHostCalls:
                 return public_call(call)
             if body.subject_digest != call["digest"]:
                 raise Forbidden("Approval does not match the operation")
+            host = self.pending_invocation(task, call)
             intent = call["detail"]
-            is_model = intent.get("execution_kind") == "formal_probe"
-            host = intent.get("formal_probe" if is_model else "formal_host") or {}
-            if (
-                intent.get("execution_kind") not in ("formal_mcp", "formal_probe")
-                or str(call["task_id"]) != host.get("task_id")
-                or str(call["attempt_id"]) != host.get("attempt_id")
-                or call["call_key"]
-                != (
-                    model_call_key(host["task_id"])
-                    if is_model
-                    else host_call_key(host["task_id"], host.get("slot", "direct"))
-                )
-            ):
-                raise Forbidden("Formal action has no trusted host identity")
-            task = await self.repo.get_task(host["task_id"])
-            if (
-                str(task.get("active_attempt_id")) != host["attempt_id"]
-                or task["state"] != TaskState.WAITING
-                or str(task.get("active_interaction_id")) != str(call["interaction_id"])
-                or task.get("cancel_requested_at")
-            ):
-                raise CapabilityError(
-                    "Formal approval no longer belongs to active work"
-                )
             context = None
             if body.decision == "accept":
-                context = await self.context(
-                    owner,
-                    host["task_id"],
-                    host["attempt_id"],
-                    caller="model" if is_model else "host",
-                )
-                if is_model:
-                    from app.application.workbench.formal_model_calls import (
-                        FormalModelCalls,
-                        bind_model_intent,
-                    )
-
-                    model = await FormalModelCalls(self.capabilities).existing_model(
-                        owner, call
-                    )
-                    bind_model_intent(context, model)
-                if (
-                    context.identity != call["digest"]
-                    or digest(context.intent)
-                    != digest(
-                        {k: v for k, v in intent.items() if k != "approval_token"}
-                    )
-                    or context.intent["formal_probe" if is_model else "formal_host"]
-                    != host
-                    or call["source_asset_id"] != context.asset["id"]
-                    or call["connection_id"] != context.asset["id"]
-                    or call["registration_id"] != context.registration.tool_id
-                    or call["registration_digest"]
-                    != context.registration.descriptor_digest
-                ):
-                    raise CapabilityError(
-                        "Formal action changed; existing approval cannot authorize it"
-                    )
+                context = await self.approval_context(owner, call, host)
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
                 token=body.token,

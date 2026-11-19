@@ -1,6 +1,7 @@
-"""A formal host read through the configured KnowBase data MCP and its owner consent."""
+"""A formal method read through the configured KnowBase data MCP and its owner consent."""
 
 import hashlib
+import json
 from uuid import UUID
 
 from app.domain.workbench.capabilities import CapabilityError
@@ -66,9 +67,11 @@ class KnowbaseMethodReader:
         self.issuer = issuer
         self.url = client.data_mcp_url
 
-    async def rpc(self, subject, method, params, binding=None):
+    async def rpc(
+        self, subject, method, params, binding=None, *, sandbox="formal-host"
+    ):
         token = self.issuer.data_token(
-            subject, sandbox="formal-host", tools=[TOOL], method_read=binding
+            subject, sandbox=sandbox, tools=[TOOL], method_read=binding
         ).token
         reply = await self.client.data_mcp(
             token,
@@ -96,45 +99,71 @@ class KnowbaseMethodReader:
 
     async def call(self, subject, intent, binding):
         if (
-            intent.get("execution_kind") != "formal_mcp"
+            intent.get("execution_kind") not in ("formal_mcp", "formal_probe")
             or intent["tool"]["name"] != TOOL
             or not binding
         ):
             raise CapabilityError(
-                "KnowBase method reads require a verified host invocation"
+                "KnowBase method reads require a verified formal invocation"
             )
         result = await self.rpc(
             subject,
             "tools/call",
             {"name": TOOL, "arguments": intent["arguments"]},
             binding,
+            sandbox="formal-model"
+            if intent["execution_kind"] == "formal_probe"
+            else "formal-host",
         )
-        if not result.get("isError"):
-            content = result.get("structuredContent")
-            source = content.get("source") if isinstance(content, dict) else None
-            if (
-                not isinstance(source, dict)
-                or not isinstance(content.get("text"), str)
-                or source.get("material_id") != binding["material_id"]
-                or type(source.get("version_no")) is not int
-                or source["version_no"] != binding["version_no"]
-                or source.get("method_call_id") != binding["path"][-1]["call_id"]
-            ):
-                raise CapabilityError(
-                    "KnowBase returned a different material or invocation"
+        if result.get("isError"):
+            return {
+                "isError": True,
+                "content": [
+                    {"type": "text", "text": "KnowBase declined this method read."}
+                ],
+            }
+        content = result.get("structuredContent")
+        source = content.get("source") if isinstance(content, dict) else None
+        if (
+            not isinstance(source, dict)
+            or not isinstance(content.get("text"), str)
+            or source.get("material_id") != binding["material_id"]
+            or type(source.get("version_no")) is not int
+            or source["version_no"] != binding["version_no"]
+            or source.get("method_call_id") != binding["path"][-1]["call_id"]
+        ):
+            raise CapabilityError(
+                "KnowBase returned a different material or invocation"
+            )
+        if source.get("sha256") != hashlib.sha256(content["text"].encode()).hexdigest():
+            raise CapabilityError("KnowBase text differs from its content digest")
+        try:
+            UUID(source["grant_id"])
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            raise CapabilityError(
+                "KnowBase omitted the resource grant receipt"
+            ) from exc
+        # Only the verified material and its receipt cross the caller boundary.
+        payload = {
+            "text": content["text"],
+            "source": {
+                k: source[k]
+                for k in (
+                    "material_id",
+                    "version_no",
+                    "method_call_id",
+                    "grant_id",
+                    "sha256",
                 )
-            if (
-                source.get("sha256")
-                != hashlib.sha256(content["text"].encode()).hexdigest()
-            ):
-                raise CapabilityError("KnowBase text differs from its content digest")
-            try:
-                UUID(source["grant_id"])
-            except (KeyError, ValueError, TypeError, AttributeError) as exc:
-                raise CapabilityError(
-                    "KnowBase omitted the resource grant receipt"
-                ) from exc
-        return result
+            },
+        }
+        return {
+            "isError": False,
+            "structuredContent": payload,
+            "content": [
+                {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
+            ],
+        }
 
 
 async def pending_read(svc, owner, call_id):
@@ -148,26 +177,17 @@ async def pending_read(svc, owner, call_id):
             str(call["task_id"]), owner_actor_id=owner, for_update=True
         )
         call = await svc.repo.capability_call(owner, str(call_id), lock=True)
-        host = call["detail"].get("formal_host") or {}
-        if (
-            call["status"] != "awaiting_approval"
-            or not host
-            or not svc.knowbase_reader
-            or task.get("cancel_requested_at")
-            or str(task.get("active_interaction_id")) != str(call["interaction_id"])
-            or str(task["id"]) != host.get("task_id")
-        ):
+        if call["status"] != "awaiting_approval" or not svc.knowbase_reader:
             raise CapabilityError("This call has no pending KnowBase material read")
-        context = await FormalHostCalls(svc).context(
-            owner, host["task_id"], host["attempt_id"]
-        )
-        if (
-            call["digest"] != context.identity
-            or context.intent["formal_host"] != host
-            or not context.knowbase_read
-        ):
-            raise CapabilityError("The requested KnowBase method invocation changed")
+        formal = FormalHostCalls(svc)
+        host = formal.pending_invocation(task, call)
+        context = await formal.approval_context(owner, call, host)
+        if not context.knowbase_read:
+            raise CapabilityError("This action does not read a KnowBase material")
         return {
+            "caller": "model"
+            if call["detail"]["execution_kind"] == "formal_probe"
+            else "host",
             "subject_digest": call["digest"],
             "parent_run_ref": "formal-task:" + host["task_id"],
             "read": context.knowbase_read,

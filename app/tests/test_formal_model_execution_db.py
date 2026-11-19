@@ -4,7 +4,7 @@ import asyncio
 from decimal import Decimal
 
 import pytest
-from formal_model_support import ModelServer, setup
+from formal_model_support import ModelServer, pending_model_call, setup
 from httpx import ASGITransport, AsyncClient
 from test_capabilities_db import OWNER, approval
 from test_workbench_advisor_db import close
@@ -21,25 +21,7 @@ async def drive_to_approval(db, fake, *, decision="accept", before_wait=None):
     request, remote, factory, conductor, runner = await setup(db, fake)
     await conductor.advance(str(request.run_id))
     await runner.run_once()
-    call = None
-    for _ in range(300):
-        async with db() as session:
-            repo = WorkbenchRepository(session)
-            rows = await repo.list_test_cases(str(request.run_id))
-            task_id = str(rows[0]["task_id"])
-            attempts = await repo.list_attempts(task_id)
-            linked = (
-                (attempts[-1].get("refs") or {}).get("capability_call_id")
-                if attempts
-                else None
-            )
-            if linked:
-                call = await repo.capability_call(OWNER, linked)
-                break
-            task = await repo.get_task(task_id)
-            if task["state"] in ("FAILED", "CANCELLED", "REJECTED"):
-                break
-        await asyncio.sleep(0.02)
+    task_id, call = await pending_model_call(db, request)
     if call and decision is not None:
         async with AsyncClient(
             transport=ASGITransport(fake.app), base_url="http://testserver"

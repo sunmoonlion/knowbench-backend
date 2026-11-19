@@ -408,11 +408,13 @@ API 拥有账号安装记录、不可变包、连接凭据和工具注册；runn
 
 ## 私有孵化中读取 KnowBase 资料
 
-正式方法声明资料 ID、版本、用途和资源范围。仅当受信操作目录将 `read_method_input` 映射到 `KNOWBASE_INTERNAL_URL` 对应的数据 MCP、有工作台签名密钥且来源许可有效时，宿主才能请求读取。工具参数只有 `material_id` 和 `version_no`。每层方法身份取自已受理的冻结快照、精确依赖、当前 Task 和共同调用账。
+正式方法声明资料 ID、版本、用途和资源范围。仅当受信操作目录将 `read_method_input` 映射到 `KNOWBASE_INTERNAL_URL` 对应的数据 MCP、有工作台签名密钥且来源许可有效时，私有孵化中的宿主或模型试跑才能请求读取。工具参数只有 `material_id` 和 `version_no`。每层方法身份取自已受理的冻结快照、精确依赖、当前 Task 和共同调用账。
 
-1. 宿主提出动作后，本人通过 `GET /workbench/capability-calls/{call_id}/knowbase-read` 查看用途、资料、版本、完整方法调用链和 `subject_digest`。草稿根方法按定义摘要识别，已登记的子方法同时核对冻结版本和定义摘要。
+1. 宿主或模型提出动作后，本人通过 `GET /workbench/capability-calls/{call_id}/knowbase-read` 查看调用入口（`caller` 的取值为 `host` 或 `model`）、用途、资料、版本、完整方法调用链和 `subject_digest`。草稿根方法按定义摘要识别，已登记的子方法同时核对冻结版本和定义摘要。
 2. 本人向同一地址 POST 所见摘要、带时区的 `expires_at`，并选择已有的本任务 `grant_id` 或提交所选原件的完整 `sha256`。后者由 KnowBase 按任务、资料和版本签发仅供方法使用的父授权。保存返回的 `grant_id` 和叶子 `method_call_id`。
 3. 用户再沿原有动作审批确认本次执行。KnowBase 以签名声明和持久授权核对精确调用链，在取原件前后复核授权。成功回执给出原文、完整 SHA-256、资料版本、父授权与叶子调用 ID。当前支持本人已向 KnowBench 展示、最多 16,000 字节的 UTF-8 文本原件。
 4. 本人可用 `DELETE /workbench/knowbase-method-reads/{grant_id}/{method_call_id}` 撤销本次读取。撤销父授权会使其下全部读取失效。相同授权可幂等确认，同一调用变更授权条件需重新发起调用。
+
+模型入口仅开放给允许模型试跑的直接工具方法。预览、授权和实际批准都核对同一条已观察到的线程、轮次和工具调用，成功回包的结构化数据与可读文本均由核验过的原件和出处生成。读取被拒时模型收到失败状态。宿主入口还支持已冻结的递归依赖。
 
 旧委托的 `accepted_plan` 身份继续用于原有一步委派。正式孵化需要本人确认上面的真实方法调用链。浏览器入口与普通用户委托按专家方案的后续阶段接入。

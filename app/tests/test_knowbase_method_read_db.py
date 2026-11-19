@@ -1,6 +1,7 @@
-"""Formal host, private registration and three-level dispatch with a synthetic data MCP."""
+"""Host and model incubation reads share owner consent for an exact invocation."""
 
 import hashlib
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -12,11 +13,12 @@ from formal_recursive_support import accept_request
 from joserfc import jwt
 from joserfc.jwk import ECKey
 from test_capabilities_db import Remote, body
-from test_formal_execution_db import approve, setup
+from test_formal_execution_db import approve
 from test_formal_host_calls_db import FORMAL_OPERATION
+from test_formal_method_admission_db import setup as admission_setup
 from test_formal_method_admission_db import validation_request
 from test_source_licenses import license_record
-from test_workbench_ledger_db import OWNER
+from test_workbench_ledger_db import OWNER, seed
 from test_workbench_ledger_db import db as db
 
 from app.application.workbench.capabilities import Capabilities
@@ -29,6 +31,7 @@ from app.application.workbench.knowbase_method_read import (
 from app.application.workbench.test_runs import KnowbotTestConductor
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.bootstrap.workbench import workbench_stores
+from app.domain.workbench.formal_execution import FORMAL_RUNTIME
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
     FormalTestSuiteDraft,
@@ -40,6 +43,18 @@ from app.interfaces.endpoints.capability_routes import (
     PinnedParentApproval,
     approve_knowbase_read,
 )
+
+
+async def owner_token():
+    return "owner-token"
+
+
+def pinned_approval(subject_digest):
+    return PinnedParentApproval(
+        subject_digest=subject_digest,
+        sha256=hashlib.sha256(b"verified").hexdigest(),
+        expires_at=datetime.now(UTC) + timedelta(minutes=1),
+    )
 
 
 class DataPeer:
@@ -60,6 +75,11 @@ class DataPeer:
     async def consent_method_read(self, token, grant_id, read, expires_at):
         assert token == "owner-token" and grant_id == self.grant_id
         self.consent = deepcopy(read)
+
+    async def revoke_method_read(self, token, grant_id, call_id):
+        assert token == "owner-token" and grant_id == self.grant_id
+        assert self.consent["path"][-1]["call_id"] == call_id
+        self.consent = None
 
     async def data_mcp(self, token, message):
         claims = jwt.decode(token, self.key, algorithms=["ES256"]).claims
@@ -85,7 +105,13 @@ class DataPeer:
                     ]
                 }
             }
-        assert claims["method_read"] == self.consent
+        if claims["method_read"] != self.consent:
+            return {
+                "result": {
+                    "isError": True,
+                    "content": [{"type": "text", "text": "no consent"}],
+                }
+            }
         assert message["params"]["arguments"] == {
             "material_id": self.material_id,
             "version_no": 1,
@@ -93,7 +119,7 @@ class DataPeer:
         return {
             "result": {
                 "isError": False,
-                "content": [{"type": "text", "text": "verified"}],
+                "content": [{"type": "text", "text": "provider diagnostic"}],
                 "structuredContent": {
                     "text": "verified",
                     "source": {
@@ -114,7 +140,7 @@ def reader_peer():
     return issuer, DataPeer(issuer)
 
 
-def suite(args):
+def suite(args, caller="host"):
     return (
         FormalTestSuiteDraft.model_validate(
             {
@@ -123,7 +149,15 @@ def suite(args):
                 "cases": [
                     {
                         "case_id": "read",
-                        "input": {"values": args},
+                        "caller": caller,
+                        "input": {
+                            "values": args,
+                            **(
+                                {"model_prompt": "Read the selected material."}
+                                if caller == "model"
+                                else {}
+                            ),
+                        },
                         "repetitions": 1,
                         "minimum_passes": 1,
                         "expected": {
@@ -192,10 +226,11 @@ def wrap(request, frozen):
     return FormalMethodExecutionRequest.model_validate(doc)
 
 
-async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_peer):
+async def read_candidate(db, reader_peer):
     issuer, peer = reader_peer
     reader = KnowbaseMethodReader(peer, issuer)
-    baseline, _, _, _, _ = await setup(db)
+    await admission_setup(db, licensed=True)
+    env, sandbox, _ = await seed(db)
     remote = Remote()
     tools = await reader.discover("author")
     registration = ToolRegistration.discover("mcp", reader.url, tools[0])
@@ -242,6 +277,7 @@ async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_
             operations=(operation,),
             source_licenses=(license,),
             knowbase_reader=reader,
+            runtime_url="http://testserver/api/mcp/capabilities",
         )
 
     doc = validation_request(source).model_dump(mode="json", by_alias=True)
@@ -277,9 +313,20 @@ async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_
             "on_unavailable": "pause",
         }
     ]
-    execution = baseline.execution.model_dump(mode="json")
-    execution["suite"] = suite(params)
-    doc.update(contract=baseline.contract, execution=execution)
+    doc.update(
+        contract=FORMAL_RUNTIME,
+        execution={
+            "runner": {
+                "kind": "user",
+                "environment_id": env,
+                "workspace_root": "/home/u/research",
+            },
+            "budget": {"limit": "1", "currency": "CNY"},
+            "timeout_seconds": 60,
+            "max_wait_seconds": 120,
+            "suite": suite(params),
+        },
+    )
     ctx = SimpleNamespace(
         request=FormalMethodExecutionRequest.model_validate(doc),
         factory=factory,
@@ -288,8 +335,17 @@ async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_
         ),
     )
 
-    async def owner_token():
-        return "owner-token"
+    return ctx, remote, sandbox
+
+
+async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_peer):
+    ctx, remote, _ = await read_candidate(db, reader_peer)
+    await run_host_tree(db, ctx, reader_peer[1])
+    assert remote.calls == []
+
+
+async def run_host_tree(db, ctx, peer):
+    factory = ctx.factory
 
     previous = None
     for depth in (1, 2, 3):
@@ -302,6 +358,7 @@ async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_
             svc = factory(WorkbenchRepository(session))
             projection = await pending_read(svc, OWNER, call_id)
             path = projection["read"]["path"]
+            assert projection["caller"] == "host"
             assert len(path) == depth and len({n["call_id"] for n in path}) == depth
             assert projection["read"]["material_id"] == peer.material_id
             assert projection["subject_digest"] == action["subject_digest"]
@@ -314,11 +371,7 @@ async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_
                 assert path[1]["definition_digest"] == previous.reference.digest
             await approve_knowbase_read(
                 call_id,
-                PinnedParentApproval(
-                    sha256=hashlib.sha256(b"verified").hexdigest(),
-                    subject_digest=action["subject_digest"],
-                    expires_at=datetime.now(UTC) + timedelta(minutes=1),
-                ),
+                pinned_approval(action["subject_digest"]),
                 SimpleNamespace(actor_id=OWNER),
                 owner_token,
                 svc,
@@ -333,4 +386,155 @@ async def test_read_through_frozen_child_with_separate_owner_consent(db, reader_
             )
         if depth < 3:
             ctx.request = wrap(ctx.request, previous)
+
+
+async def run_host_denial(db, ctx, peer, mode):
+    doc = ctx.request.model_dump(mode="json", by_alias=True)
+    doc.update(request_id=str(uuid4()), run_id=str(uuid4()))
+    case = SimpleNamespace(
+        request=FormalMethodExecutionRequest.model_validate(doc),
+        factory=ctx.factory,
+        conductor=ctx.conductor,
+    )
+    await accept_request(db, case)
+    pending = await advance(db, case)
+    action = pending["actions"][0]
+    call_id = UUID(action["call_id"])
+    async with db() as session:
+        svc = ctx.factory(WorkbenchRepository(session))
+        shown = await pending_read(svc, OWNER, call_id)
+        assert (
+            shown["caller"] == "host" and shown["read"]["purpose"] == "verify a report"
+        )
+        if mode == "revoked":
+            consent = await approve_knowbase_read(
+                call_id,
+                pinned_approval(action["subject_digest"]),
+                SimpleNamespace(actor_id=OWNER),
+                owner_token,
+                svc,
+            )
+            await peer.revoke_method_read(
+                "owner-token", consent["grant_id"], consent["method_call_id"]
+            )
+    await approve(db, case.request, case.factory, pending)
+    result = await advance(db, case)
+    assert result["status"] == "failed", result
+    async with db() as session:
+        call = await WorkbenchRepository(session).capability_call(OWNER, str(call_id))
+        assert call["status"] == "failed" and call["detail"]["result"]["isError"]
+
+
+@pytest.mark.parametrize("mode", ["missing", "revoked"])
+async def test_host_read_requires_exact_owner_consent(db, reader_peer, mode):
+    ctx, remote, _ = await read_candidate(db, reader_peer)
+    await run_host_denial(db, ctx, reader_peer[1], mode)
+    assert remote.calls == []
+
+
+async def run_model_read(db, ctx, sandbox, peer, mode):
+    from formal_model_support import ModelServer, model_runner, pending_model_call
+    from httpx import ASGITransport, AsyncClient
+    from test_capabilities_db import approval
+    from test_workbench_advisor_db import close
+
+    from app.interfaces.endpoints.capability_routes import (
+        get_web_knowbase_token_provider,
+        knowbase_v2,
+    )
+
+    doc = ctx.request.model_dump(mode="json", by_alias=True)
+    doc.update(request_id=str(uuid4()), run_id=str(uuid4()))
+    doc["draft"]["allowed_callers"] = ["model"]
+    args = {"material_id": peer.material_id, "version_no": 1}
+    doc["execution"].update(
+        suite=suite(args, "model"), model_probe={"max_turns": 1, "max_method_calls": 1}
+    )
+    request = FormalMethodExecutionRequest.model_validate(doc)
+    fake, runner = ModelServer(), None
+    fake.arguments = args
+    await fake.start()
+
+    try:
+        conductor, runner = await model_runner(db, fake, request, ctx.factory, sandbox)
+        fake.app.dependency_overrides[get_web_knowbase_token_provider] = lambda: (
+            owner_token
+        )
+        fake.app.dependency_overrides[knowbase_v2] = lambda: peer
+        await conductor.advance(str(request.run_id))
+        await runner.run_once()
+        _, call = await pending_model_call(db, request)
+        assert call is not None, fake.failures
+        async with AsyncClient(
+            transport=ASGITransport(fake.app), base_url="http://testserver"
+        ) as http:
+            path = f"/api/workbench/capability-calls/{call['id']}"
+            projection = await http.get(path + "/knowbase-read")
+            assert projection.status_code == 200, projection.text
+            shown = projection.json()
+            assert shown["caller"] == "model"
+            assert shown["read"]["material_id"] == args["material_id"]
+            assert shown["read"]["purpose"] == "verify a report"
+            assert shown["read"]["path"][0]["method_id"] == str(request.method_id)
+            if mode == "missing":
+                refused = await http.post(
+                    path + "/knowbase-read",
+                    json=pinned_approval("0" * 64).model_dump(mode="json"),
+                )
+                assert refused.status_code == 403, refused.text
+            else:
+                result = await http.post(
+                    path + "/knowbase-read",
+                    json=pinned_approval(shown["subject_digest"]).model_dump(
+                        mode="json"
+                    ),
+                )
+                assert result.status_code == 200, result.text
+                consent = result.json()
+                if mode == "revoked":
+                    revoked = await http.delete(
+                        f"/api/workbench/knowbase-method-reads/{consent['grant_id']}/{consent['method_call_id']}"
+                    )
+                    assert revoked.status_code == 204, revoked.text
+            response = await http.post(
+                path + "/decision", json=approval(call).model_dump()
+            )
+            assert response.status_code == 200, response.text
+        await runner.wait_drivers(timeout=30)
+        async with db() as session:
+            current = await WorkbenchRepository(session).capability_call(
+                OWNER, call["id"]
+            )
+        assert current["status"] == ("succeeded" if mode == "allowed" else "failed"), (
+            current["detail"]
+        )
+        if mode == "allowed":
+            output = current["detail"]["result"]["structuredContent"]
+            assert output["text"] == "verified"
+            assert (
+                output["source"]["method_call_id"]
+                == shown["read"]["path"][-1]["call_id"]
+            )
+        else:
+            assert current["detail"]["result"]["isError"]
+        assert len(fake.turn_inputs) == len(fake.responses) == 1
+        reply = fake.responses[0]["result"]
+        assert reply["isError"] == (mode != "allowed")
+        delivered = json.loads(reply["content"][0]["text"])
+        assert delivered["call_id"] == str(call["id"])
+        if mode == "allowed":
+            assert delivered["result"]["structuredContent"] == output
+            assert json.loads(delivered["result"]["content"][0]["text"]) == output
+        else:
+            assert "verified" not in json.dumps(delivered["result"])
+    finally:
+        if runner:
+            await close(runner)
+        await fake.close()
+
+
+@pytest.mark.parametrize("mode", ["allowed", "missing", "revoked"])
+async def test_model_read_requires_exact_owner_consent(db, reader_peer, mode):
+    ctx, remote, sandbox = await read_candidate(db, reader_peer)
+    await run_model_read(db, ctx, sandbox, reader_peer[1], mode)
     assert remote.calls == []

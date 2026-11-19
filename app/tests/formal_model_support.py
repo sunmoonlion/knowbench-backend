@@ -15,7 +15,7 @@ from test_formal_method_admission_db import setup as admission_setup
 from test_formal_method_use_routes_db import application
 from test_source_licenses import license_record
 from test_workbench_advisor_db import ScriptedAppServer
-from test_workbench_ledger_db import seed
+from test_workbench_ledger_db import OWNER, seed
 from usage_support import MODEL
 
 from app.application.workbench.capabilities import Capabilities
@@ -39,6 +39,7 @@ class ModelServer(ScriptedAppServer):
         super().__init__()
         self.app = None
         self.config = {}
+        self.arguments = {"to": "test@example.test"}
         self.tool_name = PROBE_TOOL
         self.repeat_identity = False
         self.thread_configs = {}
@@ -161,7 +162,7 @@ class ModelServer(ScriptedAppServer):
                     "type": "mcpToolCall",
                     "server": PROBE_SERVER,
                     "tool": self.tool_name,
-                    "arguments": {"to": "test@example.test"},
+                    "arguments": self.arguments,
                     "status": "inProgress",
                 }
                 await event(
@@ -304,6 +305,11 @@ async def setup(db, fake):
             runtime_url="http://testserver/api/mcp/capabilities",
         )
 
+    conductor, runner = await model_runner(db, fake, request, factory, sandbox)
+    return request, remote, factory, conductor, runner
+
+
+async def model_runner(db, fake, request, factory, sandbox):
     async with db() as session:
         repo = WorkbenchRepository(session)
         async with repo.transaction():
@@ -323,4 +329,27 @@ async def setup(db, fake):
     runner.capabilities = factory
     conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)
     fake.app = application(db, factory)
-    return request, remote, factory, conductor, runner
+    return conductor, runner
+
+
+async def pending_model_call(db, request):
+    call = None
+    for _ in range(300):
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            rows = await repo.list_test_cases(str(request.run_id))
+            task_id = str(rows[0]["task_id"])
+            attempts = await repo.list_attempts(task_id)
+            linked = (
+                (attempts[-1].get("refs") or {}).get("capability_call_id")
+                if attempts
+                else None
+            )
+            if linked:
+                call = await repo.capability_call(OWNER, linked)
+                break
+            task = await repo.get_task(task_id)
+            if task["state"] in ("FAILED", "CANCELLED", "REJECTED"):
+                break
+        await asyncio.sleep(0.02)
+    return task_id, call
