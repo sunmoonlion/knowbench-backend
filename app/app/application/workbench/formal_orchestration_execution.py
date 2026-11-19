@@ -79,6 +79,15 @@ async def accepted_outputs(repo, task, snapshot, before):
         ):
             raise CapabilityError("Formal dependency is not an accepted step result")
         version = versions[0]
+        if (
+            not isinstance(version, dict)
+            or type(version.get("version")) is not int
+            or version["version"] < 1
+            or version.get("name") != "formal-step:" + step.id
+        ):
+            raise CapabilityError(
+                "Formal dependency has no exact step artifact version"
+            )
         artifact = await repo.get_artifact(
             task_id=str(task["id"]),
             name="formal-step:" + step.id,
@@ -86,6 +95,8 @@ async def accepted_outputs(repo, task, snapshot, before):
         )
         if (
             artifact is None
+            or artifact["kind"] != "step"
+            or artifact["version"] != version["version"]
             or str(artifact["id"]) != version["id"]
             or str(artifact["attempt_id"]) != str(attempt["id"])
             or artifact["name"] != version["name"]

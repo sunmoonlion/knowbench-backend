@@ -60,6 +60,9 @@ def public_call(call: dict) -> dict:
     copy["detail"].pop(
         "formal_host", None
     )  # Persisted host context, never model provenance.
+    copy["detail"].pop(
+        "artifact_read_digest", None
+    )  # Resource scope is shown on its approval.
     copy["detail"].pop("authorization", None)  # Exact-action permission evidence.
     copy["detail"].pop("formal_method", None)  # Private frozen method provenance.
     copy["detail"].pop("formal_probe", None)  # Verified candidate model provenance.

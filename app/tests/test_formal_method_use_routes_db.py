@@ -32,6 +32,7 @@ def application(db, factory):
             yield factory(WorkbenchRepository(s))
 
     app.dependency_overrides[routes.service] = service
+    app.dependency_overrides[routes.method_read_service] = service
     app.dependency_overrides[routes.require_workbench_enabled] = lambda: None
     app.dependency_overrides[auth.get_web_current_user] = lambda: principal(OWNER)
     return app

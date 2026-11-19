@@ -25,6 +25,7 @@ from app.application.workbench.method_capabilities import (
     method_scope,
     selection_issues,
 )
+from app.application.workbench.task_output_reader import TOOL as TASK_OUTPUT_TOOL
 from app.application.workbench.tool_invocation import verify_tool_invocation
 from app.application.workbench.tool_registry import mcp_catalog, registered_call
 from app.domain.workbench.capabilities import (
@@ -95,6 +96,7 @@ class Capabilities:
         source_licenses=(),
         resource_delegations=(),
         knowbase_reader=None,
+        task_outputs_url="",
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
             repo,
@@ -102,6 +104,7 @@ class Capabilities:
             cipher,
             runtime_url,
         )
+        self.task_outputs_url = task_outputs_url
         self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.script_executor = script_executor
@@ -158,6 +161,10 @@ class Capabilities:
         return [public_skill_asset(a, assets) for a in assets]
 
     async def _discover(self, owner, url, token):
+        if self.task_outputs_url and url == self.task_outputs_url and not token:
+            from app.application.workbench.task_output_reader import descriptor
+
+            return [descriptor()]
         if self.knowbase_reader and url == self.knowbase_reader.url:
             if token:
                 raise CapabilityError(
@@ -1845,6 +1852,16 @@ class Capabilities:
                 return public_call(await self.repo.capability_call(owner, call_id))
             else:
                 if (
+                    self.task_outputs_url
+                    and connection["detail"]["url"] == self.task_outputs_url
+                    and intent["tool"]["name"] == TASK_OUTPUT_TOOL
+                ):
+                    from app.application.workbench.task_output_reader import (
+                        read_approved,
+                    )
+
+                    result = await read_approved(self.repo, owner, call, intent)
+                elif (
                     self.knowbase_reader
                     and connection["detail"]["url"] == self.knowbase_reader.url
                 ):

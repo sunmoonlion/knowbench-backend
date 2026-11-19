@@ -96,6 +96,48 @@ async def _approval(
     ]
     _require(len(matches) == 1, "authorization_confirmation_event_missing")
     payload = matches[0]["payload"]
+    resource = None
+    if (
+        "artifact_read_digest" in intent
+        or "artifact_read_digest" in payload
+        or "artifact_read" in subject
+    ):
+        from app.application.workbench.artifact_read_authority import (
+            planned_read,
+            verify_approval,
+        )
+
+        transfer = leaf.draft.definition.access_requirements[
+            0
+        ].data_transfer.model_dump(mode="json")
+        snapshot = snapshot_for_task(task)
+        if "return_to" in (subject.get("artifact_read") or {}):
+            from app.application.workbench.task_output_reader import read_binding
+
+            binding = await read_binding(
+                repo,
+                task,
+                snapshot,
+                inputs,
+                transfer,
+                child=child,
+                attempt=attempt,
+                result=intent["result"],
+            )
+        else:
+            binding = await planned_read(
+                repo, task, snapshot, child, attempt, inputs, transfer
+            )
+        resource = await verify_approval(
+            repo,
+            task,
+            attempt,
+            call,
+            binding,
+            interaction,
+            matches[0],
+            deadline=authorization_expiry,
+        )
     auth = MethodAuthorization.model_validate(payload["authorization"])
     parent = MethodAuthorization.model_validate(payload["parent_authorization"])
     current = MethodAuthorization.model_validate(
@@ -188,6 +230,7 @@ async def _approval(
         "registration_id": call["registration_id"],
         "registration_digest": call["registration_digest"],
         "formal_host": intent["formal_host"],
+        **({"artifact_read": resource} if resource else {}),
         "direct_grants": True,
         "approved": True,
         "authorization": auth.model_dump(mode="json"),

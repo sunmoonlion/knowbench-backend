@@ -107,7 +107,7 @@ _OCCUPYING = """(
 def _test_task(alias: str) -> str:
     # K29 只认存下来的列（SDD 0052 第二节）：建测试委托时就写 pack_source，迁移 0039 回填，
     # #85 后线上对账与现算一致（11-06）。不再现算 workbench_test_cases
-    return f"(coalesce({alias}.pack_source, '') = 'knowlab-test')"
+    return f"(coalesce({alias}.pack_source, '') in ('knowlab-test', 'formal-test'))"
 
 
 def _test_session(alias: str) -> str:
@@ -841,6 +841,25 @@ class WorkbenchRepository(
             {"s": session_id, "types": list(types)},
         )
         return [_event(m) for m in r.mappings().all()]
+
+    async def latest_call_event(
+        self, call: dict, event_type: str, *, before: int | None = None
+    ) -> dict[str, Any] | None:
+        sql = """select payload from workbench_session_events
+                 where task_id = :task and attempt_id = :attempt and event_type = :type
+                   and payload->>'call_id' = :call"""
+        params = {
+            "task": call["task_id"],
+            "attempt": call["attempt_id"],
+            "type": event_type,
+            "call": str(call["id"]),
+        }
+        if before is not None:
+            sql += " and cursor < :before"
+            params["before"] = before
+        return await self.session.scalar(
+            text(sql + " order by cursor desc limit 1"), params
+        )
 
     async def list_task_events(
         self, task_id: str, *, types: tuple[str, ...]

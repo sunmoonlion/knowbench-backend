@@ -443,6 +443,10 @@ class WorkbenchStore(Protocol):
         self, *, session_id: str, interaction_id: str
     ) -> int | None: ...
 
+    async def latest_call_event(
+        self, call: dict, event_type: str, *, before: int | None = None
+    ) -> dict[str, Any] | None: ...
+
     async def list_task_events(
         self, task_id: str, *, types: tuple[str, ...]
     ) -> list[dict[str, Any]]: ...

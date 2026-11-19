@@ -387,6 +387,35 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             require("result" not in intent, "rejected_call_has_dispatch_result")
         else:
             require(approved, "exact_approval_not_proven")
+            if "artifact_read_digest" in intent or "artifact_read" in interaction[
+                "prompt"
+            ].get("subject", {}):
+                from app.application.workbench.artifact_read_authority import (
+                    verify_approval,
+                )
+                from app.application.workbench.task_output_reader import read_binding
+
+                events = await repo.list_task_events(
+                    str(task["id"]), types=("method/permissionsConfirmed",)
+                )
+                confirmed = [
+                    e
+                    for e in events
+                    if e["payload"].get("interaction_id") == str(interaction["id"])
+                    and e["payload"].get("action_digest") == call["digest"]
+                ]
+                require(len(confirmed) == 1, "artifact_read_confirmation_missing")
+                binding = await read_binding(
+                    repo,
+                    task,
+                    snapshot,
+                    intent["arguments"],
+                    intent["access"]["requirement"]["data_transfer"],
+                    result=intent.get("result") if outcome == "succeeded" else None,
+                )
+                governance["artifact_read"] = await verify_approval(
+                    repo, task, attempt, call, binding, interaction, confirmed[0]
+                )
             raw_auth = await repo.method_authorization(owner, str(parent["id"]))
             auth = MethodAuthorization.model_validate(raw_auth)
             require(

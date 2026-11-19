@@ -17,7 +17,19 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bootstrap.workbench import capability_service, knowbase_v2, web_workbench_store
+from app.application.workbench.artifact_read_authority import (
+    ArtifactConsent,
+    ArtifactRestriction,
+)
+from app.application.workbench.artifact_read_authority import (
+    manage as manage_artifact_read,
+)
+from app.bootstrap.workbench import (
+    capability_service,
+    knowbase_v2,
+    web_workbench_store,
+    workbench_store,
+)
 from app.domain.security import Principal
 from app.domain.workbench.capabilities import (
     ActionDecision,
@@ -35,7 +47,7 @@ from app.domain.workbench.capability_contract import (
     Catalog,
     Selection,
 )
-from app.domain.workbench.errors import Forbidden, WorkbenchError
+from app.domain.workbench.errors import Forbidden, TestManagedInKnowlab, WorkbenchError
 from app.domain.workbench.formal_method_calls import (
     FormalMethodCallRequest,
     FormalMethodCatalogResponse,
@@ -67,6 +79,12 @@ router = APIRouter(
 
 def service(db: AsyncSession = Depends(get_db_session)):
     return capability_service(web_workbench_store(db))
+
+
+def method_read_service(db: AsyncSession = Depends(get_db_session)):
+    # The owner can manage a specific pending trial action; test Tasks stay
+    # hidden from the ordinary browser task/session listing.
+    return capability_service(workbench_store(db))
 
 
 def formal_service(svc=Depends(service)):
@@ -346,6 +364,49 @@ async def list_calls(
         raise _http(exc) from exc
 
 
+@router.get("/workbench/capability-calls/{call_id}/artifact-read")
+async def preview_artifact_read(
+    call_id: UUID,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(method_read_service),
+):
+    response.headers["Cache-Control"] = "no-store"
+    try:
+        return await manage_artifact_read(svc, _actor(user), call_id)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/workbench/capability-calls/{call_id}/artifact-read")
+async def confirm_artifact_read(
+    call_id: UUID,
+    body: ArtifactConsent,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(method_read_service),
+):
+    try:
+        return await manage_artifact_read(svc, _actor(user), call_id, consent=body)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/workbench/capability-calls/{call_id}/artifact-read/{node_id}")
+async def narrow_artifact_read(
+    call_id: UUID,
+    node_id: UUID,
+    body: ArtifactRestriction,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(method_read_service),
+):
+    try:
+        return await manage_artifact_read(
+            svc, _actor(user), call_id, restriction=body, node_id=node_id
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 class KnowbaseReadApproval(BaseModel):
     model_config = ConfigDict(extra="forbid")
     subject_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -362,7 +423,9 @@ class PinnedParentApproval(KnowbaseReadApproval):
 
 @router.get("/workbench/capability-calls/{call_id}/knowbase-read")
 async def preview_knowbase_read(
-    call_id: UUID, user: Principal = Depends(get_web_current_user), svc=Depends(service)
+    call_id: UUID,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(method_read_service),
 ):
     from app.application.workbench.knowbase_method_read import pending_read
 
@@ -378,7 +441,7 @@ async def approve_knowbase_read(
     body: ExistingParentApproval | PinnedParentApproval,
     user: Principal = Depends(get_web_current_user),
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
-    svc=Depends(service),
+    svc=Depends(method_read_service),
 ):
     from app.application.workbench.knowbase_method_read import pending_read
     from app.infrastructure.external.knowbase_client import KnowbaseRefused
@@ -456,7 +519,20 @@ async def decide_call(
     svc=Depends(service),
 ):
     try:
-        return await svc.decide(_actor(user), str(call_id), body)
+        owner = _actor(user)
+        try:
+            return await svc.decide(owner, str(call_id), body)
+        except TestManagedInKnowlab:
+            # Keep the existing owner/token-bound decision usable for trial
+            # calls without exposing the parent Task through browser listings.
+            trial_svc = method_read_service(svc.repo.session)
+            call = await trial_svc.repo.capability_call(owner, str(call_id))
+            if call["detail"].get("execution_kind") not in (
+                "formal_mcp",
+                "formal_probe",
+            ):
+                raise
+            return await trial_svc.decide(owner, str(call_id), body)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 

@@ -12,6 +12,7 @@ from typing import Any
 from app.application.workbench.call_policy import authorize_operation
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_calls import root_call
+from app.application.workbench.task_output_reader import TOOL as TASK_OUTPUT_TOOL
 from app.application.workbench.tool_registry import registered_call
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden
@@ -60,6 +61,7 @@ class HostContext:
     method_call: dict | None = None
     scopes: list[MethodAuthorization] | None = None
     knowbase_read: dict | None = None
+    artifact_read: dict | None = None
 
     @property
     def identity(self):
@@ -355,6 +357,46 @@ class FormalHostCalls:
             "operation": decision.operation,
             "access": access,
         }
+        artifact_read = None
+        if (
+            self.capabilities.task_outputs_url
+            and asset["detail"]["url"] == self.capabilities.task_outputs_url
+            and source.entry == TASK_OUTPUT_TOOL
+        ):
+            from app.application.workbench.task_output_reader import (
+                read_binding as output_binding,
+            )
+
+            if policy.effect != "read" or not any(
+                r.resource_role == "task" and r.argument_path == ("task_id",)
+                for r in policy.resources
+            ):
+                raise CapabilityError(
+                    "Task output reads require a reviewed task resource"
+                )
+            artifact_read = await output_binding(
+                self.repo,
+                task,
+                snapshot,
+                arguments,
+                access["requirement"]["data_transfer"],
+                child=child,
+                attempt=attempt,
+            )
+        elif child is not None:
+            from app.application.workbench.artifact_read_authority import planned_read
+
+            artifact_read = await planned_read(
+                self.repo,
+                task,
+                snapshot,
+                child,
+                attempt,
+                arguments,
+                access["requirement"]["data_transfer"],
+            )
+        if artifact_read:
+            intent["artifact_read_digest"] = digest(artifact_read)
         return HostContext(
             task,
             attempt,
@@ -366,6 +408,7 @@ class FormalHostCalls:
             child,
             scopes,
             knowbase_read,
+            artifact_read,
         )
 
     async def request(self, owner, task_id, attempt_id, *, model=None):
@@ -484,7 +527,14 @@ class FormalHostCalls:
                 ttl=timedelta(minutes=15),
                 prompt=InteractionPrompt(
                     title="确认正式方法的外部操作",
-                    question="请核对本次账号、用途、资源范围和完整参数。仅批准这一次操作，不授予委派或后续操作权限。",
+                    question=(
+                        "请核对产物版本、输出字段、用途和接收方法链。批准即允许沿所示调用链仅传递这些字段，并执行这一次操作。"
+                        if context.artifact_read
+                        and "return_to" not in context.artifact_read
+                        else "请核对来源任务、产物版本、字段与接收入口。批准即允许本次方法读取所示字段并把结果返回给该入口。"
+                        if context.artifact_read
+                        else "请核对本次账号、用途、资源范围和完整参数。仅批准这一次操作，不授予委派或后续操作权限。"
+                    ),
                     options=[
                         {"value": "accept", "label": "仅允许这次"},
                         {"value": "decline", "label": "拒绝"},
@@ -495,6 +545,11 @@ class FormalHostCalls:
                         "account": context.intent["account_label"],
                         "purpose": context.intent["purpose"],
                         "tool": context.intent["tool"]["name"],
+                        **(
+                            {"artifact_read": context.artifact_read}
+                            if context.artifact_read
+                            else {}
+                        ),
                         "arguments": context.intent["arguments"],
                         "operation": {
                             k: operation[k]
@@ -591,6 +646,12 @@ class FormalHostCalls:
             host["attempt_id"],
             caller="model" if is_model else "host",
         )
+        if context.artifact_read and "artifact_read_digest" not in call["detail"]:
+            # Pending actions created before resource consent require explicit
+            # approval on the resource endpoint. Preserve their action identity.
+            interaction = await self.repo.get_interaction(str(call["interaction_id"]))
+            if "artifact_read" not in interaction["prompt"].get("subject", {}):
+                context.intent.pop("artifact_read_digest", None)
         if is_model:
             from app.application.workbench.formal_model_calls import (
                 FormalModelCalls,
@@ -642,7 +703,14 @@ class FormalHostCalls:
                 subject_digest=body.subject_digest,
             )
             if context:
-                intent = await self.authorize(owner, call, context)
+                from app.application.workbench.artifact_read_authority import (
+                    authorize_dispatch,
+                )
+
+                resource = await authorize_dispatch(
+                    self.repo, task, call, context.artifact_read, context.scopes
+                )
+                intent = await self.authorize(owner, call, context, resource)
             await Ledger(self.repo).transition(
                 host["task_id"],
                 TaskState.RUNNING,
@@ -656,7 +724,7 @@ class FormalHostCalls:
             )
         return public_call(await self.repo.capability_call(owner, call["id"]))
 
-    async def authorize(self, owner, call, context):
+    async def authorize(self, owner, call, context, resource=None):
         """An authenticated owner approved this exact action in this transaction."""
         root = await root_call(self.repo, context.task)
         recipient = context.method_call["id"] if context.method_call else root["id"]
@@ -770,6 +838,7 @@ class FormalHostCalls:
             payload={
                 "authorization": authorization.model_dump(mode="json"),
                 **scope_evidence,
+                **({"artifact_read_digest": digest(resource)} if resource else {}),
                 "context": host["snapshot_digest"],
                 "interaction_id": str(call["interaction_id"]),
                 "action_digest": call["digest"],

@@ -477,12 +477,25 @@ def capability_service(repo):
                 issuer=settings.workbench_token_issuer,
             ),
         )
+    # The governed method identity uses the public HTTPS endpoint. The private
+    # cluster transport for sandbox records is allowed to use a different URL.
+    records_endpoint = settings.web_frontend_base_url.rstrip("/") + "/api/mcp/workbench"
     return Capabilities(
         repo,
         RemoteMcp(tuple(settings.workbench_capability_mcp_urls)),
         cipher,
         runtime_url=settings.workbench_capability_mcp_url,
         knowbase_reader=reader,
+        task_outputs_url=(
+            records_endpoint
+            if settings.workbench_records_mcp_enabled
+            and any(
+                op.service_url == records_endpoint
+                and op.tool_name == "read_task_output"
+                for op in settings.workbench_capability_operations
+            )
+            else ""
+        ),
         operations=settings.workbench_capability_operations,
         source_licenses=settings.workbench_source_licenses,
         resource_delegations=settings.workbench_resource_delegations,
