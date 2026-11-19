@@ -81,7 +81,6 @@
         "detail": {
           "description": "Write a notice",
           "version": "1",
-          "content": "Draft and validate a notice before requesting delivery.",
           "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "dependencies": [
             "c_11111111111141118111111111111111_27ce1d1bf4270020"
@@ -103,7 +102,15 @@
               ]
             }
           ],
-          "format": "instruction-markdown"
+          "format": "instruction-markdown",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "size": 55,
+              "sha256": "2223132aaf877b0e184c55f54fe457cddca329118d907c686d95127d5a923b4e",
+              "media_type": "text/plain"
+            }
+          ]
         },
         "created_at": "2026-11-13T00:00:00Z",
         "updated_at": "2026-11-13T00:00:00Z"
@@ -173,7 +180,6 @@
         "detail": {
           "description": "Write a notice",
           "version": "1",
-          "content": "Draft and validate a notice before requesting delivery.",
           "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "dependencies": [
             "c_11111111111141118111111111111111_27ce1d1bf4270020"
@@ -195,7 +201,15 @@
               ]
             }
           ],
-          "format": "instruction-markdown"
+          "format": "instruction-markdown",
+          "files": [
+            {
+              "path": "SKILL.md",
+              "size": 55,
+              "sha256": "2223132aaf877b0e184c55f54fe457cddca329118d907c686d95127d5a923b4e",
+              "media_type": "text/plain"
+            }
+          ]
         },
         "created_at": "2026-11-13T00:00:00Z",
         "updated_at": "2026-11-13T00:00:00Z"
@@ -1035,7 +1049,6 @@
           "source": null,
           "description": "Write a notice",
           "version": "1",
-          "content": "Draft and validate a notice before requesting delivery.",
           "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "dependencies": [
             "c_11111111111141118111111111111111_27ce1d1bf4270020"
@@ -1059,7 +1072,14 @@
             }
           ],
           "format": "instruction-markdown",
-          "files": []
+          "files": [
+            {
+              "path": "SKILL.md",
+              "size": 55,
+              "sha256": "2223132aaf877b0e184c55f54fe457cddca329118d907c686d95127d5a923b4e",
+              "media_type": "text/plain"
+            }
+          ]
         },
         "created_at": "2026-11-13T00:00:00Z",
         "updated_at": "2026-11-13T00:00:00Z"
@@ -1258,7 +1278,6 @@
           "source": null,
           "description": "Write a notice",
           "version": "1",
-          "content": "Draft and validate a notice before requesting delivery.",
           "digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
           "dependencies": [
             "c_11111111111141118111111111111111_27ce1d1bf4270020"
@@ -1282,7 +1301,14 @@
             }
           ],
           "format": "instruction-markdown",
-          "files": []
+          "files": [
+            {
+              "path": "SKILL.md",
+              "size": 55,
+              "sha256": "2223132aaf877b0e184c55f54fe457cddca329118d907c686d95127d5a923b4e",
+              "media_type": "text/plain"
+            }
+          ]
         },
         "created_at": "2026-11-13T00:00:00Z",
         "updated_at": "2026-11-13T00:00:00Z"

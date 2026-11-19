@@ -119,9 +119,10 @@ async def observe_capability_call(svc, sid, name, arguments, *, call_id=None):
     }
 
 
-async def read_skill(svc, sid, token, arguments):
-    meta = await observe_capability_call(svc, sid, "skill_read", arguments)
-    return await svc.skill_resource(sid, token, arguments, meta=meta)
+async def read_skill(svc, sid, token, arguments, *, listing=False):
+    name = "skill_files" if listing else "skill_read"
+    meta = await observe_capability_call(svc, sid, name, arguments)
+    return await svc.skill_resource(sid, token, arguments, meta=meta, listing=listing)
 
 
 async def request_call(svc, sid, token, name, arguments, *, call_id=None):

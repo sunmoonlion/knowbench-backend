@@ -853,10 +853,6 @@
             "title": "Version",
             "type": "string"
           },
-          "content": {
-            "title": "Content",
-            "type": "string"
-          },
           "digest": {
             "title": "Digest",
             "type": "string"
@@ -901,7 +897,6 @@
         "required": [
           "description",
           "version",
-          "content",
           "digest",
           "dependencies",
           "format"
@@ -1353,10 +1348,6 @@
             "title": "Version",
             "type": "string"
           },
-          "content": {
-            "title": "Content",
-            "type": "string"
-          },
           "digest": {
             "title": "Digest",
             "type": "string"
@@ -1401,7 +1392,6 @@
         "required": [
           "description",
           "version",
-          "content",
           "digest",
           "dependencies",
           "format"
@@ -2292,10 +2282,6 @@
             "title": "Version",
             "type": "string"
           },
-          "content": {
-            "title": "Content",
-            "type": "string"
-          },
           "digest": {
             "title": "Digest",
             "type": "string"
@@ -2340,7 +2326,6 @@
         "required": [
           "description",
           "version",
-          "content",
           "digest",
           "dependencies",
           "format"

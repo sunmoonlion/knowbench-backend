@@ -6,7 +6,13 @@ import zipfile
 import pytest
 
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.skill_package import SkillRead, resource_result, unpack_skill
+from app.domain.workbench.skill_package import (
+    SkillRead,
+    instruction_package,
+    resource_metadata,
+    resource_result,
+    unpack_skill,
+)
 
 SID = "11111111-1111-4111-8111-111111111111"
 
@@ -26,6 +32,13 @@ def archive(files=None):
     return base64.b64encode(output.getvalue()).decode()
 
 
+def read_resource(package, request):
+    file = resource_metadata(package["files"], request)
+    return resource_result(
+        package["version"], file, package["resources"][file["path"]], request
+    )
+
+
 def test_roundtrip_relative_references_and_character_pagination():
     data = unpack_skill(
         archive(
@@ -37,7 +50,7 @@ def test_roundtrip_relative_references_and_character_pagination():
         )
     )
     data["version"] = "v1"
-    result = resource_result(
+    result = read_resource(
         data,
         SkillRead(
             skill_id=SID,
@@ -92,14 +105,12 @@ def test_reference_escape_and_unknown_source_rejected():
     data = {**unpack_skill(archive()), "version": "1"}
     for path, source in [("../secret", "SKILL.md"), ("SKILL.md", "missing.md")]:
         with pytest.raises(CapabilityError):
-            resource_result(
-                data, SkillRead(skill_id=SID, path=path, relative_to=source)
-            )
+            read_resource(data, SkillRead(skill_id=SID, path=path, relative_to=source))
 
 
 def test_plain_instruction_uses_same_lazy_reader():
-    result = resource_result(
-        {"content": "on demand", "version": "1", "format": "instruction-markdown"},
+    result = read_resource(
+        {**instruction_package("on demand"), "version": "1"},
         SkillRead(skill_id=SID, path="SKILL.md"),
     )
     assert result["text"] == "on demand"
@@ -109,3 +120,21 @@ def test_plain_instruction_uses_same_lazy_reader():
 def test_invalid_archive(encoded):
     with pytest.raises(CapabilityError):
         unpack_skill(encoded)
+
+
+def test_image_bytes_round_trip_and_opaque_binary_only_returns_metadata():
+    image = b"\x89PNG\r\n\x1a\n\xff"
+    binary = b"\x00\xff"
+    package = {
+        **unpack_skill(
+            archive({"SKILL.md": "entry", "img.png": image, "raw.bin": binary})
+        ),
+        "version": "1",
+    }
+    png = read_resource(package, SkillRead(skill_id=SID, path="img.png"))
+    assert png["media_type"] == "image/png"
+    assert base64.b64decode(png["image_base64"]) == image
+    raw = read_resource(package, SkillRead(skill_id=SID, path="raw.bin"))
+    assert raw["media_type"] == "application/octet-stream"
+    assert raw["size"] == len(binary) and "message" in raw
+    assert {"text", "image_base64"}.isdisjoint(raw)

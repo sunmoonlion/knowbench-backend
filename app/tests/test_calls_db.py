@@ -148,6 +148,8 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
                 direct_migration = migration("20261115_0044_direct_method_grants.py")
                 formal_migration = migration("20261114_0043_formal_methods.py")
                 authorization_migration = migration("20261114_0042_authorizations.py")
+                skill_migration = migration("20261119_0046_skill_files.py")
+                skill_migration.downgrade()
                 execution_migration.downgrade()
                 direct_migration.downgrade()
                 formal_migration.downgrade()
@@ -171,6 +173,7 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
                 formal_migration.upgrade()
                 direct_migration.upgrade()
                 execution_migration.upgrade()
+                skill_migration.upgrade()
                 assert (
                     sync.execute(
                         text("SELECT to_regclass('workbench_capability_calls')")
@@ -395,3 +398,96 @@ async def test_call_migration_refuses_lossy_downgrade_and_preserves_history(db):
             await s.scalar(text("SELECT to_regclass('workbench_capability_calls')"))
             is None
         )
+
+
+async def test_skill_file_migration_reconciles_old_rows_and_aborts_on_corruption(db):
+    import base64
+    import hashlib
+    import json
+
+    module = migration("20261119_0046_skill_files.py")
+    body = "中文 instructions\n"
+    binary = bytes(range(256))
+    data = {"SKILL.md": body.encode(), "assets/raw.bin": binary}
+    files = [
+        {
+            "path": path,
+            "size": len(raw),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+            "media_type": "application/octet-stream"
+            if path.endswith(".bin")
+            else "text/plain",
+        }
+        for path, raw in data.items()
+    ]
+    old = {"content": body, "description": "legacy", "version": "1", "dependencies": []}
+    plain = {**old, "format": "instruction-markdown", "digest": "plain-original"}
+    package = {
+        **old,
+        "format": "skill-package-zip",
+        "digest": "archive-original",
+        "files": files,
+        "resources": {k: base64.b64encode(v).decode() for k, v in data.items()},
+    }
+    async with db() as session:
+        conn = await session.connection()
+
+        def cycle(sync):
+            with Operations.context(MigrationContext.configure(sync)):
+                module.downgrade()
+                for num, detail in enumerate([plain, package]):
+                    sync.execute(
+                        text("""INSERT INTO workbench_capability_assets
+                        (id,owner_actor_id,kind,name,status,revision,detail,request_id,request_digest)
+                        VALUES (gen_random_uuid(),:owner,'skill',:name,'disabled',3,
+                                cast(:detail as jsonb),:name,:name)"""),
+                        {
+                            "owner": OWNER,
+                            "name": str(num),
+                            "detail": json.dumps(detail),
+                        },
+                    )
+                get_assets = text(
+                    "SELECT * FROM workbench_capability_assets ORDER BY name"
+                )
+                before = sync.execute(get_assets).mappings().all()
+                module.upgrade()
+                after = sync.execute(get_assets).mappings().all()
+                for a, b in zip(before, after, strict=True):
+                    assert {**b, "detail": a["detail"]} == a
+                    assert b["detail"]["digest"] == a["detail"]["digest"]
+                    assert {"content", "resources"}.isdisjoint(b["detail"])
+                saved = sync.execute(
+                    text("""SELECT a.name, f.path, f.data FROM workbench_skill_files f
+                            JOIN workbench_capability_assets a ON a.id=f.asset_id""")
+                ).all()
+                assert {(name, path): bytes(buf) for name, path, buf in saved} == {
+                    ("0", "SKILL.md"): body.encode(),
+                    **{("1", k): v for k, v in data.items()},
+                }
+                with pytest.raises(DBAPIError, match="immutable"), sync.begin_nested():
+                    sync.execute(
+                        text(
+                            "UPDATE workbench_skill_files SET data='' WHERE path='SKILL.md'"
+                        )
+                    )
+                module.downgrade()
+                assert sync.execute(get_assets).mappings().all() == before
+                sync.execute(
+                    text("""UPDATE workbench_capability_assets
+                    SET detail=jsonb_set(detail,'{files,1,sha256}','"bad"') WHERE name='1'""")
+                )
+                with (
+                    pytest.raises(DBAPIError, match="reconciliation failed"),
+                    sync.begin_nested(),
+                ):
+                    module.upgrade()
+                assert (
+                    sync.execute(
+                        text("SELECT to_regclass('workbench_skill_files')")
+                    ).scalar()
+                    is None
+                )
+                assert sync.execute(get_assets).mappings().first() == before[0]
+
+        await conn.run_sync(cycle)

@@ -51,7 +51,6 @@ class SkillDetail(Strict):
     source: SkillSource | None = None
     description: str
     version: str
-    content: str
     digest: str
     dependencies: list[str]
     tool_requirements: list[McpRequirement] = Field(default_factory=list)

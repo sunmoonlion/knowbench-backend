@@ -42,15 +42,18 @@ def token(prepared):
     ].split()[1]
 
 
-async def test_auto_discovery_late_install_lazy_reads_and_owner_isolation(db):
+async def test_auto_discovery_late_install_lazy_reads_and_owner_isolation(
+    db, monkeypatch
+):
     _, _, sid = await seed(db)
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo)
         assert (await svc.selection(OWNER, sid))["skill_mode"] == "auto"
-        first = await svc.create_skill(OWNER, package(), package=True)
+        request = package()
+        first = await svc.create_skill(OWNER, request, package=True)
         assert "resources" not in first["detail"] and len(first["detail"]["files"]) == 3
-        assert (await svc.create_skill(OWNER, package(), package=True))["id"] == first[
+        assert (await svc.create_skill(OWNER, request, package=True))["id"] == first[
             "id"
         ]
         other = await svc.create_skill(OTHER, package(), package=True)
@@ -63,6 +66,18 @@ async def test_auto_discovery_late_install_lazy_reads_and_owner_isolation(db):
             prepared["config"]["mcp_servers.sunmoon_capabilities"]["enabled_tools"]
         ) == {"skill_read", "skill_files"}
         auth = token(prepared)
+        reads = []
+        load_file = repo.skill_file
+
+        async def record(owner, asset_id, path):
+            reads.append((owner, asset_id, path))
+            return await load_file(owner, asset_id, path)
+
+        monkeypatch.setattr(repo, "skill_file", record)
+        listed = await read_skill(
+            svc, sid, auth, {"skill_id": first["id"]}, listing=True
+        )
+        assert len(listed["files"]) == 3 and reads == []
         result = await read_skill(
             svc, sid, auth, {"skill_id": first["id"], "path": "references/guide.md"}
         )
@@ -71,6 +86,7 @@ async def test_auto_discovery_late_install_lazy_reads_and_owner_isolation(db):
             await read_skill(
                 svc, sid, auth, {"skill_id": other["id"], "path": "SKILL.md"}
             )
+        assert reads == [(OWNER, first["id"], "references/guide.md")]
         late = await svc.create_skill(
             OWNER,
             SkillCreate(
@@ -159,7 +175,21 @@ async def test_http_package_import_and_lazy_mcp_read(db):
         )
         assert response.status_code == 201, response.text
         asset = response.json()
-        assert "resources" not in asset["detail"]
+        assert {"resources", "content"}.isdisjoint(asset["detail"])
+        catalog = await http.get("/api/workbench/capabilities")
+        assert catalog.is_success and "Read references/guide.md" not in catalog.text
+        instructions_url = (
+            f"/api/workbench/capabilities/skills/{asset['id']}/instructions"
+        )
+        preview = await http.get(instructions_url)
+        assert preview.json() == "Read references/guide.md"
+        assert "no-store" in preview.headers["Cache-Control"]
+        async with db() as session:
+            other = await service(WorkbenchRepository(session)).create_skill(
+                OTHER, package(), package=True
+            )
+        denied = await http.get(instructions_url.replace(asset["id"], other["id"]))
+        assert denied.status_code == 404
         async with db() as s:
             prepared = await service(WorkbenchRepository(s)).prepare(OWNER, sid)
         headers = {"Authorization": "Bearer " + token(prepared)}
@@ -433,3 +463,44 @@ async def test_delayed_runner_ack_cannot_bind_replacement_skill_scope(db):
             assert value["text"] == "REFERENCE_SENTINEL"
     finally:
         await fake.close()
+
+
+async def test_file_insert_failure_and_concurrent_retry_are_atomic(db):
+    import asyncio
+
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+
+    request = package()
+
+    async def install():
+        async with db() as session:
+            return await service(WorkbenchRepository(session)).create_skill(
+                OWNER, request, package=True
+            )
+
+    async with db() as session:
+        await session.execute(
+            text("""ALTER TABLE workbench_skill_files ADD CONSTRAINT injected
+            CHECK (path <> 'references/guide.md')""")
+        )
+        await session.commit()
+        with pytest.raises(IntegrityError, match="injected"):
+            await install()
+        assert (
+            await session.execute(
+                text("SELECT count(*) FROM workbench_capability_assets")
+            )
+        ).scalar_one() == 0
+        assert (
+            await session.execute(text("SELECT count(*) FROM workbench_skill_files"))
+        ).scalar_one() == 0
+        await session.execute(
+            text("ALTER TABLE workbench_skill_files DROP CONSTRAINT injected")
+        )
+        await session.commit()
+        # Retry the same package bytes and request id from two sessions.
+        a, b = await asyncio.gather(install(), install())
+        assert a == b
+        stored = await WorkbenchRepository(session).skill_package_files(OWNER, a["id"])
+        assert set(stored) == {f["path"] for f in a["detail"]["files"]}

@@ -1,5 +1,6 @@
 """Installed package entrypoints and public execution receipts."""
 
+import base64
 from copy import deepcopy
 from pathlib import PurePosixPath
 
@@ -26,7 +27,7 @@ def script_tool(asset: dict) -> dict | None:
     }
 
 
-def execution_input(asset: dict, arguments: dict) -> dict:
+def execution_input(asset: dict, arguments: dict, resources: dict[str, bytes]) -> dict:
     detail = asset["detail"]
     return {
         **ScriptArguments.model_validate(arguments).model_dump(),
@@ -34,7 +35,7 @@ def execution_input(asset: dict, arguments: dict) -> dict:
             {
                 "path": f["path"],
                 "sha256": f["sha256"],
-                "data_base64": detail["resources"][f["path"]],
+                "data_base64": base64.b64encode(resources[f["path"]]).decode("ascii"),
             }
             for f in detail["files"]
         ],

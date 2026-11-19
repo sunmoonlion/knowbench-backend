@@ -170,10 +170,6 @@ def public_asset(asset: dict) -> dict:
                 for t in asset["detail"].get("tools", [])
             ],
         }
-    if asset["kind"] == "skill":
-        public["detail"] = {
-            k: v for k, v in asset["detail"].items() if k != "resources"
-        }
     return public
 
 

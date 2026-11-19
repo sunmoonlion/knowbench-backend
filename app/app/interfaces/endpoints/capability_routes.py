@@ -253,6 +253,22 @@ async def install_skill(
         raise _http(exc) from exc
 
 
+@router.get(
+    "/workbench/capabilities/skills/{asset_id}/instructions", response_model=str
+)
+async def installed_instructions(
+    asset_id: UUID,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.installed_instructions(_actor(user), str(asset_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.post(
     "/workbench/capabilities/skills",
     status_code=201,

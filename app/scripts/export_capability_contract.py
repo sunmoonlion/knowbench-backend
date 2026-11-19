@@ -109,6 +109,7 @@ asset = {
     "created_at": now,
     "updated_at": now,
 }
+instructions = b"Draft and validate a notice before requesting delivery."
 skill = {
     "id": SK,
     "kind": "skill",
@@ -119,7 +120,14 @@ skill = {
     "detail": {
         "description": "Write a notice",
         "version": "1",
-        "content": "Draft and validate a notice before requesting delivery.",
+        "files": [
+            {
+                "path": "SKILL.md",
+                "size": len(instructions),
+                "sha256": hashlib.sha256(instructions).hexdigest(),
+                "media_type": "text/plain",
+            }
+        ],
         "digest": "b" * 64,
         "dependencies": [key],
         "format": "instruction-markdown",

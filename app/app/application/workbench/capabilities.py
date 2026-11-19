@@ -60,8 +60,9 @@ from app.domain.workbench.skill_installation import repository_packages
 from app.domain.workbench.skill_package import (
     SkillPackageCreate,
     SkillRead,
+    instruction_package,
+    resource_metadata,
     resource_result,
-    skill_files,
     unpack_skill,
 )
 from app.domain.workbench.states import (
@@ -160,6 +161,11 @@ class Capabilities:
     async def assets(self, owner):
         assets = await self.repo.capability_assets(owner)
         return [public_skill_asset(a, assets) for a in assets]
+
+    async def installed_instructions(self, owner, asset_id):
+        # The installer may inspect their own stored version, including a disabled one.
+        data = await self.repo.skill_file(owner, asset_id, "SKILL.md")
+        return data.decode("utf-8")
 
     async def _discover(self, owner, url, token):
         if self.task_outputs_url and url == self.task_outputs_url and not token:
@@ -265,12 +271,12 @@ class Capabilities:
         material = (
             unpack_skill(body.archive_base64)
             if package
-            else {
-                "content": body.content,
-                "digest": digest(body.content),
-                "format": "instruction-markdown",
-            }
+            else instruction_package(body.content)
         )
+        resources = material.pop("resources")
+        material.pop(
+            "content", None
+        )  # Package preview reads the decoded entry at import.
         asset = {
             "id": str(uuid.uuid4()),
             "owner_actor_id": owner,
@@ -299,7 +305,9 @@ class Capabilities:
                 **({"source": source} if source else {}),
             },
         }
-        return public_asset(await self.repo.capability_insert(asset))
+        return public_asset(
+            await self.repo.capability_insert(asset, resources=resources)
+        )
 
     async def renew(self, owner, asset_id, body):
         asset = await self.repo.capability_asset(owner, asset_id)
@@ -1359,7 +1367,7 @@ class Capabilities:
             ):
                 raise Forbidden("Skill changed or was disabled")
             if listing:
-                files = skill_files(asset["detail"])
+                files = asset["detail"]["files"]
                 end = min(request.offset + 50, len(files))
                 return {
                     "skill_id": asset["id"],
@@ -1367,7 +1375,9 @@ class Capabilities:
                     "files": files[request.offset : end],
                     "next_offset": end if end < len(files) else None,
                 }
-            result = resource_result(asset["detail"], request)
+            file = resource_metadata(asset["detail"]["files"], request)
+            data = await self.repo.skill_file(owner, asset["id"], file["path"])
+            result = resource_result(asset["detail"]["version"], file, data, request)
             if result["path"] == "SKILL.md" and request.offset == 0:
                 available = self.runtime_tools(runtime)
                 dependencies = skill_dependencies(
@@ -1872,6 +1882,15 @@ class Capabilities:
                     raise CapabilityError(
                         "Operation policy changed; request approval again"
                     )
+            script_input = None
+            if (
+                body.decision == "accept"
+                and intent.get("execution_kind") == "skill_script"
+            ):
+                resources = await self.repo.skill_package_files(owner, connection["id"])
+                script_input = execution_input(
+                    connection, intent["arguments"], resources
+                )
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
                 token=body.token,
@@ -1888,20 +1907,22 @@ class Capabilities:
             status = "dispatching" if body.decision == "accept" else "declined"
             await self.repo.update_call(owner, call_id, status, intent)
         if status == "dispatching":
-            return await self._dispatch_call(owner, call, connection, intent)
+            return await self._dispatch_call(
+                owner, call, connection, intent, script_input=script_input
+            )
         return public_call(await self.repo.capability_call(owner, call_id))
 
-    async def _dispatch_call(self, owner, call, connection, intent, knowbase_read=None):
+    async def _dispatch_call(
+        self, owner, call, connection, intent, knowbase_read=None, *, script_input=None
+    ):
         """One adapter path; callers must have committed exact approved dispatch."""
         call_id = call["id"]
         # Receipt is committed before outbound I/O. No automatic retry after a crash.
         try:
             if intent.get("execution_kind") == "skill_script":
-                if self.script_executor is None:
+                if self.script_executor is None or script_input is None:
                     raise CapabilityError("Script execution is unavailable")
-                await self.script_executor.start(
-                    owner, call_id, execution_input(connection, intent["arguments"])
-                )
+                await self.script_executor.start(owner, call_id, script_input)
                 # The runner reconciles the asynchronous Job into this same call.
                 return public_call(await self.repo.capability_call(owner, call_id))
             else:

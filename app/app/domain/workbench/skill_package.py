@@ -13,7 +13,7 @@ import zlib
 
 from pydantic import Field
 
-from app.domain.workbench.capabilities import CapabilityError, Strict
+from app.domain.workbench.capabilities import CapabilityError, Strict, digest
 from app.domain.workbench.method_capabilities import McpRequirement
 
 MAX_ARCHIVE = 2 * 1024 * 1024
@@ -121,7 +121,7 @@ def unpack_skill(encoded: str) -> dict:
                     media = "image/png"
                 elif data.startswith(b"\xff\xd8\xff"):
                     media = "image/jpeg"
-                resources[path] = base64.b64encode(data).decode("ascii")
+                resources[path] = data
                 files.append(
                     {
                         "path": path,
@@ -143,7 +143,7 @@ def unpack_skill(encoded: str) -> dict:
     if "SKILL.md" not in resources:
         raise CapabilityError("Skill ZIP must contain SKILL.md at its root")
     try:
-        content = base64.b64decode(resources["SKILL.md"]).decode("utf-8")
+        content = resources["SKILL.md"].decode("utf-8")
     except UnicodeDecodeError as exc:
         raise CapabilityError("SKILL.md must be UTF-8") from exc
     if not content.strip() or "\x00" in content or len(content.encode()) > 65536:
@@ -157,11 +157,9 @@ def unpack_skill(encoded: str) -> dict:
     }
 
 
-def skill_files(detail: dict) -> list[dict]:
-    if detail.get("format") == "skill-package-zip":
-        return detail["files"]
-    data = detail["content"].encode("utf-8")
-    return [
+def instruction_package(content: str) -> dict:
+    data = content.encode("utf-8")
+    files = [
         {
             "path": "SKILL.md",
             "size": len(data),
@@ -170,26 +168,34 @@ def skill_files(detail: dict) -> list[dict]:
         }
     ]
 
-
-def resource_result(detail: dict, request: SkillRead) -> dict:
-    resources = detail.get("resources") or {
-        "SKILL.md": base64.b64encode(detail["content"].encode("utf-8")).decode("ascii")
+    return {
+        "digest": digest(content),
+        "format": "instruction-markdown",
+        "files": files,
+        "resources": {"SKILL.md": data},
     }
-    if request.relative_to not in resources:
+
+
+def resource_metadata(files: list[dict], request: SkillRead) -> dict:
+    by_path = {f["path"]: f for f in files}
+    if request.relative_to not in by_path:
         raise CapabilityError("Unknown Skill reference source")
     path = resolve_path(request.path, request.relative_to)
-    if path not in resources:
+    if path not in by_path:
         raise CapabilityError("Skill resource not found")
-    meta = next(f for f in skill_files(detail) if f["path"] == path)
-    result = {"skill_id": request.skill_id, "version": detail["version"], **meta}
+    return by_path[path]
+
+
+def resource_result(version: str, meta: dict, data: bytes, request: SkillRead) -> dict:
+    result = {"skill_id": request.skill_id, "version": version, **meta}
     if meta["media_type"].startswith("image/"):
-        return {**result, "image_base64": resources[path]}
+        return {**result, "image_base64": base64.b64encode(data).decode("ascii")}
     if meta["media_type"] != "text/plain":
         return {
             **result,
             "message": "Binary resource preserved; this reader supports text and PNG/JPEG images only.",
         }
-    text = base64.b64decode(resources[path]).decode("utf-8")
+    text = data.decode("utf-8")
     end = min(request.offset + request.limit, len(text))
     return {
         **result,

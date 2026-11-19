@@ -57,8 +57,8 @@ class CapabilityRepositoryMixin:
             await self.session.execute(
                 text(
                     "SELECT id,owner_actor_id,kind,name,revision,status,default_selected,"
-                    "detail - 'resources' AS detail,secret,request_id,request_digest,created_at,updated_at "
-                    "FROM workbench_capability_assets WHERE owner_actor_id=:o ORDER BY id"
+                    "detail,created_at,updated_at FROM workbench_capability_assets "
+                    "WHERE owner_actor_id=:o ORDER BY id"
                     + (" FOR UPDATE" if lock else "")
                 ),
                 {"o": owner},
@@ -80,7 +80,33 @@ class CapabilityRepositoryMixin:
             raise NotFound("capability not found")
         return row(r)
 
-    async def capability_insert(self, asset):
+    async def skill_file(self, owner, asset_id, path):
+        data = (
+            await self.session.execute(
+                text("""
+            SELECT f.data FROM workbench_skill_files f
+            JOIN workbench_capability_assets a ON a.id=f.asset_id
+            WHERE a.owner_actor_id=:owner AND a.kind='skill' AND f.asset_id=:id AND f.path=:path
+        """),
+                {"owner": owner, "id": asset_id, "path": path},
+            )
+        ).scalar_one_or_none()
+        if data is None:
+            raise NotFound("Skill file not found")
+        return bytes(data)
+
+    async def skill_package_files(self, owner, asset_id):
+        rows = await self.session.execute(
+            text("""
+            SELECT f.path,f.data FROM workbench_skill_files f
+            JOIN workbench_capability_assets a ON a.id=f.asset_id
+            WHERE a.owner_actor_id=:owner AND a.kind='skill' AND f.asset_id=:id
+        """),
+            {"owner": owner, "id": asset_id},
+        )
+        return {path: bytes(data) for path, data in rows}
+
+    async def capability_insert(self, asset, *, resources=None):
         async with self.transaction():
             result = (
                 (
@@ -96,6 +122,17 @@ class CapabilityRepositoryMixin:
                 .first()
             )
             if result:
+                if resources:
+                    await self.session.execute(
+                        text("""
+                        INSERT INTO workbench_skill_files(asset_id,path,data)
+                        VALUES (:id,:path,:data)
+                    """),
+                        [
+                            {"id": asset["id"], "path": path, "data": data}
+                            for path, data in resources.items()
+                        ],
+                    )
                 return row(result)
             existing = (
                 (
