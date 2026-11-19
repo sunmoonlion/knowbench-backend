@@ -69,9 +69,18 @@ async def db():
         yield factory
     finally:
         await engine.dispose()
-        with sync.begin() as connection:
-            connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        sync.dispose()
+
+        def drop_schema():
+            with sync.begin() as connection:
+                connection.execute(text("SET LOCAL lock_timeout = '20s'"))
+                connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+
+        # An async session returning its connection must be able to finish while
+        # PostgreSQL waits for the schema lock during test teardown.
+        try:
+            await asyncio.to_thread(drop_schema)
+        finally:
+            sync.dispose()
 
 
 OWNER = str(uuid.uuid4())

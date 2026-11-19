@@ -124,3 +124,42 @@ async def test_unreviewed_endpoint_is_never_resolved(monkeypatch):
     with pytest.raises(CapabilityError):
         await mcp.RemoteMcp().discover("https://tools.example/mcp", None)
     resolve.assert_not_called()
+
+
+async def test_unauthorized_dispatch_is_unknown_and_requires_new_credentials(
+    monkeypatch,
+):
+    from app.domain.workbench.capabilities import CapabilityAuthOutcomeUnknown
+
+    calls = []
+
+    def handler(req):
+        rpc = json.loads(req.content)
+        calls.append(rpc["method"])
+        if rpc["method"] == "notifications/initialized":
+            return httpx.Response(204)
+        if rpc["method"] == "tools/call":
+            return httpx.Response(401)
+        return httpx.Response(
+            200,
+            json={
+                "jsonrpc": "2.0",
+                "id": rpc["id"],
+                "result": {"protocolVersion": "2025-06-18"},
+            },
+        )
+
+    factory = httpx.AsyncClient
+    monkeypatch.setattr(
+        mcp, "public_address", AsyncMock(return_value=("192.0.2.1", "tools.example"))
+    )
+    monkeypatch.setattr(
+        mcp.httpx,
+        "AsyncClient",
+        lambda **kwargs: factory(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises(CapabilityAuthOutcomeUnknown):
+        await mcp.RemoteMcp(("https://tools.example/mcp",)).call(
+            "https://tools.example/mcp", "test", "send", {}
+        )
+    assert calls.count("tools/call") == 1

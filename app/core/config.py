@@ -19,6 +19,7 @@ from pydantic import (
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.cross_app import Source, Target, parse_sources, parse_targets
+from app.domain.workbench.connection_oauth import OAuthProvider
 from app.domain.workbench.pricing import DEFAULT_PRICES_JSON, PriceList, parse_prices
 from app.domain.workbench.resource_delegation import (
     ResourceDelegation,
@@ -357,6 +358,12 @@ class Settings(BaseSettings):
     )
 
     # 受管外部 MCP：审核目录与沙箱可达的限定会话网关。
+    workbench_connection_keys: tuple[SecretStr, ...] = Field(
+        default=(), validation_alias="WORKBENCH_CONNECTION_KEYS"
+    )
+    workbench_connection_oauth_providers: tuple[OAuthProvider, ...] = Field(
+        default=(), max_length=64
+    )
     workbench_capability_mcp_urls: list[str] = Field(
         default_factory=list,
         description="Reviewed HTTPS MCP service URLs; no arbitrary server-side endpoints",
@@ -500,8 +507,14 @@ class Settings(BaseSettings):
         OperationCatalog(self.workbench_capability_operations)
         SourceLicenseCatalog(self.workbench_source_licenses)
         ResourceDelegationCatalog(self.workbench_resource_delegations)
+        providers = self.workbench_connection_oauth_providers
+        urls = {p.service_url for p in providers}
+        if len(urls) != len(providers) or len(
+            {p.provider_id for p in providers}
+        ) != len(providers):
+            raise ValueError("Duplicate OAuth provider identity or resource")
         if any(
-            operation.service_url not in self.workbench_capability_mcp_urls
+            operation.service_url not in set(self.workbench_capability_mcp_urls) | urls
             for operation in self.workbench_capability_operations
         ):
             raise ValueError("Operation endpoint is not in the reviewed MCP URL list")

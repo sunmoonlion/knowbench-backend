@@ -597,6 +597,7 @@
             "on_unavailable": "pause"
           }
         ],
+        "connection_preview": null,
         "uncovered": [
           {
             "scenario": "Supplier business effectiveness",
@@ -665,6 +666,7 @@
             "on_unavailable": "pause"
           }
         ],
+        "connection_preview": null,
         "uncovered": [
           {
             "scenario": "Supplier business effectiveness",

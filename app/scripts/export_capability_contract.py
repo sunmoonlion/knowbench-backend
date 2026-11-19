@@ -29,6 +29,7 @@ from app.domain.workbench.capability_contract import (  # noqa: E402
     Catalog,
     Selection,
 )
+from app.domain.workbench.connection_oauth import OAuthStart  # noqa: E402
 from app.domain.workbench.formal_method_calls import (  # noqa: E402
     FormalMethodCallRequest,
     FormalMethodCatalogResponse,
@@ -47,6 +48,7 @@ from app.domain.workbench.skill_package import SkillPackageCreate  # noqa: E402
 
 models = (
     ConnectionCreate,
+    OAuthStart,
     ConnectionRenew,
     SkillCreate,
     SkillPackageCreate,

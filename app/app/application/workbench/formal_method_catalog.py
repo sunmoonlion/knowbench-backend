@@ -41,6 +41,76 @@ from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
 
 
+def _version_key(reference):
+    return (reference.method_id, reference.version, reference.digest)
+
+
+def connection_preview(reference, definitions):
+    """Project connection needs from exact candidate versions without binding an account."""
+    memo = {}
+    remaining = 1000
+
+    def visit(key, ancestors):
+        if key in ancestors or len(ancestors) > 16 or key not in definitions:
+            return set(), set(), False
+        if key in memo:
+            return memo[key]
+        nonlocal remaining
+        if remaining <= 0:
+            return set(), set(), False
+        remaining -= 1
+        definition = definitions[key]
+        requirements = {
+            r.requirement_id: (r.data_transfer.destination, r.capability_ref, r.version)
+            for r in definition.access_requirements
+        }
+        procedure = definition.procedure
+        if procedure.kind != "orchestration":
+            services = set(requirements.values())
+            memo[key] = {url for url, _, _ in services}, services, True
+            return memo[key]
+        required = set()
+        possible = set()
+        complete = True
+        for step in procedure.steps:
+            inputs = {
+                requirements[i.binding.requirement_id]
+                for i in step.inputs.values()
+                if i.binding.source == "resource"
+            }
+            possible.update(inputs)
+            if step.always_required:
+                required.update(url for url, _, _ in inputs)
+            choices = []
+            for candidate in step.candidates:
+                certain, available, resolved = visit(
+                    _version_key(candidate), ancestors | {key}
+                )
+                choices.append(certain)
+                possible.update(available)
+                complete = complete and resolved
+            if step.always_required and choices:
+                required.update(set.intersection(*choices))
+        result = required, possible, complete
+        if complete:
+            memo[key] = result
+        return result
+
+    needed, possible, complete = visit(_version_key(reference), set())
+    return {
+        "complete": complete,
+        "services": [
+            {
+                "url": url,
+                "capability_ref": capability,
+                "version": version,
+                "required": url in needed,
+            }
+            for url, capability, version in sorted(possible)
+        ],
+    }
+
+
 @dataclass(frozen=True)
 class ResolvedOwnedMethod:
     frozen: FrozenFormalMethod
@@ -776,6 +846,7 @@ class FormalMethodCatalog:
         async with self.repo.transaction():
             rows = await self.repo.list_formal_methods(owner)
         items = []
+        documents = []
         for row in rows:
             try:
                 frozen = FrozenFormalMethod.model_validate(row["document"])
@@ -787,6 +858,11 @@ class FormalMethodCatalog:
                     owner
                 ):
                     continue
+            documents.append(frozen)
+        definitions = {
+            _version_key(doc.reference): doc.draft.definition for doc in documents
+        }
+        for frozen in documents:
             issue = None
             try:
                 await self.resolve_owned(owner, frozen.reference, caller=caller)
@@ -799,6 +875,9 @@ class FormalMethodCatalog:
                     "reference": frozen.reference.model_dump(mode="json"),
                     "title": definition.capability_declaration.title[:20000],
                     "purpose": definition.capability_declaration.purpose,
+                    "connection_preview": connection_preview(
+                        frozen.reference, definitions
+                    ),
                     "inputs": {
                         key: value["slot"]
                         for key, value in interfaces["inputs"].items()

@@ -28,6 +28,10 @@ def mcp_catalog(url: str, tools: list[dict]) -> ToolRegistry:
     return ToolRegistry(ToolRegistration.discover("mcp", url, tool) for tool in tools)
 
 
+def connection_source(asset):
+    return (asset["detail"].get("oauth") or {}).get("protocol", "mcp")
+
+
 def registered_call(asset: dict, spec: dict) -> ToolRegistration:
     """Resolve against the current account's asset, then compare the frozen definition."""
     if spec.get("execution_kind") == "skill_script":
@@ -41,13 +45,14 @@ def registered_call(asset: dict, spec: dict) -> ToolRegistration:
         if asset["kind"] != "connection":
             raise CapabilityError("Tool requires a connection")
         requested = ToolRegistration.discover(
-            "mcp", asset["detail"]["url"], spec["tool"]
+            connection_source(asset), asset["detail"]["url"], spec["tool"]
         )
         # Installation validates the full snapshot; a call only needs its selected
         # definition. Do not recompile every installed schema for every invocation.
-        catalog = mcp_catalog(
-            asset["detail"]["url"],
-            [t for t in asset["detail"]["tools"] if t["name"] == requested.name],
+        catalog = ToolRegistry(
+            ToolRegistration.discover(requested.source, requested.service, tool)
+            for tool in asset["detail"]["tools"]
+            if tool["name"] == requested.name
         )
         current = catalog.get(requested.tool_id)
     frozen = ToolRegistration.discover(current.source, current.service, spec["tool"])

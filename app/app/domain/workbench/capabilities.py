@@ -42,6 +42,10 @@ class CapabilityOutcomeUnknown(CapabilityError):
     code = "capability_outcome_unknown"
 
 
+class CapabilityAuthOutcomeUnknown(CapabilityOutcomeUnknown):
+    """The dispatched operation was rejected at the authentication boundary."""
+
+
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

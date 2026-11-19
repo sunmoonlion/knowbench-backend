@@ -442,19 +442,15 @@ def build_incubation_folders(
 
 
 def capability_service(repo):
-    from cryptography.fernet import Fernet
-
     from app.application.workbench.capabilities import Capabilities
     from app.infrastructure.workbench.capability_mcp import RemoteMcp
+    from app.infrastructure.workbench.connection_keys import connection_keys
+    from app.infrastructure.workbench.connection_oauth import OAuthTransport
     from app.infrastructure.workbench.skill_executor import SkillExecutor
     from app.infrastructure.workbench.skill_sources import GitHubSkills
 
     settings = get_settings()
-    cipher = (
-        Fernet(settings.workbench_credential_key.encode())
-        if settings.workbench_credential_key
-        else None
-    )
+    cipher = connection_keys(settings)
     reader = None
     read_urls = {
         op.service_url
@@ -482,8 +478,24 @@ def capability_service(repo):
     records_endpoint = settings.web_frontend_base_url.rstrip("/") + "/api/mcp/workbench"
     return Capabilities(
         repo,
-        RemoteMcp(tuple(settings.workbench_capability_mcp_urls)),
+        RemoteMcp(
+            tuple(
+                dict.fromkeys(
+                    [
+                        *settings.workbench_capability_mcp_urls,
+                        *(
+                            p.service_url
+                            for p in settings.workbench_connection_oauth_providers
+                            if p.protocol == "mcp"
+                        ),
+                    ]
+                )
+            )
+        ),
         cipher,
+        oauth_providers=settings.workbench_connection_oauth_providers,
+        oauth_transport=OAuthTransport(),
+        web_origin=settings.web_frontend_base_url,
         runtime_url=settings.workbench_capability_mcp_url,
         knowbase_reader=reader,
         task_outputs_url=(

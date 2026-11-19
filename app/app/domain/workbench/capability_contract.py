@@ -31,10 +31,20 @@ class RegisteredTool(Tool):
     key: str
 
 
+class OAuthAccount(Strict):
+    provider_id: str
+    protocol: Literal["mcp", "a2a"]
+    issuer: str
+    account_id: str
+    scopes: list[str]
+
+
 class ConnectionDetail(Strict):
     url: str
     account_label: str
-    auth: Literal["none", "bearer"]
+    auth: Literal["none", "bearer", "oauth"]
+    oauth: OAuthAccount | None = None
+    reauth_reason: str | None = None
     tools: list[RegisteredTool]
     checked_at: str
     revocation: str | None = None
@@ -64,7 +74,7 @@ class Asset(Strict):
     kind: Literal["connection", "skill"]
     name: str
     revision: int
-    status: Literal["active", "disabled", "disconnected"]
+    status: Literal["active", "disabled", "disconnected", "reauth_required"]
     default_selected: bool
     detail: ConnectionDetail | SkillDetail
     created_at: datetime
@@ -74,6 +84,8 @@ class Asset(Strict):
 class Service(Strict):
     url: str
     authentication: list[str]
+    provider_id: str | None = None
+    protocol: Literal["mcp", "a2a"] | None = None
 
 
 class Catalog(Strict):

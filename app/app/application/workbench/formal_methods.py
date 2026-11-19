@@ -91,6 +91,8 @@ class FormalMethods:
             "license_basis": "pending",
         }
         if asset["kind"] == "connection":
+            if (detail.get("oauth") or {}).get("protocol") == "a2a":
+                return []
             result = []
             for tool in detail.get("tools", []):
                 registered = ToolRegistration.discover("mcp", detail["url"], tool)

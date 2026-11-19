@@ -13,7 +13,12 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import (
+    JSONResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,6 +52,7 @@ from app.domain.workbench.capability_contract import (
     Catalog,
     Selection,
 )
+from app.domain.workbench.connection_oauth import OAuthStart
 from app.domain.workbench.errors import Forbidden, TestManagedInKnowlab, WorkbenchError
 from app.domain.workbench.formal_method_calls import (
     FormalMethodCallRequest,
@@ -192,7 +198,18 @@ async def list_capabilities(
         "services": [
             {"url": url, "authentication": ["none", "bearer"]}
             for url in svc.remote.allowed_urls
-            if not svc.knowbase_reader or url != svc.knowbase_reader.url
+            if url not in svc.oauth.urls
+            and (not svc.knowbase_reader or url != svc.knowbase_reader.url)
+        ]
+        + [
+            {
+                "url": p.service_url,
+                "authentication": ["oauth"],
+                "provider_id": p.provider_id,
+                "protocol": p.protocol,
+            }
+            for p in svc.oauth.providers.values()
+            if svc.cipher is not None
         ]
         + (
             [{"url": svc.knowbase_reader.url, "authentication": ["none"]}]
@@ -203,6 +220,51 @@ async def list_capabilities(
         "runtime_enabled": bool(svc.runtime_url),
         "script_execution_enabled": svc.script_executor is not None,
     }
+
+
+@router.post("/workbench/capabilities/oauth/start")
+async def start_connection_oauth(
+    body: OAuthStart,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    try:
+        result = await svc.oauth.start(_actor(user), body)
+        return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/workbench/capabilities/oauth/{provider_id}/callback")
+async def finish_connection_oauth(
+    provider_id: str,
+    request: Request,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    params = request.query_params
+    if (
+        any(len(params.getlist(k)) > 1 for k in ("state", "iss", "code", "error"))
+        or not 1 <= len(params.get("state", "")) <= 128
+        or len(params.get("code", "")) > 4096
+    ):
+        raise _http(WorkbenchError("Invalid authorization response"))
+    try:
+        location = await svc.oauth.finish(
+            _actor(user),
+            provider_id,
+            params["state"],
+            params.get("iss"),
+            params.get("code"),
+            "error" in params,
+        )
+        return RedirectResponse(
+            location,
+            status_code=303,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.post(

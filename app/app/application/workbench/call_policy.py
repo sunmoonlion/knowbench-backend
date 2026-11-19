@@ -37,7 +37,7 @@ def authorize_operation(
     dispatch; they are not authorized by a remote readOnlyHint annotation.
     """
     registration.validate_arguments(arguments)
-    if registration.source == "mcp":
+    if registration.source in ("mcp", "a2a"):
         if operations is None:
             raise CapabilityError("External operation policy is unavailable")
         policy = operations.require(registration)

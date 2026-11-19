@@ -154,7 +154,7 @@ class OperationCatalog:
             self._operations[key] = operation
 
     def require(self, tool: ToolRegistration) -> McpOperation:
-        if tool.source != "mcp":
+        if tool.source not in ("mcp", "a2a"):
             raise CapabilityError(
                 "Tool has no matching reviewed operation; contact the administrator"
             )

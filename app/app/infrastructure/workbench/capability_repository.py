@@ -37,6 +37,43 @@ class CapabilityRepositoryMixin:
     transaction: Callable[[], AbstractAsyncContextManager[Any]]
     get_session: Callable[..., Awaitable[dict[str, Any]]]
 
+    async def start_connection_oauth(
+        self, owner, provider, state, verifier, context, expires
+    ):
+        await self.session.execute(
+            text("DELETE FROM workbench_connection_oauth WHERE expires_at <= now()")
+        )
+        await self.session.execute(
+            text("""INSERT INTO workbench_connection_oauth
+            (state_hash,owner_actor_id,provider_id,verifier,context,expires_at)
+            VALUES(:state,:owner,:provider,:verifier,cast(:context as jsonb),:expires)"""),
+            {
+                "state": state,
+                "owner": owner,
+                "provider": provider,
+                "verifier": verifier,
+                "context": json.dumps(context),
+                "expires": expires,
+            },
+        )
+
+    async def consume_connection_oauth(self, owner, provider, state):
+        result = await self.session.execute(
+            text("""DELETE FROM workbench_connection_oauth
+            WHERE state_hash=:state AND owner_actor_id=:owner AND provider_id=:provider AND expires_at>now()
+            RETURNING verifier, context"""),
+            {"state": state, "owner": owner, "provider": provider},
+        )
+        return result.mappings().first()
+
+    async def rotate_connection_secret(self, owner, asset_id, revision, secret):
+        # Caller holds the current asset lock. Rotation preserves its authorization revision.
+        await self.session.execute(
+            text("""UPDATE workbench_capability_assets SET secret=:secret,updated_at=now()
+            WHERE id=:id AND owner_actor_id=:owner AND revision=:revision AND status='active'"""),
+            {"secret": secret, "id": asset_id, "owner": owner, "revision": revision},
+        )
+
     async def capability_context_exists(self, owner, session_id):
         # Metadata-only fast path. Prior runtime state must still be reconciled,
         # even after all assets have been disabled or removed.
@@ -158,7 +195,7 @@ class CapabilityRepositoryMixin:
             (
                 await self.session.execute(
                     text("""UPDATE workbench_capability_assets
-          SET revision=revision+1,status=:status,default_selected=CASE WHEN :status='disconnected' THEN false ELSE default_selected END,detail=cast(:detail as jsonb),secret=:secret,updated_at=now()
+          SET revision=revision+1,status=:status,default_selected=CASE WHEN :status IN ('disconnected','reauth_required') THEN false ELSE default_selected END,detail=cast(:detail as jsonb),secret=:secret,updated_at=now()
           WHERE id=:id AND owner_actor_id=:o AND revision=:revision RETURNING *"""),
                     dict(
                         id=asset_id,

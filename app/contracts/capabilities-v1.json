@@ -50,6 +50,79 @@
     "title": "ConnectionCreate",
     "type": "object"
   },
+  "OAuthStart": {
+    "additionalProperties": false,
+    "properties": {
+      "provider_id": {
+        "maxLength": 64,
+        "minLength": 1,
+        "title": "Provider Id",
+        "type": "string"
+      },
+      "name": {
+        "maxLength": 100,
+        "minLength": 1,
+        "pattern": "\\S",
+        "title": "Name",
+        "type": "string"
+      },
+      "locale": {
+        "default": "zh-CN",
+        "enum": [
+          "zh-CN",
+          "en"
+        ],
+        "title": "Locale",
+        "type": "string"
+      },
+      "return_to": {
+        "anyOf": [
+          {
+            "maxLength": 500,
+            "pattern": "^/(zh-CN|en)/workbench/(chat/[a-zA-Z0-9-]+|projects/[a-zA-Z0-9-]+/c/[a-zA-Z0-9-]+)$",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Return To"
+      },
+      "connection_id": {
+        "anyOf": [
+          {
+            "format": "uuid",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Connection Id"
+      },
+      "revision": {
+        "anyOf": [
+          {
+            "minimum": 1,
+            "type": "integer"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Revision"
+      }
+    },
+    "required": [
+      "provider_id",
+      "name"
+    ],
+    "title": "OAuthStart",
+    "type": "object"
+  },
   "ConnectionRenew": {
     "additionalProperties": false,
     "properties": {
@@ -647,10 +720,34 @@
           "auth": {
             "enum": [
               "none",
-              "bearer"
+              "bearer",
+              "oauth"
             ],
             "title": "Auth",
             "type": "string"
+          },
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OAuthAccount"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reauth_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reauth Reason"
           },
           "tools": {
             "items": {
@@ -741,6 +838,47 @@
           "name"
         ],
         "title": "McpRequirement",
+        "type": "object"
+      },
+      "OAuthAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "protocol": {
+            "enum": [
+              "mcp",
+              "a2a"
+            ],
+            "title": "Protocol",
+            "type": "string"
+          },
+          "issuer": {
+            "title": "Issuer",
+            "type": "string"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_id",
+          "protocol",
+          "issuer",
+          "account_id",
+          "scopes"
+        ],
+        "title": "OAuthAccount",
         "type": "object"
       },
       "RegisteredTool": {
@@ -986,7 +1124,8 @@
         "enum": [
           "active",
           "disabled",
-          "disconnected"
+          "disconnected",
+          "reauth_required"
         ],
         "title": "Status",
         "type": "string"
@@ -1061,7 +1200,8 @@
             "enum": [
               "active",
               "disabled",
-              "disconnected"
+              "disconnected",
+              "reauth_required"
             ],
             "title": "Status",
             "type": "string"
@@ -1120,10 +1260,34 @@
           "auth": {
             "enum": [
               "none",
-              "bearer"
+              "bearer",
+              "oauth"
             ],
             "title": "Auth",
             "type": "string"
+          },
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OAuthAccount"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reauth_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reauth Reason"
           },
           "tools": {
             "items": {
@@ -1216,6 +1380,47 @@
         "title": "McpRequirement",
         "type": "object"
       },
+      "OAuthAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "protocol": {
+            "enum": [
+              "mcp",
+              "a2a"
+            ],
+            "title": "Protocol",
+            "type": "string"
+          },
+          "issuer": {
+            "title": "Issuer",
+            "type": "string"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_id",
+          "protocol",
+          "issuer",
+          "account_id",
+          "scopes"
+        ],
+        "title": "OAuthAccount",
+        "type": "object"
+      },
       "RegisteredTool": {
         "additionalProperties": false,
         "properties": {
@@ -1259,6 +1464,34 @@
             },
             "title": "Authentication",
             "type": "array"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Provider Id"
+          },
+          "protocol": {
+            "anyOf": [
+              {
+                "enum": [
+                  "mcp",
+                  "a2a"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Protocol"
           }
         },
         "required": [
@@ -1594,7 +1827,8 @@
             "enum": [
               "active",
               "disabled",
-              "disconnected"
+              "disconnected",
+              "reauth_required"
             ],
             "title": "Status",
             "type": "string"
@@ -1704,10 +1938,34 @@
           "auth": {
             "enum": [
               "none",
-              "bearer"
+              "bearer",
+              "oauth"
             ],
             "title": "Auth",
             "type": "string"
+          },
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/OAuthAccount"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "reauth_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Reauth Reason"
           },
           "tools": {
             "items": {
@@ -2109,6 +2367,47 @@
           "requirement_id"
         ],
         "title": "MethodToolBinding",
+        "type": "object"
+      },
+      "OAuthAccount": {
+        "additionalProperties": false,
+        "properties": {
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "protocol": {
+            "enum": [
+              "mcp",
+              "a2a"
+            ],
+            "title": "Protocol",
+            "type": "string"
+          },
+          "issuer": {
+            "title": "Issuer",
+            "type": "string"
+          },
+          "account_id": {
+            "title": "Account Id",
+            "type": "string"
+          },
+          "scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Scopes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_id",
+          "protocol",
+          "issuer",
+          "account_id",
+          "scopes"
+        ],
+        "title": "OAuthAccount",
         "type": "object"
       },
       "RegisteredTool": {
@@ -3753,6 +4052,17 @@
             "title": "Access Requirements",
             "type": "array"
           },
+          "connection_preview": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectionPreview"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "uncovered": {
             "items": {
               "$ref": "#/$defs/UncoveredScenario"
@@ -3789,6 +4099,28 @@
           "issue"
         ],
         "title": "AvailableFormalMethod",
+        "type": "object"
+      },
+      "ConnectionPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "services": {
+            "items": {
+              "$ref": "#/$defs/PlannedConnection"
+            },
+            "title": "Services",
+            "type": "array"
+          }
+        },
+        "required": [
+          "complete",
+          "services"
+        ],
+        "title": "ConnectionPreview",
         "type": "object"
       },
       "DataTransfer": {
@@ -3850,6 +4182,35 @@
           "digest"
         ],
         "title": "MethodRef",
+        "type": "object"
+      },
+      "PlannedConnection": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "capability_ref": {
+            "title": "Capability Ref",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          },
+          "required": {
+            "title": "Required",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "url",
+          "capability_ref",
+          "version",
+          "required"
+        ],
+        "title": "PlannedConnection",
         "type": "object"
       },
       "ResourceScope": {

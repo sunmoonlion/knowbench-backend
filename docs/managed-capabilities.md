@@ -459,3 +459,24 @@ KnowMart 的作者申请、运营审核、买方获取和运行方交付均核�
 私有工具方法也可显式选取本人另一份已成功结束的正式孵化任务的步骤产物。受管目录的 `read_task_output` 接受 `task_id`、`name`、正整数 `version` 和 `output`，返回 `value` 及精确出处。来源须有已完成步骤、已验收版本和对应的输出声明。动作确认页还会显示结果返回宿主还是模型。宿主可以直接读取或经冻结专家逐层委派；模型从已观察到的直接工具试跑发起读取。清理掉的来源不能用于新读取。
 
 启用该受管来源需要打开 `WORKBENCH_RECORDS_MCP_ENABLED`，并将 `WEB_FRONTEND_BASE_URL` 的 HTTPS 同源地址加上 `/api/mcp/workbench` 登记到受信 MCP 地址及操作目录。操作名为 `read_task_output`，描述摘要按本版本平台工具描述计算，副作用为 `read`，资源角色 `task` 绑定参数 `task_id`。来源许可和零增量成本的核定沿用原有方法准入。本人以无令牌连接安装该来源，KnowBench 在本地核权并读取数据库。此配置专用于私有孵化候选。
+
+## C3 用户连接与 OAuth 候选（2026-11-20）
+
+KnowBench 在“设置 → 连接与工具”发起授权。回调取回当前登录用户的单次授权事务，校验 PKCE 和服务配置，通过受保护的账号接口读取稳定账号 ID。选择面板和动作审批显示服务返回的账号身份。同一服务可以保存多个连接。续授权必须匹配连接 ID、修订和原外部账号。切换账号应新增连接、重新选择并批准。方法目录按精确候选版本预览连接需求，所有可选路径都需要的服务标为必需，分支用到的服务标为条件需要。未能解析的候选提示下层展开后再核对。这个视图只读取声明。
+
+**接入条件。** 在供应商登记本环境的回调 `<WEB_FRONTEND_BASE_URL>/api/workbench/capabilities/oauth/<provider_id>/callback`。每个服务配置一个固定回调。生产使用 HTTPS。用 `WORKBENCH_CONNECTION_OAUTH_PROVIDERS` 配置 JSON 数组，元素字段如下。
+
+| 字段 | 所需内容 |
+| --- | --- |
+| `provider_id`、`protocol`、`service_url` | 本地唯一服务名、`mcp` 或 `a2a`、已审核的资源端点 |
+| `issuer`、`authorization_url`、`token_url`、`account_url`、可选 `revocation_url` | 固定 HTTPS 地址。账号端点与资源同源，并接受该资源的访问令牌。授权响应如果带 `iss`，须与登记的签发方一致 |
+| `client_id`、可选 `client_secret` | 已登记的客户端。密钥经部署环境注入。当前支持公开客户端及使用表单客户端密钥的服务 |
+| `scopes`、`tool_scopes` | 申请的最小 OAuth scope 和各工具所需 scope。工具还需通过 `WORKBENCH_CAPABILITY_OPERATIONS` 的操作描述摘要及资源策略核验 |
+| `account_field`、`label_field` | 受保护的账号接口返回的顶层字符串字段，默认分别为 `sub`、`name`。身份校验使用前者 |
+| `resource_indicator` | 默认向授权端和令牌端传递精确资源 URL。MCP 必须启用，A2A 按供应商支持配置 |
+
+授权码流程使用 PKCE S256。当前配置要求供应商返回 Bearer 令牌及正整数秒数 `expires_in`，可选轮换刷新令牌。MCP 通过原有调用网关执行。A2A 当前支持 JSON-RPC `GetTask`，登记工具名 `a2a_get_task`，只向调用方交付指定任务的 ID 和状态。每个服务、账号持有自己的凭据。第三方任务发送、消息订阅和常驻职责另有实现范围。[OAuth 安全最佳实践](https://www.rfc-editor.org/rfc/rfc9700.html)；[A2A 协议规范](https://a2a-protocol.org/latest/specification/)
+
+**到期与撤权。** 刷新前先在数据库提交唯一占用，再向服务商请求。成功后核对连接修订、稳定账号和 scope，一次普通刷新保留原修订。刷新结果不明、远端拒绝或账号变化时需要用户重新授权。断开先在本地禁止调用并清除活动凭据，再向服务商请求撤销。设置页显示撤销是否得到确认。已经进入远端的操作仍看原调用回执。
+
+**加密密钥轮换。** `WORKBENCH_CONNECTION_KEYS` 按写入主密钥、旧读取密钥的顺序接受 Fernet 密钥数组。未设置时沿用 `WORKBENCH_CREDENTIAL_KEY`。首次拆分时将现有密钥列入读取密钥，在所有 KnowBench 凭据写入进程切到新主密钥后，于后端 `app` 目录运行 `python -m scripts.rotate_connection_keys`。命令逐条验证并在同一事务中重加密连接凭据及有效的待回调事务，只输出数量。复跑应为零，再移除旧读取密钥。数据库备份还原后仍须核对备份时间之后的撤权记录，当前候选未提供自动恢复核对。

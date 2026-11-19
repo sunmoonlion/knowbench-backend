@@ -26,6 +26,7 @@ from app.domain.workbench.capability_contract import (
     Catalog,
     Selection,
 )
+from app.domain.workbench.connection_oauth import OAuthStart
 from app.domain.workbench.formal_method_calls import (
     FormalMethodCallRequest,
     FormalMethodCatalogResponse,
@@ -130,6 +131,7 @@ async def test_http_contract_authentication_approval_and_mcp_scope(db):
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = (
     ConnectionCreate,
+    OAuthStart,
     ConnectionRenew,
     SkillCreate,
     SkillPackageCreate,

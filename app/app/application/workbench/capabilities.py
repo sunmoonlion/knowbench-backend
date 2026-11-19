@@ -28,7 +28,11 @@ from app.application.workbench.method_capabilities import (
 )
 from app.application.workbench.task_output_reader import TOOL as TASK_OUTPUT_TOOL
 from app.application.workbench.tool_invocation import verify_tool_invocation
-from app.application.workbench.tool_registry import mcp_catalog, registered_call
+from app.application.workbench.tool_registry import (
+    connection_source,
+    mcp_catalog,
+    registered_call,
+)
 from app.domain.workbench.capabilities import (
     CapabilityError,
     CapabilityOutcomeUnknown,
@@ -91,6 +95,9 @@ class Capabilities:
         remote: McpPort,
         cipher: Any = None,
         *,
+        oauth_providers=(),
+        oauth_transport=None,
+        web_origin="",
         runtime_url: str = "",
         skill_source: Any = None,
         script_executor: Any = None,
@@ -107,7 +114,18 @@ class Capabilities:
             cipher,
             runtime_url,
         )
+        from app.application.workbench.connection_oauth import ConnectionOAuth
+
+        self.oauth = ConnectionOAuth(
+            repo, oauth_providers, oauth_transport, remote, cipher, web_origin
+        )
         self.task_outputs_url = task_outputs_url
+        internal_urls = {
+            task_outputs_url,
+            knowbase_reader.url if knowbase_reader else "",
+        }
+        if self.oauth.urls & internal_urls:
+            raise ValueError("An OAuth provider cannot claim an internal service URL")
         self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.script_executor = script_executor
@@ -126,7 +144,9 @@ class Capabilities:
 
     def operation(self, asset, tool):
         return self.operations.require(
-            ToolRegistration.discover("mcp", asset["detail"]["url"], tool)
+            ToolRegistration.discover(
+                connection_source(asset), asset["detail"]["url"], tool
+            )
         )
 
     def runtime_tools(self, runtime):
@@ -137,7 +157,7 @@ class Capabilities:
                 try:
                     policy = self.operations.require(
                         ToolRegistration.discover(
-                            "mcp",
+                            self.oauth.protocols.get(spec.get("service_url"), "mcp"),
                             spec.get("service_url", ""),
                             spec.get("implementation_tool", spec["tool"]),
                         )
@@ -156,6 +176,8 @@ class Capabilities:
         return available
 
     def secret(self, asset):
+        if asset["detail"].get("auth") == "oauth":
+            raise CapabilityError("OAuth credentials require a live connection binding")
         if not asset.get("secret"):
             return None
         if self.cipher is None:
@@ -172,6 +194,8 @@ class Capabilities:
         return data.decode("utf-8")
 
     async def _discover(self, owner, url, token):
+        if url in self.oauth.urls:
+            raise CapabilityError("This connection requires provider authorization")
         if self.task_outputs_url and url == self.task_outputs_url and not token:
             from app.application.workbench.task_output_reader import descriptor
 
@@ -315,8 +339,8 @@ class Capabilities:
 
     async def renew(self, owner, asset_id, body):
         asset = await self.repo.capability_asset(owner, asset_id)
-        if asset["kind"] != "connection":
-            raise CapabilityError("Only connections have credentials")
+        if asset["kind"] != "connection" or asset["detail"].get("auth") == "oauth":
+            raise CapabilityError("This connection requires its own authorization flow")
         if body.token and self.cipher is None:
             raise CapabilityError("Credential storage is unavailable")
         tools = await self._discover(owner, asset["detail"]["url"], body.token)
@@ -357,6 +381,8 @@ class Capabilities:
                     )
                 )
         asset = await self.repo.capability_asset(owner, asset_id)
+        if asset["detail"].get("auth") == "oauth":
+            return await self.oauth.action(owner, asset, body)
         detail = dict(asset["detail"])
         status, default, secret = (
             asset["status"],
@@ -1950,7 +1976,13 @@ class Capabilities:
                     result = await self.knowbase_reader.call(
                         subject, intent, knowbase_read
                     )
+                elif connection["detail"].get("auth") == "oauth":
+                    result = await self.oauth.call(owner, connection, intent)
                 else:
+                    if connection["detail"]["url"] in self.oauth.urls:
+                        raise CapabilityError(
+                            "This service requires a verified OAuth connection"
+                        )
                     result = await self.remote.call(
                         connection["detail"]["url"],
                         self.secret(connection),

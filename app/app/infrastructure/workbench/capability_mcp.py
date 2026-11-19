@@ -12,6 +12,7 @@ from urllib.parse import urlsplit
 import httpx
 
 from app.domain.workbench.capabilities import (
+    CapabilityAuthOutcomeUnknown,
     CapabilityError,
     CapabilityOutcomeUnknown,
     CapabilityReauthRequired,
@@ -103,6 +104,10 @@ class RemoteMcp:
                             raise CapabilityReauthRequired(
                                 "MCP authentication requires renewal"
                             )
+                        if response.status_code == 401 and method == "tools/call":
+                            raise CapabilityAuthOutcomeUnknown(
+                                "External authorization expired; check the operation outcome before retrying."
+                            )
                         if response.status_code not in (200, 202, 204):
                             raise CapabilityError("MCP service rejected the request")
                         session_id = response.headers.get("mcp-session-id")
@@ -172,6 +177,8 @@ class RemoteMcp:
                     raise CapabilityError(
                         "MCP connection unavailable before dispatch"
                     ) from exc
+                except CapabilityAuthOutcomeUnknown:
+                    raise
                 except CapabilityError as exc:
                     if method == "tools/call":
                         raise CapabilityOutcomeUnknown(

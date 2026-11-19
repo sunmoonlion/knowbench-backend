@@ -27,6 +27,18 @@ class FormalMethodCallRequest(Strict):
         return self
 
 
+class PlannedConnection(Strict):
+    url: str
+    capability_ref: str
+    version: str
+    required: bool
+
+
+class ConnectionPreview(Strict):
+    complete: bool
+    services: list[PlannedConnection]
+
+
 class AvailableFormalMethod(Strict):
     reference: MethodRef
     title: str = Field(min_length=1, max_length=20000)
@@ -34,6 +46,7 @@ class AvailableFormalMethod(Strict):
     inputs: dict[str, ValueSlot]
     outputs: dict[str, ValueSlot]
     access_requirements: tuple[AccessRequirement, ...]
+    connection_preview: ConnectionPreview | None = None
     uncovered: tuple[UncoveredScenario, ...]
     available: bool
     issue: str | None = Field(max_length=2000)

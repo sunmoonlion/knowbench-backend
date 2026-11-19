@@ -12,7 +12,7 @@ from referencing.exceptions import Unresolvable
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.tool_schema import schema_validator
 
-ToolSource = Literal["platform", "knowbase", "mcp", "skill_script"]
+ToolSource = Literal["platform", "knowbase", "mcp", "a2a", "skill_script"]
 
 
 @dataclass(frozen=True)

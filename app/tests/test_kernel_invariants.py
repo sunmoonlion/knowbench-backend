@@ -88,6 +88,7 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261115_0044_direct_method_grants.py",
         "20261115_0045_formal_execution_evidence.py",
         "20261119_0046_skill_files.py",
+        "20261120_0047_connection_oauth.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert sum("down_revision = None" in content for content in contents) == 1
