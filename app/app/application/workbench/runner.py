@@ -823,7 +823,13 @@ class SandboxLink:
                 w["future"].set_result(True)
 
     def _forget_turn(self, thread_id: str, turn_id: str) -> None:
-        self.turn_waiters.pop(turn_id, None)
+        waiter = self.turn_waiters.pop(turn_id, None)
+        if (
+            waiter
+            and (binding := waiter.get("attempt_bound")) is not None
+            and not binding.done()
+        ):
+            binding.set_result(False)
         if self.active_turns.get(thread_id) == turn_id:
             self.active_turns.pop(thread_id, None)
         self._end_turn_waits(thread_id)
@@ -935,6 +941,9 @@ class SandboxLink:
         waiter: dict[str, Any] = {
             "thread_id": thread_id,
             "future": asyncio.get_running_loop().create_future(),
+            "attempt_bound": asyncio.get_running_loop().create_future()
+            if expected_attempt
+            else None,
             "text": None,
             "reported": False,
             "error": None,
@@ -1030,6 +1039,7 @@ class SandboxLink:
                 ):  # Retain the actual turn/usage even if persistence failed.
                     log.exception("method turn binding failed thread=%s", thread_id)
                     bound = False
+                waiter["attempt_bound"].set_result(bound)
                 if not bound:
                     waiter["error"] = "execution changed before turn binding"
                     try:
@@ -1449,6 +1459,24 @@ class SandboxLink:
     ) -> None:
         client = self.client
         assert client is not None
+        # A native request can immediately follow turn/start on the socket.
+        # Opening its interaction changes RUNNING to WAITING, so it must follow
+        # the durable binding of this exact expert attempt.
+        thread_id = thread_id_of(params)
+        turn_id = params.get("turnId")
+        waiter = self.turn_waiters.get(turn_id) if isinstance(turn_id, str) else None
+        if waiter and (binding := waiter.get("attempt_bound")) is not None:
+            if (
+                thread_id is None
+                or waiter["thread_id"] != thread_id
+                or not await asyncio.shield(binding)
+                or self.client is not client
+                or self.active_turns.get(thread_id) != turn_id
+            ):
+                await client.respond_error(
+                    rid, -32600, "Expert turn is no longer active"
+                )
+                return
         if method == "mcpServer/elicitation/request":
             await self._on_elicitation(rid, params)
             return

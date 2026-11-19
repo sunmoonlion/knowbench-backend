@@ -1,5 +1,6 @@
 """A repeated command must not rotate an active turn's capability credentials."""
 
+import asyncio
 from contextlib import asynccontextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -201,3 +202,39 @@ async def test_finished_turn_interrupt_error_still_requires_idle_metadata(
     ]
     assert len(interrupts) == (0 if idle_before else 1)
     assert reads == (1 if idle_before else 2)
+
+
+@pytest.mark.parametrize(
+    "outcome", ["bound", "binding_failed", "turn_replaced", "aborted"]
+)
+async def test_native_input_cannot_open_until_its_own_attempt_is_bound(
+    outcome, monkeypatch
+):
+    link = SandboxLink(SimpleNamespace(), {"id": "sandbox"})
+    client = AsyncMock()
+    link.client = client
+    opened = AsyncMock()
+    monkeypatch.setattr(link, "_on_user_input", opened)
+    bound = asyncio.get_running_loop().create_future()
+    link.turn_waiters["turn"] = {"thread_id": "thread", "attempt_bound": bound}
+    link.active_turns["thread"] = "turn"
+    params = {"turnId": "turn", "threadId": "thread"}
+
+    request = asyncio.create_task(
+        link.on_server_request(1, "item/tool/requestUserInput", params)
+    )
+    await asyncio.sleep(0)  # Run the handler up to its first suspension.
+    opened.assert_not_awaited()
+    assert not request.done()
+    if outcome == "aborted":
+        link._forget_turn("thread", "turn")
+    else:
+        if outcome == "turn_replaced":
+            link.active_turns["thread"] = "next-turn"
+        bound.set_result(outcome != "binding_failed")
+    await asyncio.wait_for(request, 1)
+    if outcome == "bound":
+        opened.assert_awaited_once_with(1, params)
+    else:
+        opened.assert_not_awaited()
+        client.respond_error.assert_awaited_once()
