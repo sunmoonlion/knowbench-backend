@@ -86,7 +86,8 @@ class CapabilityRepositoryMixin:
                 text("""
             SELECT f.data FROM workbench_skill_files f
             JOIN workbench_capability_assets a ON a.id=f.asset_id
-            WHERE a.owner_actor_id=:owner AND a.kind='skill' AND f.asset_id=:id AND f.path=:path
+            WHERE a.owner_actor_id=:owner AND a.kind='skill' AND a.status <> 'disconnected'
+              AND f.asset_id=:id AND f.path=:path
         """),
                 {"owner": owner, "id": asset_id, "path": path},
             )

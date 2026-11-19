@@ -223,6 +223,15 @@ async def test_http_package_import_and_lazy_mcp_read(db):
             json.loads(result["result"]["content"][0]["text"])["text"]
             == "REFERENCE_SENTINEL"
         )
+        actions = f"/api/workbench/capabilities/{asset['id']}/actions"
+        assert (
+            await http.post(actions, json={"revision": 1, "action": "disable"})
+        ).is_success
+        assert (await http.get(instructions_url)).json() == "Read references/guide.md"
+        assert (
+            await http.post(actions, json={"revision": 2, "action": "remove"})
+        ).is_success
+        assert (await http.get(instructions_url)).status_code == 404
         bad = await http.post(
             "/api/workbench/capabilities/skill-packages",
             json={**package().model_dump(), "archive_base64": "bad"},
