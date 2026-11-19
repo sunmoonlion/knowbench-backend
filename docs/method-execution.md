@@ -196,7 +196,7 @@ docker run --rm --network none --read-only --cap-drop ALL \
   --entrypoint python "$probe_python_image" /probe/probe.py
 ```
 
-探针打印版本与五个核验布尔值；不打印凭据、请求头或用户消息。通用接口参考
+探针让同一线程在相同 MCP 配置下连续完成两轮合成工具调用，核对网关只初始化一次，并逐轮比对不同的 turn/call 与宿主事件。输出含版本和各项核验结果。通用接口参考
 [官方 app-server 文档](https://developers.openai.com/codex/app-server/)与
 [MCP 配置文档](https://developers.openai.com/codex/mcp/)，上面的热更新与 metadata 结论
 以固定二进制实测为依据。生产接入前仍需真实沙箱的完整工具轮次验收。

@@ -721,45 +721,48 @@ async def capability_rpc(
             args = params.get("arguments") or {}
             if not isinstance(args, dict):
                 raise Forbidden("Invalid tool arguments")
-            if params.get("name") in ("skill_files", "skill_read", "action_result"):
-                await svc.verify_invocation(
-                    str(session_id), token, params["name"], args, params.get("_meta")
-                )
             if params.get("name") in ("skill_files", "skill_read"):
-                listing = params["name"] == "skill_files"
-                if listing:
-                    if set(args) - {"skill_id", "offset"}:
-                        raise Forbidden("Invalid skill_files arguments")
-                    args = {**args, "path": "SKILL.md"}
                 value = await svc.skill_resource(
-                    str(session_id), token, args, listing=listing
+                    str(session_id),
+                    token,
+                    args,
+                    meta=params.get("_meta"),
+                    listing=params["name"] == "skill_files",
                 )
             elif params.get("name") == "action_result":
-                await svc.repo.recover_calls(
-                    selected["owner_actor_id"], str(session_id)
-                )
-                call = await svc.repo.capability_call(
-                    selected["owner_actor_id"], str(UUID(args["call_id"]))
-                )
-                if call["session_id"] != str(session_id):
-                    raise Forbidden("Call belongs to another conversation")
-                if (
-                    selected["runtime"].get("method")
-                    and call["detail"].get("method") != selected["runtime"]["method"]
-                ):
-                    raise Forbidden("Call belongs to another method execution")
-                if call["detail"].get("execution_kind") == "formal_method_model":
-                    value = await svc.method_call_result(
-                        str(session_id), token, call["id"]
+                async with svc.verified_read(
+                    str(session_id), token, "action_result", args, params.get("_meta")
+                ) as selected:
+                    if not selected["runtime"].get("tools") or selected["runtime"].get(
+                        "formal_probe"
+                    ):
+                        raise Forbidden("Action result is outside the selected scope")
+                    await svc.repo.recover_calls(
+                        selected["owner_actor_id"], str(session_id)
                     )
-                else:
-                    value = {
-                        "call_id": call["id"],
-                        "status": call["status"],
-                        "result": public_result(
-                            call["detail"].get("result"), call["id"]
-                        ),
-                    }
+                    call = await svc.repo.capability_call(
+                        selected["owner_actor_id"], str(UUID(args["call_id"]))
+                    )
+                    if call["session_id"] != str(session_id):
+                        raise Forbidden("Call belongs to another conversation")
+                    if (
+                        call["detail"].get("method")
+                        != selected["runtime"].get("method")
+                        or call["detail"].get("execution_kind") == "formal_probe"
+                    ):
+                        raise Forbidden("Call belongs to another method execution")
+                    if call["detail"].get("execution_kind") == "formal_method_model":
+                        value = await svc.method_call_result(
+                            str(session_id), token, call["id"]
+                        )
+                    else:
+                        value = {
+                            "call_id": call["id"],
+                            "status": call["status"],
+                            "result": public_result(
+                                call["detail"].get("result"), call["id"]
+                            ),
+                        }
             else:
                 value = await svc.request_call(
                     str(session_id),

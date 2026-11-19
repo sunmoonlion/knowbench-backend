@@ -262,6 +262,37 @@ class SessionService:
         await self._refuse_while_expert_works(session)
         return session
 
+    async def interrupt_user_turn(
+        self, session_id: str, owner: str, turn_id: str | None
+    ) -> str:
+        async with self.repo.transaction():
+            await self.repo.get_session(
+                session_id, owner_actor_id=owner, for_update=True
+            )
+            session = await self.assert_user_may_drive(session_id, owner_actor_id=owner)
+            selection = await self.repo.capability_runtime_by_session(session_id)
+            runtime = selection["runtime"] if selection else {}
+            if runtime.get("status") in ("prepared", "applied") and (
+                turn_id is None or turn_id == runtime.get("turn_id")
+            ):
+                turn_id = turn_id or runtime.get("turn_id")
+                await self.repo.capability_runtime(
+                    owner,
+                    session_id,
+                    {**runtime, "status": "completed", "aborted": True},
+                )
+            elif runtime.get("status") == "prepared" and turn_id:
+                # The host ID is not bound yet. Match the queued stop at its ACK.
+                await self.repo.capability_runtime(
+                    owner, session_id, {**runtime, "pending_stop": True}
+                )
+            return await self.repo.enqueue_command(
+                session_id=session_id,
+                sandbox_id=str(session["sandbox_id"]),
+                kind="turn.interrupt",
+                payload={"turn_id": turn_id},
+            )
+
     async def assert_advisor_may_drive(
         self, session_id: str, *, task_id: str
     ) -> dict[str, Any]:

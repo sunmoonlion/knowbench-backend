@@ -245,11 +245,21 @@ class CapabilityRepositoryMixin:
             if started
             else "runtime->>'turn_id'=:t AND runtime->>'status'='applied'"
         )
+        # An explicit stop can arrive before turn/start binds the host turn ID.
+        # Preserve that decision even if the provider acknowledges its start later.
+        binding_stop = (
+            """ || CASE WHEN runtime ? 'pending_stop' AND EXISTS (
+            SELECT 1 FROM workbench_commands
+            WHERE session_id=:s AND kind='turn.interrupt' AND payload->>'turn_id'=:t
+        ) THEN jsonb_build_object('status','completed','aborted',true) ELSE '{}'::jsonb END"""
+            if started
+            else ""
+        )
         await self.session.execute(
             text(
-                """UPDATE workbench_capability_selections
-            SET runtime=runtime || cast(:patch as jsonb)
-            WHERE session_id=:s AND """
+                "UPDATE workbench_capability_selections SET runtime=runtime || cast(:patch as jsonb)"
+                + binding_stop
+                + " WHERE session_id=:s AND "
                 + condition
             ),
             {"s": session_id, "scope": scope, "t": turn_id, "patch": json.dumps(patch)},
@@ -277,7 +287,7 @@ class CapabilityRepositoryMixin:
         await self.lock_capability_sandbox_scope(sandbox_id)
         await self.session.execute(
             text("""UPDATE workbench_capability_selections c
-                SET runtime=runtime || cast(:patch as jsonb)
+                SET runtime=(runtime - 'gateway_hash') || cast(:patch as jsonb)
                 FROM workbench_sessions s
                 WHERE c.session_id=s.id AND s.sandbox_id=:sandbox
                 AND c.runtime->>'status' IN ('prepared','applied','completed')"""),

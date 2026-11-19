@@ -218,20 +218,10 @@ class SandboxLink:
         async with self._lock:
             if self.client is not None and self.client.connected:
                 return self.client
-            client = self.runner.connector.open(
-                self.sandbox,
-                on_notification=self.on_notification,
-                on_server_request=self.on_server_request,
-            )
-            await client.connect()
-            self.client = client
             self.live_threads.clear()
             self.search_scopes.clear()
-            log.info(
-                "sandbox link up sandbox=%s url=%s",
-                self.sandbox_id,
-                self.sandbox["app_server_url"],
-            )
+            self.capability_config.clear()
+            self.capability_scopes.clear()
             # 旧连接上等着答的工具审批随连接没了（app-server 那边的请求也没了，Codex 会重问）：
             # 每次真的建一条新连接都作废一次，同一进程里断了再连也算（0034 §三.2）
             for fut in list(self.pending_approvals.values()):
@@ -239,6 +229,18 @@ class SandboxLink:
                     fut.set_result({"decision": "decline"})
             await self.runner.expire_approvals(
                 self.sandbox_id, "connection to the sandbox re-established"
+            )
+            client = self.runner.connector.open(
+                self.sandbox,
+                on_notification=self.on_notification,
+                on_server_request=self.on_server_request,
+            )
+            await client.connect()
+            self.client = client
+            log.info(
+                "sandbox link up sandbox=%s url=%s",
+                self.sandbox_id,
+                self.sandbox["app_server_url"],
             )
             return client
 
@@ -455,13 +457,17 @@ class SandboxLink:
                 "cannot change stage tools during an active or unknown turn"
             )
 
-    async def record_capability_turn(self, thread_id: str, turn_id: str | None) -> None:
-        scope = self.capability_scopes.get(thread_id)
+    async def record_capability_turn(
+        self, thread_id: str, turn_id: str | None, scope: str | None
+    ) -> None:
         if not scope or not turn_id:
             return
         async with self.runner.stores() as repo, repo.transaction():
             session = await repo.get_session_by_thread(thread_id)
             if session:
+                session = await repo.get_session(str(session["id"]), for_update=True)
+                if session.get("thread_id") != thread_id:
+                    return
                 await repo.capability_runtime_event(
                     str(session["id"]), scope, turn_id, started=True
                 )
@@ -501,8 +507,19 @@ class SandboxLink:
             session = await repo.get_session_by_thread(thread_id)
             if session is None:
                 raise RuntimeError("Capability context has no session")
+            previous = self.capability_config.get(thread_id, {}).get(
+                "mcp_servers.sunmoon_capabilities", {}
+            )
+            gateway = (
+                previous.get("http_headers", {})
+                .get("Authorization", "")
+                .removeprefix("Bearer ")
+            )
             prepared = await self.runner.capabilities(repo).prepare(
-                str(session["owner_actor_id"]), str(session["id"]), scene=scene
+                str(session["owner_actor_id"]),
+                str(session["id"]),
+                scene=scene,
+                previous_gateway=gateway or None,
             )
         self.capability_scopes[thread_id] = prepared.get("scope_id", "")
         config = prepared["config"]
@@ -883,6 +900,7 @@ class SandboxLink:
             capability_inputs = await self.prepare_capabilities(
                 thread_id, scene=ExecutionScene.METHOD
             )
+            prepared_scope = self.capability_scopes.get(thread_id)
             if probe:
                 await self.configure_formal_probe(thread_id)
             else:
@@ -991,7 +1009,7 @@ class SandboxLink:
                     tokens={},
                     error=f"turn/start returned no turn id: {result}",
                 )
-            await self.record_capability_turn(thread_id, turn_id)
+            await self.record_capability_turn(thread_id, turn_id, prepared_scope)
         except BaseException:
             if turn_id:
                 self._forget_turn(thread_id, turn_id)
@@ -2575,6 +2593,7 @@ class Runner:
             capability_inputs = await link.prepare_capabilities(
                 session["thread_id"], scene=ExecutionScene.CONVERSATION
             )
+            prepared_scope = link.capability_scopes.get(session["thread_id"])
             await link.configure_search_scope(session["thread_id"], restricted=False)
             result = await client.request(
                 "turn/start",
@@ -2590,7 +2609,9 @@ class Runner:
                 timeout=120,
             )
             await link.record_capability_turn(
-                session["thread_id"], ((result or {}).get("turn") or {}).get("id")
+                session["thread_id"],
+                ((result or {}).get("turn") or {}).get("id"),
+                prepared_scope,
             )
             async with self.stores() as repo:
                 async with repo.transaction():

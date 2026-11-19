@@ -49,11 +49,11 @@ class Handler(BaseHTTPRequestHandler):
                     {"type": "output_text", "text": "probe", "annotations": []}
                 ],
             }
-            if model_calls == 1:
+            if model_calls in (1, 3):
                 item = {
                     "type": "function_call",
-                    "id": "fc_probe",
-                    "call_id": "call_probe",
+                    "id": f"fc_probe_{model_calls}",
+                    "call_id": f"call_probe_{model_calls}",
                     "name": "echo_scope",
                     "namespace": "mcp__sunmoon_workbench",
                     "arguments": "{}",
@@ -275,11 +275,27 @@ http_headers = {{ "X-Test-Scope" = "global" }}
         bid = b["thread"]["id"]
         assert (await echo(bid))["content"][0]["text"] == "attempt-b"
         assert (await echo(aid))["content"][0]["text"] == "attempt-a"
-        await call(
-            "turn/start",
-            {"threadId": aid, "input": [{"type": "text", "text": "synthetic probe"}]},
+        turn_ids = []
+        initializations = sum(
+            v["method"] == "initialize" and v["scope"] == "attempt-a" for v in seen
         )
-        await asyncio.wait_for(finished.wait(), 15)
+        assert initializations
+        for _ in range(2):
+            finished.clear()
+            reply = await call(
+                "turn/start",
+                {
+                    "threadId": aid,
+                    "input": [{"type": "text", "text": "synthetic probe"}],
+                },
+            )
+            turn_ids.append(reply["turn"]["id"])
+            await asyncio.wait_for(finished.wait(), 15)
+        assert len(set(turn_ids)) == 2
+        assert (
+            sum(v["method"] == "initialize" and v["scope"] == "attempt-a" for v in seen)
+            == initializations
+        )
         await call(
             "thread/resume",
             {
@@ -315,27 +331,29 @@ http_headers = {{ "X-Test-Scope" = "global" }}
     model = [
         v
         for v in calls
-        if (v["params"].get("_meta") or {}).get("callId") == "call_probe"
+        if (v["params"].get("_meta") or {}).get("callId")
+        in ("call_probe_1", "call_probe_3")
     ]
-    assert len(model) == 1
-    meta = model[0]["params"]["_meta"]
-    turn = meta["x-codex-turn-metadata"]
     started = [
         v["params"]
         for v in events_seen
         if v["method"] == "item/started"
         and v["params"].get("item", {}).get("type") == "mcpToolCall"
     ]
-    assert len(started) == 1
-    item = started[0]["item"]
-    assert meta["threadId"] == turn["thread_id"] == started[0]["threadId"] == aid
-    assert turn["turn_id"] == started[0]["turnId"]
-    assert meta["callId"] == item["id"]
-    assert (
-        item["server"] == "sunmoon_workbench"
-        and item["tool"] == model[0]["params"]["name"]
-    )
-    assert item["arguments"] == model[0]["params"]["arguments"]
+    assert len(started) == len(model) == 2
+    for request, event, turn_id in zip(model, started, turn_ids, strict=True):
+        meta = request["params"]["_meta"]
+        turn = meta["x-codex-turn-metadata"]
+        item = event["item"]
+        assert request["scope"] == "attempt-a"
+        assert meta["threadId"] == turn["thread_id"] == event["threadId"] == aid
+        assert turn["turn_id"] == event["turnId"] == turn_id
+        assert meta["callId"] == item["id"]
+        assert (
+            item["server"] == "sunmoon_workbench"
+            and item["tool"] == request["params"]["name"]
+        )
+        assert item["arguments"] == request["params"]["arguments"]
     assert all(
         "x-codex-turn-metadata" not in v["params"]["_meta"]
         for v in calls
@@ -344,7 +362,10 @@ http_headers = {{ "X-Test-Scope" = "global" }}
     print(
         json.dumps(
             {
-                "codex_version": turn["codex_version"],
+                "codex_version": model[0]["params"]["_meta"]["x-codex-turn-metadata"][
+                    "codex_version"
+                ],
+                "two_turns_share_one_initialized_gateway": True,
                 "model_call_matches_observed_event": True,
                 "direct_call_has_no_turn_identity": True,
                 "thread_scopes_are_separate": True,

@@ -9,6 +9,7 @@ from test_capabilities_db import URL, body, service
 from test_capability_routes_db import application
 from test_workbench_ledger_db import OTHER, OWNER, seed
 from test_workbench_ledger_db import db as db
+from tool_invocation_support import read_skill
 
 from app.domain.workbench.capabilities import (
     AssetAction,
@@ -48,8 +49,8 @@ async def test_install_before_connecting_then_bind_current_account_and_revoke(db
         token = prepared["config"]["mcp_servers.sunmoon_capabilities"]["http_headers"][
             "Authorization"
         ].split()[1]
-        resource = await svc.skill_resource(
-            sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+        resource = await read_skill(
+            svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
         )
         assert resource["connection_dependencies"][0]["status"] == "connection_required"
         assert resource["connection_dependencies"][0]["selected_tools"] == []

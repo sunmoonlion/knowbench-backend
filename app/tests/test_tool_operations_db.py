@@ -9,7 +9,11 @@ from test_capabilities_db import OPERATION, OWNER, approval, prepared, service
 from test_capability_routes_db import application
 from test_method_capabilities_db import setup_method
 from test_workbench_ledger_db import db as db
-from tool_invocation_support import ObservedCapabilityTransport, request_call
+from tool_invocation_support import (
+    ObservedCapabilityTransport,
+    read_skill,
+    request_call,
+)
 
 from app.domain.workbench.capabilities import CapabilityError, SelectionPut
 from app.domain.workbench.tool_operations import McpOperation
@@ -79,8 +83,8 @@ async def test_policy_removal_is_honored_by_live_mcp_listing_and_skill_dependenc
         assert {t["name"] for t in listed} == {"skill_read", "skill_files"}
     async with db() as session:
         svc = service(WorkbenchRepository(session), remote, operations=())
-        read = await svc.skill_resource(
-            sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+        read = await read_skill(
+            svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
         )
         assert read["connection_dependencies"][0]["selected_tools"] == []
         # Required method capabilities are not silently omitted as in ordinary chat.

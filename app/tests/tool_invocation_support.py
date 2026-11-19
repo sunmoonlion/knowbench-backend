@@ -119,6 +119,11 @@ async def observe_capability_call(svc, sid, name, arguments, *, call_id=None):
     }
 
 
+async def read_skill(svc, sid, token, arguments):
+    meta = await observe_capability_call(svc, sid, "skill_read", arguments)
+    return await svc.skill_resource(sid, token, arguments, meta=meta)
+
+
 async def request_call(svc, sid, token, name, arguments, *, call_id=None):
     meta = await observe_capability_call(svc, sid, name, arguments, call_id=call_id)
     return await svc.request_call(sid, token, name, arguments, meta=meta)

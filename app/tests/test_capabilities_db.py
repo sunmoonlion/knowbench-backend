@@ -10,7 +10,7 @@ from cryptography.fernet import Fernet
 from sqlalchemy import text
 from test_workbench_ledger_db import OTHER, OWNER, seed
 from test_workbench_ledger_db import db as db
-from tool_invocation_support import request_call
+from tool_invocation_support import read_skill, request_call
 
 from app.application.workbench.capabilities import Capabilities
 from app.domain.workbench.capabilities import (
@@ -538,8 +538,8 @@ async def test_new_runner_closes_persisted_scope_without_in_memory_scope(
         )
         call = await repo.capability_call(OWNER, request["call_id"])
         sandbox_id = str((await repo.get_session(sid))["sandbox_id"])
-        assert await svc.skill_resource(
-            sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+        assert await read_skill(
+            svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
         )
         if already_completed:
             async with repo.transaction():
@@ -572,8 +572,8 @@ async def test_new_runner_closes_persisted_scope_without_in_memory_scope(
             "status"
         ] == "completed"
         with pytest.raises(Forbidden):
-            await svc.skill_resource(
-                sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+            await read_skill(
+                svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
             )
         with pytest.raises(Forbidden):
             await request_call(svc, sid, token, key, {"to": "another@example.test"})
@@ -588,6 +588,16 @@ async def test_new_runner_closes_persisted_scope_without_in_memory_scope(
                 "status"
             ] == "succeeded"
             assert len(remote.calls) == 1
+        # Present the old link's credential even on takeover. Only a normal
+        # completion on the same connection may reuse it.
+        next_scope = await svc.prepare(OWNER, sid, previous_gateway=token)
+        header = next_scope["config"]["mcp_servers.sunmoon_capabilities"][
+            "http_headers"
+        ]["Authorization"]
+        assert (header == "Bearer " + token) is (event == "completed")
+        if event != "completed":
+            with pytest.raises(Forbidden):
+                await svc.runtime(sid, token)
 
 
 async def test_migration_down_up_preserves_existing_sessions(db):
@@ -662,3 +672,66 @@ async def test_method_panel_projects_frozen_tools_without_chat_authority(db):
         assert projection["method"]["requirements"] == {"tools": [], "skills": []}
         assert projection["preparation"] == "method_managed"
         assert key not in projection["method"]["declared_tools"]
+
+
+async def test_stable_gateway_does_not_renew_pending_approval_or_cancelled_turn(db):
+    from tool_invocation_support import observe_capability_call
+
+    from app.application.workbench.session_service import SessionService
+    from app.domain.workbench.errors import RecordsRefused
+
+    sid, _, key, gateway, remote = await prepared(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = service(repo, remote)
+        args = {"to": "person@example.test"}
+        meta = await observe_capability_call(svc, sid, key, args)
+        pending = await svc.request_call(sid, gateway, key, args, meta=meta)
+        call = await repo.capability_call(OWNER, pending["call_id"])
+        # Stop has been accepted, but the provider has not consumed its command.
+        await SessionService(repo).interrupt_user_turn(sid, OWNER, None)
+        with pytest.raises(Forbidden):
+            await svc.request_call(sid, gateway, key, args, meta=meta)
+        with pytest.raises(CapabilityError):
+            await svc.decide(OWNER, call["id"], approval(call))
+
+        next_turn = await svc.prepare(OWNER, sid, previous_gateway=gateway)
+        assert (
+            next_turn["config"]["mcp_servers.sunmoon_capabilities"]["http_headers"][
+                "Authorization"
+            ]
+            == "Bearer " + gateway
+        )
+        current = await observe_capability_call(svc, sid, key, args)
+        with pytest.raises(Forbidden, match="another execution turn"):
+            await svc.request_call(sid, gateway, key, args, meta=meta)
+        with pytest.raises(RecordsRefused):
+            await svc.request_call(sid, gateway, key, args)
+        assert (await svc.request_call(sid, gateway, key, args, meta=current))[
+            "call_id"
+        ] != call["id"]
+        with pytest.raises(CapabilityError):
+            await svc.decide(OWNER, call["id"], approval(call))
+        assert not remote.calls
+
+
+@pytest.mark.parametrize("requested", ["starting-turn", "earlier-turn"])
+async def test_interrupt_before_ack_only_revokes_matching_turn(db, requested):
+    from app.application.workbench.session_service import SessionService
+
+    sid, _, _, gateway, _ = await prepared(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        scope = (await repo.capability_runtime_by_session(sid))["runtime"]["scope_id"]
+        await SessionService(repo).interrupt_user_turn(sid, OWNER, requested)
+        async with repo.transaction():
+            await repo.capability_runtime_event(
+                sid, scope, "starting-turn", started=True
+            )
+        if requested == "starting-turn":
+            with pytest.raises(Forbidden):
+                await service(repo).runtime(sid, gateway)
+        else:
+            assert (await service(repo).runtime(sid, gateway))["runtime"][
+                "turn_id"
+            ] == "starting-turn"

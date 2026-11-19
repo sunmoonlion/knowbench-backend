@@ -6,6 +6,7 @@ import asyncio
 import json
 import secrets
 import uuid
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
@@ -953,7 +954,12 @@ class Capabilities:
             return True
 
     async def prepare(
-        self, owner, session_id, *, scene: ExecutionScene = ExecutionScene.CONVERSATION
+        self,
+        owner,
+        session_id,
+        *,
+        scene: ExecutionScene = ExecutionScene.CONVERSATION,
+        previous_gateway: str | None = None,
     ):
         scene = ExecutionScene(scene)
         if scene == ExecutionScene.METHOD:
@@ -989,7 +995,6 @@ class Capabilities:
                 "Selected capabilities need attention before this turn",
                 issues=current["issues"],
             )
-        token = secrets.token_urlsafe(32)
         async with self.repo.transaction():
             if scene == ExecutionScene.CONVERSATION:
                 await self._conversation_session(owner, session_id)
@@ -1173,9 +1178,37 @@ class Capabilities:
                         ),
                     }
                 )
+            # Only the discoverable descriptors affect the app-server subscription.
+            # Package identities, accounts and method attempts belong to this turn.
+            inventory = digest(
+                [
+                    self.runtime_url,
+                    bool(method_binding),
+                    bool(packages),
+                    {
+                        key: [spec["tool"], spec.get("execution_kind")]
+                        for key, spec in tools.items()
+                    },
+                ]
+            )
+            previous = selected["runtime"] or {}
+            if (
+                previous_gateway
+                and previous.get("status") == "completed"
+                and previous.get("inventory") == inventory
+                and secrets.compare_digest(
+                    previous.get("gateway_hash", ""), digest(previous_gateway)
+                )
+            ):
+                token = previous_gateway
+            else:
+                token = secrets.token_urlsafe(32)
             runtime = {
                 "scope_id": secrets.token_hex(16),
-                "token_hash": digest(token),
+                # Existing approval rows compare this per-turn generation.
+                "token_hash": secrets.token_hex(32),
+                "gateway_hash": digest(token),
+                "inventory": inventory,
                 "expires_at": (datetime.now(UTC) + timedelta(hours=24)).isoformat(),
                 "selection_revision": selected["revision"],
                 "tools": tools,
@@ -1220,7 +1253,7 @@ class Capabilities:
                     "enabled": True,
                     "url": self.runtime_url.rstrip("/") + "/" + session_id,
                     "http_headers": {"Authorization": "Bearer " + token},
-                    "enabled_tools": list(tools)
+                    "enabled_tools": sorted(tools)
                     + (["action_result"] if tools else [])
                     + (["skill_files", "skill_read"] if packages else []),
                     "required": True,
@@ -1250,7 +1283,10 @@ class Capabilities:
             or not selected
             or runtime.get("selection_revision") != selected["revision"]
             or runtime.get("status") not in ("prepared", "applied")
-            or not secrets.compare_digest(runtime.get("token_hash", ""), digest(token))
+            or not secrets.compare_digest(
+                runtime.get("gateway_hash", runtime.get("token_hash", "")),
+                digest(token),
+            )
             or datetime.fromisoformat(
                 runtime.get("expires_at", "1970-01-01T00:00:00+00:00")
             )
@@ -1281,8 +1317,11 @@ class Capabilities:
             raise Forbidden(exc.message) from exc
         return selected
 
-    async def skill_resource(self, session_id, token, arguments, *, listing=False):
-        request = SkillRead.model_validate(arguments)
+    @asynccontextmanager
+    async def verified_read(self, session_id, token, name, arguments, meta):
+        # Wait for the runner ACK outside locks. Recheck after serializing with
+        # turn completion, selection changes and revocation before returning data.
+        await self.verify_invocation(session_id, token, name, arguments, meta)
         async with self.repo.transaction():
             selected = await self.runtime(session_id, token)
             owner = selected["owner_actor_id"]
@@ -1290,13 +1329,28 @@ class Capabilities:
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
+            await self.verify_invocation(
+                session_id, token, name, arguments, meta, observe_seconds=0
+            )
+            yield selected
+
+    async def skill_resource(
+        self, session_id, token, arguments, *, meta=None, listing=False
+    ):
+        name = "skill_files" if listing else "skill_read"
+        async with self.verified_read(
+            session_id, token, name, arguments, meta
+        ) as selected:
+            if listing and set(arguments) - {"skill_id", "offset"}:
+                raise Forbidden("Invalid skill_files arguments")
+            request = SkillRead.model_validate(
+                {**arguments, "path": "SKILL.md"} if listing else arguments
+            )
+            owner = selected["owner_actor_id"]
             runtime = selected["runtime"]
-            if runtime.get("selection_revision") != selected["revision"]:
-                raise Forbidden("Skill selection changed; prepare a new turn")
             spec = runtime.get("packages", {}).get(request.skill_id)
             if not spec or request.skill_id not in runtime.get("skills", []):
                 raise Forbidden("Skill is outside the selected scope")
-            await self.runtime(session_id, token)
             asset = await self.repo.capability_asset(owner, request.skill_id, lock=True)
             if (
                 asset["status"] != "active"

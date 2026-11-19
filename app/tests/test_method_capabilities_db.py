@@ -11,7 +11,11 @@ from test_capabilities_db import OWNER, URL, Remote, approval, body, service
 from test_capability_routes_db import application
 from test_workbench_ledger_db import db as db
 from test_workbench_ledger_db import handover, seed
-from tool_invocation_support import ObservedCapabilityTransport, request_call
+from tool_invocation_support import (
+    ObservedCapabilityTransport,
+    read_skill,
+    request_call,
+)
 
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.capabilities import (
@@ -158,13 +162,13 @@ async def test_step_scope_lazy_read_and_cancellation(db):
     async with db() as s:
         repo = WorkbenchRepository(s)
         svc = service(repo, remote)
-        result = await svc.skill_resource(
-            sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+        result = await read_skill(
+            svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
         )
         assert "METHOD_SKILL_BODY" in str(result)
         with pytest.raises(Forbidden):
-            await svc.skill_resource(
-                sid, token, {"skill_id": other["id"], "path": "SKILL.md"}
+            await read_skill(
+                svc, sid, token, {"skill_id": other["id"], "path": "SKILL.md"}
             )
         selection = await svc.selection(OWNER, sid)
         assert not selection["editable"]
@@ -185,8 +189,8 @@ async def test_step_scope_lazy_read_and_cancellation(db):
                 {"t": tid},
             )
         with pytest.raises(Forbidden):
-            await svc.skill_resource(
-                sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+            await read_skill(
+                svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
             )
         with pytest.raises(Forbidden):
             await request_call(svc, sid, token, key, {"to": "test@example.test"})
@@ -384,8 +388,8 @@ async def test_dynamic_plan_step_inherits_requirements_after_planning_finishes(d
             "attempt_id"
         ] == opened["attempt_id"]
         assert "DYNAMIC_STEP_GUIDE" in str(
-            await svc.skill_resource(
-                sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
+            await read_skill(
+                svc, sid, token, {"skill_id": skill["id"], "path": "SKILL.md"}
             )
         )
 

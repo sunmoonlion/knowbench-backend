@@ -776,16 +776,9 @@ async def interrupt(
 ):
     repo = workbench_store(session)
     try:
-        s = await SessionService(repo).assert_user_may_drive(
-            session_id, owner_actor_id=_actor(principal)
+        cid = await SessionService(repo).interrupt_user_turn(
+            session_id, _actor(principal), body.turn_id
         )
-        async with repo.transaction():
-            cid = await repo.enqueue_command(
-                session_id=session_id,
-                sandbox_id=str(s["sandbox_id"]),
-                kind="turn.interrupt",
-                payload={"turn_id": body.turn_id},
-            )
     except WorkbenchError as exc:
         raise _http(exc) from exc
     await publish_commands_wakeup()
