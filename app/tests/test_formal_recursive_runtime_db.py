@@ -139,3 +139,40 @@ async def test_parallel_recursive_drivers_keep_nested_identity_and_exact_grants(
                 and grant["recipient_call_id"] == refs["method_call_id"]
             )
             assert grant.get("resource_authority") is None
+
+
+async def test_read_pins_the_producing_step_export_kind_and_version(db):
+    from app.application.workbench.formal_recursive_runtime import (
+        read_artifact,
+        store_result,
+    )
+    from app.domain.workbench.capabilities import digest
+
+    ctx = await setup_recursive(db)
+    pending = await advance(db, ctx)
+    task = {"id": pending["cases"][0]["task_id"]}
+    result = {"outputs": {"total": 12}, "outputs_digest": digest({"total": 12})}
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            first = await store_result(repo, task, ("first",), result)
+            second = await store_result(repo, task, ("second",), result)
+            exported = await store_result(repo, task, ("first",), result, exports=True)
+            assert (
+                await read_artifact(repo, task, ("first",), first, result)
+                == result["outputs"]
+            )
+            assert (
+                await read_artifact(
+                    repo, task, ("first",), exported, result, exports=True
+                )
+                == result["outputs"]
+            )
+            for ref in (
+                second,
+                exported,
+                {**first, "version": None},
+                {**first, "version": 0},
+            ):
+                with pytest.raises(CapabilityError, match="planned output version"):
+                    await read_artifact(repo, task, ("first",), ref, result)

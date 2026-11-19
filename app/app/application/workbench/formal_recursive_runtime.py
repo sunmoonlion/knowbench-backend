@@ -113,17 +113,24 @@ async def _scope(repo, task, call, method_id, deadline, parent=None, *, create=F
     return scope
 
 
-async def read_artifact(repo, task, reference, result, *, attempt_id=None):
+async def read_artifact(
+    repo, task, path, reference, result, *, attempt_id=None, exports=False
+):
     _require(
-        isinstance(reference, dict), "Formal accepted artifact reference is missing"
+        isinstance(reference, dict)
+        and reference.get("name") == node_artifact(path, exports=exports)
+        and type(reference.get("version")) is int
+        and reference["version"] >= 1,
+        "Formal accepted artifact does not identify the planned output version",
     )
     artifact = await repo.get_artifact(
         task_id=str(task["id"]), name=reference["name"], version=reference["version"]
     )
     _require(
         artifact is not None
-        and str(artifact["id"]) == reference["id"]
-        and artifact["digest"] == reference["digest"]
+        and artifact["kind"] == "step"
+        and str(artifact["id"]) == reference.get("id")
+        and artifact["digest"] == reference.get("digest")
         and (str(artifact["attempt_id"]) if artifact["attempt_id"] else None)
         == attempt_id
         and artifact["content"] == result.get("outputs")
@@ -171,7 +178,7 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
         )
         ref = detail.get("output_artifact")
         value = await read_artifact(
-            repo, task, ref, result, attempt_id=detail.get("execution_attempt_id")
+            repo, task, path, ref, result, attempt_id=detail.get("execution_attempt_id")
         )
         if node.kind == "tool":
             attempt_id = detail.get("execution_attempt_id")
@@ -230,7 +237,7 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
             )
             exports = detail.get("exports") or {}
             full = await read_artifact(
-                repo, task, detail.get("exports_artifact"), exports
+                repo, task, path, detail.get("exports_artifact"), exports, exports=True
             )
             children, _ = await accepted_children(repo, task, snapshot, call, path)
             _require(
