@@ -1423,16 +1423,22 @@ async def respond_interaction(
             from app.bootstrap.workbench import capability_service
             from app.domain.workbench.capabilities import ActionDecision
 
-            if body.decision not in ("accept", "decline") or not body.subject_digest:
+            if (
+                body.decision not in ("accept", "decline", "accept_read_scope")
+                or not body.subject_digest
+            ):
                 raise HTTPException(
                     status_code=422,
-                    detail="This external action only supports an exact once-only decision",
+                    detail="Choose an offered connector approval decision with its subject digest",
                 )
             await capability_service(repo).decide(
                 _actor(principal),
                 capability_call,
                 ActionDecision(
-                    decision=body.decision,
+                    decision="accept"
+                    if body.decision == "accept_read_scope"
+                    else body.decision,
+                    remember_read=body.decision == "accept_read_scope",
                     token=body.token,
                     subject_digest=body.subject_digest,
                 ),

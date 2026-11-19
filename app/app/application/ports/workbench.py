@@ -200,8 +200,23 @@ class WorkbenchStore(Protocol):
     ) -> None: ...
     async def capability_revoke_sandbox(self, sandbox_id: str) -> None: ...
     async def capability_calls(
-        self, owner: str, session_id: str
+        self, owner: str, session_id: str, call_id: str | None = None
     ) -> list[dict[str, Any]]: ...
+    async def grant_call_read_scope(
+        self, owner: str, call_id: str, key: str, expires: datetime
+    ) -> None: ...
+    async def active_call_read_scope(
+        self,
+        owner: str,
+        session_id: str,
+        key: str,
+        resources: list[dict],
+        *,
+        origin: str | None = None,
+    ) -> str | None: ...
+    async def revoke_call_read_scope(
+        self, owner: str, session_id: str, key: str, resources: list[dict]
+    ) -> None: ...
     async def capability_call(
         self, owner: str, call_id: str, *, lock: bool = False
     ) -> dict[str, Any]: ...

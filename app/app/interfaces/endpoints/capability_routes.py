@@ -432,11 +432,14 @@ async def put_selection(
 )
 async def list_calls(
     session_id: UUID,
+    call_id: UUID | None = None,
     user: Principal = Depends(get_web_current_user),
     svc=Depends(service),
 ):
     try:
-        calls = await svc.calls(_actor(user), str(session_id))
+        calls = await svc.calls(
+            _actor(user), str(session_id), str(call_id) if call_id else None
+        )
         return {"calls": calls}
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -583,6 +586,20 @@ async def revoke_knowbase_read(
             msg="KnowBase refused to revoke the method consent",
         ) from exc
     return Response(status_code=204)
+
+
+@router.post(
+    "/workbench/capability-calls/{call_id}/revoke-read",
+    response_model=Call,
+    response_model_exclude_unset=True,
+)
+async def revoke_read_scope(
+    call_id: UUID, user: Principal = Depends(get_web_current_user), svc=Depends(service)
+):
+    try:
+        return await svc.revoke_read_approval(_actor(user), str(call_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.post(

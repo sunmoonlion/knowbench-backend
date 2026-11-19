@@ -256,10 +256,15 @@ class RemoteMcp:
             raise CapabilityError("MCP pagination exceeds the limit")
 
     async def call(self, url, token, name, arguments):
+        return await self.call_checked(url, token, name, arguments, before_send=None)
+
+    async def call_checked(self, url, token, name, arguments, *, before_send):
         # Never retry tools/call: transport failure after dispatch is an unknown outcome.
         dispatching = False
         try:
             async with asyncio.timeout(45), self.connect(url, token) as rpc:
+                if before_send is not None:
+                    await before_send()
                 dispatching = True
                 return await rpc("tools/call", {"name": name, "arguments": arguments})
         except TimeoutError as exc:

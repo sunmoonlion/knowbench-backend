@@ -142,7 +142,34 @@ class Selection(Strict):
     available_skills: list[Asset]
 
 
+class AttachmentPreview(Strict):
+    name: str
+    size: int
+    sha256: str
+
+
+class ApprovalResource(Strict):
+    resource_kind: str
+    resource_role: str
+    values: list[str]
+
+
+class ConnectorApproval(Strict):
+    verified_zero_cost: bool
+    operation: str
+    effect: Literal["read", "write", "send"]
+    destination: str
+    arguments_digest: str
+    resources: list[ApprovalResource]
+    attachments: list[AttachmentPreview]
+    read_until: datetime | None
+    origin: UUID | None
+    granted: bool
+    revoked: bool
+
+
 class CommonCallDetail(Strict):
+    approval: ConnectorApproval | None = None
     connection_id: UUID | None
     revision: int
     connection_name: str

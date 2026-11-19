@@ -557,6 +557,8 @@ class FormalMethodCalls:
             }
 
     async def decide(self, owner, child_call_id, body):
+        if getattr(body, "remember_read", False):
+            raise CapabilityError("This formal action requires an exact approval")
         peek = await self.repo.capability_call(owner, child_call_id)
         session_id = peek["session_id"]
         async with self.repo.transaction():

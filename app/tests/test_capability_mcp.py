@@ -126,8 +126,12 @@ async def test_unreviewed_endpoint_is_never_resolved(monkeypatch):
     resolve.assert_not_called()
 
 
-async def test_unauthorized_dispatch_is_unknown_and_requires_new_credentials(
+@pytest.mark.parametrize(
+    "revoked", [False, True], ids=["unauthorized-response", "revoked-after-initialize"]
+)
+async def test_dispatch_rechecks_after_handshake_and_never_replays(
     monkeypatch,
+    revoked,
 ):
     from app.domain.workbench.capabilities import CapabilityAuthOutcomeUnknown
 
@@ -158,8 +162,15 @@ async def test_unauthorized_dispatch_is_unknown_and_requires_new_credentials(
         "AsyncClient",
         lambda **kwargs: factory(transport=httpx.MockTransport(handler), **kwargs),
     )
-    with pytest.raises(CapabilityAuthOutcomeUnknown):
-        await mcp.RemoteMcp(("https://tools.example/mcp",)).call(
-            "https://tools.example/mcp", "test", "send", {}
+
+    async def before_send():
+        assert calls == ["initialize", "notifications/initialized"]
+        if revoked:
+            raise CapabilityError("approval revoked")
+
+    error = CapabilityError if revoked else CapabilityAuthOutcomeUnknown
+    with pytest.raises(error):
+        await mcp.RemoteMcp(("https://tools.example/mcp",)).call_checked(
+            "https://tools.example/mcp", "test", "send", {}, before_send=before_send
         )
-    assert calls.count("tools/call") == 1
+    assert calls.count("tools/call") == (0 if revoked else 1)

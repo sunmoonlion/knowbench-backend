@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from cryptography.fernet import InvalidToken
 
+from app.application.workbench.call_policy import send_mcp
 from app.application.workbench.tool_registry import mcp_catalog
 from app.domain.workbench.capabilities import (
     CapabilityAuthOutcomeUnknown,
@@ -493,16 +494,23 @@ class ConnectionOAuth:
                 )
             )
 
-    async def call(self, owner, connection, intent):
+    async def call(self, owner, connection, intent, *, before_send=None):
         name = intent["tool"]["name"]
         p, token, sealed = await self.credential(
             owner, connection["id"], intent["revision"], name
         )
         try:
             if p.protocol == "a2a":
+                if before_send is not None:
+                    await before_send()
                 return await self.transport.get_task(p, token, intent["arguments"])
-            return await self.remote.call(
-                p.service_url, token, name, intent["arguments"]
+            return await send_mcp(
+                self.remote,
+                p.service_url,
+                token,
+                name,
+                intent["arguments"],
+                before_send=before_send,
             )
         except (CapabilityReauthRequired, CapabilityAuthOutcomeUnknown):
             await self.reject(

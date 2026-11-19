@@ -655,6 +655,11 @@
   "ActionDecision": {
     "additionalProperties": false,
     "properties": {
+      "remember_read": {
+        "default": false,
+        "title": "Remember Read",
+        "type": "boolean"
+      },
       "decision": {
         "enum": [
           "accept",
@@ -2848,9 +2853,71 @@
   },
   "Call": {
     "$defs": {
+      "ApprovalResource": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_kind": {
+            "title": "Resource Kind",
+            "type": "string"
+          },
+          "resource_role": {
+            "title": "Resource Role",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_kind",
+          "resource_role",
+          "values"
+        ],
+        "title": "ApprovalResource",
+        "type": "object"
+      },
+      "AttachmentPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ],
+        "title": "AttachmentPreview",
+        "type": "object"
+      },
       "CallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "anyOf": [
               {
@@ -2960,9 +3027,111 @@
         "title": "CallDetail",
         "type": "object"
       },
+      "ConnectorApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "verified_zero_cost": {
+            "title": "Verified Zero Cost",
+            "type": "boolean"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "effect": {
+            "enum": [
+              "read",
+              "write",
+              "send"
+            ],
+            "title": "Effect",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "arguments_digest": {
+            "title": "Arguments Digest",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ApprovalResource"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/$defs/AttachmentPreview"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "read_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Until"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "granted": {
+            "title": "Granted",
+            "type": "boolean"
+          },
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verified_zero_cost",
+          "operation",
+          "effect",
+          "destination",
+          "arguments_digest",
+          "resources",
+          "attachments",
+          "read_until",
+          "origin",
+          "granted",
+          "revoked"
+        ],
+        "title": "ConnectorApproval",
+        "type": "object"
+      },
       "FormalModelCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -3048,6 +3217,17 @@
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -3144,6 +3324,17 @@
       "ModelProbeCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -3359,6 +3550,57 @@
   },
   "Calls": {
     "$defs": {
+      "ApprovalResource": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_kind": {
+            "title": "Resource Kind",
+            "type": "string"
+          },
+          "resource_role": {
+            "title": "Resource Role",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_kind",
+          "resource_role",
+          "values"
+        ],
+        "title": "ApprovalResource",
+        "type": "object"
+      },
+      "AttachmentPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ],
+        "title": "AttachmentPreview",
+        "type": "object"
+      },
       "Call": {
         "additionalProperties": false,
         "properties": {
@@ -3477,6 +3719,17 @@
       "CallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "anyOf": [
               {
@@ -3586,9 +3839,111 @@
         "title": "CallDetail",
         "type": "object"
       },
+      "ConnectorApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "verified_zero_cost": {
+            "title": "Verified Zero Cost",
+            "type": "boolean"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "effect": {
+            "enum": [
+              "read",
+              "write",
+              "send"
+            ],
+            "title": "Effect",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "arguments_digest": {
+            "title": "Arguments Digest",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ApprovalResource"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/$defs/AttachmentPreview"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "read_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Until"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "granted": {
+            "title": "Granted",
+            "type": "boolean"
+          },
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verified_zero_cost",
+          "operation",
+          "effect",
+          "destination",
+          "arguments_digest",
+          "resources",
+          "attachments",
+          "read_until",
+          "origin",
+          "granted",
+          "revoked"
+        ],
+        "title": "ConnectorApproval",
+        "type": "object"
+      },
       "FormalModelCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -3674,6 +4029,17 @@
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -3770,6 +4136,17 @@
       "ModelProbeCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -4351,6 +4728,57 @@
   },
   "FormalMethodInvocation": {
     "$defs": {
+      "ApprovalResource": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_kind": {
+            "title": "Resource Kind",
+            "type": "string"
+          },
+          "resource_role": {
+            "title": "Resource Role",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_kind",
+          "resource_role",
+          "values"
+        ],
+        "title": "ApprovalResource",
+        "type": "object"
+      },
+      "AttachmentPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ],
+        "title": "AttachmentPreview",
+        "type": "object"
+      },
       "Call": {
         "additionalProperties": false,
         "properties": {
@@ -4469,6 +4897,17 @@
       "CallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "anyOf": [
               {
@@ -4578,9 +5017,111 @@
         "title": "CallDetail",
         "type": "object"
       },
+      "ConnectorApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "verified_zero_cost": {
+            "title": "Verified Zero Cost",
+            "type": "boolean"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "effect": {
+            "enum": [
+              "read",
+              "write",
+              "send"
+            ],
+            "title": "Effect",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "arguments_digest": {
+            "title": "Arguments Digest",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ApprovalResource"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/$defs/AttachmentPreview"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "read_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Until"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "granted": {
+            "title": "Granted",
+            "type": "boolean"
+          },
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verified_zero_cost",
+          "operation",
+          "effect",
+          "destination",
+          "arguments_digest",
+          "resources",
+          "attachments",
+          "read_until",
+          "origin",
+          "granted",
+          "revoked"
+        ],
+        "title": "ConnectorApproval",
+        "type": "object"
+      },
       "FormalModelCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -4666,6 +5207,17 @@
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -4763,6 +5315,17 @@
       "ModelProbeCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -4934,6 +5497,57 @@
   },
   "FormalMethodInvocations": {
     "$defs": {
+      "ApprovalResource": {
+        "additionalProperties": false,
+        "properties": {
+          "resource_kind": {
+            "title": "Resource Kind",
+            "type": "string"
+          },
+          "resource_role": {
+            "title": "Resource Role",
+            "type": "string"
+          },
+          "values": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Values",
+            "type": "array"
+          }
+        },
+        "required": [
+          "resource_kind",
+          "resource_role",
+          "values"
+        ],
+        "title": "ApprovalResource",
+        "type": "object"
+      },
+      "AttachmentPreview": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "size": {
+            "title": "Size",
+            "type": "integer"
+          },
+          "sha256": {
+            "title": "Sha256",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "size",
+          "sha256"
+        ],
+        "title": "AttachmentPreview",
+        "type": "object"
+      },
       "Call": {
         "additionalProperties": false,
         "properties": {
@@ -5052,6 +5666,17 @@
       "CallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "anyOf": [
               {
@@ -5161,6 +5786,97 @@
         "title": "CallDetail",
         "type": "object"
       },
+      "ConnectorApproval": {
+        "additionalProperties": false,
+        "properties": {
+          "verified_zero_cost": {
+            "title": "Verified Zero Cost",
+            "type": "boolean"
+          },
+          "operation": {
+            "title": "Operation",
+            "type": "string"
+          },
+          "effect": {
+            "enum": [
+              "read",
+              "write",
+              "send"
+            ],
+            "title": "Effect",
+            "type": "string"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "arguments_digest": {
+            "title": "Arguments Digest",
+            "type": "string"
+          },
+          "resources": {
+            "items": {
+              "$ref": "#/$defs/ApprovalResource"
+            },
+            "title": "Resources",
+            "type": "array"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/$defs/AttachmentPreview"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "read_until": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Read Until"
+          },
+          "origin": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Origin"
+          },
+          "granted": {
+            "title": "Granted",
+            "type": "boolean"
+          },
+          "revoked": {
+            "title": "Revoked",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "verified_zero_cost",
+          "operation",
+          "effect",
+          "destination",
+          "arguments_digest",
+          "resources",
+          "attachments",
+          "read_until",
+          "origin",
+          "granted",
+          "revoked"
+        ],
+        "title": "ConnectorApproval",
+        "type": "object"
+      },
       "FormalMethodInvocation": {
         "additionalProperties": false,
         "properties": {
@@ -5235,6 +5951,17 @@
       "FormalModelCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -5320,6 +6047,17 @@
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",
@@ -5417,6 +6155,17 @@
       "ModelProbeCallDetail": {
         "additionalProperties": false,
         "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "connection_id": {
             "format": "uuid",
             "title": "Connection Id",

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from typing import Annotated, Any, Literal
 from urllib.parse import urlsplit
 
@@ -93,6 +95,11 @@ class McpOperation(BaseModel):
     effect: Literal["read", "write", "send"]
     resources: tuple[ResourceBinding, ...] = Field(max_length=30)
     formal_execution_cost: FormalExecutionCost | None = None
+    # Opt-in profiles for reviewed adapters. Scoped reads return records tagged with their requested IDs.
+    read_result_id_field: Name | None = None
+    read_result_items_field: Name | None = None
+    read_result_fields: tuple[Name, ...] = Field(default=(), max_length=64)
+    inline_attachments_field: Name | None = None
 
     @model_validator(mode="after")
     def valid_definition(self):
@@ -106,6 +113,30 @@ class McpOperation(BaseModel):
             or parts.fragment
         ):
             raise ValueError("Operation requires an HTTPS endpoint without credentials")
+        if self.read_result_id_field and (
+            self.effect != "read"
+            or len(self.resources) != 1
+            or (self.resources[0].cardinality == "many")
+            != bool(self.read_result_items_field)
+        ):
+            raise ValueError(
+                "Reusable reads require one exact resource and a tagged result"
+            )
+        if self.read_result_items_field and not self.read_result_id_field:
+            raise ValueError(
+                "A result collection requires a reviewed resource identity"
+            )
+        if self.read_result_fields and (
+            not self.read_result_id_field
+            or len(set(self.read_result_fields)) != len(self.read_result_fields)
+        ):
+            raise ValueError(
+                "Reviewed output fields require a scoped read and unique names"
+            )
+        if self.inline_attachments_field and self.effect not in ("write", "send"):
+            raise ValueError(
+                "Outbound attachments require a reviewed write or send operation"
+            )
         roles = [r.resource_role for r in self.resources]
         paths = [r.argument_path for r in self.resources]
         if len(set(roles)) != len(roles) or len(set(paths)) != len(paths):
@@ -115,12 +146,59 @@ class McpOperation(BaseModel):
     @property
     def policy_digest(self) -> str:
         document = self.model_dump(mode="json")
-        if self.formal_execution_cost is None:
-            document.pop("formal_execution_cost")
+        for field in (
+            "formal_execution_cost",
+            "read_result_id_field",
+            "read_result_items_field",
+            "inline_attachments_field",
+        ):
+            if document[field] is None:
+                document.pop(field)
+        if not self.read_result_fields:
+            document.pop("read_result_fields")
         return digest(document)
 
     def resolve(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        attachments = []
+        if self.inline_attachments_field:
+            files = arguments.get(self.inline_attachments_field)
+            if not isinstance(files, list) or len(files) > 100:
+                raise CapabilityError("Invalid outbound attachment list")
+            for item in files:
+                if (
+                    not isinstance(item, dict)
+                    or set(item) != {"name", "content_base64"}
+                    or not isinstance(item["name"], str)
+                    or not 1 <= len(item["name"]) <= 255
+                    or not isinstance(item["content_base64"], str)
+                    or len(item["content_base64"]) > 64000
+                ):
+                    raise CapabilityError(
+                        "Attachments require a file name and frozen inline bytes"
+                    )
+                try:
+                    content = base64.b64decode(item["content_base64"], validate=True)
+                except ValueError:
+                    raise CapabilityError("Invalid attachment bytes") from None
+                attachments.append(
+                    {
+                        "name": item["name"],
+                        "size": len(content),
+                        "sha256": hashlib.sha256(content).hexdigest(),
+                    }
+                )
         return {
+            **({"attachments": attachments} if self.inline_attachments_field else {}),
+            **(
+                {
+                    "read_result_id_field": self.read_result_id_field,
+                    "read_result_fields": list(self.read_result_fields),
+                    "read_result_items_field": self.read_result_items_field,
+                    "read_resource_path": list(self.resources[0].argument_path),
+                }
+                if self.read_result_id_field
+                else {}
+            ),
             **(
                 {
                     "formal_execution_cost": self.formal_execution_cost.model_dump(

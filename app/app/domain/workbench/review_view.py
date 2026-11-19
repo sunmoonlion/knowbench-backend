@@ -168,10 +168,10 @@ def review_view(
         "question": prompt.get("question") or "",
         "options": [
             {
-                "id": option.get("id"),
+                "id": option.get("id") or option.get("value"),
                 "label": option.get("label"),
                 "consequence": consequence(
-                    str(option.get("id")),
+                    str(option.get("id") or option.get("value")),
                     kind,
                     reserve=reserve,
                     done=done,
@@ -185,6 +185,11 @@ def review_view(
         "evidence": list(prompt.get("evidence") or []),
     }
     view["subject"] = {
+        **(
+            {"connector_call_id": subject["capability_call_id"]}
+            if subject.get("capability_call_id") and subject.get("data_transfer")
+            else {}
+        ),
         "digest": interaction.get("subject_digest"),
         "target_state_version": interaction.get("target_state_version"),
         "command": brief(subject["command"]) if subject.get("command") else None,

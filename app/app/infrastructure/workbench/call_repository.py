@@ -93,6 +93,47 @@ class CallRepositoryMixin:
         if result.scalar_one_or_none() is None:
             raise NotFound("call not found")
 
+    async def grant_call_read_scope(self, owner, call_id, key, expires):
+        await self.session.execute(
+            text("""UPDATE workbench_calls
+            SET read_scope_key=:key,read_scope_until=:expires
+            WHERE owner_actor_id=:o AND id=:id AND status='awaiting_approval'"""),
+            {"o": owner, "id": call_id, "key": key, "expires": expires},
+        )
+
+    async def active_call_read_scope(
+        self, owner, session_id, key, resources, *, origin=None
+    ):
+        result = await self.session.execute(
+            text("""SELECT id FROM workbench_calls
+            WHERE owner_actor_id=:o AND session_id=:s AND read_scope_key=:key
+            AND detail->'operation'->'resources' @> cast(:resources as jsonb)
+            AND status='succeeded' AND read_scope_until>clock_timestamp() AND read_revoked_at IS NULL
+            AND (cast(:origin AS uuid) IS NULL OR id=cast(:origin AS uuid))
+            ORDER BY created_at DESC,id LIMIT 1"""),
+            {
+                "o": owner,
+                "s": session_id,
+                "key": key,
+                "origin": origin,
+                "resources": json.dumps(resources),
+            },
+        )
+        value = result.scalar_one_or_none()
+        return str(value) if value else None
+
+    async def revoke_call_read_scope(self, owner, session_id, key, resources):
+        await self.session.execute(
+            text("""UPDATE workbench_calls SET read_revoked_at=now()
+            WHERE owner_actor_id=:o AND session_id=:s AND read_scope_key=:key AND read_revoked_at IS NULL AND detail->'operation'->'resources' = cast(:resources as jsonb)"""),
+            {
+                "o": owner,
+                "s": session_id,
+                "key": key,
+                "resources": json.dumps(resources),
+            },
+        )
+
     async def update_method_call_state(self, task_id, state):
         # Projection of the authoritative Task; no independent method state machine.
         await self.session.execute(

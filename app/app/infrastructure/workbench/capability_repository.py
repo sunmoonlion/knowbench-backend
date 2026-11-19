@@ -372,16 +372,22 @@ class CapabilityRepositoryMixin:
             },
         )
 
-    async def capability_calls(self, owner, session_id):
+    async def capability_calls(self, owner, session_id, call_id=None):
         await self.get_session(session_id, owner_actor_id=owner)
         return [
             row(r)
             for r in (
                 await self.session.execute(
                     text(
-                        "SELECT * FROM workbench_calls WHERE origin='managed' AND owner_actor_id=:o AND session_id=:s ORDER BY created_at DESC LIMIT 100"
+                        """SELECT c.*, grant_call.read_revoked_at AS origin_read_revoked_at
+                        FROM workbench_calls c LEFT JOIN workbench_calls grant_call
+                        ON grant_call.id=cast(c.detail->>'read_approval_id' AS uuid)
+                        AND grant_call.owner_actor_id=c.owner_actor_id AND grant_call.session_id=c.session_id
+                        WHERE c.origin='managed' AND c.owner_actor_id=:o AND c.session_id=:s
+                        AND (cast(:call_id AS uuid) IS NULL OR c.id=cast(:call_id AS uuid))
+                        ORDER BY c.created_at DESC LIMIT 100"""
                     ),
-                    {"o": owner, "s": session_id},
+                    {"o": owner, "s": session_id, "call_id": call_id},
                 )
             ).mappings()
         ]

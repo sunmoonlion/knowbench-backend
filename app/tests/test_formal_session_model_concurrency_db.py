@@ -46,9 +46,12 @@ async def test_session_state_lock_allows_event_foreign_key_and_cursor_progress(d
             assert second["cursor"] == first["cursor"] + 1
 
 
-async def test_deselect_cannot_commit_ahead_of_an_approval_check(db, monkeypatch):
+async def test_deselect_waits_for_approval_then_blocks_a_dispatch_still_negotiating(
+    db, monkeypatch
+):
     _, factory, remote, sid, sandbox, fake, runner = await setup(db)
     entered, release, saving = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    saved = asyncio.Event()
     tasks = []
     try:
         await start_turn(db, runner, sid, sandbox)
@@ -65,13 +68,21 @@ async def test_deselect_cannot_commit_ahead_of_an_approval_check(db, monkeypatch
 
         monkeypatch.setattr(FormalSessionTools, "resolve", pause_resolve)
 
+        async def call_checked(url, token, name, arguments, *, before_send):
+            await asyncio.wait_for(saved.wait(), 5)
+            await before_send()
+            return await remote.call(url, token, name, arguments)
+
+        monkeypatch.setattr(remote, "call_checked", call_checked, raising=False)
+
         async def deselect():
             async with db() as session:
                 caps = factory(WorkbenchRepository(session))
                 saving.set()
-                return await caps.save_selection(
+                await caps.save_selection(
                     OWNER, sid, SelectionPut(revision=selected["revision"])
                 )
+                saved.set()
 
         async with AsyncClient(
             transport=ASGITransport(fake.app), base_url="http://testserver"
@@ -94,7 +105,8 @@ async def test_deselect_cannot_commit_ahead_of_an_approval_check(db, monkeypatch
             release.set()
             response, _ = await asyncio.wait_for(asyncio.gather(approve, save), 10)
             assert response.status_code == 200, response.text
-        assert len(remote.calls) == 1
+        assert response.json()["status"] == "failed"
+        assert not remote.calls
         async with db() as session:
             selected = await factory(WorkbenchRepository(session)).selection(OWNER, sid)
             assert selected["formal_methods"] == []

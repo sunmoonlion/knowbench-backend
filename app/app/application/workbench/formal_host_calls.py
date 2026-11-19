@@ -680,6 +680,8 @@ class FormalHostCalls:
         return context
 
     async def decide(self, owner, peek, body):
+        if getattr(body, "remember_read", False):
+            raise CapabilityError("This formal action requires an exact approval")
         async with self.repo.transaction():
             # The lock order agrees with request/cancel: Task before Attempt/call.
             task = await self.repo.get_task(

@@ -54,7 +54,26 @@ def public_result(result, call_id: str):
 
 
 def public_call(call: dict) -> dict:
+    from app.domain.workbench.call_approval import approval_preview
+
     copy = deepcopy(call)
+    preview = approval_preview(call)
+    if preview:
+        copy["detail"]["approval"] = preview
+    for key in (
+        "read_scope_key",
+        "read_scope_until",
+        "read_revoked_at",
+        "origin_read_revoked_at",
+    ):
+        copy.pop(key, None)
+    for key in (
+        "read_offer_key",
+        "read_offer_until",
+        "read_approval_id",
+        "read_approval_until",
+    ):
+        copy["detail"].pop(key, None)
     copy["detail"].pop("invocation", None)  # Host identity is internal evidence.
     copy["detail"].pop("operation", None)  # Reviewed policy snapshot is internal.
     copy["detail"].pop("access", None)  # Frozen method permission is internal evidence.

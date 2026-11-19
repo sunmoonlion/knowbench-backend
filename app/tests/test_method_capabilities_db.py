@@ -32,14 +32,19 @@ from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-async def setup_method(db, *, access=None):
+async def setup_method(db, *, access=None, remote=None, operation=None):
     _, _, sid = await seed(db)
-    remote = Remote()
+    remote = remote or Remote()
+    entry = operation.tool_name if operation else "send"
     async with db() as s:
         repo = WorkbenchRepository(s)
-        svc = service(repo, remote)
+        svc = (
+            service(repo, remote, operations=(operation,))
+            if operation
+            else service(repo, remote)
+        )
         connection = await svc.create_connection(OWNER, body())
-        key = tool_key(connection["id"], "send")
+        key = tool_key(connection["id"], entry)
         skill = await svc.create_skill(
             OWNER,
             SkillCreate(
@@ -70,7 +75,7 @@ async def setup_method(db, *, access=None):
         ]
         pack["workflow"][0]["managed_capabilities"] = {
             "tools": [
-                {"url": URL, "name": "send", "requirement_id": ACCESS["requirement_id"]}
+                {"url": URL, "name": entry, "requirement_id": ACCESS["requirement_id"]}
             ],
             "skills": [
                 {

@@ -137,6 +137,8 @@ class SelectionPut(Strict):
 
 
 class ActionDecision(Strict):
+    remember_read: bool = Field(default=False, strict=True)
+
     decision: Literal["accept", "decline"]
     token: str = Field(min_length=16, max_length=256, repr=False)
     subject_digest: str = Field(pattern=r"^[a-f0-9]{64}$")

@@ -31,8 +31,8 @@ def authorize_operation(
 ) -> CallDecision:
     """Resolve only trusted adapters, fail closed on changed or missing mappings.
 
-    Exact-action approval remains mandatory for external reads too, until the
-    task-scope read approval work package supplies a persisted approval fact.
+    External operations require a human decision or a matching, live scoped
+    read receipt. Callers check the receipt only after verifying this policy.
     Platform and KnowBase operations retain their resource-owner checks at
     dispatch; they are not authorized by a remote readOnlyHint annotation.
     """
@@ -79,3 +79,15 @@ def authorize_operation(
         },
         registration.source == "skill_script",
     )
+
+
+async def send_mcp(remote, url, token, name, arguments, *, before_send=None):
+    """HTTP adapters recheck after session negotiation. Simple in-process adapters send immediately."""
+    if before_send:
+        negotiated = getattr(remote, "call_checked", None)
+        if negotiated:
+            return await negotiated(
+                url, token, name, arguments, before_send=before_send
+            )
+        await before_send()
+    return await remote.call(url, token, name, arguments)

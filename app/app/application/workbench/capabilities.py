@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
 
-from app.application.workbench.call_policy import authorize_operation
+from app.application.workbench.call_policy import authorize_operation, send_mcp
 from app.application.workbench.calls import call_context
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_access import check_access, declared_access
@@ -33,6 +33,7 @@ from app.application.workbench.tool_registry import (
     mcp_catalog,
     registered_call,
 )
+from app.domain.workbench.call_approval import action_digest, read_offer, scoped_result
 from app.domain.workbench.capabilities import (
     CapabilityError,
     CapabilityOutcomeUnknown,
@@ -41,7 +42,7 @@ from app.domain.workbench.capabilities import (
     public_asset,
     tool_key,
 )
-from app.domain.workbench.errors import Forbidden
+from app.domain.workbench.errors import Forbidden, WorkbenchError
 from app.domain.workbench.method_capabilities import (
     AccessRequirement,
     matches_skill,
@@ -1595,11 +1596,23 @@ class Capabilities:
                 else {}
             ),
         }
+        if not intent["purpose"] and intent.get("access"):
+            intent["purpose"] = intent["access"]["requirement"]["data_transfer"][
+                "purpose"
+            ]
+        intent.update(
+            await read_offer(self.repo, owner, intent, selected["runtime"], key)
+        )
         identity = digest(intent)
         async with self.repo.transaction():
             await self._locked_session(owner, session_id)
             # Serializes duplicate model requests on this session before opening approval.
-            await self.repo.capability_selection(owner, session_id, lock=True)
+            locked = await self.repo.capability_selection(owner, session_id, lock=True)
+            if (
+                locked["revision"] != selected["revision"]
+                or locked["runtime"].get("token_hash") != intent["runtime"]
+            ):
+                raise CapabilityError("The selected authorization changed")
             # Revalidate the scope after acquiring the serialization lock.
             await self.verify_invocation(
                 session_id, token, key, arguments, meta, observe_seconds=0
@@ -1638,70 +1651,28 @@ class Capabilities:
                         "Resolve the current method approval before another operation"
                     )
             call_id = str(uuid.uuid4())
-            approval_token = secrets.token_urlsafe(32)
-            prompt = InteractionPrompt(
-                title="确认运行技能脚本"
-                if intent.get("execution_kind") == "skill_script"
-                else "确认外部工具操作",
-                question="请核对技能、脚本和输入。本次在隔离云端容器执行，不读取本地项目、不连接网络。"
-                if intent.get("execution_kind") == "skill_script"
-                else "请核对账号、操作和完整参数。连接成功并不表示批准本次操作。",
-                options=[
-                    {"value": "accept", "label": "仅允许这次"},
-                    {"value": "decline", "label": "拒绝"},
-                ],
-                subject={
-                    "capability_call_id": call_id,
-                    "connection": connection["name"],
-                    "account": intent["account_label"],
-                    "tool": spec["tool"]["name"],
-                    "arguments": arguments,
-                    **(
-                        {
-                            "operation": {
-                                key: operation[key]
-                                for key in (
-                                    "capability_ref",
-                                    "version",
-                                    "operation",
-                                    "effect",
-                                    "resources",
-                                )
-                            }
-                        }
-                        if operation is not None
-                        else {}
-                    ),
-                },
-            )
-            if binding:
-                opened = await Ledger(self.repo).open_interaction(
-                    binding["task_id"],
-                    attempt_id=binding["attempt_id"],
-                    kind="tool_approval",
-                    prompt=prompt,
-                    subject_digest=identity,
-                    waiting_reason=WaitingReason.APPROVAL,
-                    ttl=timedelta(minutes=15),
+            origin = None
+            if intent.get("read_offer_key"):
+                origin = await self.repo.active_call_read_scope(
+                    owner,
+                    session_id,
+                    intent["read_offer_key"],
+                    intent["operation"]["resources"],
                 )
-                iid, approval_token = opened["interaction_id"], opened["token"]
+            if origin:
+                iid, approval_token = None, ""
+                intent["read_approval_id"] = origin
+                source = await self.repo.capability_call(owner, origin)
+                intent["read_approval_until"] = source["read_scope_until"].isoformat()
             else:
-                iid = await self.repo.insert_interaction(
-                    session_id=session_id,
-                    task_id=None,
-                    attempt_id=None,
-                    kind="tool_approval",
-                    prompt=prompt.model_dump(),
-                    subject_digest=identity,
-                    token=approval_token,
-                    target_state_version=None,
-                    expires_at=datetime.now(UTC) + timedelta(minutes=15),
+                iid, approval_token = await self._open_action_approval(
+                    session_id, call_id, binding, intent, identity
                 )
             detail = {**intent, "approval_token": approval_token}
             context = await call_context(
                 self.repo, owner, invocation, task_id=(binding or {}).get("task_id")
             )
-            await self.repo.add_call(
+            call = await self.repo.add_call(
                 {
                     **context,
                     "kind": "tool",
@@ -1718,35 +1689,156 @@ class Capabilities:
                     else None,
                     "interaction_id": iid,
                     "digest": identity,
-                    "status": "awaiting_approval",
+                    "status": "dispatching" if origin else "awaiting_approval",
                     "detail": detail,
                 }
             )
-            if not binding:
-                await self.repo.append_event(
-                    session_id=session_id,
-                    kind="approval",
-                    event_type="interaction/opened",
-                    payload={
-                        "interaction_id": iid,
-                        "kind": "tool_approval",
-                        "token": approval_token,
-                        "subject_digest": identity,
-                        "subject": prompt.subject,
-                        "prompt": prompt.model_dump(),
-                    },
-                )
+        if origin:
+            done = await self._dispatch_call(owner, call, connection, detail)
+            return {
+                "call_id": call_id,
+                "status": done["status"],
+                "result": done["detail"]["result"],
+            }
         return {
             "call_id": call_id,
             "status": "awaiting_approval",
             "message": "No external operation has run. Await the user's decision in the capability panel; do not report success. Read action_result after approval.",
         }
 
-    async def calls(self, owner, session_id):
+    async def _open_action_approval(
+        self, session_id, call_id, binding, intent, identity
+    ):
+        operation = intent.get("operation", {})
+        approval_token = secrets.token_urlsafe(32)
+        prompt = InteractionPrompt(
+            title="确认运行技能脚本"
+            if intent.get("execution_kind") == "skill_script"
+            else "确认外部工具操作",
+            question="请核对技能、脚本和输入。本次在隔离云端容器执行，不读取本地项目、不连接网络。"
+            if intent.get("execution_kind") == "skill_script"
+            else "请核对账号、操作和完整参数。连接成功并不表示批准本次操作。",
+            options=[
+                {"value": "accept", "label": "仅允许这次"},
+                *(
+                    [
+                        {
+                            "value": "accept_read_scope",
+                            "label": "在所示范围和期限内允许重复读取",
+                        }
+                    ]
+                    if intent.get("read_offer_key")
+                    else []
+                ),
+                {"value": "decline", "label": "拒绝"},
+            ],
+            subject={
+                "capability_call_id": call_id,
+                "purpose": intent["purpose"],
+                **(
+                    {"read_until": intent["read_offer_until"]}
+                    if intent.get("read_offer_key")
+                    else {}
+                ),
+                **(
+                    {"attachments": operation["attachments"]}
+                    if "attachments" in operation
+                    else {}
+                ),
+                **(
+                    {
+                        "data_transfer": operation["data_transfer"],
+                        "verified_zero_cost": (
+                            operation.get("formal_execution_cost") or {}
+                        ).get("incremental_cost")
+                        == "0",
+                    }
+                    if "data_transfer" in operation
+                    else {}
+                ),
+                "connection": intent["connection_name"],
+                "connection_revision": intent["revision"],
+                "account": intent["account_label"],
+                "tool": intent["tool"]["name"],
+                "arguments": intent["arguments"],
+                **(
+                    {
+                        "operation": {
+                            key: operation[key]
+                            for key in (
+                                "capability_ref",
+                                "version",
+                                "operation",
+                                "effect",
+                                "resources",
+                            )
+                        }
+                    }
+                    if operation
+                    else {}
+                ),
+            },
+        )
+        if binding:
+            opened = await Ledger(self.repo).open_interaction(
+                binding["task_id"],
+                attempt_id=binding["attempt_id"],
+                kind="tool_approval",
+                prompt=prompt,
+                subject_digest=identity,
+                waiting_reason=WaitingReason.APPROVAL,
+                ttl=timedelta(minutes=15),
+            )
+            iid, approval_token = opened["interaction_id"], opened["token"]
+        else:
+            iid = await self.repo.insert_interaction(
+                session_id=session_id,
+                task_id=None,
+                attempt_id=None,
+                kind="tool_approval",
+                prompt=prompt.model_dump(),
+                subject_digest=identity,
+                token=approval_token,
+                target_state_version=None,
+                expires_at=datetime.now(UTC) + timedelta(minutes=15),
+            )
+        if not binding:
+            await self.repo.append_event(
+                session_id=session_id,
+                kind="approval",
+                event_type="interaction/opened",
+                payload={
+                    "interaction_id": iid,
+                    "kind": "tool_approval",
+                    "token": approval_token,
+                    "subject_digest": identity,
+                    "subject": prompt.subject,
+                    "prompt": prompt.model_dump(),
+                },
+            )
+        return iid, approval_token
+
+    async def revoke_read_approval(self, owner, call_id):
+        peek = await self.repo.capability_call(owner, call_id)
+        async with self.repo.transaction():
+            await self._locked_call_session(owner, peek)
+            call = await self.repo.capability_call(owner, call_id, lock=True)
+            if not call.get("read_scope_key"):
+                raise CapabilityError("This call has no reusable read approval")
+            await self.repo.revoke_call_read_scope(
+                owner,
+                call["session_id"],
+                call["read_scope_key"],
+                call["detail"]["operation"]["resources"],
+            )
+            return public_call(await self.repo.capability_call(owner, call_id))
+
+    async def calls(self, owner, session_id, call_id=None):
         await self.repo.get_session(session_id, owner_actor_id=owner)
         await self.repo.recover_calls(owner, session_id)
         return [
-            public_call(c) for c in await self.repo.capability_calls(owner, session_id)
+            public_call(c)
+            for c in await self.repo.capability_calls(owner, session_id, call_id)
         ]
 
     async def method_call_result(self, session_id, token, call_id):
@@ -1844,73 +1936,22 @@ class Capabilities:
                 owner, call["source_asset_id"], lock=True
             )
             intent = call["detail"]
+            if body.remember_read and (
+                body.decision != "accept" or not intent.get("read_offer_key")
+            ):
+                raise CapabilityError(
+                    "This action only accepts an exact once-only decision"
+                )
             if body.decision == "accept":
-                key = tool_key(connection["id"], intent["tool"]["name"])
-                session = await self.repo.get_session(
-                    call["session_id"], owner_actor_id=owner
+                await self._check_managed_action(
+                    owner, call, connection, selected, intent
                 )
-                if (
-                    not intent.get("invocation")
-                    or intent["invocation"]["session_id"] != call["session_id"]
-                    or intent["invocation"]["thread_id"] != session.get("thread_id")
-                    or intent["invocation"]["turn_id"]
-                    != selected["runtime"].get("turn_id")
-                    or connection["status"] != "active"
-                    or connection["revision"] != intent["revision"]
-                    or key not in selected["runtime"].get("tools", {})
-                    or selected["revision"] != intent["selection_revision"]
-                    or selected["runtime"].get("token_hash") != intent["runtime"]
-                    or selected["runtime"].get("aborted")
-                    or (
-                        intent.get("method")
-                        and intent["method"]["task_id"]
-                        != str(session.get("active_task_id"))
-                    )
-                    or (
-                        intent.get("method")
-                        and selected["runtime"].get("status")
-                        not in ("prepared", "applied")
-                    )
-                    or datetime.fromisoformat(
-                        selected["runtime"].get(
-                            "expires_at", "1970-01-01T00:00:00+00:00"
-                        )
-                    )
-                    <= datetime.now(UTC)
-                ):
-                    raise CapabilityError(
-                        "Authorization changed; request the operation again"
-                    )
-                await check_runtime_method(
-                    self.repo,
-                    owner,
-                    session,
-                    selected["runtime"],
-                    lock=True,
-                    resource_delegations=self.resource_delegations,
-                )
-                if intent.get("method") != selected["runtime"].get("method"):
-                    raise CapabilityError(
-                        "Method approval belongs to another execution"
-                    )
-                spec = selected["runtime"].get("tools", {}).get(key, {})
-                if intent.get("method") and spec.get("access") != intent.get("access"):
-                    raise CapabilityError(
-                        "Method permission changed after approval was requested"
-                    )
-                decision = authorize_operation(
-                    registered_call(connection, intent),
-                    intent["arguments"],
-                    operations=self.operations,
-                    method=bool(intent.get("method")),
-                    access=spec.get("access"),
-                    operation_digest=spec.get("operation_digest"),
-                )
-                if not decision.requires_approval or decision.operation != intent.get(
-                    "operation"
-                ):
-                    raise CapabilityError(
-                        "Operation policy changed; request approval again"
+                if body.remember_read:
+                    expiry = datetime.fromisoformat(intent["read_offer_until"])
+                    if expiry <= datetime.now(UTC):
+                        raise CapabilityError("The read scope has expired")
+                    await self.repo.grant_call_read_scope(
+                        owner, call_id, intent["read_offer_key"], expiry
                     )
             script_input = None
             if (
@@ -1924,7 +1965,10 @@ class Capabilities:
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
                 token=body.token,
-                response={"decision": body.decision},
+                response={
+                    "decision": body.decision,
+                    **({"remember_read": True} if body.remember_read else {}),
+                },
                 owner_actor_id=owner,
                 subject_digest=body.subject_digest,
             )
@@ -1942,6 +1986,124 @@ class Capabilities:
             )
         return public_call(await self.repo.capability_call(owner, call_id))
 
+    async def _check_managed_action(self, owner, call, connection, selected, intent):
+        if not intent.get("operation"):
+            raise CapabilityError("Operation policy changed; request approval again")
+        if action_digest(intent) != call["digest"]:
+            raise Forbidden("The approved action content changed")
+        key = tool_key(connection["id"], intent["tool"]["name"])
+        session = await self.repo.get_session(call["session_id"], owner_actor_id=owner)
+        if (
+            not intent.get("invocation")
+            or intent["invocation"]["session_id"] != call["session_id"]
+            or intent["invocation"]["thread_id"] != session.get("thread_id")
+            or intent["invocation"]["turn_id"] != selected["runtime"].get("turn_id")
+            or connection["status"] != "active"
+            or connection["revision"] != intent["revision"]
+            or key not in selected["runtime"].get("tools", {})
+            or selected["revision"] != intent["selection_revision"]
+            or selected["runtime"].get("token_hash") != intent["runtime"]
+            or selected["runtime"].get("aborted")
+            or (
+                intent.get("method")
+                and intent["method"]["task_id"] != str(session.get("active_task_id"))
+            )
+            or (
+                intent.get("method")
+                and selected["runtime"].get("status") not in ("prepared", "applied")
+            )
+            or datetime.fromisoformat(
+                selected["runtime"].get("expires_at", "1970-01-01T00:00:00+00:00")
+            )
+            <= datetime.now(UTC)
+        ):
+            raise CapabilityError("Authorization changed; request the operation again")
+        if not intent.get("method") and (
+            session["wheel"] != Wheel.user
+            or session.get("active_task_id")
+            or not await self.repo.is_accepted_user_turn(
+                session_id=call["session_id"], turn_id=intent["invocation"]["turn_id"]
+            )
+        ):
+            raise CapabilityError("The approved chat turn is no longer active")
+        await check_runtime_method(
+            self.repo,
+            owner,
+            session,
+            selected["runtime"],
+            lock=True,
+            resource_delegations=self.resource_delegations,
+        )
+        if intent.get("method") != selected["runtime"].get("method"):
+            raise CapabilityError("Method approval belongs to another execution")
+        spec = selected["runtime"].get("tools", {}).get(key, {})
+        if intent.get("method") and spec.get("access") != intent.get("access"):
+            raise CapabilityError(
+                "Method permission changed after approval was requested"
+            )
+        if intent.get("read_offer_key"):
+            offer = await read_offer(self.repo, owner, intent, selected["runtime"], key)
+            if (
+                offer.get("read_offer_key") != intent["read_offer_key"]
+                or offer["read_offer_until"] != intent["read_offer_until"]
+            ):
+                raise CapabilityError(
+                    "The method read authorization or its term changed"
+                )
+        decision = authorize_operation(
+            registered_call(connection, intent),
+            intent["arguments"],
+            operations=self.operations,
+            method=bool(intent.get("method")),
+            access=spec.get("access"),
+            operation_digest=spec.get("operation_digest"),
+        )
+        if not decision.requires_approval or decision.operation != intent.get(
+            "operation"
+        ):
+            raise CapabilityError("Operation policy changed; request approval again")
+
+    async def _check_before_send(self, owner, call, intent):
+        async with self.repo.transaction():
+            await self._locked_call_session(owner, call)
+            current = await self.repo.capability_call(owner, call["id"], lock=True)
+            selected = await self.repo.capability_selection(
+                owner, call["session_id"], lock=True
+            )
+            asset = await self.repo.capability_asset(
+                owner, call["source_asset_id"], lock=True
+            )
+            if current["status"] != "dispatching" or current["detail"] != intent:
+                raise CapabilityError("The dispatch receipt changed")
+            if current.get("read_scope_key") and (
+                current["read_revoked_at"]
+                or current["read_scope_until"] <= datetime.now(UTC)
+            ):
+                raise CapabilityError("The read approval expired or was revoked")
+            if intent.get("execution_kind") in (
+                "formal_mcp",
+                "formal_probe",
+                "formal_method",
+                "formal_method_model",
+            ):
+                from app.application.workbench.formal_dispatch_authority import (
+                    check_formal_dispatch,
+                )
+
+                await check_formal_dispatch(self, owner, current, asset, intent)
+                return
+            await self._check_managed_action(owner, current, asset, selected, intent)
+            if intent.get(
+                "read_approval_id"
+            ) and not await self.repo.active_call_read_scope(
+                owner,
+                call["session_id"],
+                intent["read_offer_key"],
+                intent["operation"]["resources"],
+                origin=intent["read_approval_id"],
+            ):
+                raise CapabilityError("The read scope expired or was revoked")
+
     async def _dispatch_call(
         self, owner, call, connection, intent, knowbase_read=None, *, script_input=None
     ):
@@ -1949,6 +2111,10 @@ class Capabilities:
         call_id = call["id"]
         # Receipt is committed before outbound I/O. No automatic retry after a crash.
         try:
+
+            async def before_send():
+                await self._check_before_send(owner, call, intent)
+
             if intent.get("execution_kind") == "skill_script":
                 if self.script_executor is None or script_input is None:
                     raise CapabilityError("Script execution is unavailable")
@@ -1965,6 +2131,7 @@ class Capabilities:
                         read_approved,
                     )
 
+                    await before_send()
                     result = await read_approved(self.repo, owner, call, intent)
                 elif (
                     self.knowbase_reader
@@ -1973,28 +2140,34 @@ class Capabilities:
                     subject = await self.repo.subject_of_actor(owner)
                     if not subject:
                         raise CapabilityError("The KnowBase account is unavailable")
+                    await before_send()
                     result = await self.knowbase_reader.call(
                         subject, intent, knowbase_read
                     )
                 elif connection["detail"].get("auth") == "oauth":
-                    result = await self.oauth.call(owner, connection, intent)
+                    result = await self.oauth.call(
+                        owner, connection, intent, before_send=before_send
+                    )
                 else:
                     if connection["detail"]["url"] in self.oauth.urls:
                         raise CapabilityError(
                             "This service requires a verified OAuth connection"
                         )
-                    result = await self.remote.call(
+                    result = await send_mcp(
+                        self.remote,
                         connection["detail"]["url"],
                         self.secret(connection),
                         intent["tool"]["name"],
                         intent["arguments"],
+                        before_send=before_send,
                     )
+                result = scoped_result(intent.get("operation", {}), result)
                 status = "failed" if result.get("isError") else "succeeded"
                 intent["result"] = result
         except CapabilityOutcomeUnknown as exc:
             status = "unknown"
             intent["result"] = {"message": exc.message}
-        except CapabilityError as exc:
+        except WorkbenchError as exc:
             status = "failed"
             intent["result"] = {"isError": True, "message": exc.message}
         except Exception:
