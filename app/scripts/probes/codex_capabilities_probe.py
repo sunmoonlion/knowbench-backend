@@ -229,7 +229,7 @@ stream_max_retries = 0
         "/probe/codex", "--version", stdout=asyncio.subprocess.PIPE
     )
     version_text = (await version.communicate())[0].decode().strip()
-    assert version_text == "codex-cli 0.155.1", version_text
+    assert version_text == "codex-cli 0.170.0", version_text
     proc = await asyncio.create_subprocess_exec(
         "/probe/codex",
         "app-server",

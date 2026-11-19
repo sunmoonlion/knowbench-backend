@@ -12,6 +12,8 @@ from typing import Any
 
 from app.domain.workbench.errors import ProjectPathInvalid
 
+CODEX_VERSION = "0.170.0"
+
 MAX_TITLE_CHARS = 200
 DEFAULT_TITLE_CHARS = 30
 MAX_PATH_CHARS = 400

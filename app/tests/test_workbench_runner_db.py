@@ -73,7 +73,7 @@ class FakeAppServer:
             await send(
                 {
                     "id": rid,
-                    "result": {"userAgent": "fake/0.155.1", "codexHome": "/data/codex"},
+                    "result": {"userAgent": "fake/0.170.0", "codexHome": "/data/codex"},
                 }
             )
         elif m == "thread/start":
@@ -446,7 +446,7 @@ async def seed(db, fake):
                 owner_actor_id=OWNER,
                 name="pc",
                 agent_version="0.1.0",
-                codex_version="0.155.1",
+                codex_version="0.170.0",
                 roots=["/home/u/research"],
                 ceiling={"sandbox": "workspace-write", "network": False},
             )
@@ -454,7 +454,7 @@ async def seed(db, fake):
                 owner_actor_id=OWNER,
                 app_server_url=f"ws://127.0.0.1:{fake.port}",
                 token_ref=f"inline:{TOKEN}",
-                codex_version="0.155.1",
+                codex_version="0.170.0",
             )
         sid = (
             await SessionService(repo).create(

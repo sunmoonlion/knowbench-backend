@@ -23,6 +23,7 @@ from app.application.ports.workbench import (
 )
 from app.application.workbench.tokens import TokenIssuer, jti_of
 from app.domain.workbench.errors import RelayIdentityChanged, WorkbenchError
+from app.domain.workbench.projects import CODEX_VERSION
 
 log = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ class SandboxProvisioning:
         provisioner: Provisioner,
         relay_admin: RelayAdmin,
         relay_public_url: str,
-        codex_version: str = "0.155.1",
+        codex_version: str = CODEX_VERSION,
         issuer: TokenIssuer | None = None,
         global_limit: int = 0,
         records_url: str = "",

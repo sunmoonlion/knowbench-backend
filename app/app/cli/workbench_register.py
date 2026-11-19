@@ -19,6 +19,7 @@ import sys
 from sqlalchemy import text
 
 from app.bootstrap.workbench import workbench_store
+from app.domain.workbench.projects import CODEX_VERSION
 from app.infrastructure.storage.postgres import get_postgres
 
 
@@ -34,7 +35,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         help="whitelisted root on the user's machine (repeatable)",
     )
-    parser.add_argument("--codex-version", default="0.155.1")
+    parser.add_argument("--codex-version", default=CODEX_VERSION)
     parser.add_argument("--agent-version", default="0.1.0")
     parser.add_argument(
         "--sandbox-url", required=True, help="ws://…:47800 of the user's app-server"

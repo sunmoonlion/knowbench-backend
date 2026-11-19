@@ -86,7 +86,7 @@ async def seed(factory, *, owner=OWNER, root="/home/u/research/proj"):
                 owner_actor_id=owner,
                 name="laptop",
                 agent_version="0.1.0",
-                codex_version="0.155.1",
+                codex_version="0.170.0",
                 roots=["/home/u/research"],
                 ceiling={"sandbox": "workspace-write", "network": False},
             )
@@ -94,7 +94,7 @@ async def seed(factory, *, owner=OWNER, root="/home/u/research/proj"):
                 owner_actor_id=owner,
                 app_server_url="ws://sandbox:47800",
                 token_ref="secret/x",
-                codex_version="0.155.1",
+                codex_version="0.170.0",
             )
         sid = (
             await SessionService(repo).create(

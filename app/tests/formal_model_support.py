@@ -86,7 +86,7 @@ class ModelServer(ScriptedAppServer):
             await ws.send(json.dumps({"method": name, "params": params}))
 
         if method == "initialize":
-            await answer({"userAgent": "sunmoon-workbench/0.155.1 (Linux) test"})
+            await answer({"userAgent": "sunmoon-workbench/0.170.0 (Linux) test"})
         elif method == "experimentalFeature/list":
             await answer(
                 {

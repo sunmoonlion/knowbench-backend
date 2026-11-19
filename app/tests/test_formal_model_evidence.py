@@ -172,7 +172,7 @@ def facts():
     }
     isolation = {
         "version": PROBE_ISOLATION,
-        "codex_version": "0.155.1",
+        "codex_version": "0.170.0",
         "tools": [PROBE_TOOL],
         "startup_features": {
             "multi_agent": False,
@@ -378,6 +378,17 @@ async def collect(world):
         world.parent,
         world.result,
     )
+
+
+@pytest.mark.parametrize("version", ["0.155.1", "0.170.0"])
+async def test_previous_probe_profile_only_qualifies_its_recorded_version(version):
+    world = facts()
+    world.isolation.update(
+        version=f"codex-{version}/formal-probe-v1", codex_version=version
+    )
+    del world.isolation["applied_config"]["features.view_image"]
+    proof = await collect(world)
+    assert proof["validated"] is (version == "0.155.1")
 
 
 async def test_completed_provenance_reconciles_events_budget_and_isolation_without_secrets():

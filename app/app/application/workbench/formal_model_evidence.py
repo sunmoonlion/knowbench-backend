@@ -12,11 +12,10 @@ from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_execution import direct_procedure, snapshot_for_task
 from app.domain.workbench.formal_model import (
-    PROBE_CONFIG,
-    PROBE_ISOLATION,
     PROBE_SERVER,
     PROBE_TOOL,
     validate_model_call,
+    verified_probe_profile,
 )
 from app.domain.workbench.pricing import cumulative_of, fresh_usage
 from app.domain.workbench.skill_execution import public_result
@@ -102,12 +101,10 @@ def _isolation(value, task, attempt, call, snapshot):
     }
     if (
         not isinstance(value, dict)
-        or value.get("version") != PROBE_ISOLATION
-        or value.get("codex_version") != "0.155.1"
+        or not verified_probe_profile(value)
         or value.get("tools") != [PROBE_TOOL]
         or value.get("startup_features")
         != {"multi_agent": False, "multi_agent_v2": False, "goals": False}
-        or value.get("applied_config") != PROBE_CONFIG
         or value.get("thread_id") != task["thread_id"]
         or value.get("attempt_id") != str(attempt["id"])
         or value.get("snapshot_digest") != task["pack_digest"]

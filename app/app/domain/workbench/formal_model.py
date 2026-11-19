@@ -5,11 +5,12 @@ from decimal import Decimal
 
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import snapshot_for_task
+from app.domain.workbench.projects import CODEX_VERSION
 
 PROBE_TOOL = "formal_probe_call"
 PROBE_SERVER = "sunmoon_capabilities"
-PROBE_ISOLATION = "codex-0.155.1/formal-probe-v1"
-PROBE_CONFIG = {
+PROBE_ISOLATION = f"codex-{CODEX_VERSION}/formal-probe-v1"
+_PREVIOUS_PROBE_CONFIG = {
     "features.shell_tool": False,
     "features.multi_agent": False,
     "features.apps": False,
@@ -17,6 +18,24 @@ PROBE_CONFIG = {
     "features.default_mode_request_user_input": False,
     "web_search": "disabled",
 }
+
+
+PROBE_CONFIG = {**_PREVIOUS_PROBE_CONFIG, "features.view_image": False}
+
+
+def verified_probe_profile(evidence: dict) -> bool:
+    # Frozen methods carry the exact profile observed when their test ran.
+    version = evidence.get("codex_version")
+    if version == CODEX_VERSION:
+        config = PROBE_CONFIG
+    elif version == "0.155.1":
+        config = _PREVIOUS_PROBE_CONFIG
+    else:
+        return False
+    return (
+        evidence.get("version") == f"codex-{version}/formal-probe-v1"
+        and evidence.get("applied_config") == config
+    )
 
 
 def model_call_key(task_id: str) -> str:

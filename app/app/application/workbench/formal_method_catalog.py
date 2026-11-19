@@ -32,10 +32,9 @@ from app.domain.workbench.formal_method_execution_generated import (
 )
 from app.domain.workbench.formal_method_generated import MethodRef, Orchestration
 from app.domain.workbench.formal_model import (
-    PROBE_CONFIG,
-    PROBE_ISOLATION,
     PROBE_SERVER,
     PROBE_TOOL,
+    verified_probe_profile,
 )
 from app.domain.workbench.method_authorization import MethodAuthorization
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
@@ -129,12 +128,10 @@ def _verify_model_case(request, snapshot, item, result, identities):
         )
         identities.add((kind, value))
     _require(
-        isolation["version"] == PROBE_ISOLATION
-        and isolation["codex_version"] == "0.155.1"
+        verified_probe_profile(isolation)
         and isolation["tools"] == [PROBE_TOOL]
         and isolation["startup_features"]
         == {"multi_agent": False, "multi_agent_v2": False, "goals": False}
-        and isolation["applied_config"] == PROBE_CONFIG
         and isolation["thread_id"] == trace.thread_id
         and isolation["attempt_id"] == str(result.attempt_id)
         and isolation["snapshot_digest"] == item["snapshot_digest"]

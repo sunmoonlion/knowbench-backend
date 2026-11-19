@@ -65,6 +65,7 @@ from app.domain.workbench.pricing import (
     fresh_usage,
 )
 from app.domain.workbench.projects import (
+    CODEX_VERSION,
     THREAD_CONFIG,
     ExecutionScene,
     mode_note,
@@ -323,7 +324,7 @@ class SandboxLink:
         client = await self.ensure_connected()
         user_agent = getattr(client, "server_info", {}).get("userAgent", "")
         if not isinstance(user_agent, str) or not re.match(
-            r"^[^\s/]+/0\.155\.1(?:\s|$)", user_agent
+            rf"^[^\s/]+/{re.escape(CODEX_VERSION)}(?:\s|$)", user_agent
         ):
             raise RuntimeError("Unverified Codex version for candidate isolation")
         state = await client.request(
@@ -427,7 +428,7 @@ class SandboxLink:
                                 name: actual[name] for name in required
                             },
                             "disabled_servers": sorted(servers - {PROBE_SERVER}),
-                            "codex_version": "0.155.1",
+                            "codex_version": CODEX_VERSION,
                             "inventory": safe_inventory,
                             "applied_config": dict(PROBE_CONFIG),
                             "scope_id": selected["runtime"]["scope_id"],

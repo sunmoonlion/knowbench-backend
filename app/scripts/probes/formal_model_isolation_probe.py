@@ -17,6 +17,7 @@ import codex_capabilities_probe as fixture
 TOOL = "formal_probe_call"
 PROFILE = {
     "features.shell_tool": False,
+    "features.view_image": False,
     "features.multi_agent": False,
     "features.apps": False,
     "features.goals": False,
@@ -97,7 +98,7 @@ stream_max_retries = 0
         binary, "--version", stdout=asyncio.subprocess.PIPE
     )
     version_text = (await version.communicate())[0].decode().strip()
-    assert version_text == "codex-cli 0.155.1", version_text
+    assert version_text == "codex-cli 0.170.0", version_text
     proc = await asyncio.create_subprocess_exec(
         binary,
         "app-server",

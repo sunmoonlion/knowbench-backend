@@ -178,8 +178,7 @@ HTTP MCP 在所有本地工具和数据中继之前检查：
 ### 固定版本协议探针
 
 `scripts/probes/codex_mcp_provenance.py` 只在无外网、全新 home 的一次性容器中运行；Responses
-和 MCP 都是 loopback 合成服务，不读任何用户 Key、不调用真实模型/Wind。以项目固定的
-Codex 0.155.1 验证：模型 MCP 调用有线程/轮次/callId，且与 item/started 一致；客户端直接
+和 MCP 都是 loopback 合成服务，不读任何用户 Key、不调用真实模型/Wind。以当前开发基线 Codex 0.170.0 和原基线 0.155.1 分别验证：模型 MCP 调用有线程/轮次/callId，且与 item/started 一致；客户端直接
 mcpServer/tool/call 没有轮次身份。thread/start 的 MCP header 可分线程，但已装载线程的
 thread/resume 不更新 header，unsubscribe 后再 resume 才更新。因此实现不依靠热重写全局
 header，不动其他线程配置。升级 Codex 时须重新跑此探针，不能把版本实测当永久协议保证。

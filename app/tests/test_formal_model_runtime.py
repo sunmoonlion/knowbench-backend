@@ -138,8 +138,9 @@ async def test_probe_never_turns_native_questions_into_operation_approval(method
     [
         None,
         {},
-        {"userAgent": "client/0.155.2 (Linux)"},
-        {"userAgent": "client/0.155.10 (Linux)"},
+        {"userAgent": "client/0.155.1 (Linux)"},
+        {"userAgent": "client/0.170.1 (Linux)"},
+        {"userAgent": "client/0.170.00 (Linux)"},
     ],
 )
 async def test_probe_requires_exact_handshake_version_before_configuration(version):
