@@ -7,7 +7,10 @@ from app.domain.workbench.formal_execution import (
     FormalTaskSnapshot,
     dependency_for_step,
     direct_procedure,
-    orchestration_plan,
+    execution_slot,
+    execution_steps,
+    expanded_plan,
+    recursive_plan,
     validate_values,
 )
 
@@ -61,7 +64,7 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
         digest(snapshot.arguments),
     )
     if snapshot.dependencies:
-        steps = orchestration_plan(snapshot)
+        steps = execution_steps(snapshot)
         index = refs.get("step_index")
         if not isinstance(index, int) or not 0 <= index < len(steps):
             raise CapabilityError("Formal step index is invalid")
@@ -69,7 +72,7 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
         frozen = dependency_for_step(snapshot, step)
         source, slot, method_id = (
             frozen.draft.source,
-            step.id,
+            execution_slot(snapshot, index),
             str(frozen.reference.method_id),
         )
         arguments_digest = refs.get("arguments_digest")
@@ -78,13 +81,40 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
             or refs.get("slot") != slot
             or refs.get("reference") != frozen.reference.model_dump(mode="json")
             or host.get("reference") != refs["reference"]
-            or host.get("parent_method_id") != str(snapshot.method_id)
+            or host.get("parent_method_id")
+            != (
+                str(
+                    next(
+                        n.reference.method_id
+                        for n in expanded_plan(snapshot).nodes
+                        if n.path
+                        == expanded_plan(snapshot).leaf_nodes[index].parent_path
+                    )
+                )
+                if recursive_plan(snapshot)
+                and expanded_plan(snapshot).leaf_nodes[index].parent_path
+                else str(snapshot.method_id)
+            )
             or host.get("method_call_id") != refs.get("method_call_id")
             or str(call.get("parent_call_id")) != refs.get("method_call_id")
             or host.get("inputs_digest") != arguments_digest
             or not arguments_digest
         ):
             raise CapabilityError("Formal dependency invocation changed")
+        if recursive_plan(snapshot):
+            from app.domain.workbench.formal_recursive import TREE_ADAPTER
+
+            node = expanded_plan(snapshot).leaf_nodes[index]
+            if (
+                refs.get("path") != list(node.path)
+                or host.get("path") != list(node.path)
+                or host.get("adapter") != TREE_ADAPTER
+                or host.get("parent_method_call_id")
+                != refs.get("parent_method_call_id")
+                or host.get("root_method_call_id") != refs.get("root_method_call_id")
+            ):
+                raise CapabilityError("Formal recursive call path changed")
+
     if (
         snapshot.caller != "host"
         or call.get("kind") != "tool"

@@ -16,6 +16,15 @@ class CallRepositoryMixin:
     session: AsyncSession
     transaction: Callable[[], AbstractAsyncContextManager[Any]]
 
+    async def list_task_calls(self, owner, task_id):
+        """Complete task call ledger for reconciliation, not a paginated UI view."""
+        result = await self.session.execute(
+            text("""SELECT * FROM workbench_calls
+                WHERE owner_actor_id=:o AND task_id=:t ORDER BY created_at,id"""),
+            {"o": owner, "t": task_id},
+        )
+        return [row(item) for item in result.mappings()]
+
     async def call_by_key(self, owner, session_id, key):
         result = (
             (

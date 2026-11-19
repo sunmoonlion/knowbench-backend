@@ -39,6 +39,23 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
     from app.domain.workbench.formal_method_generated import Orchestration
 
     if isinstance(request.draft.definition.procedure, Orchestration):
+        from app.domain.workbench.formal_execution import recursive_plan
+
+        if result.get("task_id"):
+            try:
+                owner = await repo.actor_for_subject(request.owner_subject)
+                task = await repo.get_task(result["task_id"], owner_actor_id=owner)
+                recursive = recursive_plan(snapshot_for_task(task))
+            except (WorkbenchError, ValueError, TypeError, KeyError):
+                recursive = False
+            if recursive:
+                from app.application.workbench.formal_recursive_evidence import (
+                    collect_recursive_evidence,
+                )
+
+                return await collect_recursive_evidence(
+                    repo, request, case, repetition, result
+                )
         from app.application.workbench.formal_orchestration_evidence import (
             collect_plan_evidence,
         )

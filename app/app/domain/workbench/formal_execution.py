@@ -38,7 +38,7 @@ class FormalTaskSnapshot(Strict):
     arguments: dict[str, Any]
     definition_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     dependencies: tuple[FrozenFormalMethod, ...] = Field(
-        default=(), max_length=100, exclude_if=lambda value: not value
+        default=(), max_length=1000, exclude_if=lambda value: not value
     )
     caller: Literal["host", "model"] = Field(
         default="host", exclude_if=lambda value: value == "host"
@@ -91,34 +91,18 @@ def is_formal_host(task: dict) -> bool:
     return is_formal(task) and not is_formal_model(task)
 
 
-def orchestration_plan(snapshot: FormalTaskSnapshot):
-    """A fixed, one-level formal plan; never an accepted-plan/pack projection."""
-    from app.domain.workbench.formal_method_compiler_generated import (
-        FrozenMethod,
-        compile_method,
-    )
-    from app.domain.workbench.formal_method_plan_generated import unique_plan
-
-    if snapshot.caller != "host" or snapshot.draft.allowed_callers != ("host",):
-        raise ValueError("Formal orchestration currently supports the host caller only")
-    steps = unique_plan(snapshot.draft.definition)
-    refs = [
-        (f.reference.method_id, f.reference.version, f.reference.digest)
+def recursive_plan(snapshot: FormalTaskSnapshot) -> bool:
+    return any(
+        isinstance(f.draft.definition.procedure, Orchestration)
         for f in snapshot.dependencies
-    ]
-    wanted = {
-        (
-            step.candidates[0].method_id,
-            step.candidates[0].version,
-            step.candidates[0].digest,
-        )
-        for step in steps
-    }
-    if len(set(refs)) != len(refs) or set(refs) != wanted:
-        raise ValueError("Formal orchestration requires exact frozen dependency pins")
-    for frozen in snapshot.dependencies:
-        direct_procedure(frozen.draft, caller="host")
-    compile_method(
+    )
+
+
+def expanded_plan(snapshot: FormalTaskSnapshot):
+    from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
+    from app.domain.workbench.formal_method_plan_generated import expand_unique_plan
+
+    return expand_unique_plan(
         snapshot.method_id,
         snapshot.draft.definition,
         {
@@ -128,7 +112,48 @@ def orchestration_plan(snapshot: FormalTaskSnapshot):
             for f in snapshot.dependencies
         },
     )
-    return steps
+
+
+def orchestration_plan(snapshot: FormalTaskSnapshot):
+    """Validate the complete pinned closure; execution expands only reached nodes."""
+    from app.domain.workbench.formal_method_plan_generated import unique_plan
+
+    if snapshot.caller != "host" or snapshot.draft.allowed_callers != ("host",):
+        raise ValueError("Formal orchestration currently supports the host caller only")
+    refs = [
+        (f.reference.method_id, f.reference.version, f.reference.digest)
+        for f in snapshot.dependencies
+    ]
+    if len(set(refs)) != len(refs):
+        raise ValueError("Formal orchestration requires unique frozen dependency pins")
+    for frozen in snapshot.dependencies:
+        if "host" not in frozen.draft.allowed_callers:
+            raise ValueError("Formal dependency must allow the host caller")
+        if isinstance(frozen.draft.definition.procedure, ToolProcedure):
+            direct_procedure(frozen.draft, caller="host")
+        elif frozen.draft.allowed_callers != ("host",):
+            raise ValueError("Formal orchestration dependencies must be host-only")
+    plan = expanded_plan(snapshot)
+    wanted = {
+        (n.reference.method_id, n.reference.version, n.reference.digest)
+        for n in plan.nodes
+    }
+    if set(refs) != wanted:
+        raise ValueError(
+            "Formal orchestration requires the exact frozen dependency closure"
+        )
+    return unique_plan(snapshot.draft.definition)
+
+
+def execution_steps(snapshot: FormalTaskSnapshot):
+    return tuple(node.step for node in expanded_plan(snapshot).leaf_nodes)
+
+
+def execution_slot(snapshot: FormalTaskSnapshot, index: int) -> str:
+    node = expanded_plan(snapshot).leaf_nodes[index]
+    return (
+        "node:" + digest(list(node.path)) if recursive_plan(snapshot) else node.step.id
+    )
 
 
 def dependency_for_step(snapshot: FormalTaskSnapshot, step):

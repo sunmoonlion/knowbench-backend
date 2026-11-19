@@ -7,7 +7,11 @@ from app.application.workbench.method_calls import root_call
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import (
     dependency_for_step,
+    execution_slot,
+    execution_steps,
+    expanded_plan,
     orchestration_plan,
+    recursive_plan,
     snapshot_for_task,
     structured_outputs,
 )
@@ -19,6 +23,7 @@ from app.domain.workbench.formal_method_plan_generated import (
     validate_plan_inputs,
     validate_step_outputs,
 )
+from app.domain.workbench.formal_recursive import node_artifact, node_key
 from app.domain.workbench.states import (
     ATTEMPT_TERMINAL,
     TASK_TERMINAL,
@@ -32,6 +37,11 @@ def step_call_key(task_id, slot):
 
 
 def step_identity(task, step, index):
+    snapshot = snapshot_for_task(task)
+    if recursive_plan(snapshot):
+        from app.domain.workbench.formal_recursive import node_identity
+
+        return node_identity(task, expanded_plan(snapshot).leaf_nodes[index])
     return {
         "identity_basis": "formal_dependency",
         "task_id": str(task["id"]),
@@ -94,27 +104,37 @@ async def accepted_outputs(repo, task, snapshot, before):
 async def step_context(repo, task, attempt):
     """Resolve the active leaf from the frozen root, not from caller-controlled refs."""
     snapshot = snapshot_for_task(task)
-    steps = orchestration_plan(snapshot)
+    steps = execution_steps(snapshot)
     index = int(task["current_step"])
     if not 0 <= index < len(steps):
         raise CapabilityError("Formal step cursor is outside its plan")
     step = steps[index]
     frozen = dependency_for_step(snapshot, step)
     refs = attempt.get("refs") or {}
+    slot = execution_slot(snapshot, index)
     if (
         str(attempt["task_id"]) != str(task["id"])
         or refs.get("kind") != "formal_orchestration_step"
-        or refs.get("slot") != step.id
+        or refs.get("slot") != slot
         or refs.get("step_index") != index
         or refs.get("snapshot_digest") != task["pack_digest"]
         or refs.get("reference") != frozen.reference.model_dump(mode="json")
-        or attempt["step_id"] != step.id
+        or attempt["step_id"] != slot
         or attempt["step_version"] != digest(step_identity(task, step, index))
     ):
         raise CapabilityError("Formal step Attempt differs from its pinned plan")
-    outputs, artifacts = await accepted_outputs(repo, task, snapshot, index)
-    inputs = bind_step_inputs(step, snapshot.arguments, outputs)
-    bindings = [a for a in artifacts if a["step_id"] in step.depends_on]
+    if recursive_plan(snapshot):
+        from app.application.workbench.formal_recursive_runtime import resolve_leaf
+
+        call, inputs, bindings, extra = await resolve_leaf(repo, task, snapshot)
+        if call["id"] != refs.get("method_call_id") or any(
+            refs.get(k) != v for k, v in extra.items()
+        ):
+            raise CapabilityError("Formal nested Attempt changed invocation")
+    else:
+        outputs, artifacts = await accepted_outputs(repo, task, snapshot, index)
+        inputs = bind_step_inputs(step, snapshot.arguments, outputs)
+        bindings = [a for a in artifacts if a["step_id"] in step.depends_on]
     if refs.get("input_bindings") != bindings or refs.get("arguments_digest") != digest(
         inputs
     ):
@@ -129,11 +149,26 @@ class FormalOrchestrationExecution:
     async def drive(self, task_id):
         # Each pass advances at most the declared step count. I/O never runs
         # inside the Task transaction and a pending action returns to the caller.
-        for _ in range(101):
+        for _ in range(1001):
             async with self.stores() as repo, repo.transaction():
                 task = await repo.get_task(task_id, for_update=True)
                 led = Ledger(repo)
                 if task["state"] in TASK_TERMINAL:
+                    if task["state"] in (TaskState.FAILED, TaskState.CANCELLED):
+                        snapshot = snapshot_for_task(task)
+                        if recursive_plan(snapshot):
+                            from app.application.workbench.formal_recursive_runtime import (
+                                settle_ancestors,
+                            )
+
+                            await settle_ancestors(
+                                repo,
+                                task,
+                                snapshot,
+                                outcome="cancelled"
+                                if task["state"] == TaskState.CANCELLED
+                                else "failed",
+                            )
                     return task["state"]
                 if task.get("cancel_requested_at"):
                     return (
@@ -148,7 +183,7 @@ class FormalOrchestrationExecution:
                 ):
                     return task["state"]
                 snapshot = snapshot_for_task(task)
-                steps = orchestration_plan(snapshot)
+                steps = execution_steps(snapshot)
                 if task["state"] == TaskState.RECEIVED:
                     await led.transition(task_id, TaskState.VALIDATING)
                     task = await repo.get_task(task_id)
@@ -171,12 +206,11 @@ class FormalOrchestrationExecution:
                 if not 0 <= index < len(steps):
                     raise CapabilityError("Formal step cursor is outside its plan")
                 step = steps[index]
+                slot = execution_slot(snapshot, index)
                 active = task.get("active_attempt_id")
                 if active is None:
                     attempts = await repo.list_attempts(task_id)
-                    if any(
-                        (a.get("refs") or {}).get("slot") == step.id for a in attempts
-                    ):
+                    if any((a.get("refs") or {}).get("slot") == slot for a in attempts):
                         return (
                             await led.transition(
                                 task_id,
@@ -184,49 +218,88 @@ class FormalOrchestrationExecution:
                                 reason={"code": "formal_step_already_settled"},
                             )
                         )["state"]
-                    previous_outputs, artifacts = await accepted_outputs(
-                        repo, task, snapshot, index
-                    )
-                    arguments = bind_step_inputs(
-                        step, snapshot.arguments, previous_outputs
-                    )
-                    root = await root_call(repo, task)
+                    extra = {}
                     identity = step_identity(task, step, index)
-                    child = await repo.add_call(
-                        {
-                            "id": str(uuid.uuid4()),
-                            "owner_actor_id": str(task["owner_actor_id"]),
-                            "session_id": str(task["session_id"]),
-                            "task_id": task_id,
-                            "parent_call_id": root["id"],
-                            "kind": "method",
-                            "origin": "method",
-                            "call_key": step_call_key(task_id, step.id),
-                            "digest": digest(identity),
-                            "status": "created",
-                            "detail": identity,
-                        }
-                    )
-                    if (
-                        child["digest"] != digest(identity)
-                        or child["parent_call_id"] != root["id"]
-                    ):
-                        raise CapabilityError("Formal child method identity changed")
+                    if recursive_plan(snapshot):
+                        from app.application.workbench.formal_recursive_runtime import (
+                            execution_scopes,
+                            resolve_leaf,
+                        )
+
+                        try:
+                            child, arguments, bindings, extra = await resolve_leaf(
+                                repo, task, snapshot, create=True
+                            )
+                            await execution_scopes(repo, task, snapshot)
+                        except (CapabilityError, ValueError) as exc:
+                            from app.application.workbench.formal_recursive_runtime import (
+                                settle_ancestors,
+                            )
+
+                            await settle_ancestors(
+                                repo,
+                                task,
+                                snapshot,
+                                outcome="rejected",
+                                detail=str(exc),
+                            )
+                            return (
+                                await led.transition(
+                                    task_id,
+                                    TaskState.FAILED,
+                                    reason={
+                                        "code": "authorization_denied",
+                                        "message": str(exc),
+                                    },
+                                )
+                            )["state"]
+                    else:
+                        previous_outputs, artifacts = await accepted_outputs(
+                            repo, task, snapshot, index
+                        )
+                        arguments = bind_step_inputs(
+                            step, snapshot.arguments, previous_outputs
+                        )
+                        bindings = [
+                            a for a in artifacts if a["step_id"] in step.depends_on
+                        ]
+                        root = await root_call(repo, task)
+                        child = await repo.add_call(
+                            {
+                                "id": str(uuid.uuid4()),
+                                "owner_actor_id": str(task["owner_actor_id"]),
+                                "session_id": str(task["session_id"]),
+                                "task_id": task_id,
+                                "parent_call_id": root["id"],
+                                "kind": "method",
+                                "origin": "method",
+                                "call_key": step_call_key(task_id, step.id),
+                                "digest": digest(identity),
+                                "status": "created",
+                                "detail": identity,
+                            }
+                        )
+                        if (
+                            child["digest"] != digest(identity)
+                            or child["parent_call_id"] != root["id"]
+                        ):
+                            raise CapabilityError(
+                                "Formal child method identity changed"
+                            )
                     opened = await led.open_attempt(
                         task_id,
-                        step_id=step.id,
+                        step_id=slot,
                         step_version=digest(identity),
                         meta={
                             "kind": "formal_orchestration_step",
                             "snapshot_digest": task["pack_digest"],
-                            "slot": step.id,
+                            "slot": slot,
                             "step_index": index,
                             "reference": step.candidates[0].model_dump(mode="json"),
                             "method_call_id": child["id"],
                             "arguments_digest": digest(arguments),
-                            "input_bindings": [
-                                a for a in artifacts if a["step_id"] in step.depends_on
-                            ],
+                            "input_bindings": bindings,
+                            **extra,
                         },
                     )
                     active = opened["attempt_id"]
@@ -411,7 +484,9 @@ class FormalOrchestrationExecution:
                 artifact = await repo.put_artifact(
                     task_id=task_id,
                     attempt_id=attempt_id,
-                    name="formal-step:" + step.id,
+                    name=("formal-step:" + step.id)
+                    if not recursive_plan(snapshot)
+                    else node_artifact(refs["path"]),
                     kind="step",
                     content=outputs,
                 )
@@ -434,7 +509,9 @@ class FormalOrchestrationExecution:
             child = await repo.call_by_key(
                 str(task["owner_actor_id"]),
                 str(task["session_id"]),
-                step_call_key(task_id, step.id),
+                step_call_key(task_id, step.id)
+                if not recursive_plan(snapshot)
+                else node_key(task_id, refs["path"]),
             )
             if child is None or child["id"] != refs.get("method_call_id"):
                 raise CapabilityError("Formal child method is missing")
@@ -446,10 +523,29 @@ class FormalOrchestrationExecution:
                 else "unknown"
                 if outcome == "unknown"
                 else "failed",
-                {**child["detail"], "result": result},
+                {
+                    **child["detail"],
+                    "result": result,
+                    **(
+                        {
+                            "output_artifact": versions[0],
+                            "execution_attempt_id": attempt_id,
+                        }
+                        if recursive_plan(snapshot) and versions
+                        else {}
+                    ),
+                },
             )
             task = await repo.get_task(task_id)
             if outcome != "succeeded":
+                if recursive_plan(snapshot):
+                    from app.application.workbench.formal_recursive_runtime import (
+                        settle_ancestors,
+                    )
+
+                    await settle_ancestors(
+                        repo, task, snapshot, outcome=outcome, detail=detail
+                    )
                 return (
                     await led.transition(
                         task_id,
@@ -461,7 +557,29 @@ class FormalOrchestrationExecution:
                     )
                 )["state"]
             index = int(task["current_step"]) + 1
-            if index == len(orchestration_plan(snapshot)):
+            if recursive_plan(snapshot):
+                from app.application.workbench.formal_recursive_runtime import (
+                    settle_ancestors,
+                )
+
+                exports = await settle_ancestors(
+                    repo, task, snapshot, outcome="succeeded"
+                )
+                if exports is not None:
+                    if index != len(execution_steps(snapshot)):
+                        raise CapabilityError(
+                            "Formal root returned before all leaf attempts"
+                        )
+                    await repo.update_attempt(
+                        attempt_id,
+                        refs={
+                            **refs,
+                            "formal_result": result,
+                            "formal_exports": exports,
+                        },
+                    )
+                    return (await led.transition(task_id, TaskState.SUCCEEDED))["state"]
+            elif index == len(orchestration_plan(snapshot)):
                 accepted, _ = await accepted_outputs(repo, task, snapshot, index)
                 exported = export_outputs(snapshot.draft.definition, accepted)
                 bounded_json(exported)

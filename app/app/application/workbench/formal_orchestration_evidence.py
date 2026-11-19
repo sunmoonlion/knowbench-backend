@@ -45,10 +45,29 @@ def _zero(value):
 
 
 async def _approval(
-    repo, owner, task, attempt, child, call, leaf, inputs, root, events
+    repo,
+    owner,
+    task,
+    attempt,
+    child,
+    call,
+    leaf,
+    inputs,
+    root,
+    events,
+    *,
+    authorization_deadline=None,
 ):
     intent = call["detail"]
     interaction = await repo.get_interaction(str(call["interaction_id"]))
+    # Recursive scopes have a fixed run deadline. The grant must use exactly
+    # this minimum, not an arbitrary shorter lifetime; legacy calls keep the
+    # interaction expiry unchanged.
+    authorization_expiry = (
+        min(interaction["expires_at"], authorization_deadline)
+        if authorization_deadline is not None
+        else interaction["expires_at"]
+    )
     consumed = interaction.get("consumed_at")
     subject = (interaction.get("prompt") or {}).get("subject") or {}
     _require(
@@ -97,7 +116,7 @@ async def _approval(
         and not parent.revoked
         and len(auth.grants) == 1
         and consumed < auth.expires_at <= parent.expires_at
-        and auth.expires_at == interaction["expires_at"]
+        and auth.expires_at == authorization_expiry
         and payload.get("context") == task["pack_digest"]
         and intent.get("authorization")
         == {"call_id": str(child["id"]), "revision": auth.revision},
@@ -156,7 +175,7 @@ async def _approval(
         and grant.operation_digest == access["operation_digest"]
         and grant.method_ids == (str(leaf.reference.method_id),)
         and grant.requirement.model_dump(mode="json") == exact
-        and consumed < grant.expires_at == interaction["expires_at"],
+        and consumed < grant.expires_at == authorization_expiry,
         "exact_child_direct_grant_missing",
     )
     FormalExecutionCost.model_validate(operation["formal_execution_cost"])

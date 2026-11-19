@@ -154,12 +154,18 @@ class OperationCatalog:
             self._operations[key] = operation
 
     def require(self, tool: ToolRegistration) -> McpOperation:
-        policy = self._operations.get((tool.service, tool.name))
-        if (
-            tool.source != "mcp"
-            or policy is None
-            or policy.descriptor_digest != tool.descriptor_digest
-        ):
+        if tool.source != "mcp":
+            raise CapabilityError(
+                "Tool has no matching reviewed operation; contact the administrator"
+            )
+        return self.require_source(tool.service, tool.name, tool.descriptor_digest)
+
+    def require_source(
+        self, service_url: str, tool_name: str, descriptor_digest: str
+    ) -> McpOperation:
+        """Resolve an exact reviewed MCP descriptor without fabricating discovery."""
+        policy = self._operations.get((service_url, tool_name))
+        if policy is None or policy.descriptor_digest != descriptor_digest:
             raise CapabilityError(
                 "Tool has no matching reviewed operation; contact the administrator"
             )

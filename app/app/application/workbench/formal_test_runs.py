@@ -28,6 +28,8 @@ from app.domain.workbench.formal_execution import (
     FormalTaskSnapshot,
     PinnedFormalMethod,
     case_key,
+    recursive_plan,
+    snapshot_for_task,
 )
 from app.domain.workbench.formal_method_admission_generated import (
     CONTRACT,
@@ -308,7 +310,28 @@ class FormalExecutions:
         return await self.status(subject, run_id, caller=caller)
 
     async def record_case(self, run, request, case, n, row):
-        task = await self.repo.get_task(str(row["task_id"]))
+        task = await self.repo.get_task(str(row["task_id"]), for_update=True)
+        if task["state"] in (TaskState.CANCELLED, TaskState.FAILED):
+            from app.application.workbench.formal_recursive_runtime import (
+                settle_ancestors,
+            )
+
+            try:
+                snapshot = snapshot_for_task(task)
+            except (ValueError, TypeError):
+                # Invalid snapshots remain unqualified evidence; do not infer a
+                # call tree or fabricate closure facts from a corrupt definition.
+                snapshot = None
+            if snapshot is not None and recursive_plan(snapshot):
+                await settle_ancestors(
+                    self.repo,
+                    task,
+                    snapshot,
+                    outcome="cancelled"
+                    if task["state"] == TaskState.CANCELLED
+                    else "failed",
+                    detail="Root task terminated before the complete tree returned",
+                )
         attempts = await self.repo.list_attempts(str(task["id"]))
         attempt = attempts[-1] if attempts else None
         refs = (attempt or {}).get("refs") or {}
@@ -443,6 +466,8 @@ class FormalExecutions:
                 )
                 policies = {}
                 for leaf in leaves:
+                    if leaf.draft.source is None:
+                        continue
                     policy = await self.reviewed_policy(owner, leaf)
                     policies[fingerprint(leaf.reference.model_dump(mode="json"))] = (
                         policy.policy_digest
@@ -489,7 +514,12 @@ class FormalExecutions:
             request_digest=request.fingerprint(),
             suite=request.execution.suite.reference().model_dump(mode="json"),
             definition_digest=request.draft.definition.digest(),
-            adapter="knowbench/formal-orchestration-host/v1"
+            adapter="knowbench/formal-orchestration-tree-host/v1"
+            if any(
+                e.get("adapter") == "knowbench/formal-orchestration-tree-host/v1"
+                for e in evidence_cases
+            )
+            else "knowbench/formal-orchestration-host/v1"
             if isinstance(request.draft.definition.procedure, Orchestration)
             else "knowbench/formal-mcp-caller-probe/v1"
             if "model" in request.draft.allowed_callers

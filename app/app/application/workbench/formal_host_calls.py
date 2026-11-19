@@ -18,7 +18,9 @@ from app.domain.workbench.errors import Forbidden
 from app.domain.workbench.formal_execution import (
     case_key,
     direct_procedure,
-    orchestration_plan,
+    execution_slot,
+    expanded_plan,
+    recursive_plan,
     snapshot_for_task,
     validate_values,
 )
@@ -56,6 +58,7 @@ class HostContext:
     operation: dict
     intent: dict
     method_call: dict | None = None
+    scopes: list[MethodAuthorization] | None = None
 
     @property
     def identity(self):
@@ -89,6 +92,7 @@ class FormalHostCalls:
         attempt = await self.repo.get_attempt(attempt_id, for_update=True)
         refs = attempt.get("refs") or {}
         step = frozen = child = None
+        scopes = None
         draft, arguments, slot = snapshot.draft, snapshot.arguments, "direct"
         if snapshot.dependencies:
             from app.application.workbench.formal_orchestration import resolve_plan
@@ -106,23 +110,37 @@ class FormalHostCalls:
             )
             if live != snapshot.dependencies:
                 raise CapabilityError("Formal dependency admission changed")
-            draft, slot = frozen.draft, step.id
-            child = await self.repo.call_by_key(
-                owner, str(task["session_id"]), step_call_key(task_id, slot)
+            draft, slot = (
+                frozen.draft,
+                execution_slot(snapshot, int(task["current_step"])),
             )
-            root = await self.repo.call_by_key(
-                owner, str(task["session_id"]), "task:" + task_id
-            )
-            identity = step_identity(task, step, int(task["current_step"]))
-            if (
-                child is None
-                or root is None
-                or child["id"] != refs.get("method_call_id")
-                or child["parent_call_id"] != root["id"]
-                or child["digest"] != digest(identity)
-                or any(child["detail"].get(k) != v for k, v in identity.items())
-            ):
-                raise CapabilityError("Formal child method differs from its host plan")
+            if recursive_plan(snapshot):
+                from app.application.workbench.formal_recursive_runtime import (
+                    execution_scopes,
+                    resolve_leaf,
+                )
+
+                child, _, _, _ = await resolve_leaf(self.repo, task, snapshot)
+                scopes = await execution_scopes(self.repo, task, snapshot)
+            else:
+                child = await self.repo.call_by_key(
+                    owner, str(task["session_id"]), step_call_key(task_id, slot)
+                )
+                root = await self.repo.call_by_key(
+                    owner, str(task["session_id"]), "task:" + task_id
+                )
+                identity = step_identity(task, step, int(task["current_step"]))
+                if (
+                    child is None
+                    or root is None
+                    or child["id"] != refs.get("method_call_id")
+                    or child["parent_call_id"] != root["id"]
+                    or child["digest"] != digest(identity)
+                    or any(child["detail"].get(k) != v for k, v in identity.items())
+                ):
+                    raise CapabilityError(
+                        "Formal child method differs from its host plan"
+                    )
         if (
             str(attempt["task_id"]) != task_id
             or str(task.get("active_attempt_id")) != attempt_id
@@ -277,6 +295,17 @@ class FormalHostCalls:
                 method_call_id=child["id"],
                 inputs_digest=digest(arguments),
             )
+        if scopes is not None:
+            from app.domain.workbench.formal_recursive import TREE_ADAPTER
+
+            leaf = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])]
+            host.update(
+                adapter=TREE_ADAPTER,
+                path=list(leaf.path),
+                parent_method_id=scopes[-1].method_id,
+                parent_method_call_id=refs["parent_method_call_id"],
+                root_method_call_id=refs["root_method_call_id"],
+            )
         intent = {
             "execution_kind": "formal_mcp",
             "formal_host": host,
@@ -300,6 +329,7 @@ class FormalHostCalls:
             decision.operation,
             intent,
             child,
+            scopes,
         )
 
     async def request(self, owner, task_id, attempt_id, *, model=None):
@@ -313,7 +343,7 @@ class FormalHostCalls:
             if snapshot.caller != caller:
                 raise CapabilityError("This test requires its own caller entry")
             slot = (
-                orchestration_plan(snapshot)[int(task["current_step"])].id
+                execution_slot(snapshot, int(task["current_step"]))
                 if snapshot.dependencies
                 else "direct"
             )
@@ -596,7 +626,11 @@ class FormalHostCalls:
                 "Formal action authority was already confirmed or revoked"
             )
         interaction = await self.repo.get_interaction(str(call["interaction_id"]))
-        expiry = interaction["expires_at"]
+        expiry = (
+            min(interaction["expires_at"], context.scopes[0].expires_at)
+            if context.scopes
+            else interaction["expires_at"]
+        )
         if expiry <= datetime.now(UTC):
             raise CapabilityError("Formal action approval expired")
         declared = context.access["requirement"]
@@ -633,9 +667,15 @@ class FormalHostCalls:
             revision=current.revision + 1 if current else 1,
             parent_call_id=None,
             parent_revision=None,
-            method_id=host.get("parent_method_id", host["method_id"]),
+            method_id=current.method_id
+            if context.scopes and current
+            else host.get("parent_method_id", host["method_id"]),
             revoked=False,
-            expires_at=max(current.expires_at, expiry) if current else expiry,
+            expires_at=current.expires_at
+            if context.scopes and current
+            else max(current.expires_at, expiry)
+            if current
+            else expiry,
             grants=(*(current.grants if current else ()), grant),
         )
         await self.repo.save_method_authorization(
@@ -665,6 +705,19 @@ class FormalHostCalls:
                 authorization.model_dump(mode="json"),
                 previous=0,
             )
+        scope_evidence = {}
+        if context.scopes is not None:
+            from app.application.workbench.formal_recursive_runtime import (
+                execution_scopes,
+            )
+
+            snapshot = snapshot_for_task(context.task)
+            scopes = await execution_scopes(self.repo, context.task, snapshot)
+            scope_evidence = {
+                "scope_authorizations": [s.model_dump(mode="json") for s in scopes],
+                "call_path": host["path"],
+                "authority_source": "owner_exact_leaf",
+            }
         await self.repo.append_event(
             session_id=str(context.task["session_id"]),
             task_id=str(context.task["id"]),
@@ -673,6 +726,7 @@ class FormalHostCalls:
             event_type="method/permissionsConfirmed",
             payload={
                 "authorization": authorization.model_dump(mode="json"),
+                **scope_evidence,
                 "context": host["snapshot_digest"],
                 "interaction_id": str(call["interaction_id"]),
                 "action_digest": call["digest"],

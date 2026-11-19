@@ -328,10 +328,11 @@ class FormalMethods:
                     resolve_owned_plan,
                 )
 
-                if (
-                    frozen.validation.execution is None
-                    or (run.get("execution_evidence") or {}).get("adapter")
-                    != "knowbench/formal-orchestration-host/v1"
+                if frozen.validation.execution is None or (
+                    run.get("execution_evidence") or {}
+                ).get("adapter") not in (
+                    "knowbench/formal-orchestration-host/v1",
+                    "knowbench/formal-orchestration-tree-host/v1",
                 ):
                     raise Forbidden(
                         "Formal experts require actual orchestration execution evidence"

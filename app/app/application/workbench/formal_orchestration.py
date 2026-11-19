@@ -1,4 +1,4 @@
-"""Resolve the exact private leaves of a deterministic formal expert plan.
+"""Resolve an exact private dependency closure before executing any method.
 
 Definition compilation proves structure. Each leaf must independently retain
 real host execution qualification and its current reviewed source and policy.
@@ -12,7 +12,11 @@ from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
     compile_method,
 )
-from app.domain.workbench.formal_method_plan_generated import unique_plan
+from app.domain.workbench.formal_method_generated import Orchestration
+from app.domain.workbench.formal_method_plan_generated import (
+    expand_unique_plan,
+    unique_plan,
+)
 
 
 async def resolve_plan(capabilities, owner, draft, method_id):
@@ -27,54 +31,70 @@ async def resolve_plan(capabilities, owner, draft, method_id):
 
 
 async def resolve_owned_plan(repo, formal_sources, operations, owner, draft, method_id):
-    try:
-        steps = unique_plan(draft.definition)
-    except ValueError as exc:
-        raise CapabilityError(str(exc)) from exc
-    references = tuple(
-        {
-            (
-                step.candidates[0].method_id,
-                step.candidates[0].version,
-                step.candidates[0].digest,
-            ): step.candidates[0]
-            for step in steps
-        }.values()
-    )
     catalog = FormalMethodCatalog(repo, formal_sources, operations)
     async with repo.transaction():
-        # Match ordinary selection/asset mutation lock order across all leaves.
+        resolved = {}
+        postorder = []
         assets = set()
-        for ref in references:
-            row = await repo.formal_method(owner, str(ref.method_id), ref.version)
-            if row is None:
-                raise CapabilityError("A plan dependency has no private registration")
-            frozen = FrozenFormalMethod.model_validate(row["document"])
-            if frozen.reference != ref or frozen.draft.source is None:
-                raise CapabilityError("A plan dependency is not an exact direct method")
-            if frozen.draft.source.asset_id is not None:
-                assets.add(str(frozen.draft.source.asset_id))
-        for asset_id in sorted(assets):
-            await repo.capability_asset(owner, asset_id, lock=True)
-        leaves = tuple(
-            [
-                (await catalog.resolve_owned(owner, ref, caller="host")).frozen
-                for ref in references
-            ]
-        )
+
+        async def collect(current, ancestors):
+            if not isinstance(current.procedure, Orchestration):
+                return
+            if len(ancestors) >= 16:
+                raise CapabilityError("Formal dependency depth limit")
+            for step in unique_plan(current):
+                ref = step.candidates[0]
+                if ref.method_id in ancestors:
+                    raise CapabilityError("Cyclic formal method dependency")
+                key = (ref.method_id, ref.version)
+                if key in resolved:
+                    if resolved[key].reference != ref:
+                        raise CapabilityError("A frozen dependency has two digests")
+                    continue
+                if len(resolved) >= 1000:
+                    raise CapabilityError("Formal dependency closure limit")
+                row = await repo.formal_method(owner, str(ref.method_id), ref.version)
+                if row is None:
+                    raise CapabilityError("A dependency has no private registration")
+                frozen = FrozenFormalMethod.model_validate(row["document"])
+                if (
+                    frozen.reference != ref
+                    or "host" not in frozen.draft.allowed_callers
+                ):
+                    raise CapabilityError("A dependency has no exact host definition")
+                resolved[key] = frozen
+                source = frozen.draft.source
+                if source is not None and source.asset_id is not None:
+                    assets.add(str(source.asset_id))
+                await collect(frozen.draft.definition, (*ancestors, ref.method_id))
+                postorder.append(key)
+
         try:
-            compiled = compile_method(
-                method_id,
-                draft.definition,
-                {
-                    (leaf.reference.method_id, leaf.reference.version): FrozenMethod(
-                        leaf.reference, leaf.draft.definition
-                    )
-                    for leaf in leaves
-                },
-            )
+            await collect(draft.definition, (method_id,))
+            definitions = {
+                key: FrozenMethod(f.reference, f.draft.definition)
+                for key, f in resolved.items()
+            }
+            # Expansion counts invocations, including repeated references; only
+            # immutable registration reads are deduplicated above.
+            plan = expand_unique_plan(method_id, draft.definition, definitions)
+            compiled = compile_method(method_id, draft.definition, definitions)
         except ValueError as exc:
             raise CapabilityError(str(exc)) from exc
-        if compiled.method_kind != "expert":
-            raise CapabilityError("This runtime requires a one-level formal expert")
-        return leaves
+        if compiled.method_kind not in ("expert", "expert_team"):
+            raise CapabilityError("This runtime requires an orchestrated method")
+        # Acquire all mutable asset locks in one global order, including those
+        # buried below already-qualified experts. Never recurse while acquiring
+        # locks in a caller-controlled graph order.
+        for asset_id in sorted(assets):
+            await repo.capability_asset(owner, asset_id, lock=True)
+        for key in postorder:
+            frozen = resolved[key]
+            admitted = await catalog.resolve_owned_admission(
+                owner, frozen.reference, resolved=resolved
+            )
+            if admitted != frozen:
+                raise CapabilityError("Formal dependency admission changed")
+        return tuple(
+            resolved[(ref.method_id, ref.version)] for ref in plan.dependencies
+        )

@@ -30,7 +30,7 @@ from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
     fingerprint,
 )
-from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.formal_method_generated import MethodRef, Orchestration
 from app.domain.workbench.formal_model import (
     PROBE_CONFIG,
     PROBE_ISOLATION,
@@ -307,7 +307,55 @@ class FormalMethodCatalog:
                     "Formal method admission evidence is invalid"
                 ) from exc
 
-    async def _resolve(self, owner, reference, row, caller):
+    async def resolve_owned_admission(
+        self, owner, reference: MethodRef, *, resolved
+    ) -> FrozenFormalMethod:
+        """Internal dependency qualification; never expands the conversation catalog.
+
+        ``resolved`` contains the owner's exact FrozenFormalMethod closure.
+        The caller locks all sources in order and checks leaves before parents.
+        """
+        async with self.repo.transaction():
+            row = await self.repo.formal_method(
+                owner, str(reference.method_id), reference.version
+            )
+            if row is None:
+                raise NotFound("Private formal method not found")
+            try:
+                frozen = FrozenFormalMethod.model_validate(row["document"])
+                if not isinstance(frozen.draft.definition.procedure, Orchestration):
+                    return (
+                        await self.resolve_owned(owner, reference, caller="host")
+                    ).frozen
+                frozen, request, evidence = await self._admission(
+                    owner, reference, row, orchestration=True
+                )
+                from app.application.workbench.formal_orchestration_admission import (
+                    verify_sealed_plan,
+                )
+
+                verify_sealed_plan(
+                    owner,
+                    frozen,
+                    request,
+                    evidence,
+                    resolved,
+                    operations=self.operations,
+                )
+                return frozen
+            except (
+                ValueError,
+                TypeError,
+                KeyError,
+                IndexError,
+                AttributeError,
+                InvalidOperation,
+            ) as exc:
+                raise CapabilityError(
+                    "Formal expert admission evidence is invalid"
+                ) from exc
+
+    async def _admission(self, owner, reference, row, *, orchestration=False):
         frozen = FrozenFormalMethod.model_validate(row["document"])
         _require(
             str(row["owner_actor_id"]) == str(owner)
@@ -323,12 +371,6 @@ class FormalMethodCatalog:
         _require(
             frozen.visibility == "private",
             "This entry supports only the author's private methods",
-        )
-        direct_procedure(frozen.draft, caller=caller)
-        _require(
-            len(frozen.draft.definition.access_requirements) == 1
-            and not frozen.validation.dependencies,
-            "Only one reviewed direct MCP operation is supported",
         )
         execution_ref = frozen.validation.execution
         _require(
@@ -396,11 +438,19 @@ class FormalMethodCatalog:
         )
         _require(
             evidence["contract"] == FORMAL_RUNTIME
-            and evidence["adapter"]
-            == (
-                "knowbench/formal-mcp-caller-probe/v1"
-                if "model" in frozen.draft.allowed_callers
-                else "knowbench/formal-mcp-host/v1"
+            and (
+                evidence["adapter"]
+                in (
+                    "knowbench/formal-orchestration-host/v1",
+                    "knowbench/formal-orchestration-tree-host/v1",
+                )
+                if orchestration
+                else evidence["adapter"]
+                == (
+                    "knowbench/formal-mcp-caller-probe/v1"
+                    if "model" in frozen.draft.allowed_callers
+                    else "knowbench/formal-mcp-host/v1"
+                )
             )
             and evidence["request_digest"] == request.fingerprint()
             and evidence["definition_digest"] == frozen.reference.digest
@@ -427,6 +477,16 @@ class FormalMethodCatalog:
             "Formal evidence has no valid seal time",
         )
 
+        return frozen, request, evidence
+
+    async def _resolve(self, owner, reference, row, caller):
+        frozen, request, evidence = await self._admission(owner, reference, row)
+        direct_procedure(frozen.draft, caller=caller)
+        _require(
+            len(frozen.draft.definition.access_requirements) == 1
+            and not frozen.validation.dependencies,
+            "Only one reviewed direct MCP operation is supported",
+        )
         source = frozen.draft.source
         _require(
             source is not None and source.kind == "mcp" and source.asset_id is not None,
