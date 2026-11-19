@@ -498,6 +498,7 @@ def capability_service(repo):
         ),
         operations=settings.workbench_capability_operations,
         source_licenses=settings.workbench_source_licenses,
+        business_reviews=settings.workbench_business_coverage_reviews,
         resource_delegations=settings.workbench_resource_delegations,
         skill_source=GitHubSkills(),
         script_executor=SkillExecutor(

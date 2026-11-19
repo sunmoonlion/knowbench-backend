@@ -2,15 +2,17 @@
 
 The catalog checks the applicability of supplied review evidence. It neither
 fetches that evidence nor independently establishes its legal validity. Empty
-configuration grants nothing; delivery remains a separate, unused right.
+configuration grants nothing. Skill redistribution additionally requires reviewed terms.
 """
 
 from datetime import datetime
 from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.workbench.capabilities import digest
+from app.domain.workbench.formal_method_admission_generated import SkillDeliveryTerms
 
 Text = Annotated[str, Field(strict=True, min_length=1, max_length=20000, pattern=r"\S")]
 Digest = Annotated[str, Field(strict=True, pattern=r"^sha256:[a-f0-9]{64}$")]
@@ -45,6 +47,22 @@ class LicenseEvidence(LicenseRecord):
     digest: Digest
 
 
+class BusinessCoverageReview(LicenseRecord):
+    """Independent review of the business scenarios covered by an exact test suite."""
+
+    subject: Text
+    method_id: UUID
+    definition_digest: Digest
+    source_digest: Digest
+    suite_digest: Digest
+    evidence: LicenseEvidence
+    expires_at: AwareDatetime
+
+    @property
+    def fingerprint(self):
+        return "sha256:" + digest(self.model_dump(mode="json"))
+
+
 class SourceLicense(LicenseRecord):
     record_id: str = Field(strict=True, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     revision: int = Field(strict=True, ge=1)
@@ -57,9 +75,19 @@ class SourceLicense(LicenseRecord):
     valid_from: datetime
     expires_at: datetime
     evidence: LicenseEvidence
+    delivery_terms: SkillDeliveryTerms | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def valid_period(self):
+        if self.delivery_terms is not None and (
+            not self.rights.deliver
+            or self.source.kind not in ("skill_instruction", "skill_script")
+        ):
+            raise ValueError(
+                "Skill delivery terms require a Skill redistribution right"
+            )
         if self.valid_from.tzinfo is None or self.expires_at.tzinfo is None:
             raise ValueError("Source license times must include a timezone")
         if self.expires_at <= self.valid_from:
@@ -86,9 +114,9 @@ class SourceLicenseCatalog:
             ids.add(record.record_id)
             self._records[key] = record
 
-    def execution_basis(
+    def executable(
         self, subject: str, source: SourceIdentity, *, now: datetime
-    ) -> str:
+    ) -> SourceLicense | None:
         record = self._records.get((subject, *source.key()))
         if (
             record is None
@@ -96,5 +124,11 @@ class SourceLicenseCatalog:
             or not record.rights.execute
             or not record.valid_from <= now < record.expires_at
         ):
-            return "pending"
-        return record.basis
+            return None
+        return record
+
+    def execution_basis(
+        self, subject: str, source: SourceIdentity, *, now: datetime
+    ) -> str:
+        record = self.executable(subject, source, now=now)
+        return record.basis if record else "pending"

@@ -402,3 +402,174 @@ async def test_stored_asset_license_label_has_no_authority(db):
             "source"
             in (await svc.validate(request, caller="knowlab"))["missing_checks"]
         )
+
+
+async def reviewed_skill_fixture(db):
+    """Real installation/storage/registration, simulated Skill execution evidence."""
+    from test_formal_method_routes import validation_body
+    from test_skill_package import archive
+    from test_skill_package_db import package
+
+    from app.domain.workbench.formal_method_execution_generated import fingerprint
+    from app.domain.workbench.skill_package import skill_manifest_digest, unpack_skill
+    from app.domain.workbench.source_licenses import BusinessCoverageReview
+
+    await setup(db)
+    raw = {
+        "SKILL.md": "Read the notice",
+        "NOTICE": "原声明\n",
+        "assets/demo.bin": b"\xff\x00",
+    }
+    repacked = unpack_skill(archive(dict(reversed(raw.items()))))
+    material = unpack_skill(archive(raw))
+    assert material["digest"] != repacked["digest"]
+    assert skill_manifest_digest(material["files"]) == skill_manifest_digest(
+        repacked["files"]
+    )
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        asset = await service(repo).create_skill(
+            OWNER,
+            package().model_copy(update={"archive_base64": archive(raw)}),
+            package=True,
+        )
+        unsigned = next(
+            x
+            for x in (await FormalMethods(repo).sources("author"))["items"]
+            if str(x["asset_id"]) == str(asset["id"])
+        )
+        record = license_record(
+            unsigned,
+            rights={"execute": True, "deliver": True},
+            delivery_terms={"origin": "test/guidance", "notices": ["原声明\n"]},
+        )
+        svc = FormalMethods(repo, source_licenses=(record,))
+        source = next(
+            x
+            for x in (await svc.sources("author"))["items"]
+            if x["asset_id"] == unsigned["asset_id"]
+        )
+        body = validation_body()
+        body["draft"]["source"] = source
+        impl = body["draft"]["definition"]["procedure"]["implementation"]
+        impl.update(
+            {k: source[k] for k in ("kind", "source", "version", "digest", "entry")}
+        )
+        req = FormalMethodValidationRequest.model_validate(body)
+        pending = await svc.validate(req, caller="knowlab")
+        private = frozen(req)
+        suite_digest = "sha256:" + "1" * 64
+        review = BusinessCoverageReview(
+            subject="author",
+            method_id=req.method_id,
+            definition_digest=private.reference.digest,
+            source_digest=req.draft.source.fingerprint(),
+            suite_digest=suite_digest,
+            evidence=record.evidence,
+            expires_at=record.expires_at,
+        )
+        svc.business_reviews = (review,)
+        proof = {
+            "request_digest": "sha256:" + "2" * 64,
+            "business_review_digest": review.fingerprint,
+        }
+        receipt = {
+            **private.validation.model_dump(mode="json"),
+            "execution": {
+                "contract": "knowlab/formal-method-execution/v1",
+                "request_digest": proof["request_digest"],
+                "suite_id": str(uuid4()),
+                "suite_version": 1,
+                "suite_digest": suite_digest,
+                "evidence_digest": fingerprint(proof),
+            },
+        }
+        public = FrozenFormalMethod.model_validate(
+            {
+                **private.model_dump(mode="json", by_alias=True),
+                "visibility": "public",
+                "validation": receipt,
+            }
+        )
+        async with repo.transaction():
+            await repo.seal_formal_execution(
+                OWNER,
+                str(req.run_id),
+                {
+                    **pending,
+                    "status": "passed",
+                    "missing_checks": [],
+                    "receipt": receipt,
+                },
+                proof,
+            )
+        await svc.register(public, caller="knowlab")
+        return raw, record, review, public
+
+
+async def test_skill_delivery_retains_notices_and_rechecks_before_loading_files(
+    db, monkeypatch
+):
+    from base64 import b64decode
+
+    raw, record, review, public = await reviewed_skill_fixture(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = FormalMethods(repo, source_licenses=(record,), business_reviews=(review,))
+        getter = repo.skill_package_files
+        reads = []
+
+        async def counted(*args):
+            reads.append(args)
+            return await getter(*args)
+
+        monkeypatch.setattr(repo, "skill_package_files", counted)
+        await svc.delivery("author", public.reference, market=True)
+        with pytest.raises(NotFound):
+            await svc.delivery(
+                "author",
+                public.reference,
+                market=True,
+                skill=public.reference.model_copy(update={"version": 2}),
+            )
+        assert not reads
+        out = await svc.delivery(
+            "author", public.reference, market=True, skill=public.reference
+        )
+        assert out["package"]["terms"] == {
+            "origin": "test/guidance",
+            "notices": ["原声明\n"],
+        }
+        assert {
+            f["path"]: b64decode(f["data_base64"]) for f in out["package"]["files"]
+        } == {k: v.encode() if isinstance(v, str) else v for k, v in raw.items()}
+        assert record.evidence.reference not in json.dumps(out)
+        assert len(reads) == 1
+        from app.domain.workbench.source_licenses import SourceLicenseCatalog
+
+        active = svc.source_licenses
+        svc.source_licenses = SourceLicenseCatalog(
+            (record.model_copy(update={"status": "revoked"}),)
+        )
+        with pytest.raises(CapabilityError, match="changed"):
+            await svc.delivery(
+                "author", public.reference, market=True, skill=public.reference
+            )
+        assert len(reads) == 1
+        svc.source_licenses = active
+        svc.now = lambda: record.expires_at
+        with pytest.raises((Forbidden, CapabilityError)):
+            await svc.delivery(
+                "author", public.reference, market=True, skill=public.reference
+            )
+        assert len(reads) == 1
+        svc.now = lambda: datetime.now(UTC)
+
+        async def broken_storage(*args):
+            return {**await getter(*args), "NOTICE": b"modified"}
+
+        monkeypatch.setattr(repo, "skill_package_files", broken_storage)
+        with pytest.raises(CapabilityError, match="manifest"):
+            await svc.delivery(
+                "author", public.reference, market=True, skill=public.reference
+            )

@@ -6,7 +6,7 @@ are pinned author input; the runtime must resolve ownership, revision and rights
 """
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -45,6 +45,15 @@ GOVERNANCE_CHECKS = frozenset(
 )
 
 
+class SkillDeliveryTerms(Strict):
+    """Publishable provenance and verbatim notices from the operator's review."""
+
+    origin: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$")
+    notices: tuple[
+        Annotated[str, Field(min_length=1, max_length=8192, pattern=r"\S")], ...
+    ] = Field(max_length=16)
+
+
 class FormalMethodSource(Strict):
     asset_id: UUID | None
     asset_revision: int | None = Field(ge=1, strict=True)
@@ -54,9 +63,17 @@ class FormalMethodSource(Strict):
     digest: Digest
     entry: Text
     license_basis: Text
+    delivery_terms: SkillDeliveryTerms | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
 
     @model_validator(mode="after")
     def source_identity(self):
+        if self.delivery_terms is not None and (
+            self.kind not in ("skill_instruction", "skill_script")
+            or self.license_basis == "pending"
+        ):
+            raise ValueError("Only a reviewed Skill can carry delivery terms")
         if self.kind == "platform":
             if self.asset_id is not None or self.asset_revision is not None:
                 raise ValueError("Platform implementations do not name user assets")
@@ -264,6 +281,14 @@ class FrozenFormalMethod(Strict):
             and not execution.covers_callers(self.draft.allowed_callers)
         ):
             raise ValueError("Frozen callers lack matching execution coverage")
+        source = self.draft.source
+        if (
+            self.visibility == "public"
+            and source
+            and source.kind in ("skill_instruction", "skill_script")
+            and source.delivery_terms is None
+        ):
+            raise ValueError("Public Skill methods require reviewed delivery terms")
         if self.visibility == "public" and (
             self.validation.uncovered or "business" not in self.validation.checks
         ):

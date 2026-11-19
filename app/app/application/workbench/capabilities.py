@@ -96,6 +96,7 @@ class Capabilities:
         script_executor: Any = None,
         operations: tuple[McpOperation, ...] = (),
         source_licenses=(),
+        business_reviews=(),
         resource_delegations=(),
         knowbase_reader=None,
         task_outputs_url="",
@@ -117,7 +118,10 @@ class Capabilities:
         from app.application.workbench.formal_methods import FormalMethods
 
         self.formal_sources = FormalMethods(
-            repo, operations=operations, source_licenses=source_licenses
+            repo,
+            operations=operations,
+            source_licenses=source_licenses,
+            business_reviews=business_reviews,
         )
 
     def operation(self, asset, tool):

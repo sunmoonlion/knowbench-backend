@@ -24,6 +24,10 @@ from app.domain.workbench.formal_method_admission_generated import (
     CONTRACT,
     FormalMethodValidationRequest,
 )
+from app.domain.workbench.skill_package import (
+    instruction_package,
+    skill_manifest_digest,
+)
 from app.infrastructure.security import relation_auth
 from app.infrastructure.security.relation_auth import RelationServiceVerifier
 from app.interfaces.endpoints import knowbot_runtime_routes
@@ -38,6 +42,11 @@ RUN = "d2ca1514-1b66-4c9b-86d0-ae4fa6fa9c7e"
 REQUEST = "f583e1ec-23e1-4ad8-9bc0-03f0cc3e0cba"
 WORKDRAFT = "6a103785-900d-46f6-a31c-ec8b73514d8e"
 HEADERS = {"Authorization": "Bearer author-service"}
+
+
+SKILL_FILES = instruction_package("Synthetic instruction, not runtime evidence.")[
+    "files"
+]
 
 
 class MemoryRepository:
@@ -56,7 +65,7 @@ class MemoryRepository:
                 "detail": {
                     "digest": "a" * 64,
                     "version": "1",
-                    "files": [],
+                    "files": SKILL_FILES,
                     "content": "Synthetic instruction, not runtime evidence.",
                 },
             }
@@ -105,7 +114,7 @@ def validation_body():
         "kind": "skill_instruction",
         "source": "skill:" + ASSET,
         "version": "1",
-        "digest": "sha256:" + "a" * 64,
+        "digest": skill_manifest_digest(SKILL_FILES),
         "entry": "SKILL.md",
         "license_basis": "pending",
     }
@@ -533,3 +542,53 @@ async def test_missing_registration_is_404_and_projection_is_owner_and_caller_sc
         assert (
             await http.get(url, params={"owner_subject": "author"})
         ).status_code == 404
+
+
+async def test_only_market_delivery_identity_can_request_a_registered_package(
+    app_and_repo, monkeypatch
+):
+    app, repo = app_and_repo
+    env = {
+        "SERVICE_AUTH_METHOD_DELIVERY_CALLERS": "knowlab,knowmart",
+        "SERVICE_AUTH_METHOD_DELIVERY_KNOWMART_AUDIENCE": "delivery-aud",
+        "SERVICE_AUTH_METHOD_DELIVERY_KNOWMART_REQUIRED_SCOPE": "knowbench:method-delivery",
+        "SERVICE_AUTH_METHOD_DELIVERY_KNOWMART_SUBJECT_ALLOWLIST": "mart/delivery",
+    }
+
+    class Tokens(FakeOidc):
+        async def verify_access_token(self, encoded, *, audience):
+            if encoded == "delivery" and audience == "delivery-aud":
+                return {
+                    "iss": "https://casdoor.test",
+                    "sub": "mart/delivery",
+                    "iat": 1,
+                    "exp": 4102444800,
+                    "scope": "knowbench:method-delivery",
+                }
+            return await super().verify_access_token(encoded, audience=audience)
+
+    monkeypatch.setattr(
+        relation_auth,
+        "relation_verifier",
+        lambda name: RelationServiceVerifier(
+            name, settings=Settings(), oidc_client=Tokens(), environ=env
+        ),
+    )
+    body = {"owner_subject": "author", "reference": claimed_frozen_body()["reference"]}
+    async with AsyncClient(
+        transport=ASGITransport(app), base_url="http://127.0.0.1"
+    ) as client:
+        for token in ("author-service", "other-service", "browser-subject"):
+            response = await client.post(
+                f"{BASE}/formal-method-delivery",
+                json=body,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert response.status_code in (401, 403)
+        assert repo.accesses == 0
+        response = await client.post(
+            f"{BASE}/formal-method-delivery",
+            json=body,
+            headers={"Authorization": "Bearer delivery"},
+        )
+        assert response.status_code == 404 and repo.accesses == 1

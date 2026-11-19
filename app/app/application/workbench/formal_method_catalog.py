@@ -456,6 +456,19 @@ class FormalMethodCatalog:
             and evidence["external_provider_billing"] == "reviewed_no_incremental_fee",
             "Formal evidence does not qualify this execution path",
         )
+        covered = "business" in frozen.validation.checks
+        if covered:
+            review = self.formal_sources.business_review(
+                frozen.owner_subject,
+                reference.method_id,
+                frozen.draft,
+                execution_ref.suite_digest,
+            )
+            _require(
+                review is not None
+                and review.fingerprint == evidence.get("business_review_digest"),
+                "The business coverage review has expired or changed",
+            )
         _require(
             execution_ref.covers_callers(frozen.draft.allowed_callers)
             and (
@@ -464,8 +477,12 @@ class FormalMethodCatalog:
                 if "model" in frozen.draft.allowed_callers
                 else evidence.get("validated_callers") in (None, ["host"])
             )
-            and set(frozen.validation.checks) == GOVERNANCE_CHECKS
-            and bool(frozen.validation.uncovered),
+            and (
+                set(frozen.validation.checks) == GOVERNANCE_CHECKS
+                and bool(frozen.validation.uncovered)
+                or set(frozen.validation.checks) == GOVERNANCE_CHECKS | {"business"}
+                and not frozen.validation.uncovered
+            ),
             "Caller coverage or uncovered business scope is missing",
         )
         sealed = datetime.fromisoformat(evidence["sealed_at"])

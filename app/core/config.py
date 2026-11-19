@@ -24,7 +24,11 @@ from app.domain.workbench.resource_delegation import (
     ResourceDelegation,
     ResourceDelegationCatalog,
 )
-from app.domain.workbench.source_licenses import SourceLicense, SourceLicenseCatalog
+from app.domain.workbench.source_licenses import (
+    BusinessCoverageReview,
+    SourceLicense,
+    SourceLicenseCatalog,
+)
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 
 
@@ -366,6 +370,7 @@ class Settings(BaseSettings):
         max_length=1000,
         description="Operator-reviewed MCP operation/resource mappings; empty permits discovery only",
     )
+    workbench_business_coverage_reviews: tuple[BusinessCoverageReview, ...] = ()
     workbench_source_licenses: tuple[SourceLicense, ...] = Field(
         default=(),
         max_length=1000,

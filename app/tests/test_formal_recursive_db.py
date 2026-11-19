@@ -15,6 +15,7 @@ from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.test_runs import KnowbotTestConductor
 from app.bootstrap.workbench import workbench_stores
 from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.errors import Forbidden
 from app.domain.workbench.formal_execution import expanded_plan, snapshot_for_task
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
@@ -80,6 +81,12 @@ async def test_nested_qualified_methods_preserve_each_call_and_private_registrat
             assert not auth["grants"][0]["delegable"]
             assert auth["grants"][0]["recipient_call_id"] == leaf["id"]
         await ctx.factory(repo).formal_sources.register(frozen, caller="knowlab")
+        # Private execution of the nested tree grants no redistribution of its MCP leaves.
+        with pytest.raises(Forbidden, match="delivery right"):
+            await ctx.factory(repo).formal_sources.delivery(
+                "author", frozen.reference, market=False
+            )
+
         async with repo.transaction():
             await repo.purge_test_run(str(ctx.request.run_id))
         retained = {

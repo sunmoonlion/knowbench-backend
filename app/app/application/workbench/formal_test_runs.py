@@ -535,6 +535,18 @@ class FormalExecutions:
             evidence["validated_callers"] = (
                 sorted(request.draft.allowed_callers) if passed else []
             )
+        review = (
+            self.formal.business_review(
+                request.owner_subject,
+                request.method_id,
+                request.draft,
+                request.execution.suite.digest,
+            )
+            if passed and all(r["status"] == "passed" for r in results)
+            else None
+        )
+        if review is not None:
+            evidence["business_review_digest"] = review.fingerprint
         receipt = None
         if passed:
             receipt = FormalMethodValidationReceipt.model_validate(
@@ -546,8 +558,12 @@ class FormalExecutions:
                     "source_digest": request.draft.source.fingerprint()
                     if request.draft.source
                     else None,
-                    "checks": sorted(GOVERNANCE_CHECKS),
-                    "uncovered": [
+                    "checks": sorted(
+                        GOVERNANCE_CHECKS | ({"business"} if review else set())
+                    ),
+                    "uncovered": []
+                    if review
+                    else [
                         {
                             "scenario": "Real-service business effectiveness beyond the supplied assertions",
                             "reason": "This run checks typed outputs and governance, not every natural-language business rule or supplier scenario",
@@ -582,7 +598,7 @@ class FormalExecutions:
                 for check in sorted(GOVERNANCE_CHECKS - {"definition", "dependencies"})
             ),
             details=(
-                "Typed test thresholds and declared caller governance verified; see the explicit uncovered business scope"
+                "Test results and the declared validation scope are recorded in the receipt"
                 if passed
                 else detail
                 or (

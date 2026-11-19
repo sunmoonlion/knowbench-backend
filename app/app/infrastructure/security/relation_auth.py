@@ -31,9 +31,10 @@ from app.domain.security import Principal
 from app.infrastructure.security.oidc import OidcProviderClient
 from core.config import Settings, get_settings
 
-Relation = Literal["testrun", "incubate", "supply-status"]
+Relation = Literal["testrun", "incubate", "supply-status", "method-delivery"]
 # 只许这些调用方的关系；没列的照部署配的调用方
 RELATION_CALLERS: dict[str, frozenset[str]] = {
+    "method-delivery": frozenset({"knowmart"}),
     "incubate": frozenset({"knowlab"}),
     "supply-status": frozenset({"knowfeed"}),
 }
@@ -229,3 +230,9 @@ async def require_supply_status_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:
     return await relation_verifier("supply-status").verify(_bearer(authorization))
+
+
+async def require_method_delivery_service(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    return await relation_verifier("method-delivery").verify(_bearer(authorization))

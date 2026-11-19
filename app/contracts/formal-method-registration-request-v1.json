@@ -510,6 +510,17 @@
           "pattern": "\\S",
           "title": "License Basis",
           "type": "string"
+        },
+        "delivery_terms": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SkillDeliveryTerms"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -978,6 +989,34 @@
         "role"
       ],
       "title": "ResourceValue",
+      "type": "object"
+    },
+    "SkillDeliveryTerms": {
+      "additionalProperties": false,
+      "description": "Publishable provenance and verbatim notices from the operator's review.",
+      "properties": {
+        "origin": {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$",
+          "title": "Origin",
+          "type": "string"
+        },
+        "notices": {
+          "items": {
+            "maxLength": 8192,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 16,
+          "title": "Notices",
+          "type": "array"
+        }
+      },
+      "required": [
+        "origin",
+        "notices"
+      ],
+      "title": "SkillDeliveryTerms",
       "type": "object"
     },
     "StepInput": {

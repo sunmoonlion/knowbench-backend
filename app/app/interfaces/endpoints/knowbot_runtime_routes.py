@@ -14,7 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Path, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from pydantic import Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.errors.exceptions import AppException
@@ -37,11 +37,13 @@ from app.domain.workbench.formal_method_execution_generated import (
     FormalExecutionDecision,
     FormalMethodExecutionRequest,
 )
+from app.domain.workbench.formal_method_generated import MethodRef, Strict
 from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
 from app.domain.workbench.test_runs import CASE_ID, RUN_ID, Answers, RunRequest
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
     require_incubate_service,
+    require_method_delivery_service,
     require_testrun_service,
 )
 from app.infrastructure.storage.postgres import get_db_session
@@ -89,6 +91,7 @@ def formal_methods(
         WorkbenchRepository(session),
         operations=get_settings().workbench_capability_operations,
         source_licenses=get_settings().workbench_source_licenses,
+        business_reviews=get_settings().workbench_business_coverage_reviews,
     )
 
 
@@ -116,6 +119,38 @@ def formal_executions(
 
 
 FormalExecutionService = Annotated[FormalExecutions, Depends(formal_executions)]
+
+
+class DeliverySelection(Strict):
+    owner_subject: str = Field(min_length=1, max_length=512)
+    reference: MethodRef
+    skill: MethodRef | None = None
+
+
+@router.post("/users/{subject}/formal-method-delivery-check")
+async def author_delivery_check(
+    _: FormalCaller, subject: str, reference: MethodRef, svc: FormalService
+):
+    try:
+        return _out(await svc.delivery(subject, reference, market=False))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-delivery")
+async def market_delivery(
+    _: Annotated[ServiceCaller, Depends(require_method_delivery_service)],
+    body: DeliverySelection,
+    svc: FormalService,
+):
+    try:
+        return _out(
+            await svc.delivery(
+                body.owner_subject, body.reference, market=True, skill=body.skill
+            )
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.post("/formal-method-executions")

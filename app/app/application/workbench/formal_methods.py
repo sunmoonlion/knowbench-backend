@@ -23,7 +23,9 @@ from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
     compile_method,
 )
+from app.domain.workbench.formal_method_execution_generated import fingerprint
 from app.domain.workbench.formal_method_generated import Orchestration
+from app.domain.workbench.skill_package import delivery_files, skill_manifest_digest
 from app.domain.workbench.source_licenses import SourceIdentity, SourceLicenseCatalog
 from app.domain.workbench.tool_operations import OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
@@ -36,12 +38,39 @@ class FormalMethods:
         *,
         operations=(),
         source_licenses=(),
+        business_reviews=(),
         now: Callable[[], datetime] | None = None,
     ):
         self.repo = repo
         self.operations = OperationCatalog(tuple(operations))
         self.source_licenses = SourceLicenseCatalog(tuple(source_licenses))
+        self.business_reviews = tuple(business_reviews)
         self.now = now or (lambda: datetime.now(UTC))
+
+    def business_review(self, subject, method_id, draft, suite_digest):
+        if draft.source is None:
+            return None
+        key = (
+            subject,
+            method_id,
+            draft.definition.digest(),
+            draft.source.fingerprint(),
+            suite_digest,
+        )
+        matches = [
+            r
+            for r in self.business_reviews
+            if (
+                r.subject,
+                r.method_id,
+                r.definition_digest,
+                r.source_digest,
+                r.suite_digest,
+            )
+            == key
+            and self.now() < r.expires_at
+        ]
+        return matches[0] if len(matches) == 1 else None
 
     async def _owner(self, subject: str) -> str:
         actor = await self.repo.actor_for_subject(subject)
@@ -82,9 +111,7 @@ class FormalMethods:
             return self._licensed_sources(result, subject, now=now)
         if asset["kind"] != "skill":
             return []
-        fingerprint = detail["digest"]
-        if not fingerprint.startswith("sha256:"):
-            fingerprint = "sha256:" + fingerprint
+        fingerprint = skill_manifest_digest(detail["files"])
         source = "skill:" + str(asset["id"])
         entries = [
             FormalMethodSource(
@@ -97,7 +124,7 @@ class FormalMethods:
             )
         ]
         for file in detail.get("files", []):
-            if file["path"].endswith((".py", ".sh", ".js", ".mjs")):
+            if file["path"].endswith((".py", ".sh", ".js", ".mjs", ".cjs")):
                 entries.append(
                     FormalMethodSource(
                         **common,
@@ -111,22 +138,25 @@ class FormalMethods:
         return self._licensed_sources(entries, subject, now=now)
 
     def _licensed_sources(self, sources, subject: str, *, now: datetime):
-        return [
-            source.model_copy(
-                update={
-                    "license_basis": self.source_licenses.execution_basis(
-                        subject,
-                        SourceIdentity.model_validate(
-                            source.model_dump(
-                                include={"kind", "source", "version", "digest", "entry"}
-                            )
-                        ),
-                        now=now,
-                    )
-                }
+        result = []
+        for source in sources:
+            identity = SourceIdentity.model_validate(
+                source.model_dump(
+                    include={"kind", "source", "version", "digest", "entry"}
+                )
             )
-            for source in sources
-        ]
+            record = self.source_licenses.executable(subject, identity, now=now)
+            if record is not None:
+                source = source.model_copy(
+                    update={
+                        "license_basis": record.basis,
+                        "delivery_terms": record.delivery_terms
+                        if record.rights.deliver
+                        else None,
+                    }
+                )
+            result.append(source)
+        return result
 
     async def sources(self, subject: str) -> dict:
         async with self.repo.transaction():
@@ -159,7 +189,7 @@ class FormalMethods:
             )
         return source.license_basis != "pending"
 
-    async def _compile(self, owner: str, method_id, definition):
+    async def _compile(self, owner: str, method_id, definition, *, documents=None):
         resolved: dict = {}
 
         async def collect(current, path=()):
@@ -181,13 +211,15 @@ class FormalMethods:
                     row = await self.repo.formal_method(
                         owner, str(ref.method_id), ref.version
                     )
-                    if row is None:
+                    if row is None or row["caller"] != "knowlab":
                         raise CapabilityError(
                             "Dependency has no admitted version for this author"
                         )
                     frozen = FrozenFormalMethod.model_validate(row["document"])
                     if frozen.reference != ref:
                         raise CapabilityError("Dependency changed")
+                    if documents is not None:
+                        documents.append(frozen)
                     resolved[key] = FrozenMethod(ref, frozen.draft.definition)
                     await collect(frozen.draft.definition, (*path, ref.method_id))
 
@@ -196,6 +228,114 @@ class FormalMethods:
             return compile_method(method_id, definition, resolved)
         except ValueError as exc:
             raise CapabilityError(str(exc)) from exc
+
+    async def check_delivery_source(self, owner, frozen, run=None, *, market=True):
+        source = frozen.draft.source
+        if market:
+            if frozen.visibility != "public" or not frozen.validation.execution:
+                raise Forbidden("Version has no public validation")
+            run = run or await self.repo.formal_validation(
+                owner, str(frozen.validation.run_id)
+            )
+            review = self.business_review(
+                frozen.owner_subject,
+                frozen.reference.method_id,
+                frozen.draft,
+                frozen.validation.execution.suite_digest,
+            )
+            evidence = (run or {}).get("execution_evidence") or {}
+            if (
+                not review
+                or evidence.get("business_review_digest") != review.fingerprint
+                or fingerprint(evidence) != frozen.validation.execution.evidence_digest
+            ):
+                raise Forbidden("Business coverage review is missing or has changed")
+        if source is None:
+            return
+        if not await self._source(owner, frozen.owner_subject, source):
+            raise Forbidden("Source is unavailable")
+        identity = SourceIdentity.model_validate(
+            source.model_dump(include={"kind", "source", "version", "digest", "entry"})
+        )
+        record = self.source_licenses.executable(
+            frozen.owner_subject, identity, now=self.now()
+        )
+        if (
+            not record
+            or not record.rights.deliver
+            or (source.kind.startswith("skill_") and not source.delivery_terms)
+        ):
+            raise Forbidden("Source has no reviewed delivery right")
+
+    async def delivery(self, subject, reference, *, market, skill=None):
+        async with self.repo.transaction():
+            owner = await self._owner(subject)
+            row = await self.repo.formal_method(
+                owner, str(reference.method_id), reference.version
+            )
+            if not row or row["caller"] != "knowlab":
+                raise NotFound("Formal method not found")
+            root = FrozenFormalMethod.model_validate(row["document"])
+            if root.reference != reference or root.owner_subject != subject:
+                raise Forbidden("Different frozen version")
+            documents = [root]
+            await self._compile(
+                owner, reference.method_id, root.draft.definition, documents=documents
+            )
+            locks = []
+            selected = None
+            for method in sorted(
+                documents, key=lambda m: (m.reference.method_id, m.reference.version)
+            ):
+                if method.owner_subject != subject:
+                    raise Forbidden("Dependency is owned by another author")
+                await self.check_delivery_source(owner, method, market=market)
+                source = method.draft.source
+                locks.append(
+                    {
+                        "reference": method.reference.model_dump(mode="json"),
+                        "source_digest": source.fingerprint() if source else None,
+                    }
+                )
+                if (
+                    method.reference == skill
+                    and source
+                    and source.kind.startswith("skill_")
+                ):
+                    selected = source
+            result = {
+                "contract": "knowbench/formal-method-delivery/v1",
+                "owner_subject": subject,
+                "reference": reference.model_dump(mode="json"),
+                "delivery_digest": "sha256:" + digest(locks),
+                "title": root.draft.definition.capability_declaration.title,
+                "purpose": root.draft.definition.capability_declaration.purpose,
+                "skill_dependencies": [
+                    {
+                        "method": m.reference.model_dump(mode="json"),
+                        "version": m.draft.source.version,
+                        "manifest_digest": m.draft.source.digest,
+                        "terms": m.draft.source.delivery_terms.model_dump(mode="json"),
+                    }
+                    for m in documents
+                    if m.draft.source and m.draft.source.delivery_terms
+                ],
+            }
+            if skill is not None:
+                if not market or selected is None or not selected.delivery_terms:
+                    raise NotFound("Skill is not part of the frozen method")
+                asset_id = str(selected.asset_id)
+                asset = await self.repo.capability_asset(owner, asset_id, lock=True)
+                files = asset["detail"]["files"]
+                contents = await self.repo.skill_package_files(owner, asset_id)
+                result["package"] = {
+                    "method": skill.model_dump(mode="json"),
+                    "version": selected.version,
+                    "manifest_digest": selected.digest,
+                    "terms": selected.delivery_terms.model_dump(mode="json"),
+                    "files": delivery_files(files, contents),
+                }
+            return result
 
     async def validate(self, request: FormalMethodValidationRequest, *, caller: str):
         async with self.repo.transaction():
@@ -310,10 +450,6 @@ class FormalMethods:
                     "Frozen method does not match a completed trusted validation"
                 )
             if frozen.validation.execution is not None:
-                from app.domain.workbench.formal_method_execution_generated import (
-                    fingerprint,
-                )
-
                 evidence = run.get("execution_evidence")
                 if not evidence or (
                     fingerprint(evidence) != frozen.validation.execution.evidence_digest
@@ -353,11 +489,8 @@ class FormalMethods:
             if set(compilation.dependencies) != set(frozen.validation.dependencies):
                 raise Forbidden("Frozen dependencies differ from validation")
             if frozen.visibility == "public":
-                # Publication qualification belongs to KnowMart; this path has no
-                # trusted publication receipt and must not invent public rights.
-                raise Forbidden(
-                    "Public method registration requires publication qualification"
-                )
+                # KnowMart independently qualifies listing and acquisition.
+                await self.check_delivery_source(owner, frozen, run)
             await self.repo.insert_formal_method(
                 {
                     "method_id": str(frozen.reference.method_id),

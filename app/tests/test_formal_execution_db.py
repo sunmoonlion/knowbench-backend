@@ -27,6 +27,7 @@ from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
     FormalTestSuiteDraft,
 )
+from app.domain.workbench.source_licenses import BusinessCoverageReview
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
@@ -36,7 +37,7 @@ class StructuredRemote(Remote):
         return {**result, "structuredContent": {"receipt": "expected-never-sent"}}
 
 
-async def setup(db, *, cases=None, remote=None):
+async def setup(db, *, cases=None, remote=None, public_review=False):
     admission, asset = await admission_setup(db, licensed=True)
     env, _, _ = await seed(db)
     doc = admission.model_dump(mode="json", by_alias=True)
@@ -44,6 +45,10 @@ async def setup(db, *, cases=None, remote=None):
     doc["draft"]["definition"]["procedure"]["implementation"]["requirement_ids"] = [
         ACCESS["requirement_id"]
     ]
+    record = license_record(
+        doc["draft"]["source"], rights={"execute": True, "deliver": public_review}
+    )
+    doc["draft"]["source"]["license_basis"] = record.basis
     suite = FormalTestSuiteDraft.model_validate(
         {
             "suite_id": str(uuid4()),
@@ -86,11 +91,26 @@ async def setup(db, *, cases=None, remote=None):
             },
         }
     )
-    record = license_record(request.draft.source.model_dump())
+    review = (
+        BusinessCoverageReview(
+            subject="author",
+            method_id=request.method_id,
+            definition_digest=request.draft.definition.digest(),
+            source_digest=request.draft.source.fingerprint(),
+            suite_digest=suite.digest,
+            evidence=record.evidence,
+            expires_at=record.expires_at,
+        )
+        if public_review
+        else None
+    )
     remote = remote or StructuredRemote()
 
     def factory(repo):
-        return host_service(repo, record, remote)
+        capabilities = host_service(repo, record, remote)
+        if review:
+            capabilities.formal_sources.business_reviews = (review,)
+        return capabilities
 
     conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)
     async with db() as s:
@@ -443,3 +463,39 @@ async def test_final_seal_rechecks_source_and_current_cost_policy(db, withdrawal
     final = await status(db, request, factory)
     assert final["status"] == "failed" and final["admission"]["receipt"] is None
     assert len(remote.calls) == 1
+
+
+async def test_market_candidate_uses_real_execution_and_current_review(db):
+    request, _, remote, factory, conductor = await setup(db, public_review=True)
+    await conductor.advance(str(request.run_id))
+    await approve(db, request, factory, await status(db, request, factory))
+    await settle(conductor, request)
+    result = await status(db, request, factory)
+    receipt = result["admission"]["receipt"]
+    assert "business" in receipt["checks"] and not receipt["uncovered"]
+    assert len(remote.calls) == 1
+    version = FrozenFormalMethod.model_validate(
+        dict(
+            contract="knowlab/frozen-formal-method/v1",
+            owner_subject="author",
+            reference={
+                "method_id": request.method_id,
+                "version": 1,
+                "digest": request.draft.definition.digest(),
+            },
+            draft=request.draft,
+            validation=receipt,
+            visibility="public",
+        )
+    )
+    async with db() as session:
+        service = factory(WorkbenchRepository(session)).formal_sources
+        await service.register(version, caller="knowlab")
+        checked = await service.delivery("author", version.reference, market=True)
+        assert checked["reference"] == version.reference.model_dump(mode="json")
+        assert "credentials" not in json.dumps(checked)
+        with pytest.raises(NotFound):
+            await service.delivery("other", version.reference, market=True)
+        service.business_reviews = ()
+        with pytest.raises(Forbidden, match="coverage"):
+            await service.delivery("author", version.reference, market=True)

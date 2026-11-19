@@ -157,6 +157,42 @@ def unpack_skill(encoded: str) -> dict:
     }
 
 
+def skill_manifest_digest(files: list[dict]) -> str:
+    """Content identity for methods, independent of the ZIP container and installation."""
+    manifest = [
+        {key: f[key] for key in ("path", "size", "sha256", "media_type")}
+        for f in sorted(files, key=lambda f: f["path"])
+    ]
+    return "sha256:" + digest({"schema": "skill-files/v1", "files": manifest})
+
+
+def delivery_files(files: list[dict], contents: dict[str, bytes]) -> list[dict]:
+    paths = {f["path"] for f in files}
+    if (
+        len(paths) != len(files)
+        or len(files) > MAX_FILES
+        or paths != contents.keys()
+        or "SKILL.md" not in paths
+        or sum(map(len, contents.values())) > MAX_TOTAL
+    ):
+        raise CapabilityError("Stored Skill differs from its manifest")
+    result = []
+    for item in sorted(files, key=lambda f: f["path"]):
+        path = canonical_path(item["path"])
+        data = contents[path]
+        if (
+            len(data) != item["size"]
+            or len(data) > MAX_FILE
+            or hashlib.sha256(data).hexdigest() != item["sha256"]
+        ):
+            raise CapabilityError("Stored Skill content differs from its manifest")
+        result.append(
+            {key: item[key] for key in ("path", "size", "sha256", "media_type")}
+            | {"data_base64": base64.b64encode(data).decode("ascii")}
+        )
+    return result
+
+
 def instruction_package(content: str) -> dict:
     data = content.encode("utf-8")
     files = [
