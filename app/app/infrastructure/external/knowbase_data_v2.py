@@ -298,10 +298,38 @@ class KnowbaseDataV2(KnowbaseClient):
     def data_mcp_configured(self) -> bool:
         return bool(self._environ.get("KNOWBASE_INTERNAL_URL", "").strip())
 
+    @property
+    def data_mcp_url(self) -> str:
+        return self._base().removesuffix(BASE_V2) + DATA_MCP_PATH
+
+    async def method_parent_grant(self, token, read, sha256, expires_at):
+        _, grant, _ = await self._send(
+            "POST",
+            "/method-parent-grants",
+            token,
+            json={"read": read, "sha256": sha256, "expires_at": expires_at.isoformat()},
+        )
+        return grant["grant_id"]
+
+    async def consent_method_read(self, token, grant_id, read, expires_at):
+        await self._send(
+            "POST",
+            "/run-grants/" + _segment(grant_id) + "/method-read-consents",
+            token,
+            json={"read": read, "expires_at": expires_at.isoformat()},
+        )
+
+    async def revoke_method_read(self, token, grant_id, method_call_id):
+        await self._send(
+            "DELETE",
+            f"/run-grants/{_segment(grant_id)}/method-read-consents/{_segment(method_call_id)}",
+            token,
+        )
+
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]:
         """把一条 JSON-RPC 原样交给 knowbase 数据 MCP；令牌是工作台当场签的
         `knowbase-data` 令牌。只回 JSON（knowbase 不开流）。"""
-        url = self._base().removesuffix(BASE_V2) + DATA_MCP_PATH
+        url = self.data_mcp_url
         try:
             async with httpx.AsyncClient(
                 timeout=self._timeout,

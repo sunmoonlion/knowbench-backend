@@ -168,6 +168,7 @@ class TokenIssuer:
         sandbox: str,
         tools: list[str],
         ttl_seconds: int = DATA_TTL_SECONDS,
+        method_read: dict | None = None,
     ) -> Issued:
         """工作台中继 knowbase 数据 MCP 时当场签（0048 第三节）：`sub` 是用户（Casdoor
         编号，knowbase 认的那个）、`azp` 是执行的应用、沙箱、只许这次调的工具。令牌只
@@ -175,6 +176,7 @@ class TokenIssuer:
         运行授权或会话范围核。"""
         return self._issue(
             {
+                **({"method_read": method_read} if method_read is not None else {}),
                 "aud": DATA_AUDIENCE,
                 "sub": subject,
                 "azp": "knowbench",

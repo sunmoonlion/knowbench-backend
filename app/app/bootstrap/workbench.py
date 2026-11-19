@@ -455,11 +455,34 @@ def capability_service(repo):
         if settings.workbench_credential_key
         else None
     )
+    reader = None
+    read_urls = {
+        op.service_url
+        for op in settings.workbench_capability_operations
+        if op.tool_name == "read_method_input"
+    }
+    if (
+        read_urls
+        and settings.workbench_token_signing_key
+        and knowbase_v2().data_mcp_configured
+        and knowbase_v2().data_mcp_url in read_urls
+    ):
+        from app.application.workbench.knowbase_method_read import KnowbaseMethodReader
+        from app.application.workbench.tokens import TokenIssuer
+
+        reader = KnowbaseMethodReader(
+            knowbase_v2(),
+            TokenIssuer(
+                settings.workbench_token_signing_key,
+                issuer=settings.workbench_token_issuer,
+            ),
+        )
     return Capabilities(
         repo,
         RemoteMcp(tuple(settings.workbench_capability_mcp_urls)),
         cipher,
         runtime_url=settings.workbench_capability_mcp_url,
+        knowbase_reader=reader,
         operations=settings.workbench_capability_operations,
         source_licenses=settings.workbench_source_licenses,
         resource_delegations=settings.workbench_resource_delegations,

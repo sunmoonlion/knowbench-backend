@@ -94,6 +94,7 @@ class Capabilities:
         operations: tuple[McpOperation, ...] = (),
         source_licenses=(),
         resource_delegations=(),
+        knowbase_reader=None,
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
             repo,
@@ -101,6 +102,7 @@ class Capabilities:
             cipher,
             runtime_url,
         )
+        self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.script_executor = script_executor
         self.operations = OperationCatalog(operations)
@@ -155,10 +157,22 @@ class Capabilities:
         assets = await self.repo.capability_assets(owner)
         return [public_skill_asset(a, assets) for a in assets]
 
+    async def _discover(self, owner, url, token):
+        if self.knowbase_reader and url == self.knowbase_reader.url:
+            if token:
+                raise CapabilityError(
+                    "KnowBase uses the authenticated workbench account"
+                )
+            subject = await self.repo.subject_of_actor(owner)
+            if not subject:
+                raise CapabilityError("The KnowBase account is unavailable")
+            return await self.knowbase_reader.discover(subject)
+        return await self.remote.discover(url, token)
+
     async def create_connection(self, owner, body):
         if body.token and self.cipher is None:
             raise CapabilityError("Credential storage is unavailable")
-        tools = await self.remote.discover(body.url, body.token)
+        tools = await self._discover(owner, body.url, body.token)
         tools = mcp_catalog(body.url, tools).descriptors()
         asset = {
             "id": str(uuid.uuid4()),
@@ -285,7 +299,7 @@ class Capabilities:
             raise CapabilityError("Only connections have credentials")
         if body.token and self.cipher is None:
             raise CapabilityError("Credential storage is unavailable")
-        tools = await self.remote.discover(asset["detail"]["url"], body.token)
+        tools = await self._discover(owner, asset["detail"]["url"], body.token)
         tools = mcp_catalog(asset["detail"]["url"], tools).descriptors()
         detail = {
             **asset["detail"],
@@ -332,8 +346,8 @@ class Capabilities:
         if body.action == "refresh":
             if asset["kind"] != "connection" or status != "active":
                 raise CapabilityError("Only active connections can be checked")
-            detail["tools"] = await self.remote.discover(
-                detail["url"], self.secret(asset)
+            detail["tools"] = await self._discover(
+                owner, detail["url"], self.secret(asset)
             )
             detail["tools"] = mcp_catalog(detail["url"], detail["tools"]).descriptors()
             detail["checked_at"] = datetime.now(UTC).isoformat()
@@ -1816,7 +1830,7 @@ class Capabilities:
             return await self._dispatch_call(owner, call, connection, intent)
         return public_call(await self.repo.capability_call(owner, call_id))
 
-    async def _dispatch_call(self, owner, call, connection, intent):
+    async def _dispatch_call(self, owner, call, connection, intent, knowbase_read=None):
         """One adapter path; callers must have committed exact approved dispatch."""
         call_id = call["id"]
         # Receipt is committed before outbound I/O. No automatic retry after a crash.
@@ -1830,12 +1844,23 @@ class Capabilities:
                 # The runner reconciles the asynchronous Job into this same call.
                 return public_call(await self.repo.capability_call(owner, call_id))
             else:
-                result = await self.remote.call(
-                    connection["detail"]["url"],
-                    self.secret(connection),
-                    intent["tool"]["name"],
-                    intent["arguments"],
-                )
+                if (
+                    self.knowbase_reader
+                    and connection["detail"]["url"] == self.knowbase_reader.url
+                ):
+                    subject = await self.repo.subject_of_actor(owner)
+                    if not subject:
+                        raise CapabilityError("The KnowBase account is unavailable")
+                    result = await self.knowbase_reader.call(
+                        subject, intent, knowbase_read
+                    )
+                else:
+                    result = await self.remote.call(
+                        connection["detail"]["url"],
+                        self.secret(connection),
+                        intent["tool"]["name"],
+                        intent["arguments"],
+                    )
                 status = "failed" if result.get("isError") else "succeeded"
                 intent["result"] = result
         except CapabilityOutcomeUnknown as exc:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import quote
@@ -13,10 +14,10 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, Response, StreamingResponse
-from pydantic import ValidationError
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.bootstrap.workbench import capability_service, web_workbench_store
+from app.bootstrap.workbench import capability_service, knowbase_v2, web_workbench_store
 from app.domain.security import Principal
 from app.domain.workbench.capabilities import (
     ActionDecision,
@@ -54,7 +55,10 @@ from app.interfaces.endpoints.workbench_routes import (
     _http,
     require_workbench_enabled,
 )
-from app.interfaces.http.middleware.auth import get_web_current_user
+from app.interfaces.http.middleware.auth import (
+    get_web_current_user,
+    get_web_knowbase_token_provider,
+)
 
 router = APIRouter(
     tags=["Capabilities"], dependencies=[Depends(require_workbench_enabled)]
@@ -170,7 +174,13 @@ async def list_capabilities(
         "services": [
             {"url": url, "authentication": ["none", "bearer"]}
             for url in svc.remote.allowed_urls
-        ],
+            if not svc.knowbase_reader or url != svc.knowbase_reader.url
+        ]
+        + (
+            [{"url": svc.knowbase_reader.url, "authentication": ["none"]}]
+            if svc.knowbase_reader
+            else []
+        ),
         "skill_formats": ["instruction-markdown", "skill-package-zip"],
         "runtime_enabled": bool(svc.runtime_url),
         "script_execution_enabled": svc.script_executor is not None,
@@ -334,6 +344,104 @@ async def list_calls(
         return {"calls": calls}
     except WorkbenchError as exc:
         raise _http(exc) from exc
+
+
+class KnowbaseReadApproval(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    subject_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    expires_at: AwareDatetime
+
+
+class ExistingParentApproval(KnowbaseReadApproval):
+    grant_id: UUID
+
+
+class PinnedParentApproval(KnowbaseReadApproval):
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+@router.get("/workbench/capability-calls/{call_id}/knowbase-read")
+async def preview_knowbase_read(
+    call_id: UUID, user: Principal = Depends(get_web_current_user), svc=Depends(service)
+):
+    from app.application.workbench.knowbase_method_read import pending_read
+
+    try:
+        return await pending_read(svc, _actor(user), call_id)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/workbench/capability-calls/{call_id}/knowbase-read")
+async def approve_knowbase_read(
+    call_id: UUID,
+    body: ExistingParentApproval | PinnedParentApproval,
+    user: Principal = Depends(get_web_current_user),
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+    svc=Depends(service),
+):
+    from app.application.workbench.knowbase_method_read import pending_read
+    from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+    try:
+        request = await pending_read(svc, _actor(user), call_id)
+        if request["subject_digest"] != body.subject_digest:
+            raise Forbidden("Consent does not match the displayed method read")
+        token = await user_token()
+        client = svc.knowbase_reader.client
+        grant_id = (
+            str(body.grant_id)
+            if isinstance(body, ExistingParentApproval)
+            else await client.method_parent_grant(
+                token,
+                request["read"],
+                body.sha256,
+                body.expires_at,
+            )
+        )
+        await client.consent_method_read(
+            token, grant_id, request["read"], body.expires_at
+        )
+        return {
+            "grant_id": grant_id,
+            "method_call_id": request["read"]["path"][-1]["call_id"],
+            "expires_at": body.expires_at,
+        }
+    except KnowbaseRefused as exc:
+        from app.application.errors.exceptions import AppException
+
+        raise AppException(
+            status_code=exc.status,
+            code=exc.code,
+            msg="KnowBase refused the method read consent",
+        ) from exc
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.delete(
+    "/workbench/knowbase-method-reads/{grant_id}/{method_call_id}", status_code=204
+)
+async def revoke_knowbase_read(
+    grant_id: UUID,
+    method_call_id: UUID,
+    user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+    client=Depends(knowbase_v2),
+):
+    from app.application.errors.exceptions import AppException
+    from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+    try:
+        await client.revoke_method_read(
+            await user_token(), str(grant_id), str(method_call_id)
+        )
+    except KnowbaseRefused as exc:
+        raise AppException(
+            status_code=exc.status,
+            code=exc.code,
+            msg="KnowBase refused to revoke the method consent",
+        ) from exc
+    return Response(status_code=204)
 
 
 @router.post(

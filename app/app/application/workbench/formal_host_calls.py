@@ -59,6 +59,7 @@ class HostContext:
     intent: dict
     method_call: dict | None = None
     scopes: list[MethodAuthorization] | None = None
+    knowbase_read: dict | None = None
 
     @property
     def identity(self):
@@ -306,6 +307,41 @@ class FormalHostCalls:
                 parent_method_call_id=refs["parent_method_call_id"],
                 root_method_call_id=refs["root_method_call_id"],
             )
+        knowbase_read = None
+        reader = self.capabilities.knowbase_reader
+        if reader and asset["detail"]["url"] == reader.url:
+            from app.application.workbench.knowbase_method_read import (
+                TOOL,
+                read_binding,
+            )
+
+            material = arguments.get("material_id")
+            if (
+                caller != "host"
+                or source.entry != TOOL
+                or policy.effect != "read"
+                or not any(
+                    r.resource_role == "material"
+                    and r.argument_path == ("material_id",)
+                    for r in policy.resources
+                )
+                or not any(
+                    r["resource_role"] == "material" and r["values"] == [material]
+                    for r in decision.operation["resources"]
+                )
+            ):
+                raise CapabilityError(
+                    "KnowBase requires an exact reviewed material read"
+                )
+            knowbase_read = await read_binding(
+                self.repo,
+                task,
+                snapshot,
+                arguments,
+                access["requirement"]["data_transfer"]["purpose"],
+                child,
+                scopes,
+            )
         intent = {
             "execution_kind": "formal_mcp",
             "formal_host": host,
@@ -330,6 +366,7 @@ class FormalHostCalls:
             intent,
             child,
             scopes,
+            knowbase_read,
         )
 
     async def request(self, owner, task_id, attempt_id, *, model=None):
@@ -609,7 +646,7 @@ class FormalHostCalls:
             await self.repo.update_call(owner, call["id"], status, intent)
         if context:
             return await self.capabilities._dispatch_call(
-                owner, call, context.asset, intent
+                owner, call, context.asset, intent, context.knowbase_read
             )
         return public_call(await self.repo.capability_call(owner, call["id"]))
 
