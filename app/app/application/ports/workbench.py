@@ -43,7 +43,10 @@ class AppServerConnection(Protocol):
         params: dict[str, Any] | None = None,
         *,
         timeout: float = 60,  # noqa: ASYNC109
-    ) -> Any: ...
+        on_result: Callable[[Any], None] | None = None,
+    ) -> Any:
+        """Run on_result synchronously when the successful reply is read, before the next frame."""
+        ...
 
     async def respond(self, rid: Any, result: dict[str, Any]) -> None: ...
 

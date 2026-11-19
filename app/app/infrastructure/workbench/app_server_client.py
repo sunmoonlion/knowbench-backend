@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import websockets
@@ -66,8 +66,9 @@ class AppServerClient:
         self._client_name = client_name
         self._client_version = client_version
         self._ws: ClientConnection | None = None
-        self._pending: dict[int, asyncio.Future] = {}
-        self._methods: dict[int, str] = {}
+        self._pending: dict[
+            int, tuple[str, asyncio.Future, Callable[[Any], None] | None]
+        ] = {}
         self._next_id = 1
         self._reader: asyncio.Task | None = None
         self.closed = asyncio.Event()
@@ -114,11 +115,10 @@ class AppServerClient:
 
     def _finish_closed(self) -> None:
         self.closed.set()
-        for fut in self._pending.values():
+        for _, fut, _ in self._pending.values():
             if not fut.done():
                 fut.set_exception(ConnectionError("app-server connection closed"))
         self._pending.clear()
-        self._methods.clear()
 
     async def _read_loop(self) -> None:
         assert self._ws is not None
@@ -136,13 +136,22 @@ class AppServerClient:
                         )
                     )
                 elif "id" in msg:
-                    fut = self._pending.pop(msg["id"], None)
-                    method = self._methods.pop(msg["id"], "?")
-                    if fut is not None and not fut.done():
+                    pending = self._pending.pop(msg["id"], None)
+                    if pending is None:
+                        continue
+                    method, fut, on_result = pending
+                    if not fut.done():
                         if "error" in msg:
                             fut.set_exception(AppServerError(method, msg["error"]))
                         else:
-                            fut.set_result(msg.get("result"))
+                            result = msg.get("result")
+                            try:
+                                if on_result is not None:
+                                    on_result(result)
+                            except Exception as exc:
+                                fut.set_exception(exc)
+                            else:
+                                fut.set_result(result)
                 elif "method" in msg:
                     try:
                         await self._on_notification(
@@ -174,20 +183,28 @@ class AppServerClient:
         params: dict[str, Any] | None = None,
         *,
         timeout: float = 60,  # noqa: ASYNC109
+        on_result: Callable[[Any], None] | None = None,
     ) -> Any:
         if self._ws is None or self.closed.is_set():
             raise ConnectionError("app-server not connected")
         rid = self._next_id
         self._next_id += 1
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self._pending[rid] = fut
-        self._methods[rid] = method
-        await self._ws.send(
-            json.dumps(
-                {"jsonrpc": "2.0", "id": rid, "method": method, "params": params or {}}
+        self._pending[rid] = (method, fut, on_result)
+        try:
+            await self._ws.send(
+                json.dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": rid,
+                        "method": method,
+                        "params": params or {},
+                    }
+                )
             )
-        )
-        return await asyncio.wait_for(fut, timeout)
+            return await asyncio.wait_for(fut, timeout)
+        finally:
+            self._pending.pop(rid, None)
 
     async def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
         if self._ws is None:

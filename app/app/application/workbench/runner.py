@@ -804,6 +804,12 @@ class SandboxLink:
             if not w["future"].done():
                 w["future"].set_result(True)
 
+    def _forget_turn(self, thread_id: str, turn_id: str) -> None:
+        self.turn_waiters.pop(turn_id, None)
+        if self.active_turns.get(thread_id) == turn_id:
+            self.active_turns.pop(thread_id, None)
+        self._end_turn_waits(thread_id)
+
     async def run_turn(
         self,
         thread_id: str,
@@ -907,24 +913,6 @@ class SandboxLink:
                 not_started=True,
                 usage_known=True,
             )
-        result = await client.request(
-            "turn/start",
-            {
-                "threadId": thread_id,
-                "input": [*capability_inputs, {"type": "text", "text": text}],
-                **plan.settings,
-            },
-            timeout=120,
-        )
-        turn_id = ((result or {}).get("turn") or {}).get("id")
-        await self.record_capability_turn(thread_id, turn_id)
-        if not turn_id:
-            return TurnResult(
-                turn_id=None,
-                final_text=None,
-                tokens={},
-                error=f"turn/start returned no turn id: {result}",
-            )
         waiter: dict[str, Any] = {
             "thread_id": thread_id,
             "future": asyncio.get_running_loop().create_future(),
@@ -951,15 +939,7 @@ class SandboxLink:
             and not probe
             and active["step_id"] != PLAN_STEP
             else None,
-            "idle_guard": StepProgressGuard(
-                asyncio.get_running_loop().time() - self.waited(thread_id)
-            )
-            if active
-            and not planning
-            and not lookup
-            and not probe
-            and active["step_id"] != PLAN_STEP
-            else None,
+            "idle_guard": None,
             "idle_failure": None,
             "idle_stop_unconfirmed": False,
             # 账 183：这一步久无进展时提醒（只提醒、不中断）；提醒记在这件委托这一步下
@@ -977,9 +957,46 @@ class SandboxLink:
             "permission_failure": None,
             "permission_stop_unconfirmed": False,
         }
-        self.turn_waiters[turn_id] = waiter
-        self.active_turns[thread_id] = turn_id
         loop = asyncio.get_running_loop()
+        turn_id: str | None = None
+
+        def register_turn(result):
+            nonlocal turn_id
+            turn_id = ((result or {}).get("turn") or {}).get("id")
+            if turn_id:
+                if waiter["compute_guard"] is not None:
+                    waiter["idle_guard"] = StepProgressGuard(
+                        loop.time() - self.waited(thread_id)
+                    )
+                self.turn_waiters[turn_id] = waiter
+                self.active_turns[thread_id] = turn_id
+
+        # Register on the reply frame itself: the same socket can already have
+        # queued the final text, usage and completion while the caller is asleep.
+        try:
+            result = await client.request(
+                "turn/start",
+                {
+                    "threadId": thread_id,
+                    "input": [*capability_inputs, {"type": "text", "text": text}],
+                    **plan.settings,
+                },
+                timeout=120,
+                on_result=register_turn,
+            )
+            if not turn_id:
+                return TurnResult(
+                    turn_id=None,
+                    final_text=None,
+                    tokens={},
+                    error=f"turn/start returned no turn id: {result}",
+                )
+            await self.record_capability_turn(thread_id, turn_id)
+        except BaseException:
+            if turn_id:
+                self._forget_turn(thread_id, turn_id)
+                self.turn_usage.pop(turn_id, None)
+            raise
         started, waited_before = loop.time(), self.waited(thread_id)
         capability_waiting = False
         try:
@@ -1150,10 +1167,7 @@ class SandboxLink:
         finally:
             if capability_waiting:
                 self._wait_ended(thread_id)
-            self.turn_waiters.pop(turn_id, None)
-            if self.active_turns.get(thread_id) == turn_id:
-                self.active_turns.pop(thread_id, None)
-            self._end_turn_waits(thread_id)
+            self._forget_turn(thread_id, turn_id)
         # 这一轮花的 = 这一轮里每次调用相加。不拿这条线的累计来算
         used = self.turn_usage.pop(turn_id, Usage())
         stop = self.user_stops.pop(thread_id, None)

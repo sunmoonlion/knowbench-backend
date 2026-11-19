@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import contextlib
 import hashlib
@@ -189,6 +190,44 @@ async def test_a_delivered_draft_is_written_to_the_output_area(db):  # noqa: F81
         1,
     )
     assert await writer.sweep() == 0  # 写过的不再写
+
+
+async def test_plan_reply_survives_blocked_capability_turn_record(db, monkeypatch):
+    handle = ScriptedAppServer.handle
+
+    async def delay_first_turn_record(server, ws, msg):
+        if msg["method"] != "turn/start" or server.replies != [PLAN, ANSWER]:
+            return await handle(server, ws, msg)
+        async with db() as session, session.begin():
+            session_id = (
+                await session.execute(
+                    text("""select c.session_id from workbench_capability_selections c
+                        join workbench_sessions s on s.id = c.session_id
+                        where s.thread_id = :thread for update of c"""),
+                    {"thread": msg["params"]["threadId"]},
+                )
+            ).scalar_one()
+            await handle(server, ws, msg)
+            # The usage notification follows the plan text on the same socket.
+            # Keep the write blocked until the receiver has processed that text.
+            async with asyncio.timeout(10):
+                while not await session.scalar(  # noqa: ASYNC110 -- wait for a commit in the other session
+                    text("""select exists(select 1 from workbench_session_events
+                            where session_id = :sid and event_type = 'thread/tokenUsage/updated')"""),
+                    {"sid": session_id},
+                ):
+                    await asyncio.sleep(0.01)
+
+    monkeypatch.setattr(ScriptedAppServer, "handle", delay_first_turn_record)
+    task_id = await delivered(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        task = await repo.get_task(task_id)
+        assert task["state"] == TaskState.SUCCEEDED
+        assert await repo.list_task_events(task_id, types=("step/rejected",)) == []
+    [output] = await rows(db)
+    assert str(output["run_ref"]) == task_id and output["status"] == "pending"
+    assert output["accepted_sha256"] == hashlib.sha256(MD).hexdigest()
 
 
 async def test_not_written_does_not_block_and_is_tried_again(db):  # noqa: F811
