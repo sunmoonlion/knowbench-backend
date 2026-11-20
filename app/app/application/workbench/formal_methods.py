@@ -11,6 +11,7 @@ from typing import Any
 
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden, NotFound, RuntimeCapabilityGap
+from app.domain.workbench.formal_execution import validate_values
 from app.domain.workbench.formal_method_admission_generated import (
     CONTRACT,
     GOVERNANCE_CHECKS,
@@ -23,9 +24,16 @@ from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
     compile_method,
 )
-from app.domain.workbench.formal_method_execution_generated import fingerprint
+from app.domain.workbench.formal_method_execution_generated import (
+    bounded_json,
+    fingerprint,
+)
 from app.domain.workbench.formal_method_generated import Orchestration
-from app.domain.workbench.skill_package import delivery_files, skill_manifest_digest
+from app.domain.workbench.skill_package import (
+    delivery_files,
+    skill_manifest_digest,
+    verified_instruction,
+)
 from app.domain.workbench.source_licenses import SourceIdentity, SourceLicenseCatalog
 from app.domain.workbench.tool_operations import OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
@@ -195,12 +203,65 @@ class FormalMethods:
             raise CapabilityError(
                 "Platform implementation has no incubation source record"
             )
+        asset = await self._installed_source(owner, subject, source)
+        if source.license_basis == "pending":
+            return False
+        if source.kind == "skill_instruction":
+            await self._instruction_text(owner, asset)
+        return True
+
+    async def _installed_source(self, owner, subject, source):
         asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
         if source not in self._sources(asset, subject, now=self.now()):
             raise CapabilityError(
                 "Installed source changed, is unavailable or belongs to another author"
             )
-        return source.license_basis != "pending"
+        return asset
+
+    async def _instruction_text(self, owner, asset):
+        data = await self.repo.skill_file(owner, str(asset["id"]), "SKILL.md")
+        return verified_instruction(asset["detail"]["files"], data)
+
+    async def prepare_instruction_trial(self, subject, run_id, arguments, *, caller):
+        """Resolve a retained, single-turn host draft and its inputs for a local rehearsal."""
+        async with self.repo.transaction():
+            owner = await self._owner(subject)
+            row = await self.repo.formal_validation(owner, str(run_id), lock=True)
+            if row is None or row["caller"] != caller:
+                raise NotFound("Formal method validation run not found")
+            req = FormalMethodValidationRequest.model_validate(row["request"])
+            source = req.draft.source
+            definition = req.draft.definition
+            step = definition.procedure
+            if (
+                row["result"].get("status") != "pending"
+                or str(req.run_id) != str(run_id)
+                or req.owner_subject != subject
+                or digest(row["request"]) != row["request_digest"]
+                or source is None
+                or source.kind != "skill_instruction"
+                or source.license_basis == "pending"
+                or req.draft.allowed_callers != ("host",)
+                or step.kind != "direct"
+                or step.max_model_turns != 1
+                or req.dependencies
+                or definition.access_requirements
+                or definition.what_requires_approval
+                or step.implementation.requirement_ids
+            ):
+                raise CapabilityError(
+                    "The trial needs a licensed single-turn instruction with no tools"
+                )
+            asset = await self._installed_source(owner, subject, source)
+            if asset["detail"].get("tool_requirements") or asset["detail"].get(
+                "dependencies"
+            ):
+                raise CapabilityError(
+                    "The Skill requires tools outside this instruction trial"
+                )
+            bounded_json(arguments)
+            validate_values(step.inputs, arguments)
+            return req, await self._instruction_text(owner, asset)
 
     async def dependency(self, owner, reference, *, shared=True):
         row = await self.repo.formal_method(

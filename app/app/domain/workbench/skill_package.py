@@ -166,6 +166,28 @@ def skill_manifest_digest(files: list[dict]) -> str:
     return "sha256:" + digest({"schema": "skill-files/v1", "files": manifest})
 
 
+def verified_instruction(files: list[dict], data: bytes) -> str:
+    """Read just the pinned entry. Other package files are not model inputs."""
+    entries = [f for f in files if f["path"] == "SKILL.md"]
+    if len(entries) != 1:
+        raise CapabilityError("The Skill needs one SKILL.md entry")
+    entry = entries[0]
+    if (
+        entry["media_type"] != "text/plain"
+        or not 0 < len(data) <= 65536
+        or len(data) != entry["size"]
+        or hashlib.sha256(data).hexdigest() != entry["sha256"]
+    ):
+        raise CapabilityError("Stored SKILL.md differs from its pinned manifest")
+    try:
+        instructions = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise CapabilityError("SKILL.md must be UTF-8") from exc
+    if not instructions.strip() or "\x00" in instructions:
+        raise CapabilityError("SKILL.md must contain instruction text")
+    return instructions
+
+
 def delivery_files(files: list[dict], contents: dict[str, bytes]) -> list[dict]:
     paths = {f["path"] for f in files}
     if (

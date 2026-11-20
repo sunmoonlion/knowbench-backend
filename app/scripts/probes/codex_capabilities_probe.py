@@ -26,37 +26,41 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(204)
         self.end_headers()
 
+    def response_item(self, rid):
+        global next_model_tool
+        item = {
+            "type": "message",
+            "role": "assistant",
+            "id": "msg_" + rid,
+            "content": [{"type": "output_text", "text": "synthetic_ok"}],
+        }
+        if next_model_tool:
+            item = {
+                "type": "function_call",
+                "id": "fc_" + rid,
+                "call_id": "call_" + rid,
+                "name": next_model_tool,
+                "namespace": "mcp__sunmoon_capabilities",
+                "arguments": json.dumps(
+                    {
+                        "skill_id": "11111111-1111-4111-8111-111111111111",
+                        "path": "references/guide.md",
+                    }
+                )
+                if next_model_tool == "skill_read"
+                else "{}",
+                "status": "completed",
+            }
+            next_model_tool = None
+        return item
+
     def do_POST(self):
         raw = self.rfile.read(int(self.headers["Content-Length"]))
         msg = json.loads(raw)
         if self.path == "/v1/responses":
-            global next_model_tool
             captures.append(msg)
             rid = "resp_" + str(len(captures))
-            item = {
-                "type": "message",
-                "role": "assistant",
-                "id": "msg_" + rid,
-                "content": [{"type": "output_text", "text": "synthetic_ok"}],
-            }
-            if next_model_tool:
-                item = {
-                    "type": "function_call",
-                    "id": "fc_" + rid,
-                    "call_id": "call_" + rid,
-                    "name": next_model_tool,
-                    "namespace": "mcp__sunmoon_capabilities",
-                    "arguments": json.dumps(
-                        {
-                            "skill_id": "11111111-1111-4111-8111-111111111111",
-                            "path": "references/guide.md",
-                        }
-                    )
-                    if next_model_tool == "skill_read"
-                    else "{}",
-                    "status": "completed",
-                }
-                next_model_tool = None
+            item = self.response_item(rid)
             events = [
                 {"type": "response.created", "response": {"id": rid}},
                 {"type": "response.output_item.done", "item": item},

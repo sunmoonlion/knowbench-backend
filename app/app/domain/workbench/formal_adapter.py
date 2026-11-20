@@ -5,7 +5,11 @@ from app.domain.workbench.tool_registry import ToolRegistration
 
 
 def host_kind(source):
-    return "formal_script" if source.kind == "skill_script" else "formal_mcp"
+    if source.kind == "mcp":
+        return "formal_mcp"
+    if source.kind == "skill_script":
+        return "formal_script"
+    raise CapabilityError("No formal host adapter for this implementation")
 
 
 def script_registration(draft):
@@ -34,7 +38,7 @@ def script_registration(draft):
 
 def retained_registration(draft, tool):
     source = draft.source
-    if source.kind == "skill_script":
+    if host_kind(source) == "formal_script":
         registration = script_registration(draft)
         if tool != registration.descriptor():
             raise CapabilityError("Script interface or frozen entry changed")

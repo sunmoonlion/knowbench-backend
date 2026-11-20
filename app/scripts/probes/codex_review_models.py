@@ -1,6 +1,5 @@
 """Exercise thread-scoped model routing in the pinned, offline sandbox image."""
 
-import json
 import os
 import signal
 import subprocess
@@ -9,6 +8,7 @@ from http.server import ThreadingHTTPServer
 from pathlib import Path
 
 from codex_capabilities_probe import Handler, captures
+from codex_probe_client import ProbeClient
 
 
 def main():
@@ -25,6 +25,7 @@ def main():
     class CaptureProvider(Handler):
         def do_POST(self):
             if self.path == "/v1/responses":
+                assert isinstance(self.server, ThreadingHTTPServer)
                 order.append(self.server.server_port)
             super().do_POST()
 
@@ -52,44 +53,13 @@ def main():
         text=True,
         cwd="/tmp",
     ) as proc:
-        events = []
-        seq = 0
-
-        def receive():
-            line = proc.stdout.readline()
-            if not line:
-                raise RuntimeError("app-server closed")
-            msg = json.loads(line)
-            if "method" in msg:
-                events.append(msg)
-            return msg
-
-        def call(method, params):
-            nonlocal seq
-            seq += 1
-            print(
-                json.dumps(dict(id=seq, method=method, params=params)),
-                file=proc.stdin,
-                flush=True,
-            )
-            while True:
-                msg = receive()
-                if msg.get("id") == seq:
-                    assert "result" in msg, msg
-                    return msg["result"]
-
+        client = ProbeClient(proc)
+        events = client.notices
         try:
-            call(
-                "initialize",
-                {
-                    "clientInfo": {"name": "review-probe", "version": "1"},
-                    "capabilities": {"experimentalApi": True},
-                },
-            )
-            print('{"method":"initialized"}', file=proc.stdin, flush=True)
+            client.initialize("review-probe")
             threads = {}
             for name in servers:
-                result = call(
+                result = client.call(
                     "thread/start",
                     {
                         "model": name + "-test",
@@ -107,7 +77,7 @@ def main():
             for name in ("primary", "review", "primary"):
                 before = len(events)
                 tid = threads[name]
-                turn = call(
+                turn = client.call(
                     "turn/start",
                     {
                         "threadId": tid,
@@ -125,13 +95,13 @@ def main():
                 while not any(
                     e["turn"]["id"] == turn for e in notices("turn/completed")
                 ):
-                    receive()
+                    client.receive()
                 assert notices("turn/completed")[-1]["turn"]["status"] == "completed"
                 assert order[-1] == servers[name].server_port
                 assert captures[-1]["model"] == name + "-test"
                 usage = notices("thread/tokenUsage/updated")
                 while not any(e["turnId"] == turn for e in usage):
-                    receive()
+                    client.receive()
                     usage = notices("thread/tokenUsage/updated")
                 usage = [e for e in usage if e["turnId"] == turn]
                 print(

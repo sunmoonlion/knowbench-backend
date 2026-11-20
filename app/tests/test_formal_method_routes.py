@@ -70,6 +70,7 @@ class MemoryRepository:
                 },
             }
         }
+        self.entry = b"Synthetic instruction, not runtime evidence."
         self.validations: dict[str, dict[str, Any]] = {}
         self.methods: dict[tuple[str, int], dict[str, Any]] = {}
 
@@ -89,6 +90,10 @@ class MemoryRepository:
         if found is None or found["owner_actor_id"] != owner:
             raise NotFound("No such asset")
         return found
+
+    async def skill_file(self, owner, asset_id, path):
+        assert owner == OWNER and asset_id == ASSET and path == "SKILL.md"
+        return self.entry
 
     async def formal_validation(self, owner, run_id, *, lock=False):
         found = self.validations.get(run_id)
@@ -312,6 +317,13 @@ async def test_route_uses_configured_rights_without_exposing_review_evidence(
         assert result.json()["status"] == "pending"
         assert "source" not in result.json()["missing_checks"]
         assert "authorization" in result.json()["missing_checks"]
+
+        repo.entry = b"x" * len(repo.entry)
+        body["run_id"] = "94ab5394-8744-4cae-9a47-d557836dd6e1"
+        damaged = await client.post(
+            f"{BASE}/formal-method-validations", headers=HEADERS, json=body
+        )
+        assert damaged.status_code == 409 and body["run_id"] not in repo.validations
 
 
 @pytest.mark.parametrize(
