@@ -238,3 +238,17 @@ Ledger、Runner websocket 和结果回收。实际编译的非财务引用夹具
 计划，按最终方法别名交回已验成果，核方法版本及任务摘要；不直接改写任务快照。
 另验证默认拒绝、摘要/定义/编译器篡改拒绝、重复受理和开跑前取消。
 AppServer 回复仍为预录，不证明真实模型规划质量、金融数据或本人业务验收。
+
+
+### P3 复核线程的模型路由探针
+
+在后端仓根下使用项目的 Codex 0.170.0 沙箱镜像运行。探针在同一 app-server 开两个线程，分别指定两个合成供应商和模型。用主笔、复核、主笔三个轮次核对启动回参、实际收到请求的服务、请求体中的模型名和用量事件归属。全程使用容器内的回环服务。
+
+```sh
+docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+  --tmpfs /tmp:exec -e CODEX_HOME=/tmp/probe-home -e HOME=/tmp \
+  -v "$PWD/app/scripts/probes:/probe:ro" --entrypoint python3 \
+  luna-local/sandbox:codex-0.170.0 /probe/codex_review_models.py
+```
+
+此次用量事件只有线程、轮次和 token 统计。真实供应商身份、模型家族、不同路由的单价、独立工作区和恢复后隔离仍须由产品链路另验。
