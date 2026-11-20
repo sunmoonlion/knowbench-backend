@@ -13,9 +13,9 @@ from app.application.workbench.call_policy import authorize_operation
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_calls import root_call
 from app.application.workbench.task_output_reader import TOOL as TASK_OUTPUT_TOOL
-from app.application.workbench.tool_registry import registered_call
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden
+from app.domain.workbench.formal_adapter import host_kind, live_registration
 from app.domain.workbench.formal_execution import (
     case_key,
     direct_procedure,
@@ -250,17 +250,15 @@ class FormalHostCalls:
         ):
             raise CapabilityError("Source execution rights have not been verified")
         asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
-        tool = next(
-            (t for t in asset["detail"].get("tools", []) if t["name"] == source.entry),
-            None,
-        )
-        if asset["kind"] != "connection" or tool is None:
-            raise CapabilityError("Formal source has no current MCP operation")
-        registration = registered_call(asset, {"tool": tool})
-        policy = self.capabilities.operations.require(registration)
-        if policy.formal_execution_cost is None:
-            raise CapabilityError(
-                "Formal execution requires reviewed zero incremental provider cost"
+        registration = live_registration(draft, asset)
+        policy = self.capabilities.operations.formal_policy(registration)
+        if source.kind == "skill_script":
+            if self.capabilities.script_executor is None:
+                raise CapabilityError("Isolated script execution is unavailable")
+            tool = registration.descriptor()
+        else:
+            tool = next(
+                t for t in asset["detail"]["tools"] if t["name"] == source.entry
             )
         access = {
             "requirement": draft.definition.access_requirements[0].model_dump(
@@ -311,7 +309,7 @@ class FormalHostCalls:
             )
         knowbase_read = None
         reader = self.capabilities.knowbase_reader
-        if reader and asset["detail"]["url"] == reader.url:
+        if reader and asset["detail"].get("url") == reader.url:
             from app.application.workbench.knowbase_method_read import (
                 TOOL,
                 read_binding,
@@ -344,10 +342,10 @@ class FormalHostCalls:
                 scopes,
             )
         intent = {
-            "execution_kind": "formal_mcp",
+            "execution_kind": host_kind(source),
             "formal_host": host,
             "source_asset_id": asset["id"],
-            "connection_id": asset["id"],
+            "connection_id": None if source.kind == "skill_script" else asset["id"],
             "revision": asset["revision"],
             "connection_name": asset["name"],
             "account_label": asset["detail"].get("account_label", ""),
@@ -357,10 +355,12 @@ class FormalHostCalls:
             "operation": decision.operation,
             "access": access,
         }
+        if source.kind == "skill_script":
+            intent["script_quote"] = decision.operation["script_quote"]
         artifact_read = None
         if (
             self.capabilities.task_outputs_url
-            and asset["detail"]["url"] == self.capabilities.task_outputs_url
+            and asset["detail"].get("url") == self.capabilities.task_outputs_url
             and source.entry == TASK_OUTPUT_TOOL
         ):
             from app.application.workbench.task_output_reader import (
@@ -466,7 +466,11 @@ class FormalHostCalls:
                 if (
                     existing["origin"] != "managed"
                     or existing["detail"].get("execution_kind")
-                    != ("formal_probe" if model is not None else "formal_mcp")
+                    not in (
+                        ("formal_probe",)
+                        if model is not None
+                        else ("formal_mcp", "formal_script")
+                    )
                     or (
                         model is not None
                         and existing["detail"].get("invocation")
@@ -518,6 +522,7 @@ class FormalHostCalls:
                 )
             call_id = str(uuid.uuid4())
             operation = context.operation
+            quote = context.intent.get("script_quote")
             opened = await Ledger(self.repo).open_interaction(
                 task_id,
                 attempt_id=attempt_id,
@@ -526,9 +531,11 @@ class FormalHostCalls:
                 subject_digest=context.identity,
                 ttl=timedelta(minutes=15),
                 prompt=InteractionPrompt(
-                    title="确认正式方法的外部操作",
+                    title="批准隔离脚本及费用" if quote else "确认正式方法的外部操作",
                     question=(
-                        "请核对产物版本、输出字段、用途和接收方法链。批准即允许沿所示调用链仅传递这些字段，并执行这一次操作。"
+                        f"在 {quote['environment']} 执行本次脚本。容器每运行一秒收取 {quote['per_container_second']} {quote['currency']}，本次根预算最多预留 {quote['maximum']} {quote['currency']}。启动前免费，失败或取消按已运行时间结算。"
+                        if quote
+                        else "请核对产物版本、输出字段、用途和接收方法链。批准即允许沿所示调用链仅传递这些字段，并执行这一次操作。"
                         if context.artifact_read
                         and "return_to" not in context.artifact_read
                         else "请核对来源任务、产物版本、字段与接收入口。批准即允许本次方法读取所示字段并把结果返回给该入口。"
@@ -551,6 +558,11 @@ class FormalHostCalls:
                             else {}
                         ),
                         "arguments": context.intent["arguments"],
+                        **(
+                            {"script_quote": context.intent["script_quote"]}
+                            if "script_quote" in context.intent
+                            else {}
+                        ),
                         "operation": {
                             k: operation[k]
                             for k in (
@@ -580,7 +592,7 @@ class FormalHostCalls:
                     "registration_id": context.registration.tool_id,
                     "registration_digest": context.registration.descriptor_digest,
                     "source_asset_id": context.asset["id"],
-                    "connection_id": context.asset["id"],
+                    "connection_id": context.intent["connection_id"],
                     "interaction_id": opened["interaction_id"],
                     "digest": context.identity,
                     "status": "awaiting_approval",
@@ -617,7 +629,8 @@ class FormalHostCalls:
         is_model = intent.get("execution_kind") == "formal_probe"
         host = intent.get("formal_probe" if is_model else "formal_host") or {}
         if (
-            intent.get("execution_kind") not in ("formal_mcp", "formal_probe")
+            intent.get("execution_kind")
+            not in ("formal_mcp", "formal_script", "formal_probe")
             or str(task["id"]) != host.get("task_id")
             or str(call["task_id"]) != host.get("task_id")
             or str(call["attempt_id"]) != host.get("attempt_id")
@@ -670,7 +683,7 @@ class FormalHostCalls:
             )
             or context.intent["formal_probe" if is_model else "formal_host"] != host
             or call["source_asset_id"] != context.asset["id"]
-            or call["connection_id"] != context.asset["id"]
+            or call["connection_id"] != context.intent["connection_id"]
             or call["registration_id"] != context.registration.tool_id
             or call["registration_digest"] != context.registration.descriptor_digest
         ):
@@ -720,6 +733,10 @@ class FormalHostCalls:
             )
             status = "dispatching" if context else "declined"
             await self.repo.update_call(owner, call["id"], status, intent)
+            if context and intent.get("script_quote"):
+                from app.application.workbench.script_budget import reserve
+
+                await reserve(self.repo, owner, call["id"], intent["script_quote"])
         if context:
             return await self.capabilities._dispatch_call(
                 owner, call, context.asset, intent, context.knowbase_read
@@ -766,8 +783,17 @@ class FormalHostCalls:
         grant = PermissionGrant(
             grant_id=digest([call["id"], call["digest"]]),
             confirmation_context=host["snapshot_digest"],
-            connection_id=context.asset["id"],
-            connection_revision=context.asset["revision"],
+            **(
+                {
+                    "script_asset_id": context.asset["id"],
+                    "script_revision": context.asset["revision"],
+                }
+                if context.intent["execution_kind"] == "formal_script"
+                else {
+                    "connection_id": context.asset["id"],
+                    "connection_revision": context.asset["revision"],
+                }
+            ),
             operation_digest=context.access["operation_digest"],
             requirement=exact,
             delegable=False,

@@ -18,8 +18,14 @@ from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 class PermissionGrant(Requirement):
     grant_id: str = Field(min_length=1, max_length=128)
     confirmation_context: str = Field(pattern=r"^[a-f0-9]{64}$")
-    connection_id: UUID
-    connection_revision: int = Field(strict=True, ge=1)
+    connection_id: UUID | None = Field(default=None, exclude_if=lambda v: v is None)
+    connection_revision: int | None = Field(
+        default=None, strict=True, ge=1, exclude_if=lambda v: v is None
+    )
+    script_asset_id: UUID | None = Field(default=None, exclude_if=lambda v: v is None)
+    script_revision: int | None = Field(
+        default=None, strict=True, ge=1, exclude_if=lambda v: v is None
+    )
     operation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     requirement: AccessRequirement
     delegable: bool = Field(strict=True)
@@ -37,6 +43,20 @@ class PermissionGrant(Requirement):
 
     @model_validator(mode="after")
     def valid(self):
+        if (
+            (self.connection_id is None) != (self.connection_revision is None)
+            or (self.script_asset_id is None) != (self.script_revision is None)
+            or (self.connection_id is None) == (self.script_asset_id is None)
+        ):
+            raise ValueError(
+                "Specify one exact connection or installed script revision"
+            )
+        if self.script_asset_id is not None and (
+            self.resource_authority is not None
+            or self.delegable
+            or self.recipient_call_id is None
+        ):
+            raise ValueError("A script permission must name a direct recipient")
         if self.expires_at.tzinfo is None:
             raise ValueError("Permission expiry must include a timezone")
         if len(set(self.method_ids)) != len(self.method_ids):
@@ -48,6 +68,19 @@ class PermissionGrant(Requirement):
         if self.resource_authority is not None and not self.method_ids:
             raise ValueError("Resource delegation requires an exact method restriction")
         return self
+
+    def matches_asset(self, kind, asset_id, revision):
+        if kind == "skill_script":
+            return (
+                self.script_asset_id is not None
+                and str(self.script_asset_id) == str(asset_id)
+                and self.script_revision == revision
+            )
+        return (
+            self.connection_id is not None
+            and str(self.connection_id) == str(asset_id)
+            and self.connection_revision == revision
+        )
 
 
 class MethodAuthorization(Requirement):
@@ -87,6 +120,8 @@ def covers(
         or parent.confirmation_context != child.confirmation_context
         or parent.connection_id != child.connection_id
         or parent.connection_revision != child.connection_revision
+        or parent.script_asset_id != child.script_asset_id
+        or parent.script_revision != child.script_revision
         or parent.operation_digest != child.operation_digest
         or (parent.delegable and parent.resource_authority is None)
         or parent.resource_authority != child.resource_authority

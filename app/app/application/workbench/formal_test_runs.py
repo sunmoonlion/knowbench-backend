@@ -15,7 +15,6 @@ from app.application.workbench.formal_orchestration import resolve_plan
 from app.application.workbench.interactions import cancel_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
-from app.application.workbench.tool_registry import registered_call
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import (
     Forbidden,
@@ -23,6 +22,7 @@ from app.domain.workbench.errors import (
     NotFound,
     WorkbenchError,
 )
+from app.domain.workbench.formal_adapter import live_registration
 from app.domain.workbench.formal_execution import (
     FORMAL_RUNTIME,
     FormalTaskSnapshot,
@@ -90,22 +90,14 @@ class FormalExecutions:
     async def reviewed_policy(self, owner, request):
         source = request.draft.source
         if source is None:
-            raise CapabilityError("Formal execution requires a reviewed MCP source")
-        asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
-        tool = next(
-            (t for t in asset["detail"].get("tools", []) if t["name"] == source.entry),
-            None,
-        )
-        if tool is None:
-            raise CapabilityError("Formal source has no current MCP operation")
-        policy = self.capabilities.operations.require(
-            registered_call(asset, {"tool": tool})
-        )
-        if policy.formal_execution_cost is None:
             raise CapabilityError(
-                "Formal tests require reviewed evidence of no incremental provider fees"
+                "Formal execution requires a reviewed implementation source"
             )
-        return policy
+        asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
+        registration = live_registration(request.draft, asset)
+        if source.kind == "skill_script" and self.capabilities.script_executor is None:
+            raise CapabilityError("Isolated script execution is unavailable")
+        return self.capabilities.operations.formal_policy(registration)
 
     async def load(self, subject, run_id, caller, *, lock=False):
         owner = await self.formal._owner(subject)
@@ -456,6 +448,7 @@ class FormalExecutions:
             r["outcome"] not in ("pending", "unknown", "cancelled") for r in results
         )
         governed = all(e["validated"] for e in evidence_cases)
+        leaves = ()
         try:
             licensed = await self.formal._source(
                 owner, request.owner_subject, request.draft.source
@@ -509,6 +502,23 @@ class FormalExecutions:
         state = (
             "passed" if passed else "cancelled" if forced == "cancelled" else "failed"
         )
+        from app.application.workbench.script_budget import task_script_cost
+
+        script_cases = (
+            any(
+                leaf.draft.source and leaf.draft.source.kind == "skill_script"
+                for leaf in leaves
+            )
+            if isinstance(request.draft.definition.procedure, Orchestration)
+            else bool(
+                request.draft.source and request.draft.source.kind == "skill_script"
+            )
+        )
+        script_total = Decimal(0)
+        for row in rows.values():
+            if row.get("task_id"):
+                script_total += await task_script_cost(self.repo, row["task_id"])
+        script_cases = script_cases or bool(script_total)
         evidence = dict(
             contract=FORMAL_RUNTIME,
             request_digest=request.fingerprint(),
@@ -523,10 +533,15 @@ class FormalExecutions:
             if isinstance(request.draft.definition.procedure, Orchestration)
             else "knowbench/formal-mcp-caller-probe/v1"
             if "model" in request.draft.allowed_callers
+            else "knowbench/formal-script-host/v1"
+            if script_cases
             else "knowbench/formal-mcp-host/v1",
             cases=evidence_cases,
-            model_cost=str(await self.repo.test_run_spent(run_id)),
-            external_provider_billing="reviewed_no_incremental_fee"
+            model_cost=str(await self.repo.test_run_spent(run_id) - script_total),
+            **({"script_cost": str(script_total)} if script_cases else {}),
+            external_provider_billing=(
+                "metered_scripts" if script_cases else "reviewed_no_incremental_fee"
+            )
             if licensed
             else "unverified",
             sealed_at=self.now().isoformat(),
@@ -567,7 +582,11 @@ class FormalExecutions:
                         {
                             "scenario": "Real-service business effectiveness beyond the supplied assertions",
                             "reason": "This run checks typed outputs and governance, not every natural-language business rule or supplier scenario",
-                            "scope": "Private use within the tested definition and source; only adapters reviewed as having no incremental provider fees are admitted",
+                            "scope": (
+                                "Private use within the tested definition, sources and approved container tariffs"
+                                if script_cases
+                                else "Private use within the tested definition and source; only adapters reviewed as having no incremental provider fees are admitted"
+                            ),
                         }
                     ],
                     "completed_at": self.now(),

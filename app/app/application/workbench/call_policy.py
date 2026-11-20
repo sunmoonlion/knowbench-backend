@@ -37,6 +37,12 @@ def authorize_operation(
     dispatch; they are not authorized by a remote readOnlyHint annotation.
     """
     registration.validate_arguments(arguments)
+    if registration.source == "skill_script" and method and access:
+        if operations is None:
+            raise CapabilityError("Script pricing policy is unavailable")
+        policy = operations.formal_policy(registration)
+        check_access(access, policy, arguments)
+        return CallDecision(policy.resolve(arguments), True)
     if registration.source in ("mcp", "a2a"):
         if operations is None:
             raise CapabilityError("External operation policy is unavailable")

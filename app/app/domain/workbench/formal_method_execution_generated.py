@@ -294,12 +294,16 @@ class FormalMethodExecutionRequest(Strict):
         p = self.draft.definition.procedure
         if isinstance(p, ToolProcedure):
             if (
-                p.implementation.kind != "mcp"
+                p.implementation.kind not in ("mcp", "skill_script")
+                or (
+                    p.implementation.kind == "skill_script"
+                    and self.draft.allowed_callers != ("host",)
+                )
                 or p.max_model_turns != 0
                 or self.dependencies
             ):
                 raise ValueError(
-                    "Execution supports direct MCP methods without internal model turns"
+                    "Execution supports zero-turn MCP or host-only scripts"
                 )
         else:
             plan = unique_plan(self.draft.definition)

@@ -37,12 +37,15 @@ class FormalMethods:
         repo,
         *,
         operations=(),
+        script_tariff=None,
         source_licenses=(),
         business_reviews=(),
         now: Callable[[], datetime] | None = None,
     ):
         self.repo = repo
-        self.operations = OperationCatalog(tuple(operations))
+        self.operations = OperationCatalog(
+            tuple(operations), script_tariff=script_tariff
+        )
         self.source_licenses = SourceLicenseCatalog(tuple(source_licenses))
         self.business_reviews = tuple(business_reviews)
         self.now = now or (lambda: datetime.now(UTC))

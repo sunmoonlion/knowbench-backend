@@ -32,6 +32,14 @@ class CapabilityError(WorkbenchError):
     http_status = 409
 
 
+class ScriptInputNotSent(CapabilityError):
+    """The input connection failed before any script bytes were sent."""
+
+
+class ScriptSlotOccupied(CapabilityError):
+    """The provisioner confirmed that this call did not create a Job."""
+
+
 class CapabilityReauthRequired(CapabilityError):
     code = "capability_reauth_required"
 

@@ -5,10 +5,17 @@ from __future__ import annotations
 from uuid import UUID
 
 import httpx
+from pydantic import TypeAdapter
 
-from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.capabilities import (
+    CapabilityError,
+    ScriptInputNotSent,
+    ScriptSlotOccupied,
+)
 from app.domain.workbench.script_contract_generated import (
+    ScriptContainerMeter,
     ScriptExecution,
+    ScriptNotStarted,
     ScriptStatus,
     ScriptStopped,
     execution_frame,
@@ -30,6 +37,13 @@ class SkillExecutor:
             follow_redirects=False,
         ) as client:
             response = await client.request(method, path, json=body)
+            if (
+                suffix == "/prepare"
+                and response.status_code == 409
+                and response.json().get("detail")
+                == {"code": "slot_occupied_before_creation", "run_id": str(run)}
+            ):
+                raise ScriptSlotOccupied("Another script occupies the execution slot")
             if method in ("PUT", "POST") and response.status_code in (
                 401,
                 403,
@@ -40,6 +54,17 @@ class SkillExecutor:
                     "Script was not started: execution slot is busy or its configuration is unavailable"
                 )
             response.raise_for_status()
+            if suffix == "/stop-metered":
+                return response.json()
+            if suffix == "/container-meter":
+                meter = TypeAdapter(
+                    ScriptContainerMeter | ScriptNotStarted
+                ).validate_json(response.content)
+                if meter.run_id != UUID(run):
+                    raise CapabilityError(
+                        "Container meter belongs to a different execution"
+                    )
+                return meter
             if method == "DELETE":
                 return ScriptStopped.model_validate_json(response.content).model_dump()
             return ScriptStatus.model_validate_json(response.content).model_dump()
@@ -54,12 +79,22 @@ class SkillExecutor:
         payload = ScriptExecution.model_validate(body).model_dump()
         try:
             return await self.request("PUT", owner, run, payload, suffix="/input")
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise ScriptInputNotSent(
+                "Could not connect to deliver the approved script input"
+            ) from exc
         except (httpx.HTTPError, ValueError):
             # The durable call remains dispatching while the runner queries this exact Job.
             return {"state": "running"}
 
     async def status(self, owner: str, run: str):
         return await self.request("GET", owner, run)
+
+    async def container_meter(self, owner: str, run: str):
+        return await self.request("GET", owner, run, suffix="/container-meter")
+
+    async def stop_metered(self, owner, run):
+        return await self.request("POST", owner, run, suffix="/stop-metered")
 
     async def cancel(self, owner: str, run: str):
         try:

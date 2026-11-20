@@ -725,7 +725,11 @@ class WorkbenchStore(Protocol):
         tokens: dict | None = None,
         note: str | None = None,
         actor_id: str | None = None,
+        script_call_id: str | None = None,
+        script_evidence: dict | None = None,
     ) -> None: ...
+
+    async def script_budget_entries(self, call_id: str) -> dict: ...
 
     async def ledger_list(self, task_id: str) -> list[dict[str, Any]]: ...
 

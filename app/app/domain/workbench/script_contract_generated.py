@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 from uuid import UUID
@@ -158,6 +159,37 @@ class ScriptStatus(Strict):
         if self.state == "finished" and self.result is None:
             raise ValueError("Finished execution requires its result")
         return self
+
+
+class ScriptContainerMeter(Strict):
+    """Kubelet timestamps for one container. Missing timestamps are unknown usage."""
+
+    run_id: UUID
+    job_uid: UUID
+    pod_uid: UUID
+    container_id: str = Field(min_length=1, max_length=512)
+    started_at: datetime
+    finished_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def valid_interval(self):
+        if self.started_at.tzinfo is None or (
+            self.finished_at is not None
+            and (self.finished_at.tzinfo is None or self.finished_at < self.started_at)
+        ):
+            raise ValueError("Invalid metered container interval")
+        return self
+
+
+class ScriptNotStarted(Strict):
+    """Terminal Pod evidence for an execution that never acquired a container."""
+
+    run_id: UUID
+    job_uid: UUID
+    pod_uid: UUID
+    reason: Literal[
+        "unscheduled", "ErrImagePull", "ImagePullBackOff", "CreateContainerConfigError"
+    ]
 
 
 class ScriptStopped(Strict):

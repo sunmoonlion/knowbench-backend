@@ -205,3 +205,28 @@ def test_legacy_grant_without_recipient_is_not_an_implicit_delegation():
     raw.pop("recipient_call_id")
     with pytest.raises(ValueError):
         PermissionGrant.model_validate(raw)
+
+
+def test_script_grant_is_exact_direct_and_cannot_be_substituted_for_a_connection():
+    scope = parent()
+    original = scope.grants[0].model_dump(mode="json")
+    call, asset = uuid4(), uuid4()
+    for field in ("connection_id", "connection_revision", "resource_authority"):
+        original.pop(field, None)
+    original.update(
+        script_asset_id=str(asset),
+        script_revision=3,
+        recipient_call_id=str(call),
+        delegable=False,
+    )
+    grant = PermissionGrant.model_validate(original)
+    assert grant.matches_asset("skill_script", asset, 3)
+    assert not grant.matches_asset("mcp", asset, 3)
+    assert not grant.matches_asset("skill_script", asset, 4)
+    for changes in (
+        {"delegable": True},
+        {"recipient_call_id": None},
+        {"connection_id": str(asset), "connection_revision": 3},
+    ):
+        with pytest.raises(ValueError):
+            PermissionGrant.model_validate({**original, **changes})

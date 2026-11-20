@@ -168,13 +168,16 @@ class CallRepositoryMixin:
         # Remote adapter has a 45 s deadline. After 2 min a lost dispatch receipt
         # is unknown, never retried. Expired/cancelled approvals cannot authorize
         # an operation; an undelivered intent remains distinct from unknown I/O.
+        # Isolated Jobs retain their own receipts. Only their reconciler can
+        # distinguish a finished Job from a lost submission after a restart.
         async with self.transaction():
             await self.session.execute(
                 text("""UPDATE workbench_calls c
                 SET status=CASE WHEN c.status='dispatching' THEN 'unknown' ELSE 'expired' END,
                     updated_at=now()
                 WHERE c.kind='tool' AND c.owner_actor_id=:o AND c.session_id=:s AND
-                  ((c.status='dispatching' AND c.updated_at < now()-interval '2 minutes') OR
+                  ((c.status='dispatching' AND c.updated_at < now()-interval '2 minutes'
+                    AND (c.origin <> 'managed' OR coalesce(c.detail->>'execution_kind','') NOT IN ('skill_script','formal_script'))) OR
                    (c.status='awaiting_approval' AND EXISTS
                      (SELECT 1 FROM workbench_interactions i WHERE i.id=c.interaction_id
                        AND (i.expires_at <= now() OR i.status IN ('cancelled','expired')))))"""),

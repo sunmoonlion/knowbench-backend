@@ -25,6 +25,7 @@ from app.domain.workbench.resource_delegation import (
     ResourceDelegation,
     ResourceDelegationCatalog,
 )
+from app.domain.workbench.script_pricing import ScriptTariff
 from app.domain.workbench.source_licenses import (
     BusinessCoverageReview,
     SourceLicense,
@@ -372,6 +373,7 @@ class Settings(BaseSettings):
         default="",
         description="Internal URL of /api/mcp/capabilities for sandbox clients; empty disables remote capability execution",
     )
+    workbench_script_tariff: ScriptTariff | None = None
     workbench_capability_operations: tuple[McpOperation, ...] = Field(
         default=(),
         max_length=1000,
@@ -504,6 +506,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_base_security(self) -> Settings:
+        if (
+            self.workbench_script_tariff
+            and self.workbench_script_tariff.provisioner_url
+            != self.workbench_provisioner_url
+        ):
+            raise ValueError(
+                "The script tariff must identify the configured provisioner"
+            )
         OperationCatalog(self.workbench_capability_operations)
         SourceLicenseCatalog(self.workbench_source_licenses)
         ResourceDelegationCatalog(self.workbench_resource_delegations)

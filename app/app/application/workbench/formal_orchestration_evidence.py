@@ -7,8 +7,10 @@ partial executions retain their observed step identities without filling gaps.
 
 from decimal import Decimal, InvalidOperation
 
+from app.application.workbench.script_budget import task_script_cost
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.formal_adapter import host_kind, retained_registration
 from app.domain.workbench.formal_execution import (
     case_key,
     dependency_for_step,
@@ -31,7 +33,6 @@ from app.domain.workbench.formal_method_plan_generated import (
 from app.domain.workbench.method_authorization import MethodAuthorization
 from app.domain.workbench.states import AttemptState, TaskState
 from app.domain.workbench.tool_operations import FormalExecutionCost
-from app.domain.workbench.tool_registry import ToolRegistration
 
 
 def _require(condition, code):
@@ -206,22 +207,33 @@ async def _approval(
         and operation["version"] == declared["version"]
         and operation["operation"] in declared["operations"]
         and operation["data_transfer"]
-        == {"destination": source.source, "arguments_digest": digest(inputs)}
+        == {
+            "destination": declared["data_transfer"]["destination"]
+            if source.kind == "skill_script"
+            else source.source,
+            "arguments_digest": digest(inputs),
+        }
         and grant.grant_id == digest([str(call["id"]), call["digest"]])
         and not grant.delegable
         and grant.resource_authority is None
         and grant.recipient_call_id == auth.call_id
         and grant.confirmation_context == task["pack_digest"]
-        and str(grant.connection_id) == str(source.asset_id)
-        and grant.connection_revision == source.asset_revision
+        and grant.matches_asset(source.kind, source.asset_id, source.asset_revision)
         and grant.operation_digest == access["operation_digest"]
         and grant.method_ids == (str(leaf.reference.method_id),)
         and grant.requirement.model_dump(mode="json") == exact
         and consumed < grant.expires_at == authorization_expiry,
         "exact_child_direct_grant_missing",
     )
-    FormalExecutionCost.model_validate(operation["formal_execution_cost"])
+    metering = {}
+    if source.kind == "skill_script":
+        from app.application.workbench.script_budget import cost_proof
+
+        metering["script_cost"] = await cost_proof(repo, call, subject)
+    else:
+        FormalExecutionCost.model_validate(operation["formal_execution_cost"])
     return {
+        **metering,
         "operation": operation,
         "call_id": str(call["id"]),
         "method_call_id": str(child["id"]),
@@ -353,7 +365,7 @@ async def _step_evidence(
         "method_call_id": str(child["id"]),
         "inputs_digest": digest(inputs),
     }
-    registration = ToolRegistration.discover("mcp", source.source, intent["tool"])
+    registration = retained_registration(leaf.draft, intent["tool"])
     _require(
         str(call["id"]) == refs["capability_call_id"]
         and call["kind"] == "tool"
@@ -365,17 +377,20 @@ async def _step_evidence(
         and str(call["attempt_id"]) == str(attempt["id"])
         and str(call["parent_call_id"]) == str(child["id"])
         and call["call_key"] == "formal-host:" + str(task["id"]) + ":" + step.id
-        and intent.get("execution_kind") == "formal_mcp"
+        and intent.get("execution_kind") == host_kind(source)
         and intent.get("formal_host") == expected_host
         and fingerprint(intent.get("arguments")) == fingerprint(inputs)
         and call["digest"] == host_intent_digest(intent)
-        and str(call["connection_id"]) == str(source.asset_id)
+        and (
+            call.get("connection_id") is None
+            if source.kind == "skill_script"
+            else str(call.get("connection_id")) == str(source.asset_id)
+        )
         and str(call["source_asset_id"]) == str(source.asset_id)
         and intent["revision"] == source.asset_revision
-        and intent["tool"]["name"] == source.entry
+        and intent["tool"]["name"] == registration.name
         and call["registration_id"] == registration.tool_id
-        and call["registration_digest"] == registration.descriptor_digest
-        and source.digest == "sha256:" + registration.descriptor_digest,
+        and call["registration_digest"] == registration.descriptor_digest,
         "step_tool_call_mismatch",
     )
     item["governance"] = await _approval(
@@ -551,7 +566,8 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
         )
         _require(not model_events, "unexpected_plan_model_execution")
         _require(
-            _zero(task["budget"].get("used", "0"))
+            Decimal(str(task["budget"].get("used", "0")))
+            == await task_script_cost(repo, task["id"])
             and _zero(task["budget"].get("reserved", "0")),
             "unexpected_plan_cost",
         )

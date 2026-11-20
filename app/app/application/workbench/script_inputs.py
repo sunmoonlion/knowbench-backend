@@ -15,6 +15,10 @@ from app.domain.workbench.script_contract_generated import (
 from app.domain.workbench.states import AttemptState, TaskState
 
 FILE_LIMIT = 512 * 1024
+# KnowBase read_input slices Python Unicode characters (currently 60,000/page).
+# Allow pages down to 1 Ki characters at the full ASCII byte limit; always
+# count the actual UTF-8 bytes and return only after the provider reports EOF.
+MAX_MATERIAL_PAGES = FILE_LIMIT // 1024
 
 
 async def material_text(relay, ref, scope):
@@ -22,7 +26,7 @@ async def material_text(relay, ref, scope):
         raise CapabilityError("The authorized material reader is unavailable")
     data = bytearray()
     offset = 0
-    for _ in range(16):
+    for _ in range(MAX_MATERIAL_PAGES):
         reply = await relay.call(
             1,
             "read_input",
@@ -57,7 +61,9 @@ async def material_text(relay, ref, scope):
         if not record["more"]:
             return bytes(data)
         offset += len(part)
-    raise CapabilityError("Material text pagination exceeds the input limit")
+    raise CapabilityError(
+        "Material reader exceeded the page limit before EOF; no partial input was delivered"
+    )
 
 
 async def step_field(repo, owner, call, ref):

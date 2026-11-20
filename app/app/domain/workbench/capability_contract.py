@@ -195,6 +195,13 @@ class HostCallDetail(CommonCallDetail):
     connection_id: UUID
 
 
+class FormalScriptDetail(CommonCallDetail):
+    execution_kind: Literal["formal_script"]
+    source_asset_id: UUID
+    connection_id: None
+    script_quote: dict[str, Any]
+
+
 class ModelProbeCallDetail(CommonCallDetail):
     execution_kind: Literal["formal_probe"]
     source_asset_id: UUID
@@ -232,7 +239,13 @@ class Call(Strict):
     ]
     created_at: datetime
     updated_at: datetime
-    detail: CallDetail | HostCallDetail | ModelProbeCallDetail | FormalModelCallDetail
+    detail: (
+        CallDetail
+        | HostCallDetail
+        | FormalScriptDetail
+        | ModelProbeCallDetail
+        | FormalModelCallDetail
+    )
 
 
 class Calls(Strict):

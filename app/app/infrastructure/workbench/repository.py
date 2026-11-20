@@ -2191,6 +2191,19 @@ class WorkbenchRepository(
                 raise TestCleanupPending(
                     "Formal test evidence must be sealed before cleanup"
                 )
+            unsettled = await self.session.execute(
+                text("""SELECT EXISTS (
+                    SELECT 1 FROM workbench_test_cases c
+                    JOIN workbench_budget_ledger h ON h.task_id=c.task_id
+                    WHERE c.run_id=:r AND h.script_call_id IS NOT NULL AND h.entry='reserve'
+                    AND NOT EXISTS (SELECT 1 FROM workbench_budget_ledger d
+                                    WHERE d.script_call_id=h.script_call_id AND d.entry='consume'))"""),
+                {"r": run_id},
+            )
+            if unsettled.scalar_one():
+                raise TestCleanupPending(
+                    "Script container usage must be settled before cleanup"
+                )
             attempts = await self.session.execute(
                 text("""select a.refs, t.original_input
                         from workbench_test_cases c
@@ -2767,10 +2780,12 @@ class WorkbenchRepository(
         tokens: dict | None = None,
         note: str | None = None,
         actor_id: str | None = None,
+        script_call_id: str | None = None,
+        script_evidence: dict | None = None,
     ) -> None:
         await self.session.execute(
-            text("""insert into workbench_budget_ledger (task_id, attempt_id, entry, amount, tokens, note, actor_id)
-                    values (:t, :a, :e, :m, cast(:k as jsonb), :n, :by)"""),
+            text("""insert into workbench_budget_ledger (task_id, attempt_id, entry, amount, tokens, note, actor_id, script_call_id, script_evidence)
+                    values (:t, :a, :e, :m, cast(:k as jsonb), :n, :by, :call, cast(:evidence as jsonb))"""),
             {
                 "t": task_id,
                 "a": attempt_id,
@@ -2779,8 +2794,21 @@ class WorkbenchRepository(
                 "k": _j(tokens or {}),
                 "n": note,
                 "by": actor_id,
+                "call": script_call_id,
+                "evidence": _j(script_evidence)
+                if script_evidence is not None
+                else None,
             },
         )
+
+    async def script_budget_entries(self, call_id: str) -> dict:
+        result = await self.session.execute(
+            text(
+                "SELECT task_id,attempt_id,entry,amount,script_evidence FROM workbench_budget_ledger WHERE script_call_id=:call"
+            ),
+            {"call": call_id},
+        )
+        return {row["entry"]: dict(row) for row in result.mappings()}
 
     async def ledger_list(self, task_id: str) -> list[dict[str, Any]]:
         r = await self.session.execute(

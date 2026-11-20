@@ -524,6 +524,7 @@ def capability_service(repo):
             else ""
         ),
         operations=settings.workbench_capability_operations,
+        script_tariff=settings.workbench_script_tariff,
         source_licenses=settings.workbench_source_licenses,
         business_reviews=settings.workbench_business_coverage_reviews,
         resource_delegations=settings.workbench_resource_delegations,

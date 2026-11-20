@@ -34,8 +34,13 @@ async def check_formal_dispatch(svc, owner, call, asset, intent):
         or current.revision != auth.get("revision")
         or current.expires_at <= now
         or grant.expires_at <= now
-        or str(grant.connection_id) != asset["id"]
-        or grant.connection_revision != asset["revision"]
+        or not grant.matches_asset(
+            "skill_script"
+            if intent.get("execution_kind") == "formal_script"
+            else "mcp",
+            asset["id"],
+            asset["revision"],
+        )
     ):
         raise CapabilityError("Formal action authorization changed or expired")
     ancestor = current
@@ -50,8 +55,28 @@ async def check_formal_dispatch(svc, owner, call, asset, intent):
         parent = MethodAuthorization.model_validate(parent)
         check_delegation(parent, ancestor, now=now)
         ancestor = parent
+    if intent.get("execution_kind") == "formal_script":
+        from app.application.workbench.formal_host_calls import FormalHostCalls
+
+        context = await FormalHostCalls(svc).context(
+            owner, host["task_id"], host["attempt_id"]
+        )
+        reservations = await repo.script_budget_entries(call["id"])
+        if (
+            context.identity != call["digest"]
+            or not svc.script_executor
+            or reservations.get("reserve", {}).get("script_evidence")
+            != intent.get("script_quote")
+            or "consume" in reservations
+        ):
+            raise CapabilityError(
+                "Formal script approval or root budget reservation changed"
+            )
+        registration = context.registration
+    else:
+        registration = registered_call(asset, intent)
     decision = authorize_operation(
-        registered_call(asset, intent),
+        registration,
         intent["arguments"],
         operations=svc.operations,
         method=True,

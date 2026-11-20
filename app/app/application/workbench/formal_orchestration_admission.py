@@ -10,7 +10,9 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from app.application.workbench.script_budget import case_script_cost, verify_proof
 from app.domain.workbench.capabilities import CapabilityError, digest
+from app.domain.workbench.formal_adapter import script_registration
 from app.domain.workbench.formal_execution import FormalTaskSnapshot, validate_values
 from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
@@ -90,14 +92,29 @@ def verify_leaf_authority(
     """Strict historical one-level leaf proof; approval is checked at consumption."""
     source = leaf.draft.source
     require(
-        source is not None and source.kind == "mcp", "Sealed leaf has no MCP source"
+        source is not None and source.kind in ("mcp", "skill_script"),
+        "Sealed leaf implementation is unsupported",
     )
     assert source is not None
-    policy = operations.require_source(
-        source.source, source.entry, source.digest.removeprefix("sha256:")
-    )
+    if source.kind == "skill_script":
+        registration = script_registration(leaf.draft)
+        policy = operations.formal_policy(registration)
+        registration_id, descriptor_digest = (
+            registration.tool_id,
+            registration.descriptor_digest,
+        )
+    else:
+        policy = operations.require_source(
+            source.source, source.entry, source.digest.removeprefix("sha256:")
+        )
+        require(
+            policy.formal_execution_cost is not None, "Leaf cost policy is unavailable"
+        )
+        registration_id, descriptor_digest = (
+            digest(["mcp", source.source, source.entry]),
+            source.digest.removeprefix("sha256:"),
+        )
     operation = policy.resolve(inputs)
-    require(policy.formal_execution_cost is not None, "Leaf cost policy is unavailable")
     governance, observed = item["governance"], item["observed_call"]
     child_id, call_id = exact_id(item["method_call_id"]), exact_id(item["call_id"])
     expected_host = {
@@ -124,9 +141,8 @@ def verify_leaf_authority(
         and governance["method_call_id"] == child_id
         and governance["root_call_id"] == root_call_id
         and governance["input_digest"] == digest(inputs)
-        and governance["registration_id"]
-        == digest(["mcp", source.source, source.entry])
-        and governance["registration_digest"] == source.digest.removeprefix("sha256:")
+        and governance["registration_id"] == registration_id
+        and governance["registration_digest"] == descriptor_digest
         and governance["operation"] == operation
         and governance["approved"] is True
         and governance["direct_grants"] is True
@@ -137,6 +153,8 @@ def verify_leaf_authority(
         and len(observed["adapter_result_digest"]) == 64,
         "Sealed leaf provenance or current operation policy changed",
     )
+    if source.kind == "skill_script":
+        verify_proof(governance.get("script_cost"), call_id, operation["script_quote"])
     auth = MethodAuthorization.model_validate(governance["authorization"])
     parent = MethodAuthorization.model_validate(governance["parent_authorization"])
     approval = governance["approval"]
@@ -181,8 +199,7 @@ def verify_leaf_authority(
         and grant.resource_authority is None
         and grant.recipient_call_id == auth.call_id
         and grant.confirmation_context == digest(snapshot.document())
-        and str(grant.connection_id) == str(source.asset_id)
-        and grant.connection_revision == source.asset_revision
+        and grant.matches_asset(source.kind, source.asset_id, source.asset_revision)
         and grant.operation_digest == policy.policy_digest
         and grant.method_ids == (str(leaf.reference.method_id),)
         and grant.requirement.model_dump(mode="json") == exact
@@ -347,7 +364,10 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
     require(
         cost.is_finite()
         and cost == 0
-        and cost < Decimal(request.execution.budget.limit),
+        and sum((case_script_cost(c) for c in evidence["cases"]), Decimal(0))
+        == Decimal(evidence.get("script_cost", "0"))
+        and cost + Decimal(evidence.get("script_cost", "0"))
+        <= Decimal(request.execution.budget.limit),
         "Expert model cost does not reconcile",
     )
     cases = {
@@ -476,7 +496,7 @@ def _tree_case(
         and task["state"] == "SUCCEEDED"
         and task["current_step"] == len(plan.leaf_nodes) - 1
         and datetime.fromisoformat(task["scope_deadline"]) == deadline
-        and _zero(task["budget"].get("used", "0"))
+        and Decimal(str(task["budget"].get("used", "0"))) == case_script_cost(item)
         and _zero(task["budget"].get("reserved", "0")),
         "Sealed tree task or budget changed",
     )

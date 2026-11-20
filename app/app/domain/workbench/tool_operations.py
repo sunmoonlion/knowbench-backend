@@ -223,13 +223,32 @@ class McpOperation(BaseModel):
 
 
 class OperationCatalog:
-    def __init__(self, operations: tuple[McpOperation, ...] = ()):
+    def __init__(
+        self, operations: tuple[McpOperation, ...] = (), *, script_tariff=None
+    ):
+        self.script_tariff = script_tariff
         self._operations = {}
         for operation in operations:
             key = (operation.service_url, operation.tool_name)
             if key in self._operations:
                 raise ValueError("Duplicate MCP operation binding")
             self._operations[key] = operation
+
+    def formal_policy(self, registration):
+        if registration.source == "skill_script":
+            from app.domain.workbench.script_pricing import ScriptOperation
+
+            if self.script_tariff is None:
+                raise CapabilityError(
+                    "No reviewed container tariff for this execution environment"
+                )
+            return ScriptOperation(self.script_tariff, registration)
+        policy = self.require(registration)
+        if policy.formal_execution_cost is None:
+            raise CapabilityError(
+                "The zero incremental cost policy must confirm that the provider charges no incremental fees"
+            )
+        return policy
 
     def require(self, tool: ToolRegistration) -> McpOperation:
         if tool.source not in ("mcp", "a2a"):

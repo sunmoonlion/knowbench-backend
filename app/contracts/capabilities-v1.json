@@ -3214,6 +3214,88 @@
         "title": "FormalModelCallDetail",
         "type": "object"
       },
+      "FormalScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote"
+        ],
+        "title": "FormalScriptDetail",
+        "type": "object"
+      },
       "HostCallDetail": {
         "additionalProperties": false,
         "properties": {
@@ -3524,6 +3606,9 @@
             "$ref": "#/$defs/HostCallDetail"
           },
           {
+            "$ref": "#/$defs/FormalScriptDetail"
+          },
+          {
             "$ref": "#/$defs/ModelProbeCallDetail"
           },
           {
@@ -3690,6 +3775,9 @@
               },
               {
                 "$ref": "#/$defs/HostCallDetail"
+              },
+              {
+                "$ref": "#/$defs/FormalScriptDetail"
               },
               {
                 "$ref": "#/$defs/ModelProbeCallDetail"
@@ -4024,6 +4112,88 @@
           "method_title"
         ],
         "title": "FormalModelCallDetail",
+        "type": "object"
+      },
+      "FormalScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote"
+        ],
+        "title": "FormalScriptDetail",
         "type": "object"
       },
       "HostCallDetail": {
@@ -4870,6 +5040,9 @@
                 "$ref": "#/$defs/HostCallDetail"
               },
               {
+                "$ref": "#/$defs/FormalScriptDetail"
+              },
+              {
                 "$ref": "#/$defs/ModelProbeCallDetail"
               },
               {
@@ -5202,6 +5375,88 @@
           "method_title"
         ],
         "title": "FormalModelCallDetail",
+        "type": "object"
+      },
+      "FormalScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote"
+        ],
+        "title": "FormalScriptDetail",
         "type": "object"
       },
       "HostCallDetail": {
@@ -5639,6 +5894,9 @@
                 "$ref": "#/$defs/HostCallDetail"
               },
               {
+                "$ref": "#/$defs/FormalScriptDetail"
+              },
+              {
                 "$ref": "#/$defs/ModelProbeCallDetail"
               },
               {
@@ -6042,6 +6300,88 @@
           "method_title"
         ],
         "title": "FormalModelCallDetail",
+        "type": "object"
+      },
+      "FormalScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "format": "uuid",
+            "title": "Source Asset Id",
+            "type": "string"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote"
+        ],
+        "title": "FormalScriptDetail",
         "type": "object"
       },
       "HostCallDetail": {

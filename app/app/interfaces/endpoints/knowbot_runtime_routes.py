@@ -90,6 +90,7 @@ def formal_methods(
     return FormalMethods(
         WorkbenchRepository(session),
         operations=get_settings().workbench_capability_operations,
+        script_tariff=get_settings().workbench_script_tariff,
         source_licenses=get_settings().workbench_source_licenses,
         business_reviews=get_settings().workbench_business_coverage_reviews,
     )

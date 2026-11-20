@@ -1,0 +1,600 @@
+"""Qualify the script through the author-facing execution/approval/registration path."""
+
+import asyncio
+import base64
+import hashlib
+import json
+import os
+from copy import deepcopy
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from uuid import uuid4
+
+import pytest
+from formal_plan_support import freeze
+from method_access_support import ACCESS
+from test_capabilities_db import CIPHER, OPERATION, OWNER, Remote, service
+from test_formal_execution_db import approve, settle, status
+from test_formal_method_admission_db import setup as admission_setup
+from test_formal_method_admission_db import validation_request
+from test_skill_package import archive
+from test_skill_package_db import package
+from test_source_licenses import license_record
+from test_workbench_ledger_db import db as db
+from test_workbench_ledger_db import seed
+
+from app.application.workbench.capabilities import Capabilities
+from app.application.workbench.formal_method_catalog import FormalMethodCatalog
+from app.application.workbench.formal_test_runs import FormalExecutions
+from app.application.workbench.test_runs import KnowbotTestConductor
+from app.bootstrap.workbench import workbench_stores
+from app.domain.workbench.capabilities import MethodPermissionRevoke
+from app.domain.workbench.formal_method_execution_generated import (
+    FormalMethodExecutionRequest,
+    FormalTestSuiteDraft,
+)
+from app.domain.workbench.script_contract_generated import ScriptContainerMeter
+from app.domain.workbench.script_pricing import ScriptTariff
+from app.infrastructure.workbench.repository import WorkbenchRepository
+from app.infrastructure.workbench.skill_executor import SkillExecutor
+
+TARIFF = ScriptTariff(
+    environment="isolated-test",
+    revision=1,
+    destination="https://isolated.example.test",
+    provisioner_url="http://localhost",
+    currency="CNY",
+    per_container_second="0.01",
+    evidence_reference="test-local",
+    evidence_digest="sha256:" + "1" * 64,
+)
+SOURCE = """import json, os, time
+from pathlib import Path
+time.sleep(1)
+value = json.loads((Path(os.environ["SUNMOON_INPUT_DIR"])/"arguments.json").read_text())
+(Path(os.environ["SUNMOON_OUTPUT_DIR"])/"result.json").write_text(json.dumps({"receipt":value["to"]}))
+"""
+
+
+class Executor:
+    def __init__(self):
+        self.calls = []
+        self.receipts = {}
+        self.meters = {}
+
+    async def prepare(self, owner, run, body):
+        pass
+
+    async def start(self, owner, run, body):
+        self.calls.append(run)
+        args = json.loads(base64.b64decode(body["inputs"][0]["data_base64"]))
+        raw = json.dumps({"receipt": args["to"]}).encode()
+        self.receipts[run] = {
+            "state": "finished",
+            "result": {
+                "exit_code": 0,
+                "stdout": "diagnostic",
+                "stderr": "",
+                "timed_out": False,
+                "output_truncated": False,
+                "artifacts": [
+                    {
+                        "path": "result.json",
+                        "sha256": hashlib.sha256(raw).hexdigest(),
+                        "data_base64": base64.b64encode(raw).decode(),
+                    }
+                ],
+            },
+        }
+        begin = datetime.now(UTC)
+        self.meters[run] = ScriptContainerMeter(
+            run_id=run,
+            job_uid=uuid4(),
+            pod_uid=uuid4(),
+            container_id="test/container",
+            started_at=begin,
+            finished_at=begin + timedelta(seconds=4),
+        )
+
+    async def status(self, owner, run):
+        return self.receipts.get(run, {"state": "absent"})
+
+    async def container_meter(self, owner, run):
+        return self.meters[run]
+
+    async def cancel(self, owner, run):
+        pass
+
+    async def stop_metered(self, owner, run):
+        pass
+
+
+async def script_setup(db, executor=None, *, limit="1"):
+    await admission_setup(db)
+    env, _, _ = await seed(db)
+    executor = executor or Executor()
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = service(repo)
+        await svc.create_skill(
+            OWNER,
+            package().model_copy(
+                update={
+                    "archive_base64": archive(
+                        {"SKILL.md": "Run", "calculate.py": SOURCE}
+                    )
+                }
+            ),
+            package=True,
+        )
+        source = next(
+            x
+            for x in (await svc.formal_sources.sources("author"))["items"]
+            if x["kind"] == "skill_script"
+        )
+    record = license_record(source)
+    source["license_basis"] = record.basis
+    doc = validation_request(source).model_dump(mode="json", by_alias=True)
+    access = deepcopy(ACCESS)
+    access.update(
+        capability_ref="isolated-script", operations=["execute"], resources=[]
+    )
+    access["data_transfer"]["destination"] = TARIFF.destination
+    doc["draft"]["definition"]["access_requirements"] = [access]
+    doc["draft"]["definition"]["procedure"]["implementation"]["requirement_ids"] = [
+        access["requirement_id"]
+    ]
+    suite = FormalTestSuiteDraft.model_validate(
+        {
+            "suite_id": str(uuid4()),
+            "version": 1,
+            "cases": [
+                {
+                    "case_id": "calculate",
+                    "input": {"values": {"to": "example"}},
+                    "repetitions": 1,
+                    "minimum_passes": 1,
+                    "expected": {
+                        "outcome": "succeeded",
+                        "assertions": [
+                            {
+                                "kind": "equals",
+                                "pointer": "/receipt",
+                                "value": "example",
+                            }
+                        ],
+                    },
+                }
+            ],
+        }
+    ).freeze()
+    doc.update(
+        contract="knowlab/formal-method-execution/v1",
+        execution={
+            "suite": suite.model_dump(mode="json"),
+            "runner": {
+                "kind": "user",
+                "environment_id": env,
+                "workspace_root": "/home/u/research",
+            },
+            "budget": {"limit": limit, "currency": "CNY"},
+            "timeout_seconds": 60,
+            "max_wait_seconds": 120,
+        },
+    )
+    req = FormalMethodExecutionRequest.model_validate(doc)
+
+    def factory(repo):
+        return Capabilities(
+            repo,
+            Remote(),
+            CIPHER,
+            operations=(OPERATION,),
+            script_executor=executor,
+            script_tariff=TARIFF,
+            source_licenses=(record,),
+        )
+
+    conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        await FormalExecutions(repo, factory(repo)).accept(req, caller="knowlab")
+    return req, factory, conductor, executor
+
+
+async def test_formal_script_charges_root_and_freezes_after_a_real_approval(db):
+    req, factory, conductor, executor = await script_setup(db)
+    await conductor.advance(str(req.run_id))
+    action = await status(db, req, factory)
+    await approve(db, req, factory, action)
+    async with db() as session:
+        svc = factory(WorkbenchRepository(session))
+        await svc.reconcile_scripts()
+    await settle(conductor, req)
+    result = await status(db, req, factory)
+    assert result["status"] == "passed", json.dumps(result, default=str)
+    frozen = freeze(req, result)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = factory(repo)
+        await svc.formal_sources.register(frozen, caller="knowlab")
+        got = await FormalMethodCatalog(
+            repo, svc.formal_sources, svc.operations
+        ).resolve_owned(OWNER, frozen.reference)
+        assert got.frozen == frozen
+        ledger = await repo.script_budget_entries(executor.calls[0])
+        assert str(ledger["consume"]["amount"]) == "0.040000"
+
+
+async def collect_script(db, factory):
+    # Restart the service for each poll and recover the original call from SQL.
+    async with asyncio.timeout(120):
+        while True:
+            async with db() as session:
+                repo = WorkbenchRepository(session)
+                await factory(repo).reconcile_scripts()
+                if not await repo.pending_metered_scripts():
+                    return
+            await asyncio.sleep(0.2)
+
+
+async def mixed_expert(db, behavior, executor=None):
+    from formal_plan_support import EchoRemote
+    from test_capabilities_db import SCHEMA, URL, body
+    from test_formal_host_calls_db import FORMAL_OPERATION
+
+    from app.domain.workbench.tool_registry import ToolRegistration
+
+    req, script_factory, _, executor = await script_setup(db, executor)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        script_svc = script_factory(repo)
+        assets = (await script_svc.formal_sources.sources("author"))["items"]
+        script_record = license_record(
+            next(asset for asset in assets if asset["kind"] == "skill_script")
+        )
+        remote = EchoRemote()
+        lookup = {
+            "name": "lookup",
+            "description": "Read one synthetic record",
+            "inputSchema": SCHEMA,
+        }
+        remote.tools = [lookup]
+        source_url = "https://records.example.test/mcp"
+        remote.allowed_urls = (URL, source_url)
+        read_policy = FORMAL_OPERATION.model_copy(
+            update={
+                "service_url": source_url,
+                "tool_name": "lookup",
+                "descriptor_digest": ToolRegistration.discover(
+                    "mcp", source_url, lookup
+                ).descriptor_digest,
+                "effect": "read",
+                "operation": "read",
+                "capability_ref": "synthetic-records",
+            }
+        )
+        operations = (FORMAL_OPERATION, read_policy)
+        svc = Capabilities(repo, remote, CIPHER, operations=operations)
+        await svc.create_connection(
+            OWNER, body(key="read-connection").model_copy(update={"url": source_url})
+        )
+        sources = (await svc.formal_sources.sources("author"))["items"]
+        source_read = next(a for a in sources if a["entry"] == "lookup")
+        source_send = next(a for a in sources if a["entry"] == "send")
+        records = [
+            script_record,
+            license_record(source_send, record_id="send-license"),
+            license_record(source_read, record_id="lookup-license"),
+        ]
+
+    def factory(repo):
+        return Capabilities(
+            repo,
+            remote,
+            CIPHER,
+            operations=operations,
+            script_executor=executor,
+            script_tariff=TARIFF,
+            source_licenses=records,
+        )
+
+    conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)
+    leaves = []
+    for carrier in (source_read, None, source_send):
+        doc = req.model_dump(mode="json", by_alias=True)
+        if carrier:
+            carrier = {
+                **carrier,
+                "license_basis": license_record(
+                    carrier, record_id=carrier["entry"] + "-license"
+                ).basis,
+            }
+            doc.update(
+                validation_request(carrier).model_dump(mode="json", by_alias=True)
+            )
+            doc["contract"] = req.contract
+            access = deepcopy(ACCESS)
+            if carrier["entry"] == "lookup":
+                access.update(
+                    capability_ref=read_policy.capability_ref, operations=["read"]
+                )
+                access["data_transfer"]["destination"] = source_url
+            doc["draft"]["definition"]["access_requirements"] = [access]
+            doc["draft"]["definition"]["procedure"]["implementation"][
+                "requirement_ids"
+            ] = [access["requirement_id"]]
+        case = doc["execution"]["suite"]["cases"][0]
+        case["input"]["values"]["to"] = "test@example.test"
+        case["expected"]["assertions"][0]["value"] = "test@example.test"
+        suite = dict(doc["execution"]["suite"])
+        suite.pop("digest")
+        suite["suite_id"] = str(uuid4())
+        doc["execution"]["suite"] = (
+            FormalTestSuiteDraft.model_validate(suite).freeze().model_dump(mode="json")
+        )
+        doc.update(run_id=str(uuid4()))
+        leafreq = FormalMethodExecutionRequest.model_validate(doc)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            await FormalExecutions(repo, factory(repo)).accept(
+                leafreq, caller="knowlab"
+            )
+        await conductor.advance(str(leafreq.run_id))
+        await approve(db, leafreq, factory, await status(db, leafreq, factory))
+        await collect_script(db, factory)
+        await settle(conductor, leafreq)
+        res = await status(db, leafreq, factory)
+        assert res["status"] == "passed", res
+        leaf = freeze(leafreq, res)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            await factory(repo).formal_sources.register(leaf, caller="knowlab")
+        leaves.append(leaf)
+    steps = []
+    ceiling = []
+    for name, leaf in zip(("lookup", "calculate", "send"), leaves, strict=True):
+        definition = leaf.draft.definition.document()
+        access = deepcopy(definition["access_requirements"][0])
+        access["requirement_id"] = name
+        ceiling.append(access)
+        proc = definition["procedure"]
+        prior = steps[-1]["id"] if steps else None
+        steps.append(
+            {
+                "id": name,
+                "candidates": [leaf.reference.model_dump(mode="json")],
+                "select_when": "Only candidate",
+                "required_when": "Always",
+                "always_required": True,
+                "depends_on": [prior] if prior else [],
+                "inputs": {
+                    "to": {
+                        "slot": proc["inputs"]["to"],
+                        "binding": {
+                            "source": "step",
+                            "step": prior,
+                            "output": "receipt",
+                        }
+                        if prior
+                        else {"source": "caller", "name": "to"},
+                    }
+                },
+                "outputs": {"receipt": proc["outputs"]["receipt"]},
+                "on_failure": "fail",
+            }
+        )
+    definition["procedure"] = {
+        "kind": "orchestration",
+        "instructions": "Read, calculate, send",
+        "steps": steps,
+        "exports": {
+            "receipt": {"step": "send", "output": "receipt", "always_present": True}
+        },
+        "max_depth": 2,
+        "max_expansions": 4,
+        "max_steps": 3,
+        "max_replans": 0,
+    }
+    definition["access_requirements"] = ceiling
+    doc.update(
+        run_id=str(uuid4()),
+        method_id=str(uuid4()),
+        request_id=str(uuid4()),
+        workdraft_id=str(uuid4()),
+        dependencies=[x.reference.model_dump(mode="json") for x in leaves],
+        draft={"allowed_callers": ["host"], "source": None, "definition": definition},
+    )
+    expert = FormalMethodExecutionRequest.model_validate(doc)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        await FormalExecutions(repo, factory(repo)).accept(expert, caller="knowlab")
+    executor.calls.clear()
+    remote.calls.clear()
+    for i in range(3):
+        await settle(conductor, expert)
+        stage = await status(db, expert, factory)
+        assert len(stage["actions"]) == 1, stage
+        if behavior == "decline" and i == 1:
+            await approve(db, expert, factory, stage, "decline")
+            break
+        if i == 2 and behavior == "lost_send":
+            remote.fail = True
+        await approve(db, expert, factory, stage)
+        if i == 1:
+            cid = stage["actions"][0]["call_id"]
+            async with db() as session:
+                repo = WorkbenchRepository(session)
+                svc = factory(repo)
+                call = await repo.capability_call(OWNER, cid)
+                if behavior == "revoke":
+                    sid = call["session_id"]
+                    view = await svc.selection(OWNER, sid)
+                    await svc.revoke_method_permissions(
+                        OWNER,
+                        sid,
+                        MethodPermissionRevoke(
+                            revision=view["revision"],
+                            method_context=view["method"]["context"],
+                        ),
+                    )
+                elif behavior == "cancel":
+                    await svc.cancel_script(OWNER, cid)
+            conductor = KnowbotTestConductor(
+                workbench_stores(db), formal_capabilities=factory
+            )
+            await collect_script(db, factory)
+            await collect_script(db, factory)
+            async with db() as session:
+                repo = WorkbenchRepository(session)
+                entries = await repo.script_budget_entries(cid)
+                usage = entries["consume"]["script_evidence"]
+                assert usage["meter"]["run_id"] == cid
+                assert (
+                    entries["consume"]["amount"]
+                    == Decimal(usage["seconds"]) * TARIFF.per_container_second
+                )
+                assert entries["consume"]["amount"] > 0
+                if isinstance(executor, Executor):
+                    assert str(entries["consume"]["amount"]) == "0.040000"
+                if behavior in ("revoke", "cancel"):
+                    call = await repo.capability_call(OWNER, cid)
+                    assert (
+                        call["status"] == "failed"
+                        and "artifacts" not in call["detail"]["result"]
+                    )
+                    break
+    await settle(conductor, expert)
+    result = await status(db, expert, factory)
+    if behavior == "decline":
+        assert (
+            result["status"] == "failed"
+            and not executor.calls
+            and [c[2] for c in remote.calls] == ["lookup"]
+        )
+    elif behavior == "lost_send":
+        restarted = KnowbotTestConductor(
+            workbench_stores(db), formal_capabilities=factory
+        )
+        await settle(restarted, expert)
+        assert result["status"] == "failed", result
+        assert [c[2] for c in remote.calls] == ["lookup", "send"] and len(
+            executor.calls
+        ) == 1
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            original = await repo.capability_call(OWNER, stage["actions"][0]["call_id"])
+            assert original["status"] == "unknown"
+    elif behavior in ("revoke", "cancel"):
+        assert result["status"] == "failed" and [c[2] for c in remote.calls] == [
+            "lookup"
+        ]
+        assert len(executor.calls) == 1
+    else:
+        assert result["status"] == "passed", json.dumps(result, default=str)
+        assert [c[2] for c in remote.calls] == ["lookup", "send"] and len(
+            executor.calls
+        ) == 1
+        assert remote.calls[-1][3] == {"to": "test@example.test"}
+        frozen = freeze(expert, result)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            svc = factory(repo)
+            await svc.formal_sources.register(frozen, caller="knowlab")
+            await FormalMethodCatalog(
+                repo, svc.formal_sources, svc.operations
+            ).resolve_owned_admission(
+                OWNER,
+                frozen.reference,
+                resolved={
+                    (x.reference.method_id, x.reference.version): x for x in leaves
+                },
+            )
+
+
+@pytest.mark.parametrize(
+    "behavior", ["success", "decline", "revoke", "cancel", "lost_send"]
+)
+async def test_three_admitted_steps_and_exactly_one_script_charge(db, behavior):
+    await mixed_expert(db, behavior)
+
+
+@pytest.mark.skipif(
+    not os.environ.get("SCRIPT_TEST_PROVISIONER_URL"),
+    reason="requires local isolated provisioner",
+)
+async def test_real_container_in_three_step_expert(db):
+    class RecordedExecutor(SkillExecutor):
+        def __init__(self):
+            super().__init__(
+                os.environ["SCRIPT_TEST_PROVISIONER_URL"],
+                os.environ["SCRIPT_TEST_PROVISIONER_TOKEN"],
+            )
+            self.calls = []
+
+        async def start(self, owner, run, body):
+            self.calls.append(run)
+            return await super().start(owner, run, body)
+
+    await mixed_expert(db, "success", RecordedExecutor())
+
+
+@pytest.mark.parametrize(
+    "failure", ["busy", "unstarted", "failed", "missing_meter", "insufficient"]
+)
+async def test_script_budget_failure_paths(db, failure):
+    from app.domain.workbench.capabilities import ScriptSlotOccupied
+    from app.domain.workbench.errors import BudgetExhausted, TestCleanupPending
+    from app.domain.workbench.script_contract_generated import ScriptNotStarted
+
+    class Controlled(Executor):
+        async def prepare(self, owner, run, body):
+            if failure == "busy":
+                raise ScriptSlotOccupied("Slot already occupied")
+
+        async def start(self, owner, run, body):
+            await super().start(owner, run, body)
+            self.receipts[run] = {"state": "failed", "error": "test failure"}
+            if failure == "unstarted":
+                self.meters[run] = ScriptNotStarted(
+                    run_id=run, job_uid=uuid4(), pod_uid=uuid4(), reason="unscheduled"
+                )
+            if failure == "missing_meter":
+                self.meters.pop(run)
+
+    executor = Controlled()
+    req, factory, conductor, _ = await script_setup(
+        db, executor, limit="0.50" if failure == "insufficient" else "1"
+    )
+    await conductor.advance(str(req.run_id))
+    action = await status(db, req, factory)
+    cid = action["actions"][0]["call_id"]
+    if failure == "insufficient":
+        with pytest.raises(BudgetExhausted):
+            await approve(db, req, factory, action)
+        async with db() as session:
+            assert not await WorkbenchRepository(session).script_budget_entries(cid)
+        assert not executor.calls
+        return
+    await approve(db, req, factory, action)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = factory(repo)
+        await svc.reconcile_scripts()
+        rows = await repo.script_budget_entries(cid)
+        if failure == "missing_meter":
+            assert set(rows) == {"reserve"}
+            await FormalExecutions(repo, svc).cancel(
+                "author", str(req.run_id), caller="knowlab"
+            )
+            with pytest.raises(TestCleanupPending, match="usage"):
+                await repo.purge_test_run(str(req.run_id))
+            assert len(executor.calls) == 1
+            return
+        cost = Decimal("0.04") if failure == "failed" else Decimal(0)
+        assert rows["consume"]["amount"] == cost
+        assert rows["release"]["amount"] + cost == rows["reserve"]["amount"]
+        assert len(executor.calls) == (0 if failure == "busy" else 1)
+    await settle(conductor, req)
+    res = await status(db, req, factory)
+    assert res["status"] == "failed" and Decimal(res["spent"]) == cost

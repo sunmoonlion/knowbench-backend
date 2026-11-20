@@ -97,6 +97,8 @@ async def check_resource_authorities(repo, owner, scope, grants, catalog=None):
         )
     try:
         for grant in backed:
+            if grant.connection_id is None or grant.connection_revision is None:
+                raise CapabilityError("Resource delegation needs a connection")
             record = catalog.require(
                 grant.resource_authority,
                 owner,

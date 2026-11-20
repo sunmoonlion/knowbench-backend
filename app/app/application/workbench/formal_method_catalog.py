@@ -9,9 +9,10 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal
 
-from app.application.workbench.tool_registry import registered_call
+from app.application.workbench.script_budget import case_script_cost
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import NotFound, WorkbenchError
+from app.domain.workbench.formal_adapter import live_registration
 from app.domain.workbench.formal_execution import (
     FORMAL_RUNTIME,
     FormalTaskSnapshot,
@@ -37,6 +38,7 @@ from app.domain.workbench.formal_model import (
     verified_probe_profile,
 )
 from app.domain.workbench.method_authorization import MethodAuthorization
+from app.domain.workbench.script_pricing import ScriptOperation
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
 
@@ -116,7 +118,7 @@ class ResolvedOwnedMethod:
     frozen: FrozenFormalMethod
     asset: dict[str, Any]
     registration: ToolRegistration
-    policy: McpOperation
+    policy: McpOperation | ScriptOperation
     uncovered: tuple[UncoveredScenario, ...]
 
 
@@ -516,6 +518,9 @@ class FormalMethodCatalog:
                 == (
                     "knowbench/formal-mcp-caller-probe/v1"
                     if "model" in frozen.draft.allowed_callers
+                    else "knowbench/formal-script-host/v1"
+                    if frozen.draft.source
+                    and frozen.draft.source.kind == "skill_script"
                     else "knowbench/formal-mcp-host/v1"
                 )
             )
@@ -523,7 +528,12 @@ class FormalMethodCatalog:
             and evidence["definition_digest"] == frozen.reference.digest
             and evidence["suite"]
             == request.execution.suite.reference().model_dump(mode="json")
-            and evidence["external_provider_billing"] == "reviewed_no_incremental_fee",
+            and evidence["external_provider_billing"]
+            == (
+                "metered_scripts"
+                if "script_cost" in evidence
+                else "reviewed_no_incremental_fee"
+            ),
             "Formal evidence does not qualify this execution path",
         )
         covered = "business" in frozen.validation.checks
@@ -573,7 +583,9 @@ class FormalMethodCatalog:
         )
         source = frozen.draft.source
         _require(
-            source is not None and source.kind == "mcp" and source.asset_id is not None,
+            source is not None
+            and source.kind in ("mcp", "skill_script")
+            and source.asset_id is not None,
             "Formal method has no pinned MCP source",
         )
         assert source is not None
@@ -582,17 +594,8 @@ class FormalMethodCatalog:
             "Source execution rights are unavailable",
         )
         asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
-        tool = next(
-            (t for t in asset["detail"].get("tools", []) if t["name"] == source.entry),
-            None,
-        )
-        _require(tool is not None, "The registered MCP implementation is unavailable")
-        registration = registered_call(asset, {"tool": tool})
-        policy = self.operations.require(registration)
-        _require(
-            policy.formal_execution_cost is not None,
-            "The adapter has no reviewed evidence of zero incremental fees",
-        )
+        registration = live_registration(frozen.draft, asset)
+        policy = self.operations.formal_policy(registration)
         self._verify_cases(owner, frozen, request, evidence, registration, policy)
         return ResolvedOwnedMethod(
             frozen, asset, registration, policy, frozen.validation.uncovered
@@ -748,6 +751,14 @@ class FormalMethodCatalog:
                 and governance["operation"] == operation,
                 "Current operation policy differs from the validated operation",
             )
+            if source.kind == "skill_script" and result.outcome == "succeeded":
+                from app.application.workbench.script_budget import verify_proof
+
+                verify_proof(
+                    governance.get("script_cost"),
+                    str(result.call_id),
+                    operation["script_quote"],
+                )
             approval = governance["approval"]
             if result.outcome == "rejected":
                 _require(
@@ -806,8 +817,9 @@ class FormalMethodCatalog:
             _require(
                 not grant.delegable
                 and grant.recipient_call_id == auth.call_id
-                and str(grant.connection_id) == str(source.asset_id)
-                and grant.connection_revision == source.asset_revision
+                and grant.matches_asset(
+                    source.kind, source.asset_id, source.asset_revision
+                )
                 and grant.operation_digest == policy.policy_digest
                 and grant.confirmation_context == item["snapshot_digest"]
                 and grant.method_ids == (str(frozen.reference.method_id),)
@@ -836,7 +848,10 @@ class FormalMethodCatalog:
                 if "model" in request.draft.allowed_callers
                 else model_cost == 0
             )
-            and model_cost < Decimal(request.execution.budget.limit),
+            and sum((case_script_cost(case) for case in retained), Decimal(0))
+            == Decimal(evidence.get("script_cost", "0"))
+            and model_cost + Decimal(evidence.get("script_cost", "0"))
+            <= Decimal(request.execution.budget.limit),
             "Model costs do not reconcile with the sealed run budget",
         )
 
@@ -865,7 +880,11 @@ class FormalMethodCatalog:
         for frozen in documents:
             issue = None
             try:
-                await self.resolve_owned(owner, frozen.reference, caller=caller)
+                resolved = await self.resolve_owned(
+                    owner, frozen.reference, caller=caller
+                )
+                if isinstance(resolved.policy, ScriptOperation):
+                    issue = "This isolated script requires a task with an approved root budget"
             except WorkbenchError as exc:
                 issue = exc.message[:2000]
             definition = frozen.draft.definition

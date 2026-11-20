@@ -21,6 +21,7 @@ class Materials:
     def __init__(self, material, session):
         self.material = material
         self.session = session
+        self.page_chars = 60000
         self.allowed = True
         self.content = "经批准的正文" * 14000
         self.calls = []
@@ -41,7 +42,7 @@ class Materials:
         if not self.allowed:
             return {"result": {"isError": True}}
         start = args["offset"]
-        part = self.content[start : start + 60000]
+        part = self.content[start : start + self.page_chars]
         return {
             "result": {
                 "isError": False,
@@ -204,3 +205,27 @@ async def test_real_method_attempt_accepts_only_bound_producer_field(db, bound):
             assert base64.b64decode(delivered["data_base64"]) == b"21"
         else:
             assert receipt["status"] == "failed" and not executor.started
+
+
+async def test_smaller_material_pages_use_character_offsets_and_return_complete_utf8():
+    from app.application.workbench.script_inputs import material_text
+
+    material = str(uuid4())
+    provider = Materials(material, "session")
+    provider.page_chars = 1024
+    provider.content = "项🙂a" * 30000
+
+    class Reader:
+        async def call(self, _, name, args):
+            assert name == "read_input"
+            return await provider.data_mcp(
+                "synthetic-read-only", {"params": {"arguments": args}}
+            )
+
+    actual = await material_text(
+        Reader(),
+        SimpleNamespace(material_id=material, version_no=1, reading="text/3"),
+        {"session": "session"},
+    )
+    assert actual == provider.content.encode()
+    assert provider.calls == list(range(0, len(provider.content), provider.page_chars))

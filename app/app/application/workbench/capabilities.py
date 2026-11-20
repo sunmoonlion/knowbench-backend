@@ -104,6 +104,7 @@ class Capabilities:
         script_executor: Any = None,
         script_material_source=None,
         operations: tuple[McpOperation, ...] = (),
+        script_tariff=None,
         source_licenses=(),
         business_reviews=(),
         resource_delegations=(),
@@ -132,7 +133,7 @@ class Capabilities:
         self.skill_source = skill_source
         self.script_executor = script_executor
         self.script_material_source = script_material_source
-        self.operations = OperationCatalog(operations)
+        self.operations = OperationCatalog(operations, script_tariff=script_tariff)
         from app.domain.workbench.resource_delegation import ResourceDelegationCatalog
 
         self.resource_delegations = ResourceDelegationCatalog(resource_delegations)
@@ -141,6 +142,7 @@ class Capabilities:
         self.formal_sources = FormalMethods(
             repo,
             operations=operations,
+            script_tariff=script_tariff,
             source_licenses=source_licenses,
             business_reviews=business_reviews,
         )
@@ -1153,7 +1155,15 @@ class Capabilities:
                         "revision": asset["revision"],
                         "digest": asset["detail"]["digest"],
                     }
-                    tool = script_tool(asset) if self.script_executor else None
+                    tool = (
+                        script_tool(asset)
+                        if self.script_executor
+                        and not (
+                            self.operations.script_tariff
+                            and self.operations.script_tariff.per_container_second
+                        )
+                        else None
+                    )
                     if tool:
                         tools[tool_key(asset["id"], "skill_run")] = {
                             "source_asset_id": asset["id"],
@@ -1920,7 +1930,11 @@ class Capabilities:
             from app.application.workbench.formal_method_calls import FormalMethodCalls
 
             return (await FormalMethodCalls(self).decide(owner, call_id, body))["call"]
-        if peek["detail"].get("execution_kind") in ("formal_mcp", "formal_probe"):
+        if peek["detail"].get("execution_kind") in (
+            "formal_mcp",
+            "formal_script",
+            "formal_probe",
+        ):
             from app.application.workbench.formal_host_calls import FormalHostCalls
 
             return await FormalHostCalls(self).decide(owner, peek, body)
@@ -2075,7 +2089,22 @@ class Capabilities:
             asset = await self.repo.capability_asset(
                 owner, call["source_asset_id"], lock=True
             )
-            if current["status"] != "dispatching" or current["detail"] != intent:
+            if (
+                intent.get("execution_kind") == "skill_script"
+                and self.operations.script_tariff
+                and self.operations.script_tariff.per_container_second
+            ):
+                raise CapabilityError(
+                    "Metered script execution requires an approved root budget"
+                )
+            if (
+                current["status"] != "dispatching"
+                or current["detail"] != intent
+                or (
+                    intent.get("execution_kind") == "formal_script"
+                    and (intent.get("result") or {}).get("stop_requested")
+                )
+            ):
                 raise CapabilityError("The dispatch receipt changed")
             if current.get("read_scope_key") and (
                 current["read_revoked_at"]
@@ -2084,6 +2113,7 @@ class Capabilities:
                 raise CapabilityError("The read approval expired or was revoked")
             if intent.get("execution_kind") in (
                 "formal_mcp",
+                "formal_script",
                 "formal_probe",
                 "formal_method",
                 "formal_method_model",
@@ -2160,7 +2190,17 @@ class Capabilities:
             raise CapabilityError(
                 "Script input was not delivered to the reserved container"
             ) from exc
-        await self.script_executor.start(owner, call_id, script_input)
+        from app.domain.workbench.capabilities import ScriptInputNotSent
+
+        try:
+            await self.script_executor.start(owner, call_id, script_input)
+        except ScriptInputNotSent:
+            # Preparation created an empty receiver. Its input connection never opened.
+            try:
+                await self.script_executor.cancel(owner, call_id)
+            except Exception:
+                pass  # The Job's deadline still closes the empty receiver.
+            raise
 
     async def _dispatch_call(
         self, owner, call, connection, intent, knowbase_read=None, *, script_input=None
@@ -2173,6 +2213,11 @@ class Capabilities:
             async def before_send():
                 await self._check_before_send(owner, call, intent)
 
+            if intent.get("execution_kind") == "formal_script":
+                from app.application.workbench.formal_script_execution import dispatch
+
+                await dispatch(self, owner, call, intent, connection)
+                return public_call(await self.repo.capability_call(owner, call_id))
             if intent.get("execution_kind") == "skill_script":
                 if self.script_executor is None or script_input is None:
                     raise CapabilityError("Script execution is unavailable")
@@ -2251,6 +2296,11 @@ class Capabilities:
 
     async def cancel_script(self, owner, call_id):
         call = await self.repo.capability_call(owner, call_id)
+        if call["detail"].get("execution_kind") == "formal_script":
+            from app.application.workbench.formal_script_execution import request_stop
+
+            await request_stop(self, owner, call)
+            return public_call(await self.repo.capability_call(owner, call_id))
         if call["detail"].get("execution_kind") != "skill_script":
             raise CapabilityError("Only script executions can be stopped here")
         if call["status"] != "dispatching":
@@ -2288,6 +2338,9 @@ class Capabilities:
         """Runner-owned receipt collection, cancellation and recovery; never retry execution."""
         if self.script_executor is None:
             return
+        from app.application.workbench.formal_script_execution import reconcile
+
+        await reconcile(self)
         for call in await self.repo.capability_pending_scripts():
             owner, call_id, intent = call["owner_actor_id"], call["id"], call["detail"]
             status, result = None, None

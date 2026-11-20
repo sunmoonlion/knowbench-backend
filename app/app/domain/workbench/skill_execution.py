@@ -1,10 +1,12 @@
 """Installed package entrypoints and public execution receipts."""
 
 import base64
+import hashlib
+import json
 from copy import deepcopy
 from pathlib import PurePosixPath
 
-from app.domain.workbench.script_contract_generated import ScriptArguments
+from app.domain.workbench.script_contract_generated import ScriptArguments, ScriptResult
 
 
 def script_tool(asset: dict) -> dict | None:
@@ -103,3 +105,79 @@ def public_call(call: dict) -> dict:
         copy["detail"].get("result"), str(copy["id"])
     )
     return copy
+
+
+def method_script_input(asset, draft, arguments, resources):
+    from app.domain.workbench.formal_execution import direct_procedure, validate_values
+    from app.domain.workbench.formal_method_execution_generated import bounded_json
+    from app.domain.workbench.skill_package import skill_manifest_digest
+
+    procedure = direct_procedure(draft)
+    source = draft.source
+    if (
+        source is None
+        or source.kind != "skill_script"
+        or (
+            asset["kind"] != "skill"
+            or asset["status"] != "active"
+            or str(asset["id"]) != str(source.asset_id)
+            or asset["revision"] != source.asset_revision
+            or skill_manifest_digest(asset["detail"]["files"]) != source.digest
+        )
+    ):
+        raise ValueError("The installed script package changed")
+    bounded_json(arguments)
+    validate_values(procedure.inputs, arguments)
+    raw = json.dumps(
+        arguments,
+        sort_keys=True,
+        ensure_ascii=False,
+        allow_nan=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    payload = execution_input(asset, {"path": source.entry}, resources)
+    payload["inputs"] = [
+        {
+            "path": "arguments.json",
+            "data_base64": base64.b64encode(raw).decode("ascii"),
+            "sha256": hashlib.sha256(raw).hexdigest(),
+        }
+    ]
+    return payload
+
+
+def method_script_outputs(receipt: dict) -> dict:
+    """Only the installed script's complete result file supplies typed outputs."""
+    from app.domain.workbench.formal_method_execution_generated import bounded_json
+
+    result = ScriptResult.model_validate(
+        {k: v for k, v in receipt.items() if k != "isError"}
+    )
+    artifacts = [item for item in result.artifacts if item.path == "result.json"]
+    if (
+        result.exit_code != 0
+        or result.timed_out
+        or result.artifact_error
+        or len(artifacts) != 1
+    ):
+        raise ValueError(
+            "A successful script must return exactly one complete result.json"
+        )
+    raw = base64.b64decode(artifacts[0].data_base64, validate=True)
+    if len(raw) > 64000:
+        raise ValueError("Script result exceeds the formal output limit")
+
+    def unique_object(pairs):
+        obj = dict(pairs)
+        if len(obj) != len(pairs):
+            raise ValueError("Ambiguous duplicate script output field")
+        return obj
+
+    try:
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        bounded_json(value)
+    except RecursionError as exc:
+        raise ValueError("Script output exceeds the JSON nesting limit") from exc
+    if not isinstance(value, dict):
+        raise ValueError("Formal script outputs must be a JSON object")
+    return value

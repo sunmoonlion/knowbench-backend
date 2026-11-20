@@ -3,6 +3,7 @@
 import json
 
 from app.domain.workbench.capabilities import CapabilityError, digest
+from app.domain.workbench.formal_adapter import host_kind
 from app.domain.workbench.formal_execution import (
     FormalTaskSnapshot,
     dependency_for_step,
@@ -119,7 +120,8 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
         snapshot.caller != "host"
         or call.get("kind") != "tool"
         or call.get("origin") != "managed"
-        or call["detail"].get("execution_kind") != "formal_mcp"
+        or source is None
+        or call["detail"].get("execution_kind") != host_kind(source)
         or str(call.get("owner_actor_id")) != str(task["owner_actor_id"])
         or str(call.get("session_id")) != str(task["session_id"])
         or str(call.get("task_id")) != str(task["id"])

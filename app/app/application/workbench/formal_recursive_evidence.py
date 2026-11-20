@@ -10,8 +10,10 @@ from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
 from app.application.workbench.formal_orchestration_evidence import _approval
+from app.application.workbench.script_budget import task_script_cost
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.formal_adapter import host_kind, retained_registration
 from app.domain.workbench.formal_execution import (
     case_key,
     snapshot_for_task,
@@ -41,7 +43,6 @@ from app.domain.workbench.formal_recursive import (
 )
 from app.domain.workbench.method_authorization import MethodAuthorization
 from app.domain.workbench.states import AttemptState, TaskState
-from app.domain.workbench.tool_registry import ToolRegistration
 
 
 def _require(condition, code):
@@ -537,7 +538,7 @@ class _Tree:
             "parent_method_call_id": str(child["parent_call_id"]),
             "root_method_call_id": str(self.calls[()]["id"]),
         }
-        registration = ToolRegistration.discover("mcp", source.source, intent["tool"])
+        registration = retained_registration(leaf.draft, intent["tool"])
         _require(
             str(call["id"]) == refs["capability_call_id"]
             and call["kind"] == "tool"
@@ -549,17 +550,20 @@ class _Tree:
             and str(call["attempt_id"]) == str(attempt["id"])
             and str(call["parent_call_id"]) == str(child["id"])
             and call["call_key"] == "formal-host:" + str(self.task["id"]) + ":" + slot
-            and intent.get("execution_kind") == "formal_mcp"
+            and intent.get("execution_kind") == host_kind(source)
             and intent.get("formal_host") == expected_host
             and fingerprint(intent.get("arguments")) == fingerprint(inputs)
             and call["digest"] == host_intent_digest(intent)
-            and str(call["connection_id"]) == str(source.asset_id)
+            and (
+                call.get("connection_id") is None
+                if source.kind == "skill_script"
+                else str(call.get("connection_id")) == str(source.asset_id)
+            )
             and str(call["source_asset_id"]) == str(source.asset_id)
             and intent["revision"] == source.asset_revision
-            and intent["tool"]["name"] == source.entry
+            and intent["tool"]["name"] == registration.name
             and call["registration_id"] == registration.tool_id
-            and call["registration_digest"] == registration.descriptor_digest
-            and source.digest == "sha256:" + registration.descriptor_digest,
+            and call["registration_digest"] == registration.descriptor_digest,
             "leaf_tool_identity_mismatch",
         )
         confirmations = [
@@ -767,7 +771,8 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
         )
         _require(not model_events, "unexpected_tree_model_execution")
         _require(
-            _zero(task["budget"].get("used", "0"))
+            Decimal(str(task["budget"].get("used", "0")))
+            == await task_script_cost(repo, task["id"])
             and _zero(task["budget"].get("reserved", "0")),
             "unexpected_tree_cost",
         )

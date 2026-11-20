@@ -6,6 +6,7 @@ may be valid evidence; uncertain dispatch and unproved authority never qualify.
 
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.formal_adapter import host_kind, retained_registration
 from app.domain.workbench.formal_execution import (
     case_key,
     direct_procedure,
@@ -26,7 +27,6 @@ from app.domain.workbench.states import (
     AttemptState,
     TaskState,
 )
-from app.domain.workbench.tool_registry import ToolRegistration
 
 
 async def collect_case_evidence(repo, request, case, repetition, result) -> dict:
@@ -252,7 +252,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             and call.get("origin") == "managed"
             and (model or call.get("call_key") == host_call_key(result["task_id"]))
             and intent.get("execution_kind")
-            == ("formal_probe" if model else "formal_mcp"),
+            == ("formal_probe" if model else host_kind(source)),
             "call_identity_mismatch",
         )
         require(
@@ -276,16 +276,19 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         )
         require(
             str(call.get("source_asset_id")) == str(source.asset_id)
-            and str(call.get("connection_id")) == str(source.asset_id)
+            and (
+                call.get("connection_id") is None
+                if source.kind == "skill_script"
+                else str(call.get("connection_id")) == str(source.asset_id)
+            )
             and intent.get("revision") == source.asset_revision,
             "call_source_mismatch",
         )
-        registration = ToolRegistration.discover("mcp", source.source, intent["tool"])
+        registration = retained_registration(request.draft, intent["tool"])
         require(
-            intent["tool"]["name"] == source.entry
+            intent["tool"]["name"] == registration.name
             and call.get("registration_id") == registration.tool_id
-            and call.get("registration_digest") == registration.descriptor_digest
-            and source.digest == "sha256:" + registration.descriptor_digest,
+            and call.get("registration_digest") == registration.descriptor_digest,
             "registration_mismatch",
         )
         parent = await repo.call_by_key(
@@ -364,6 +367,10 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         )
         if model:
             governance["formal_probe"] = governance.pop("formal_host")
+        if approved and source.kind == "skill_script" and outcome == "succeeded":
+            from app.application.workbench.script_budget import cost_proof
+
+            governance["script_cost"] = await cost_proof(repo, call, subject)
         evidence["governance"] = governance
         if outcome == "rejected":
             declined = (
@@ -447,8 +454,9 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             direct = (
                 not grant.delegable
                 and grant.recipient_call_id == auth.call_id
-                and str(grant.connection_id) == str(source.asset_id)
-                and grant.connection_revision == source.asset_revision
+                and grant.matches_asset(
+                    source.kind, source.asset_id, source.asset_revision
+                )
                 and grant.operation_digest == access["operation_digest"]
                 and grant.confirmation_context == task["pack_digest"]
                 and grant.method_ids == (str(request.method_id),)
@@ -465,7 +473,8 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
                 authorization=auth.model_dump(mode="json"),
             )
             adapter_result = intent.get("result")
-            bounded_json(adapter_result)
+            if source.kind != "skill_script":
+                bounded_json(adapter_result)
             require(isinstance(adapter_result, dict), "adapter_result_missing")
             if outcome == "succeeded":
                 require(

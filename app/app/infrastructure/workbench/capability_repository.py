@@ -406,6 +406,16 @@ class CapabilityRepositoryMixin:
         )
         return row(result) if result else None
 
+    async def pending_metered_scripts(self):
+        result = await self.session.execute(
+            text("""SELECT c.* FROM workbench_calls c
+            JOIN workbench_budget_ledger h ON h.script_call_id=c.id AND h.entry='reserve'
+            WHERE c.detail->>'execution_kind'='formal_script' AND NOT EXISTS (
+              SELECT 1 FROM workbench_budget_ledger d WHERE d.script_call_id=c.id AND d.entry='consume')
+            ORDER BY c.updated_at,c.id""")
+        )
+        return [row(r) for r in result.mappings()]
+
     async def capability_pending_scripts(self):
         result = await self.session.execute(
             text("""SELECT * FROM workbench_calls

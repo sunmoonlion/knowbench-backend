@@ -8,6 +8,7 @@ import json
 import zipfile
 
 import pytest
+from sqlalchemy import text
 from test_capabilities_db import service
 from test_workbench_ledger_db import OWNER, seed
 from test_workbench_ledger_db import db as db
@@ -65,7 +66,6 @@ async def setup(db, *, method=False):
             package=True,
         )
         if method:
-            from sqlalchemy import text
             from test_workbench_ledger_db import handover
 
             from app.application.workbench.ledger import Ledger
@@ -169,7 +169,17 @@ async def test_script_approval_receipt_and_artifact_redaction(db, method):
                 ],
             },
         }
+        # Opening the call ledger may precede the first runner tick after downtime.
+        async with svc.repo.transaction():
+            await s.execute(
+                text(
+                    "UPDATE workbench_calls SET updated_at=now()-interval '3 minutes' WHERE id=:id"
+                ),
+                {"id": call["id"]},
+            )
+        assert (await svc.calls(OWNER, sid))[0]["status"] == "dispatching"
         await svc.reconcile_scripts()
+        assert len(executor.started) == 1
         stored = await svc.repo.capability_call(OWNER, call["id"])
         assert stored["status"] == "succeeded"
         assert stored["detail"]["result"]["artifacts"][0]["data_base64"] == "NDI="
@@ -332,3 +342,24 @@ async def test_user_can_stop_script_without_relaunch(db):
         assert (
             executor.cancelled == [(OWNER, call["id"])] and len(executor.started) == 1
         )
+
+
+async def test_input_connect_failure_closes_prepared_job_without_a_second_delivery(db):
+    from app.domain.workbench.capabilities import ScriptInputNotSent
+
+    sid, executor, _, key, token = await setup(db)
+    attempts = []
+
+    async def fail(owner, run, body):
+        attempts.append(run)
+        raise ScriptInputNotSent("Input connection never opened")
+
+    executor.start = fail
+    async with db() as session:
+        svc = service(WorkbenchRepository(session))
+        svc.script_executor = executor
+        call, _ = await approve(svc, sid, key, token)
+        await svc.reconcile_scripts()
+        assert attempts == [call["id"]]
+        assert executor.cancelled == [(OWNER, call["id"])]
+        assert call["status"] == "failed"

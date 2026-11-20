@@ -30,6 +30,7 @@ from app.domain.workbench.method_authorization import (
 from app.domain.workbench.method_capabilities import AccessRequirement
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.skill_execution import public_call
+from app.domain.workbench.tool_operations import McpOperation
 
 
 def _root_key(request_id):
@@ -97,6 +98,7 @@ class FormalMethodCalls:
             raise CapabilityError(str(exc)) from exc
         if (
             len(frozen.draft.definition.access_requirements) != 1
+            or not isinstance(policy, McpOperation)
             or policy.formal_execution_cost is None
         ):
             raise CapabilityError(

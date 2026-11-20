@@ -90,3 +90,28 @@ async def test_lost_upload_response_recovers_through_status_without_sending_agai
     assert (await executor.start(owner, run, payload))["state"] == "running"
     await executor.status(owner, run)
     assert calls == [("POST", "prepare"), ("PUT", "input"), ("GET", run)]
+
+
+@pytest.mark.parametrize("failure", [httpx.ConnectError, httpx.ConnectTimeout])
+async def test_input_connection_failure_is_definite_and_never_retried(failure):
+    from app.domain.workbench.capabilities import ScriptInputNotSent
+
+    seen = []
+
+    def refused(request):
+        seen.append(request.method)
+        raise failure("test connect failure", request=request)
+
+    executor = SkillExecutor(
+        "http://test", "test-only", transport=httpx.MockTransport(refused)
+    )
+    body = {
+        "path": "run.py",
+        "files": [
+            {"path": name, "sha256": hashlib.sha256(b"").hexdigest(), "data_base64": ""}
+            for name in ("run.py", "SKILL.md")
+        ],
+    }
+    with pytest.raises(ScriptInputNotSent):
+        await executor.start(str(uuid4()), str(uuid4()), body)
+    assert seen == ["PUT"]
