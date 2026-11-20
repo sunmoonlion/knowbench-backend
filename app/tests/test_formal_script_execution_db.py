@@ -547,14 +547,16 @@ async def test_real_container_in_three_step_expert(db):
     "failure", ["busy", "unstarted", "failed", "missing_meter", "insufficient"]
 )
 async def test_script_budget_failure_paths(db, failure):
-    from app.domain.workbench.capabilities import ScriptSlotOccupied
+    from app.domain.workbench.capabilities import ScriptNotProvisioned
     from app.domain.workbench.errors import BudgetExhausted, TestCleanupPending
     from app.domain.workbench.script_contract_generated import ScriptNotStarted
 
     class Controlled(Executor):
         async def prepare(self, owner, run, body):
             if failure == "busy":
-                raise ScriptSlotOccupied("Slot already occupied")
+                raise ScriptNotProvisioned(
+                    "slot_occupied_before_creation", "Slot already occupied"
+                )
 
         async def start(self, owner, run, body):
             await super().start(owner, run, body)

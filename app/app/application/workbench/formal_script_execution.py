@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from app.application.workbench.script_budget import settle
-from app.domain.workbench.capabilities import ScriptSlotOccupied
+from app.domain.workbench.capabilities import ScriptNotProvisioned
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_execution import (
     dependency_for_step,
@@ -41,13 +41,13 @@ async def dispatch(svc, owner, call, intent, asset):
         await svc.script_executor.prepare(owner, call["id"], payload)
         await svc._check_before_send(owner, call, intent)
         await svc.script_executor.start(owner, call["id"], payload)
-    except ScriptSlotOccupied:
+    except ScriptNotProvisioned as exc:
         await settle(
             repo,
             owner,
             call["id"],
             amount=Decimal("0"),
-            evidence={"run_id": call["id"], "stage": "slot_occupied_before_creation"},
+            evidence={"run_id": call["id"], "stage": exc.stage},
         )
         raise
     except Exception:

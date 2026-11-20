@@ -115,3 +115,36 @@ async def test_input_connection_failure_is_definite_and_never_retried(failure):
     with pytest.raises(ScriptInputNotSent):
         await executor.start(str(uuid4()), str(uuid4()), body)
     assert seen == ["PUT"]
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "isolation_unavailable_before_creation",
+        "slot_occupied_before_creation",
+        "prepare_connection_not_established",
+    ],
+)
+async def test_proven_preparation_failure_preserves_reason_for_zero_settlement(reason):
+    from app.domain.workbench.capabilities import ScriptNotProvisioned
+
+    run = str(uuid4())
+
+    def fail(request):
+        if reason == "prepare_connection_not_established":
+            raise httpx.ConnectTimeout("connect timeout", request=request)
+        return httpx.Response(409, json={"detail": {"code": reason, "run_id": run}})
+
+    executor = SkillExecutor(
+        "http://test", "test-only", transport=httpx.MockTransport(fail)
+    )
+    body = {
+        "path": "run.py",
+        "files": [
+            {"path": name, "sha256": hashlib.sha256(b"").hexdigest(), "data_base64": ""}
+            for name in ("run.py", "SKILL.md")
+        ],
+    }
+    with pytest.raises(ScriptNotProvisioned) as exc:
+        await executor.prepare(str(uuid4()), run, body)
+    assert exc.value.stage == reason

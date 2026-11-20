@@ -36,8 +36,12 @@ class ScriptInputNotSent(CapabilityError):
     """The input connection failed before any script bytes were sent."""
 
 
-class ScriptSlotOccupied(CapabilityError):
-    """The provisioner confirmed that this call did not create a Job."""
+class ScriptNotProvisioned(CapabilityError):
+    """The first preparation attempt definitively ended before creating a Job."""
+
+    def __init__(self, stage: str, message: str):
+        super().__init__(message)
+        self.stage = stage
 
 
 class CapabilityReauthRequired(CapabilityError):

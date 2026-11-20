@@ -10,7 +10,7 @@ from pydantic import TypeAdapter
 from app.domain.workbench.capabilities import (
     CapabilityError,
     ScriptInputNotSent,
-    ScriptSlotOccupied,
+    ScriptNotProvisioned,
 )
 from app.domain.workbench.script_contract_generated import (
     ScriptContainerMeter,
@@ -37,13 +37,18 @@ class SkillExecutor:
             follow_redirects=False,
         ) as client:
             response = await client.request(method, path, json=body)
-            if (
-                suffix == "/prepare"
-                and response.status_code == 409
-                and response.json().get("detail")
-                == {"code": "slot_occupied_before_creation", "run_id": str(run)}
-            ):
-                raise ScriptSlotOccupied("Another script occupies the execution slot")
+            if suffix == "/prepare" and response.status_code == 409:
+                detail = response.json().get("detail")
+                messages = {
+                    "slot_occupied_before_creation": "Another script occupies the execution slot",
+                    "isolation_unavailable_before_creation": "The required script isolation policy is unavailable",
+                }
+                if (
+                    isinstance(detail, dict)
+                    and detail.get("run_id") == str(run)
+                    and detail.get("code") in messages
+                ):
+                    raise ScriptNotProvisioned(detail["code"], messages[detail["code"]])
             if method in ("PUT", "POST") and response.status_code in (
                 401,
                 403,
@@ -71,9 +76,15 @@ class SkillExecutor:
 
     async def prepare(self, owner: str, run: str, body: dict):
         frame, _ = execution_frame(ScriptExecution.model_validate(body))
-        return await self.request(
-            "POST", owner, run, frame.model_dump(), suffix="/prepare"
-        )
+        try:
+            return await self.request(
+                "POST", owner, run, frame.model_dump(), suffix="/prepare"
+            )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            raise ScriptNotProvisioned(
+                "prepare_connection_not_established",
+                "Could not connect to reserve the script container",
+            ) from exc
 
     async def start(self, owner: str, run: str, body: dict):
         payload = ScriptExecution.model_validate(body).model_dump()
