@@ -6,7 +6,8 @@ from __future__ import annotations
 import base64
 import hashlib
 from pathlib import PurePosixPath
-from typing import Literal
+from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -42,7 +43,29 @@ class ScriptFile(Strict):
         return self
 
 
-class ScriptArguments(Strict):
+InputName = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$")]
+MAX_INPUT_BYTES = 2 * 1024 * 1024
+MAX_FRAME_BYTES = 10 * 1024 * 1024
+
+
+class MaterialInput(Strict):
+    kind: Literal["material"]
+    name: InputName
+    material_id: UUID
+    version_no: int = Field(ge=1, strict=True)
+    reading: str = Field(min_length=1, max_length=100)
+
+
+class StepInput(Strict):
+    kind: Literal["step_output"]
+    name: InputName
+    task_id: UUID
+    artifact: str = Field(min_length=1, max_length=200)
+    version: int = Field(ge=1, strict=True)
+    field: str = Field(min_length=1, max_length=128)
+
+
+class ScriptCommand(Strict):
     path: str = Field(min_length=1, max_length=500)
     args: list[str] = Field(default_factory=list, max_length=64)
     stdin: str = Field(default="", max_length=32000, repr=False)
@@ -57,11 +80,37 @@ class ScriptArguments(Strict):
         return self
 
 
-class ScriptExecution(ScriptArguments):
+class ScriptArguments(ScriptCommand):
+    inputs: list[MaterialInput | StepInput] = Field(default_factory=list, max_length=8)
+
+    @model_validator(mode="after")
+    def unique_inputs(self):
+        if len({ref.name for ref in self.inputs}) != len(self.inputs):
+            raise ValueError("Duplicate script input name")
+        return self
+
+
+class InputFile(ScriptFile):
+    path: InputName
+
+
+class ScriptFrame(Strict):
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    size: int = Field(ge=1, le=MAX_FRAME_BYTES, strict=True)
+
+
+class ScriptExecution(ScriptCommand):
+    inputs: list[InputFile] = Field(default_factory=list, max_length=8)
     files: list[ScriptFile] = Field(min_length=1, max_length=256)
 
     @model_validator(mode="after")
     def complete_package(self):
+        if (
+            len({f.path for f in self.inputs}) != len(self.inputs)
+            or sum(len(base64.b64decode(f.data_base64)) for f in self.inputs)
+            > MAX_INPUT_BYTES
+        ):
+            raise ValueError("Duplicate input name or business inputs exceed 2 MiB")
         paths = {f.path for f in self.files}
         if (
             len(paths) != len(self.files)
@@ -78,6 +127,11 @@ class ScriptExecution(ScriptArguments):
             if any(str(parent) in paths for parent in PurePosixPath(path).parents):
                 raise ValueError("A package file cannot also be a directory")
         return self
+
+
+def execution_frame(body: ScriptExecution) -> tuple[ScriptFrame, bytes]:
+    raw = body.model_dump_json().encode()
+    return ScriptFrame(sha256=hashlib.sha256(raw).hexdigest(), size=len(raw)), raw
 
 
 class ScriptArtifact(ScriptFile):

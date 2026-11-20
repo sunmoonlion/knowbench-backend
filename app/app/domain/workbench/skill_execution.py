@@ -21,7 +21,7 @@ def script_tool(asset: dict) -> dict | None:
         "name": "skill_run",
         "description": f"Run an installed script from {asset['name']} in an isolated cloud container. "
         "Python 3, Bash and Node.js are available; network, credentials and local project files are not. "
-        "The working directory is the package root. Pass small input via stdin or args; write artifacts under outputs/. "
+        "The working directory is the package root. Named inputs are files in SUNMOON_INPUT_DIR. Choose a material text rendition or an accepted step output field from this conversation; step fields are JSON files. Each file is at most 512 KiB, all business inputs at most 2 MiB. Write artifacts under outputs/. "
         "Execution is limited to 30 seconds, 256 MiB and 512 KiB of returned files. Do not assume extra dependencies are installed.",
         "inputSchema": schema,
     }
@@ -30,7 +30,7 @@ def script_tool(asset: dict) -> dict | None:
 def execution_input(asset: dict, arguments: dict, resources: dict[str, bytes]) -> dict:
     detail = asset["detail"]
     return {
-        **ScriptArguments.model_validate(arguments).model_dump(),
+        **ScriptArguments.model_validate(arguments).model_dump(exclude={"inputs"}),
         "files": [
             {
                 "path": f["path"],

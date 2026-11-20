@@ -102,6 +102,7 @@ class Capabilities:
         runtime_url: str = "",
         skill_source: Any = None,
         script_executor: Any = None,
+        script_material_source=None,
         operations: tuple[McpOperation, ...] = (),
         source_licenses=(),
         business_reviews=(),
@@ -130,6 +131,7 @@ class Capabilities:
         self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.script_executor = script_executor
+        self.script_material_source = script_material_source
         self.operations = OperationCatalog(operations)
         from app.domain.workbench.resource_delegation import ResourceDelegationCatalog
 
@@ -2104,6 +2106,62 @@ class Capabilities:
             ):
                 raise CapabilityError("The read scope expired or was revoked")
 
+    async def _start_script(self, owner, call, intent, script_input):
+        from app.application.workbench.script_inputs import (
+            input_manifest,
+            resolve_inputs,
+        )
+
+        call_id = call["id"]
+        await self._check_before_send(owner, call, intent)
+        try:
+            inputs = await resolve_inputs(
+                self.repo, owner, call, self.script_material_source
+            )
+        except WorkbenchError:
+            raise
+        except Exception as exc:
+            raise CapabilityError("Authorized script inputs could not be read") from exc
+        script_input["inputs"] = inputs
+        try:
+            await self.script_executor.prepare(owner, call_id, script_input)
+            await self._check_before_send(owner, call, intent)
+            if inputs:
+                # A slow image pull must not extend a revoked material grant.
+                live = await resolve_inputs(
+                    self.repo, owner, call, self.script_material_source
+                )
+                if live != inputs:
+                    raise CapabilityError(
+                        "Approved script inputs changed while preparing the container"
+                    )
+                async with self.repo.transaction():
+                    await self._check_before_send(owner, call, intent)
+                    await self.repo.append_event(
+                        session_id=call["session_id"],
+                        task_id=call.get("task_id"),
+                        attempt_id=call.get("attempt_id"),
+                        kind="tool",
+                        event_type="capability/script_inputs_prepared",
+                        payload={
+                            "call_id": call_id,
+                            "subject_digest": call["digest"],
+                            "files": input_manifest(inputs),
+                        },
+                    )
+        except Exception as exc:
+            # Prepare sends only a digest. A failed or cancelled reservation has no script bytes.
+            try:
+                await self.script_executor.cancel(owner, call_id)
+            except Exception:
+                pass  # The empty receiver also has a Job deadline and TTL.
+            if isinstance(exc, WorkbenchError):
+                raise
+            raise CapabilityError(
+                "Script input was not delivered to the reserved container"
+            ) from exc
+        await self.script_executor.start(owner, call_id, script_input)
+
     async def _dispatch_call(
         self, owner, call, connection, intent, knowbase_read=None, *, script_input=None
     ):
@@ -2118,7 +2176,7 @@ class Capabilities:
             if intent.get("execution_kind") == "skill_script":
                 if self.script_executor is None or script_input is None:
                     raise CapabilityError("Script execution is unavailable")
-                await self.script_executor.start(owner, call_id, script_input)
+                await self._start_script(owner, call, intent, script_input)
                 # The runner reconciles the asynchronous Job into this same call.
                 return public_call(await self.repo.capability_call(owner, call_id))
             else:
@@ -2179,6 +2237,9 @@ class Capabilities:
             }
         async with self.repo.transaction():
             await self._locked_call_session(owner, call)
+            current = await self.repo.capability_call(owner, call_id, lock=True)
+            if current["status"] != "dispatching":
+                return public_call(current)
             await self.repo.update_call(owner, call_id, status, intent)
             await self.repo.append_event(
                 session_id=call["session_id"],

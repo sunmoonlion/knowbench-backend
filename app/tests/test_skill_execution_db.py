@@ -28,6 +28,9 @@ class Executor:
         self.started, self.cancelled = [], []
         self.receipt = {"state": "running"}
 
+    async def prepare(self, owner, run, body):
+        return {"state": "running"}
+
     async def start(self, owner, run, body):
         self.started.append((owner, run, body))
         return self.receipt

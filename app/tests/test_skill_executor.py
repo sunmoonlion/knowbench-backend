@@ -55,3 +55,38 @@ async def test_stop_requires_confirmed_termination(receipt):
     )
     with pytest.raises(CapabilityError, match="termination is not confirmed"):
         await executor.cancel(str(uuid4()), str(uuid4()))
+
+
+async def test_lost_upload_response_recovers_through_status_without_sending_again():
+    from app.domain.workbench.script_contract_generated import (
+        ScriptExecution,
+        execution_frame,
+    )
+
+    owner, run = str(uuid4()), str(uuid4())
+    calls = []
+    payload = {
+        "path": "main.py",
+        "files": [
+            {"path": name, "sha256": hashlib.sha256(b"").hexdigest(), "data_base64": ""}
+            for name in ("SKILL.md", "main.py")
+        ],
+    }
+    expected, _ = execution_frame(ScriptExecution.model_validate(payload))
+
+    def handler(request):
+        last = request.url.path.rsplit("/", 1)[1]
+        calls.append((request.method, last))
+        if last == "prepare":
+            assert json.loads(request.content) == expected.model_dump()
+        if last == "input":
+            raise httpx.ReadTimeout("response lost after input")
+        return httpx.Response(200, json={"state": "running"})
+
+    executor = SkillExecutor(
+        "http://test", "test-only", transport=httpx.MockTransport(handler)
+    )
+    await executor.prepare(owner, run, payload)
+    assert (await executor.start(owner, run, payload))["state"] == "running"
+    await executor.status(owner, run)
+    assert calls == [("POST", "prepare"), ("PUT", "input"), ("GET", run)]

@@ -393,13 +393,20 @@ API 拥有账号安装记录、不可变包、连接凭据和工具注册；runn
 
 ## 包内脚本执行（候选，需平台组件一起发布）
 
-开关 `WORKBENCH_SKILL_SCRIPTS_ENABLED` 默认关闭。启用前需重建 sandbox 和 provisioner，发布供给器的 Job／pod log RBAC，并通过原生 `platform-check OBJECT=sandbox-platform/provisioner` 的真实集群执行探针。仅更新 KnowBench 镜像不足以启用脚本。API、runner 均需已有供给器 URL 与服务令牌；这些凭据绝不交给脚本。
+开关 `WORKBENCH_SKILL_SCRIPTS_ENABLED` 默认关闭。启用前需重建 sandbox 和 provisioner，发布供给器的 Job（含领取输入所需的 patch）、pods/log 与 pods/attach RBAC，并通过原生 `platform-check OBJECT=sandbox-platform/provisioner` 的真实集群执行探针。仅更新 KnowBench 镜像不足以启用脚本。API、runner 均需已有供给器 URL 与服务令牌；这些凭据绝不交给脚本。
 
 安装资产含 `.py`、`.sh`、`.js`、`.mjs` 或 `.cjs` 时，当前选中范围自动获得该技能的 `skill_run` 工具别名；路径枚举来自固定包文件。模型不能通过参数提交另一份代码或任意宿主命令。读取正文后，模型按技能说明选入口及参数，用户在同一操作卡批准。
 
 执行顺序：API 验证 scope 和包修订 → 持久记录 dispatching → 供给器用调用 ID 提交独立 Kubernetes Job → runner 查询结果并写回原调用账 → 原 tools/call 返回实际结果。Task／Attempt／Interaction 仍是原有账，不新建工作流状态机。聊天／工作和方法步骤共用包与执行接口，方法依然有更严格的冻结范围。
 
-每个账号同一时刻占一个执行位置；Job 使用镜像内 Python 3、Bash、Node，非 root、只读根文件系统、默认 seccomp、丢弃全部 capabilities，不挂模型 key、MCP 凭据、用户 PVC、本地 link 或 ServiceAccount token。输入只含所选技能包、参数和标准输入，通过该 Job 所有的临时 Secret 交付。所有输入卷均为必需项，部分交付不能启动脚本。独立网络策略拒绝全部出入站；不可访问云端元数据、Kubernetes API、其它容器或用户本地项目。
+每个账号同一时刻占一个执行位置；Job 使用镜像内 Python 3、Bash、Node，非 root、只读根文件系统、默认 seccomp、丢弃全部 capabilities，不挂模型 key、MCP 凭据、用户 PVC、本地 link 或 ServiceAccount token。供给器先按调用 ID、帧长和 SHA-256 预留空 Job。容器就绪后，API 再核调用、资料授权及内容。供给器按 Job UID 原子领取一次交付，经 Kubernetes attach 送入完整输入帧。容器校验长度和摘要后才启动脚本。包和资料只进入该容器的临时内存盘。独立网络策略拒绝全部出入站；不可访问云端元数据、Kubernetes API、其它容器或用户本地项目。
+
+具名业务输入由操作卡的 `inputs` 参数列出，最多 8 份，每份 512 KiB，合计 2 MiB。脚本从 `SUNMOON_INPUT_DIR` 指向的目录按文件名读取。调用账保留批准的引用，`capability/script_inputs_prepared` 事件记录准备交付的文件名、字节数和 SHA-256。最终执行状态以 Job 回执为准。
+
+| `kind` | 需要批准的引用 | 交付内容与核权 |
+| --- | --- | --- |
+| `material` | `name`、`material_id`、`version_no`、`reading`，例如 `text/1` | KnowBase 通过原有 `read_input` 按会话或委托核验资料权限。API 核对版本、阅读版和分页，交付完整 UTF-8 正文；超限整份拒绝 |
+| `step_output` | `name`、`task_id`、`artifact`、`version`、`field` | 输出来自已完成的生产 Attempt。方法只读取本委托当前 Attempt 已绑定的版本。聊天可显式批准同一会话内已成功委托的指定输出。交付内容是选中字段的 JSON |
 
 工作目录为包根目录，相对引用保持不变；输出写到 `outputs/`（也由 `SUNMOON_OUTPUT_DIR` 指定）。脚本执行上限 30 秒，Job 含拉取与准备总上限 90 秒，内存 256 MiB、CPU 500m、临时内存盘 32 MiB；stdout/stderr 各保留 64 KiB；最多返回 32 个普通文件、合计 512 KiB，拒绝输出符号链接和特殊文件。结果包含退出码、超时、截断和产物缺失说明，不能把有退出错误的运行当作成功。
 
