@@ -230,11 +230,35 @@ async def script_setup(db, executor=None, *, limit="1", public_review=False):
     return req, factory, conductor, executor
 
 
-async def test_formal_script_charges_root_and_freezes_after_a_real_approval(db):
+async def test_formal_script_charges_root_and_freezes_after_a_real_approval(
+    db, monkeypatch
+):
     req, factory, conductor, executor = await script_setup(db)
     await conductor.advance(str(req.run_id))
     action = await status(db, req, factory)
-    await approve(db, req, factory, action)
+    from types import SimpleNamespace
+    from uuid import UUID
+
+    from app.domain.workbench.capabilities import ActionDecision
+    from app.interfaces.endpoints import capability_routes
+
+    pending = action["actions"][0]
+    monkeypatch.setattr(
+        capability_routes,
+        "method_read_service",
+        lambda s: factory(WorkbenchRepository(s)),
+    )
+    async with db() as session:
+        await capability_routes.decide_call(
+            UUID(pending["call_id"]),
+            ActionDecision(
+                decision="accept",
+                token=pending["token"],
+                subject_digest=pending["subject_digest"],
+            ),
+            SimpleNamespace(actor_id=OWNER),
+            factory(WorkbenchRepository(session, browser_view=True)),
+        )
     async with db() as session:
         svc = factory(WorkbenchRepository(session))
         await svc.reconcile_scripts()

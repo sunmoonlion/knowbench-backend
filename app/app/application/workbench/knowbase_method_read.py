@@ -184,7 +184,12 @@ async def pending_read(svc, owner, call_id):
         context = await formal.approval_context(owner, call, host)
         if not context.knowbase_read:
             raise CapabilityError("This action does not read a KnowBase material")
+        interaction = await svc.repo.get_interaction(str(call["interaction_id"]))
+        expiry = min(
+            [interaction["expires_at"], *(s.expires_at for s in context.scopes or ())]
+        )
         return {
+            "expires_at": expiry,
             "caller": "model"
             if call["detail"]["execution_kind"] == "formal_probe"
             else "host",

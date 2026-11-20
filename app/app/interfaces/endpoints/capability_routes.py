@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Literal
 from urllib.parse import quote
@@ -512,25 +513,26 @@ async def approve_knowbase_read(
         request = await pending_read(svc, _actor(user), call_id)
         if request["subject_digest"] != body.subject_digest:
             raise Forbidden("Consent does not match the displayed method read")
+        expiry = body.expires_at
+        if not datetime.now(UTC) < expiry <= request["expires_at"]:
+            raise Forbidden("Consent expiry exceeds the pending read window")
         token = await user_token()
         client = svc.knowbase_reader.client
-        grant_id = (
-            str(body.grant_id)
-            if isinstance(body, ExistingParentApproval)
-            else await client.method_parent_grant(
+        if isinstance(body, ExistingParentApproval):
+            grant_id = str(body.grant_id)
+        else:
+            grant_id, parent_expiry = await client.method_parent_grant(
                 token,
                 request["read"],
                 body.sha256,
-                body.expires_at,
+                expiry,
             )
-        )
-        await client.consent_method_read(
-            token, grant_id, request["read"], body.expires_at
-        )
+            expiry = min(expiry, parent_expiry)
+        await client.consent_method_read(token, grant_id, request["read"], expiry)
         return {
             "grant_id": grant_id,
             "method_call_id": request["read"]["path"][-1]["call_id"],
-            "expires_at": body.expires_at,
+            "expires_at": expiry,
         }
     except KnowbaseRefused as exc:
         from app.application.errors.exceptions import AppException
@@ -606,6 +608,7 @@ async def decide_call(
             if call["detail"].get("execution_kind") not in (
                 "formal_mcp",
                 "formal_probe",
+                "formal_script",
             ):
                 raise
             return await trial_svc.decide(owner, str(call_id), body)

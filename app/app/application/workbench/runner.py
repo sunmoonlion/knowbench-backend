@@ -219,6 +219,8 @@ class SandboxLink:
         async with self._lock:
             if self.client is not None and self.client.connected:
                 return self.client
+            if self.client is not None:
+                await self.client.close()
             self.live_threads.clear()
             self.search_scopes.clear()
             self.capability_config.clear()
@@ -236,7 +238,11 @@ class SandboxLink:
                 on_notification=self.on_notification,
                 on_server_request=self.on_server_request,
             )
-            await client.connect()
+            try:
+                await client.connect()
+            except BaseException:
+                await client.close()
+                raise
             self.client = client
             log.info(
                 "sandbox link up sandbox=%s url=%s",
@@ -1961,14 +1967,13 @@ class SandboxLink:
         await client.respond(rid, {"decision": codex})
         if codex == "decline" and note and thread_id:
             # 「拒绝，并告诉它怎么改」= decline + turn/steer（approval.md「改得不对」）
-            asyncio.get_running_loop().create_task(
-                self._steer(thread_id, note), name=f"steer:{thread_id}"
-            )
+            await self._steer(client, thread_id, note)
 
-    async def _steer(self, thread_id: str, text: str) -> None:
+    async def _steer(
+        self, client: AppServerConnection, thread_id: str, text: str
+    ) -> None:
         try:
             await asyncio.sleep(0.2)
-            client = await self.ensure_connected()
             await client.request(
                 "turn/steer",
                 {"threadId": thread_id, "input": [{"type": "text", "text": text}]},
@@ -2239,20 +2244,30 @@ class Runner:
 
     async def run_forever(self) -> None:
         log.info("workbench runner starting id=%s", self.runner_id)
-        while not self._stop.is_set():
-            try:
-                n = await self.run_once()
-            except Exception:  # noqa: BLE001
-                log.exception("runner iteration failed")
-                n = 0
-            if n == 0:
+        try:
+            while not self._stop.is_set():
                 try:
-                    await asyncio.wait_for(self._stop.wait(), timeout=self.poll_seconds)
-                except TimeoutError:
-                    pass
+                    n = await self.run_once()
+                except Exception:  # noqa: BLE001
+                    log.exception("runner iteration failed")
+                    n = 0
+                if n == 0:
+                    try:
+                        await asyncio.wait_for(
+                            self._stop.wait(), timeout=self.poll_seconds
+                        )
+                    except TimeoutError:
+                        pass
+        finally:
+            await self._shutdown()
+
+    async def _shutdown(self) -> None:
+        running = list(self.driving.values())
         if self.script_receipts:
-            self.script_receipts.cancel()
-            await asyncio.gather(self.script_receipts, return_exceptions=True)
+            running.append(self.script_receipts)
+        for task in running:
+            task.cancel()
+        await asyncio.gather(*running, return_exceptions=True)
         for link in self.links.values():
             if link.client:
                 await link.client.close()

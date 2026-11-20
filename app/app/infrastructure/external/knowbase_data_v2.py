@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -309,7 +310,7 @@ class KnowbaseDataV2(KnowbaseClient):
             token,
             json={"read": read, "sha256": sha256, "expires_at": expires_at.isoformat()},
         )
-        return grant["grant_id"]
+        return grant["grant_id"], datetime.fromisoformat(grant["expires_at"])
 
     async def consent_method_read(self, token, grant_id, read, expires_at):
         await self._send(

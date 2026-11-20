@@ -71,6 +71,7 @@ class AppServerClient:
         ] = {}
         self._next_id = 1
         self._reader: asyncio.Task | None = None
+        self._handlers: set[asyncio.Task] = set()
         self.closed = asyncio.Event()
         self.closed.set()
         self.server_info: dict[str, Any] = {}
@@ -111,6 +112,10 @@ class AppServerClient:
                 await self._ws.close()
             except Exception:  # noqa: BLE001
                 pass
+        if self._reader is not None:
+            if not self.closed.is_set():
+                self._reader.cancel()
+            await asyncio.gather(self._reader, return_exceptions=True)
         self._finish_closed()
 
     def _finish_closed(self) -> None:
@@ -130,11 +135,13 @@ class AppServerClient:
                     log.warning("app-server sent non-JSON frame")
                     continue
                 if "id" in msg and "method" in msg:
-                    asyncio.create_task(
+                    handler = asyncio.create_task(
                         self._safe_server_request(
                             msg["id"], msg["method"], msg.get("params") or {}
                         )
                     )
+                    self._handlers.add(handler)
+                    handler.add_done_callback(self._handlers.discard)
                 elif "id" in msg:
                     pending = self._pending.pop(msg["id"], None)
                     if pending is None:
@@ -167,6 +174,10 @@ class AppServerClient:
             log.exception("app-server reader crashed")
         finally:
             self._finish_closed()
+            handlers = tuple(self._handlers)
+            for handler in handlers:
+                handler.cancel()
+            await asyncio.gather(*handlers, return_exceptions=True)
 
     async def _safe_server_request(
         self, rid: Any, method: str, params: dict[str, Any]
@@ -175,7 +186,10 @@ class AppServerClient:
             await self._on_server_request(rid, method, params)
         except Exception as exc:  # noqa: BLE001
             log.exception("server request handler failed method=%s", method)
-            await self.respond_error(rid, -32603, f"handler failed: {exc}")
+            try:
+                await self.respond_error(rid, -32603, f"handler failed: {exc}")
+            except websockets.ConnectionClosed:
+                pass
 
     async def request(
         self,

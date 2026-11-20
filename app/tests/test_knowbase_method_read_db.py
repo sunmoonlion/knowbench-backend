@@ -70,7 +70,9 @@ class DataPeer:
         assert (
             token == "owner-token" and sha256 == hashlib.sha256(b"verified").hexdigest()
         )
-        return self.grant_id
+        key = (read["task_id"], read["material_id"], read["version_no"])
+        self.parent_limits = getattr(self, "parent_limits", {})
+        return self.grant_id, self.parent_limits.setdefault(key, expires_at)
 
     async def consent_method_read(self, token, grant_id, read, expires_at):
         assert token == "owner-token" and grant_id == self.grant_id
@@ -386,6 +388,52 @@ async def run_host_tree(db, ctx, peer):
             )
         if depth < 3:
             ctx.request = wrap(ctx.request, previous)
+        if depth == 1:
+            await check_two_readers(db, ctx)
+
+
+async def check_two_readers(db, ctx):
+    from app.application.errors.exceptions import AppException
+
+    doc = ctx.request.model_dump(mode="json", by_alias=True)
+    doc.update(run_id=str(uuid4()), method_id=str(uuid4()))
+    graph = doc["draft"]["definition"]["procedure"]
+    second = deepcopy(graph["steps"][0])
+    second.update(id="recheck", depends_on=["read"])
+    graph["steps"].append(second)
+    for output in graph["exports"].values():
+        output["step"] = "recheck"
+    expr = SimpleNamespace(
+        **{**vars(ctx), "request": FormalMethodExecutionRequest.model_validate(doc)}
+    )
+    await accept_request(db, expr)
+    receipts = []
+    for _ in graph["steps"]:
+        pending = await advance(db, expr)
+        action = pending["actions"][0]
+        call_id = UUID(action["call_id"])
+        async with db() as session:
+            svc = expr.factory(WorkbenchRepository(session))
+            shown = await pending_read(svc, OWNER, call_id)
+            consent = pinned_approval(action["subject_digest"])
+            late = consent.model_copy(
+                update={"expires_at": shown["expires_at"] + timedelta(seconds=1)}
+            )
+            with pytest.raises(AppException) as refused:
+                await approve_knowbase_read(
+                    call_id, late, SimpleNamespace(actor_id=OWNER), owner_token, svc
+                )
+            assert refused.value.status_code == 403
+            receipts.append(
+                await approve_knowbase_read(
+                    call_id, consent, SimpleNamespace(actor_id=OWNER), owner_token, svc
+                )
+            )
+        await approve(db, expr.request, expr.factory, pending)
+    assert receipts[0]["grant_id"] == receipts[1]["grant_id"]
+    assert receipts[0]["method_call_id"] != receipts[1]["method_call_id"]
+    assert receipts[0]["expires_at"] == receipts[1]["expires_at"]
+    assert (await advance(db, expr))["status"] == "passed"
 
 
 async def run_host_denial(db, ctx, peer, mode):

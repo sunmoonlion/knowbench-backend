@@ -2291,3 +2291,49 @@ async def test_codex_question_becomes_a_card_and_the_answer_goes_back(db):
                 await link.client.close()
     finally:
         await fake.close()
+
+
+async def test_shutdown_joins_active_writers_before_releasing_lease(db, monkeypatch):
+    server = FakeAppServer()
+    await server.start()
+    try:
+        _, sandbox, _ = await seed(db, server)
+        runner = build_runner(
+            db, publisher=RedisPublisher(None, "t"), runner_id="shutdown"
+        )
+        await runner.run_once()
+        client = runner.links[sandbox].client
+        started = {name: asyncio.Event() for name in ("request", "drive")}
+        stopped = set()
+
+        async def writer(name):
+            started[name].set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                await asyncio.sleep(0)
+                stopped.add(name)
+
+        async def request_handler(*_):
+            await writer("request")
+
+        monkeypatch.setattr(client, "_on_server_request", request_handler)
+        runner.driving["in-flight"] = asyncio.create_task(writer("drive"))
+        (ws,) = server.server.connections
+        await ws.send(json.dumps({"id": 999, "method": "test/pending", "params": {}}))
+        async with asyncio.timeout(5):
+            await asyncio.gather(*(event.wait() for event in started.values()))
+        release = WorkbenchRepository.release_leases
+
+        async def release_after_writers(repo, *, runner_id):
+            assert stopped == {"request", "drive"}
+            assert client._reader.done()
+            await release(repo, runner_id=runner_id)
+
+        monkeypatch.setattr(
+            WorkbenchRepository, "release_leases", release_after_writers
+        )
+        runner.stop()
+        await runner.run_forever()
+    finally:
+        await server.close()
