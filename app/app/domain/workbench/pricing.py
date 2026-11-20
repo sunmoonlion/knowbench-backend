@@ -103,6 +103,47 @@ class Usage:
             _count(noted.get("output")),
         )
 
+    @classmethod
+    def from_responses(cls, usage: dict) -> Usage:
+        """Complete Responses usage for a hard-budget request; reject unknown billing."""
+
+        def count(value):
+            if type(value) is not int or value < 0:
+                raise ValueError("Invalid provider token count")
+            return value
+
+        if not isinstance(usage, dict) or set(usage) - {
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "input_tokens_details",
+            "output_tokens_details",
+        }:
+            raise ValueError("Unsupported provider metering fields")
+        input_tokens = count(usage.get("input_tokens"))
+        output_tokens = count(usage.get("output_tokens"))
+        if count(usage.get("total_tokens")) != input_tokens + output_tokens:
+            raise ValueError("Inconsistent provider token total")
+        inputs, outputs = (
+            usage.get("input_tokens_details", {}),
+            usage.get("output_tokens_details", {}),
+        )
+        if (
+            not isinstance(inputs, dict)
+            or not isinstance(outputs, dict)
+            or set(inputs) - {"cached_tokens", "cache_write_tokens"}
+            or set(outputs) - {"reasoning_tokens"}
+        ):
+            raise ValueError("Unsupported provider token detail")
+        cached = count(inputs.get("cached_tokens", 0))
+        written = count(inputs.get("cache_write_tokens", 0))
+        if (
+            cached + written > input_tokens
+            or count(outputs.get("reasoning_tokens", 0)) > output_tokens
+        ):
+            raise ValueError("Provider detail exceeds token total")
+        return cls(input_tokens - cached - written, cached, written, output_tokens)
+
     def as_json(self) -> dict[str, int]:
         return {
             "input": self.input,

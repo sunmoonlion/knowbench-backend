@@ -1,12 +1,14 @@
 """Isolated Codex instruction rehearsal. Only synthetic data and loopback providers."""
 
+import importlib
 import json
 import os
 import signal
 import subprocess
 import sys
 import threading
-from http.server import HTTPServer
+from http.client import HTTPConnection
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from uuid import uuid4
 
@@ -65,6 +67,85 @@ class InstructionProvider(Handler):
         return item
 
 
+class RelayServer(HTTPServer):
+    fixture: TrialServer
+    turn: str
+    turn_ready: threading.Event
+    credential_id: str
+
+
+class MeteredRelay(BaseHTTPRequestHandler):
+    """Two separate loopback sockets. Only a committed host claim reaches the fixture."""
+
+    server: RelayServer
+
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        if self.path != "/v1/responses" or not self.server.turn_ready.wait(10):
+            self.send_error(403)
+            return
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        forward = importlib.import_module("instruction_responses").forward
+
+        def claim(raw, credential_id):
+            print(
+                json.dumps(
+                    {
+                        "claim": raw,
+                        "credential_id": credential_id,
+                        "turn": self.server.turn,
+                    }
+                ),
+                flush=True,
+            )
+            decision = json.loads(sys.stdin.readline())
+            if "outgoing" not in decision:
+                raise PermissionError()
+            return decision["url"], decision["outgoing"]
+
+        def receipt(response_id, usage):
+            print(
+                json.dumps(
+                    {
+                        "receipt": {"id": response_id, "usage": usage},
+                        "turn": self.server.turn,
+                    }
+                ),
+                flush=True,
+            )
+            assert json.loads(sys.stdin.readline()) == {"recorded": True}
+
+        def start():
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+
+        # The fixture substitutes loopback for the configured TLS socket.
+        def connect(host, port, *, timeout):
+            assert (host, port) == ("instruction.example.test", 443)
+            return HTTPConnection(
+                "127.0.0.1", self.server.fixture.server_port, timeout=timeout
+            )
+
+        try:
+            forward(
+                body,
+                endpoint="https://instruction.example.test/v1/responses",
+                credential_id=self.server.credential_id,
+                api_key=None,
+                claim=claim,
+                receipt=receipt,
+                start=start,
+                write=self.wfile.write,
+                connect=connect,
+            )
+        except PermissionError:
+            self.server.fixture.refused += 1
+            self.send_error(403, "Request has no dispatch permission")
+
+
 def main():
     assert Path("/.dockerenv").exists() and {
         p.name for p in Path("/sys/class/net").iterdir()
@@ -73,13 +154,22 @@ def main():
         subprocess.check_output(["codex", "--version"], text=True).strip()
         == "codex-cli 0.170.0"
     )
-    job = json.load(sys.stdin)
+    metered = "--host-meter" in sys.argv
+    job = json.loads(sys.stdin.readline()) if metered else json.load(sys.stdin)
     home = Path(os.environ["CODEX_HOME"])
     home.mkdir()
     cwd = Path("/tmp/instruction-work")
     cwd.mkdir()
     server = TrialServer(("127.0.0.1", 0), InstructionProvider)
     threading.Thread(target=server.serve_forever, daemon=True).start()
+    relay = None
+    if metered:
+        relay = RelayServer(("127.0.0.1", 0), MeteredRelay)
+        relay.fixture = server
+        relay.credential_id = job["credential_id"]
+        relay.turn_ready = threading.Event()
+        threading.Thread(target=relay.serve_forever, daemon=True).start()
+    port = (relay or server).server_port
     (home / "config.toml").write_text(f"""
 model = "instruction-test"
 model_provider = "local"
@@ -96,7 +186,7 @@ view_image = false
 default_mode_request_user_input = false
 [model_providers.local]
 name = "local fixture"
-base_url = "http://127.0.0.1:{server.server_port}/v1"
+base_url = "http://127.0.0.1:{port}/v1"
 wire_api = "responses"
 supports_websockets = false
 requires_openai_auth = false
@@ -115,7 +205,12 @@ stream_max_retries = 0
             client.initialize("instruction-test")
             runs = []
             old_markers = []
-            for scenario in ("valid", "invalid_output", "question", "question_bounded"):
+            scenarios = (
+                ("question_bounded",)
+                if metered
+                else ("valid", "invalid_output", "question", "question_bounded")
+            )
+            for scenario in scenarios:
                 marker = uuid4().hex
                 workspace = cwd / scenario
                 workspace.mkdir()
@@ -127,7 +222,7 @@ stream_max_retries = 0
                     "summary": "ready" if scenario != "invalid_output" else 7
                 }
                 server.ask = scenario.startswith("question")
-                server.limit_one = scenario != "question"
+                server.limit_one = not metered and scenario != "question"
                 server.refused = 0
                 opened = client.call(
                     "thread/start",
@@ -167,6 +262,9 @@ stream_max_retries = 0
                     "outputSchema": job["output_schema"],
                 }
                 turn = client.call("turn/start", params)["turn"]["id"]
+                if relay:
+                    relay.turn = turn
+                    relay.turn_ready.set()
                 while True:
                     events = [
                         n
@@ -234,6 +332,9 @@ stream_max_retries = 0
             print(json.dumps(runs))
         finally:
             proc.terminate()
+            if relay:
+                relay.shutdown()
+                relay.server_close()
             server.shutdown()
             server.server_close()
 

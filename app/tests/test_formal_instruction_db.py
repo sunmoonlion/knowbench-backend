@@ -22,6 +22,7 @@ from app.domain.workbench.formal_execution import validate_values
 from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodValidationRequest,
 )
+from app.domain.workbench.instruction_requests import instruction_job
 from app.domain.workbench.pricing import Price, cost_of, usage_of
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
@@ -127,19 +128,7 @@ async def test_real_single_turn_instruction_on_isolated_codex(db):
             "author", req.run_id, ARGS, caller="knowlab"
         )
     step = retained.draft.definition.procedure
-    job = {
-        "input": {
-            "skill": instructions,
-            "instructions": step.instructions,
-            "arguments": ARGS,
-        },
-        "output_schema": {
-            "type": "object",
-            "properties": {k: v.schema_ for k, v in step.outputs.items()},
-            "required": [k for k, v in step.outputs.items() if v.required],
-            "additionalProperties": False,
-        },
-    }
+    job = instruction_job(retained, instructions, ARGS)
     proc = await asyncio.create_subprocess_exec(
         "docker",
         "run",

@@ -126,8 +126,10 @@ class WorkbenchRepository(
         self._depth = 0
 
     @asynccontextmanager
-    async def transaction(self):
+    async def transaction(self, *, independent: bool = False):
         outer = self._depth == 0
+        if independent and not outer:
+            raise RuntimeError("This operation must commit before returning")
         self._depth += 1
         try:
             yield
@@ -2770,11 +2772,23 @@ class WorkbenchRepository(
             {"s": status, "id": sandbox_id},
         )
 
+    async def model_request_credential(self, owner: str) -> dict[str, Any] | None:
+        # Lock against revocation until the request claim commits. Model secrets
+        # stay in the sandbox and are never needed for a metering decision.
+        result = await self.session.execute(
+            text("""select id, provider, sandbox_id, base_url from workbench_credentials
+                    where owner_actor_id=:owner and status='active'
+                    order by created_at desc, id desc limit 1 for share"""),
+            {"owner": owner},
+        )
+        row = result.mappings().first()
+        return dict(row) if row else None
+
     async def active_credential(self, owner_actor_id: str) -> dict[str, Any] | None:
         r = await self.session.execute(
             text(
                 """select id, provider, ciphertext, hint, base_url from workbench_credentials
-                   where owner_actor_id = :o and status = 'active' order by created_at desc limit 1"""
+                   where owner_actor_id = :o and status = 'active' order by created_at desc, id desc limit 1"""
             ),
             {"o": owner_actor_id},
         )

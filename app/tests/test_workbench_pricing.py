@@ -188,3 +188,27 @@ def test_usage_since():
     assert Usage(5, 0, 0, 0).since(Usage(6, 0, 0, 0)) is None
     assert Usage.from_json({"input": 3, "output": 2, "total": 5}) == Usage(3, 0, 0, 2)
     assert Usage.from_json(None) is None
+
+
+def test_complete_responses_usage_accounts_for_cache_and_reasoning_once():
+    meter = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "total_tokens": 15,
+        "input_tokens_details": {"cached_tokens": 3, "cache_write_tokens": 2},
+        "output_tokens_details": {"reasoning_tokens": 4},
+    }
+    assert Usage.from_responses(meter) == Usage(5, 3, 2, 5)
+    for changes in (
+        {"total_tokens": 14},
+        {"input_tokens": True},
+        {"output_tokens": -1},
+        {"input_tokens_details": {"cached_tokens": 11}},
+        {"output_tokens_details": {"reasoning_tokens": 6}},
+        {"input_tokens_details": {"audio_tokens": 2}},
+        {"input_tokens_details": None},
+    ):
+        with pytest.raises(ValueError):
+            Usage.from_responses(meter | changes)
+    with pytest.raises(ValueError):
+        Usage.from_responses({})

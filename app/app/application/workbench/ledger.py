@@ -921,6 +921,10 @@ class Ledger:
                     "Pending usage attempt belongs to another task"
                 )
             refs = dict(attempt.get("refs") or {})
+            if refs.get("instruction_quote"):
+                raise IdempotencyConflict(
+                    "Instruction metering requires its final provider receipt"
+                )
             pending = refs.get("usage_pending")
             if not pending:
                 return
@@ -1009,9 +1013,22 @@ class Ledger:
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
             if str(attempt["task_id"]) != task_id:
                 raise IdempotencyConflict("late cost attempt belongs to another task")
+            refs = attempt.get("refs") or {}
+            if refs.get("instruction_quote"):
+                bill = refs.get("instruction_usage")
+                if (
+                    not bill
+                    or not_started
+                    or turn_id != bill["turn_id"]
+                    or consumed != Decimal(bill["amount"])
+                    or tokens != bill["tokens"]
+                    or attempt["status"] not in ATTEMPT_TERMINAL
+                ):
+                    raise IdempotencyConflict(
+                        "Instruction cost requires its final provider receipt"
+                    )
             if turn_id and turn_id in (attempt.get("turn_ids") or []):
                 return  # 这一轮已经记过：同一笔花费只记一次（重复回报、重试）
-            refs = dict(attempt.get("refs") or {})
             pending = refs.get("usage_pending")
             if (
                 pending
@@ -1217,6 +1234,29 @@ class Ledger:
             task = await self.repo.get_task(str(peek["task_id"]), for_update=True)
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
             validate_attempt_transition(attempt["status"], target)
+            refs = attempt.get("refs") or {}
+            if refs.get("instruction_quote") and not refs.get("instruction_request"):
+                if consumed or tokens is not None or target == AttemptState.COMPLETED:
+                    raise IdempotencyConflict(
+                        "Instruction request has not been dispatched"
+                    )
+                usage_pending, pending_cost = False, None
+            if refs.get("instruction_request"):
+                if consumed or tokens is not None:
+                    raise IdempotencyConflict(
+                        "Instruction cost requires its provider receipt"
+                    )
+                if target in ATTEMPT_TERMINAL:
+                    turn_id = refs["instruction_request"]["turn_id"]
+                    bill = refs.get("instruction_usage")
+                    if target == AttemptState.COMPLETED and bill is None:
+                        raise IdempotencyConflict(
+                            "Instruction has no final provider usage"
+                        )
+                    usage_pending = bill is None
+                    pending_cost = None
+                    if bill is not None:
+                        consumed, tokens = Decimal(bill["amount"]), bill["tokens"]
             fields: dict[str, Any] = {"status": target}
             if turn_id and not usage_pending:
                 fields["turn_ids"] = [*attempt["turn_ids"], turn_id]
@@ -1230,7 +1270,9 @@ class Ledger:
                     fields["output_artifacts"] = output_artifacts
             budget = _budget(task)
             task_fields: dict[str, Any] = {}
-            if consumed:
+            if consumed or (
+                target in ATTEMPT_TERMINAL and refs.get("instruction_usage")
+            ):
                 reserved = max(
                     Decimal("0"),
                     Decimal(str(attempt["budget_allocated"].get("amount", "0")))
