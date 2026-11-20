@@ -55,7 +55,6 @@ from app.domain.workbench.capability_contract import (
 from app.domain.workbench.connection_oauth import OAuthStart
 from app.domain.workbench.errors import Forbidden, TestManagedInKnowlab, WorkbenchError
 from app.domain.workbench.formal_method_calls import (
-    FormalMethodCallRequest,
     FormalMethodCatalogResponse,
     FormalMethodInvocation,
     FormalMethodInvocations,
@@ -113,24 +112,6 @@ async def available_formal_methods(
     response.headers["Cache-Control"] = "private, no-store"
     try:
         return await svc.catalog(_actor(user), str(session_id), caller=caller)
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-
-
-@router.post(
-    "/workbench/sessions/{session_id}/formal-method-calls",
-    response_model=FormalMethodInvocation,
-)
-async def request_formal_method(
-    session_id: UUID,
-    body: FormalMethodCallRequest,
-    response: Response,
-    user: Principal = Depends(get_web_current_user),
-    svc=Depends(formal_service),
-):
-    response.headers["Cache-Control"] = "private, no-store"
-    try:
-        return await svc.request(_actor(user), str(session_id), body)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 
