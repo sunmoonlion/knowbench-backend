@@ -240,7 +240,7 @@ async def collect_script(db, factory):
             await asyncio.sleep(0.2)
 
 
-async def mixed_expert(db, behavior, executor=None):
+async def mixed_expert(db, behavior, executor=None, *, shared_connector=None):
     from formal_plan_support import EchoRemote
     from test_capabilities_db import SCHEMA, URL, body
     from test_formal_host_calls_db import FORMAL_OPERATION
@@ -255,15 +255,18 @@ async def mixed_expert(db, behavior, executor=None):
         script_record = license_record(
             next(asset for asset in assets if asset["kind"] == "skill_script")
         )
-        remote = EchoRemote()
+        remote = shared_connector or EchoRemote()
         lookup = {
             "name": "lookup",
             "description": "Read one synthetic record",
             "inputSchema": SCHEMA,
         }
-        remote.tools = [lookup]
         source_url = "https://records.example.test/mcp"
-        remote.allowed_urls = (URL, source_url)
+        if shared_connector is None:
+            remote.tools = [lookup]
+            remote.allowed_urls = (URL, source_url)
+        else:
+            source_url = URL
         read_policy = FORMAL_OPERATION.model_copy(
             update={
                 "service_url": source_url,
@@ -276,11 +279,29 @@ async def mixed_expert(db, behavior, executor=None):
                 "capability_ref": "synthetic-records",
             }
         )
+        if shared_connector is not None:
+            read_policy = read_policy.model_copy(
+                update={
+                    "read_result_id_field": "receipt",
+                    "read_result_fields": ("receipt",),
+                }
+            )
         operations = (FORMAL_OPERATION, read_policy)
         svc = Capabilities(repo, remote, CIPHER, operations=operations)
-        await svc.create_connection(
-            OWNER, body(key="read-connection").model_copy(update={"url": source_url})
-        )
+        if shared_connector is None:
+            await svc.create_connection(
+                OWNER,
+                body(key="read-connection").model_copy(update={"url": source_url}),
+            )
+        else:
+            from app.domain.workbench.capabilities import AssetAction
+
+            original = next(asset for asset in assets if asset["entry"] == "send")
+            await svc.action(
+                OWNER,
+                original["asset_id"],
+                AssetAction(revision=original["asset_revision"], action="refresh"),
+            )
         sources = (await svc.formal_sources.sources("author"))["items"]
         source_read = next(a for a in sources if a["entry"] == "lookup")
         source_send = next(a for a in sources if a["entry"] == "send")
@@ -514,6 +535,10 @@ async def mixed_expert(db, behavior, executor=None):
                     (x.reference.method_id, x.reference.version): x for x in leaves
                 },
             )
+
+        if shared_connector is not None:
+            assert source_read["asset_id"] == source_send["asset_id"]
+            return source_send["asset_id"], operations, result["cases"][0]["task_id"]
 
 
 @pytest.mark.parametrize(
