@@ -191,7 +191,9 @@ async def script_setup(db, executor=None, *, limit="1"):
             CIPHER,
             operations=(OPERATION,),
             script_executor=executor,
-            script_tariff=TARIFF,
+            script_tariff=TARIFF.model_copy(update={"provisioner_url": executor.url})
+            if isinstance(executor, SkillExecutor)
+            else TARIFF,
             source_licenses=(record,),
         )
 
@@ -295,7 +297,9 @@ async def mixed_expert(db, behavior, executor=None):
             CIPHER,
             operations=operations,
             script_executor=executor,
-            script_tariff=TARIFF,
+            script_tariff=TARIFF.model_copy(update={"provisioner_url": executor.url})
+            if isinstance(executor, SkillExecutor)
+            else TARIFF,
             source_licenses=records,
         )
 
@@ -598,3 +602,52 @@ async def test_script_budget_failure_paths(db, failure):
     await settle(conductor, req)
     res = await status(db, req, factory)
     assert res["status"] == "failed" and Decimal(res["spent"]) == cost
+
+
+@pytest.mark.skipif(
+    not os.environ.get("SCRIPT_TEST_PROVISIONER_URL"),
+    reason="requires local isolated provisioner",
+)
+@pytest.mark.parametrize("terminate", ["cancel", "failure"])
+async def test_real_container_settlement_after_start(db, monkeypatch, terminate):
+    executor = SkillExecutor(
+        os.environ["SCRIPT_TEST_PROVISIONER_URL"],
+        os.environ["SCRIPT_TEST_PROVISIONER_TOKEN"],
+    )
+    code = (
+        "import time\ntime.sleep(25)"
+        if terminate == "cancel"
+        else "import time\ntime.sleep(2)\nraise RuntimeError('synthetic failure')"
+    )
+    monkeypatch.setitem(globals(), "SOURCE", code)
+    req, factory, conductor, _ = await script_setup(db, executor)
+    await conductor.advance(str(req.run_id))
+    action = await status(db, req, factory)
+    cid = action["actions"][0]["call_id"]
+    await approve(db, req, factory, action)
+    if terminate == "cancel":
+        await asyncio.sleep(1)
+        async with db() as session:
+            await factory(WorkbenchRepository(session)).cancel_script(OWNER, cid)
+    await collect_script(db, factory)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        assert (await repo.capability_call(OWNER, cid))["status"] == "failed"
+        entries = await repo.script_budget_entries(cid)
+        charged = entries["consume"]
+        seconds = Decimal(charged["script_evidence"]["seconds"])
+        assert seconds > 0 and (terminate != "cancel" or seconds < 25)
+        assert charged["amount"] == seconds * TARIFF.per_container_second
+        assert (
+            entries["release"]["amount"] + charged["amount"]
+            == entries["reserve"]["amount"]
+        )
+        assert (await executor.status(OWNER, cid))["state"] == "absent"
+        print(
+            f"{terminate}: {seconds} container seconds, {charged['amount']} CNY on the root task"
+        )
+    await settle(conductor, req)
+    result = await status(db, req, factory)
+    assert (
+        result["status"] == "failed" and Decimal(result["spent"]) == charged["amount"]
+    )
