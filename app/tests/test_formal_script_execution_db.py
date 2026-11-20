@@ -678,3 +678,54 @@ async def test_real_container_settlement_after_start(db, monkeypatch, terminate)
     assert (
         result["status"] == "failed" and Decimal(result["spent"]) == charged["amount"]
     )
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_stop_waits_for_usage_and_recovers_job_cleanup(db, missing):
+    from unittest.mock import AsyncMock
+
+    executor = Executor()
+    executor.cancel = AsyncMock(side_effect=[TimeoutError(), None])
+    req, factory, conductor, _ = await script_setup(db, executor)
+    await conductor.advance(str(req.run_id))
+    action = await status(db, req, factory)
+    cid = action["actions"][0]["call_id"]
+    await approve(db, req, factory, action)
+    final = executor.receipts[cid]
+    executor.receipts[cid] = {"state": "running"}
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = factory(repo)
+        await svc.cancel_script(OWNER, cid)
+        await svc.reconcile_scripts()
+        assert (await repo.capability_call(OWNER, cid))["status"] == "dispatching"
+        if missing:
+            executor.receipts[cid] = {"state": "absent"}
+            await svc.reconcile_scripts()
+            assert (await repo.capability_call(OWNER, cid))["status"] == "unknown"
+        assert set(await repo.script_budget_entries(cid)) == {"reserve"}
+    executor.receipts[cid] = final
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        await factory(repo).reconcile_scripts()
+        retained = await repo.capability_call(OWNER, cid)
+        assert retained["status"] == ("unknown" if missing else "failed")
+        assert retained["detail"]["script_cleanup_pending"]
+        assert (await repo.script_budget_entries(cid))["consume"]["amount"] == Decimal(
+            "0.04"
+        )
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = factory(repo)
+        await svc.reconcile_scripts()
+        await svc.reconcile_scripts()
+        assert not await repo.pending_metered_scripts()
+        events = await repo.list_events(session_id=retained["session_id"])
+        completed = [
+            e
+            for e in events
+            if e["type"] == "capability/action_completed"
+            and e["payload"]["call_id"] == cid
+        ]
+        assert len(completed) == 1
+        assert len(executor.calls) == 1 and executor.cancel.await_count == 2

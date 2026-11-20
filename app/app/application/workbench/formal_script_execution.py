@@ -100,45 +100,41 @@ async def reconcile(svc):
 async def _collect(svc, call):
     owner, cid, intent = call["owner_actor_id"], call["id"], call["detail"]
     executor = svc.script_executor
-    receipt = await executor.status(owner, cid)
+    if intent.get("script_cleanup_pending"):
+        await _release_job(svc, owner, cid)
+        return
+    delayed = datetime.now(UTC) - call["updated_at"] > timedelta(minutes=2)
+    try:
+        receipt = await executor.status(owner, cid)
+    except Exception:
+        if delayed:
+            await _missing_receipt(svc, call)
+        raise
     authorized = call["status"] == "dispatching"
     if authorized:
         try:
             await svc._check_before_send(owner, call, intent)
         except WorkbenchError:
             authorized = False
-    delayed = datetime.now(UTC) - call["updated_at"] > timedelta(minutes=2)
     if receipt["state"] in ("running", "absent"):
+        if delayed or (receipt["state"] == "absent" and not authorized):
+            await _missing_receipt(svc, call)
         if receipt["state"] == "running" and (not authorized or delayed):
             await executor.stop_metered(owner, cid)
-        if (delayed or not authorized) and not (intent.get("result") or {}).get(
-            "stop_requested"
-        ):
-            async with svc.repo.transaction():
-                current = await svc.repo.capability_call(owner, cid, lock=True)
-                if current["status"] == "dispatching":
-                    await svc.repo.update_call(
-                        owner,
-                        cid,
-                        "unknown" if authorized else "failed",
-                        {
-                            **intent,
-                            "result": {
-                                "isError": True,
-                                "message": "Script receipt pending reconciliation"
-                                if authorized
-                                else "Script execution authority ended",
-                            },
-                        },
-                    )
         return
-    meter = await executor.container_meter(owner, cid)
+    try:
+        meter = await executor.container_meter(owner, cid)
+    except Exception:
+        if delayed:
+            await _missing_receipt(svc, call)
+        raise
     amount, evidence = rated_usage(intent["script_quote"], cid, meter)
     async with svc.repo.transaction():
-        await svc.repo.get_task(
-            str(call["task_id"]), owner_actor_id=owner, for_update=True
-        )
+        await svc._locked_call_session(owner, call)
         current = await svc.repo.capability_call(owner, cid, lock=True)
+        if "consume" in await svc.repo.script_budget_entries(cid):
+            return
+        intent = current["detail"]
         if current["status"] == "dispatching":
             try:
                 await svc._check_before_send(owner, current, intent)
@@ -163,7 +159,7 @@ async def _collect(svc, call):
                     "isError": result["exit_code"] != 0 or result["timed_out"],
                 }
             status = "failed" if result["isError"] else "succeeded"
-            await svc.repo.update_call(owner, cid, status, {**intent, "result": result})
+            intent = {**intent, "result": result}
             await svc.repo.append_event(
                 session_id=call["session_id"],
                 task_id=call["task_id"],
@@ -172,4 +168,55 @@ async def _collect(svc, call):
                 event_type="capability/action_completed",
                 payload={"call_id": cid, "status": status, "script_cost": str(amount)},
             )
-    await executor.cancel(owner, cid)
+        else:
+            status = current["status"]
+            await svc.repo.append_event(
+                session_id=call["session_id"],
+                task_id=call["task_id"],
+                attempt_id=call["attempt_id"],
+                kind="tool",
+                event_type="capability/script_cost_settled",
+                payload={"call_id": cid, "status": status, "script_cost": str(amount)},
+            )
+        await svc.repo.update_call(
+            owner, cid, status, {**intent, "script_cleanup_pending": True}
+        )
+    await _release_job(svc, owner, cid)
+
+
+async def _missing_receipt(svc, call):
+    owner, cid = call["owner_actor_id"], call["id"]
+    async with svc.repo.transaction():
+        await svc._locked_call_session(owner, call)
+        current = await svc.repo.capability_call(owner, cid, lock=True)
+        if current["status"] != "dispatching" or current["detail"] != call["detail"]:
+            return
+        await svc.repo.update_call(
+            owner,
+            cid,
+            "unknown",
+            {
+                **current["detail"],
+                "result": {
+                    "isError": True,
+                    "message": "Script receipt pending reconciliation",
+                },
+            },
+        )
+        await svc.repo.append_event(
+            session_id=call["session_id"],
+            task_id=call["task_id"],
+            attempt_id=call["attempt_id"],
+            kind="tool",
+            event_type="capability/action_completed",
+            payload={"call_id": cid, "status": "unknown"},
+        )
+
+
+async def _release_job(svc, owner, cid):
+    await svc.script_executor.cancel(owner, cid)
+    async with svc.repo.transaction():
+        current = await svc.repo.capability_call(owner, cid, lock=True)
+        detail = dict(current["detail"])
+        if detail.pop("script_cleanup_pending", False):
+            await svc.repo.update_call(owner, cid, current["status"], detail)

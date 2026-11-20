@@ -70,6 +70,7 @@ def public_call(call: dict) -> dict:
     ):
         copy.pop(key, None)
     for key in (
+        "script_cleanup_pending",
         "read_offer_key",
         "read_offer_until",
         "read_approval_id",

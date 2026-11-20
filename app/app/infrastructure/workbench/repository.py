@@ -2195,14 +2195,16 @@ class WorkbenchRepository(
                 text("""SELECT EXISTS (
                     SELECT 1 FROM workbench_test_cases c
                     JOIN workbench_budget_ledger h ON h.task_id=c.task_id
-                    WHERE c.run_id=:r AND h.script_call_id IS NOT NULL AND h.entry='reserve'
-                    AND NOT EXISTS (SELECT 1 FROM workbench_budget_ledger d
-                                    WHERE d.script_call_id=h.script_call_id AND d.entry='consume'))"""),
+                    JOIN workbench_calls sc ON sc.id=h.script_call_id
+                    WHERE c.run_id=:r AND h.entry='reserve'
+                    AND (sc.detail ? 'script_cleanup_pending' OR NOT EXISTS (
+                        SELECT 1 FROM workbench_budget_ledger d
+                        WHERE d.script_call_id=h.script_call_id AND d.entry='consume')))"""),
                 {"r": run_id},
             )
             if unsettled.scalar_one():
                 raise TestCleanupPending(
-                    "Script container usage must be settled before cleanup"
+                    "Script container usage and Job cleanup must be confirmed before purge"
                 )
             attempts = await self.session.execute(
                 text("""select a.refs, t.original_input

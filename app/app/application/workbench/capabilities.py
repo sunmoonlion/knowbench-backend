@@ -2277,7 +2277,7 @@ class Capabilities:
             status = "unknown"
             intent["result"] = {
                 "message": "Script submission outcome is unknown; it was not retried. Any created container is bounded by its execution deadline."
-                if intent.get("execution_kind") == "skill_script"
+                if intent.get("execution_kind") in ("skill_script", "formal_script")
                 else "External outcome is unknown. Check the provider before retrying."
             }
         async with self.repo.transaction():
