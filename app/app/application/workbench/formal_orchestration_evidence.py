@@ -198,7 +198,7 @@ async def _approval(
             "argument_fields": sorted(inputs),
         },
     }
-    source = leaf.draft.source
+    source = snapshot_for_task(task).execution_source(leaf)
     assert source is not None
     _require(
         access["requirement"] == declared
@@ -277,14 +277,16 @@ async def _step_evidence(
     refs = attempt.get("refs") or {}
     actual = refs.get("formal_result") or {}
     leaf = dependency_for_step(snapshot, step)
-    source = leaf.draft.source
+    source = snapshot_for_task(task).execution_source(leaf)
     _require(source is not None, "leaf_source_missing")
     assert source is not None
     _require(
         len(leaf.draft.definition.access_requirements) == 1, "leaf_access_mismatch"
     )
     row = await repo.formal_method(
-        owner, str(leaf.reference.method_id), leaf.reference.version
+        await repo.actor_for_subject(leaf.owner_subject),
+        str(leaf.reference.method_id),
+        leaf.reference.version,
     )
     _require(
         row is not None

@@ -14,10 +14,12 @@ from pydantic import Field, model_validator
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodDraft,
+    FormalMethodSource,
     FrozenFormalMethod,
 )
 from app.domain.workbench.formal_method_execution_generated import ModelProbeLimits
 from app.domain.workbench.formal_method_generated import (
+    MethodRef,
     Orchestration,
     Strict,
     ToolProcedure,
@@ -25,6 +27,29 @@ from app.domain.workbench.formal_method_generated import (
 
 FORMAL_RUNTIME = "knowlab/formal-method-execution/v1"
 FORMAL_SOURCE = "formal-test"
+
+
+class IncubationBinding(Strict):
+    reference: MethodRef
+    listing_id: UUID
+    source: FormalMethodSource
+
+
+def same_implementation(original, local):
+    # An installed Skill's source URI contains the account-local asset ID.
+    return (
+        original.kind == local.kind
+        and original.kind in ("mcp", "skill_script")
+        and original.version == local.version
+        and original.digest == local.digest
+        and original.entry == local.entry
+        and local.asset_id is not None
+        and (
+            original.source == local.source
+            if original.kind == "mcp"
+            else local.source == "skill:" + str(local.asset_id)
+        )
+    )
 
 
 class FormalTaskSnapshot(Strict):
@@ -38,6 +63,9 @@ class FormalTaskSnapshot(Strict):
     arguments: dict[str, Any]
     definition_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
     dependencies: tuple[FrozenFormalMethod, ...] = Field(
+        default=(), max_length=1000, exclude_if=lambda value: not value
+    )
+    bindings: tuple[IncubationBinding, ...] = Field(
         default=(), max_length=1000, exclude_if=lambda value: not value
     )
     caller: Literal["host", "model"] = Field(
@@ -55,6 +83,25 @@ class FormalTaskSnapshot(Strict):
 
     @model_validator(mode="after")
     def pinned(self):
+        dependencies = {
+            (f.reference.method_id, f.reference.version): f for f in self.dependencies
+        }
+        seen = set()
+        for binding in self.bindings:
+            original = dependencies.get(
+                (binding.reference.method_id, binding.reference.version)
+            )
+            if (
+                not original
+                or original.reference != binding.reference
+                or original.visibility != "public"
+                or original.draft.source is None
+                or binding.reference in seen
+                or not same_implementation(original.draft.source, binding.source)
+                or binding.source.license_basis == "pending"
+            ):
+                raise ValueError("Invalid cross-author execution binding")
+            seen.add(binding.reference)
         if self.definition_digest != self.draft.definition.digest():
             raise ValueError("Formal definition digest changed")
         if self.caller not in self.draft.allowed_callers:
@@ -69,6 +116,12 @@ class FormalTaskSnapshot(Strict):
         elif self.dependencies:
             raise ValueError("Direct methods cannot contain dependency snapshots")
         return self
+
+    def execution_source(self, frozen):
+        return next(
+            (b.source for b in self.bindings if b.reference == frozen.reference),
+            frozen.draft.source,
+        )
 
     def document(self) -> dict:
         return self.model_dump(mode="json", by_alias=True)

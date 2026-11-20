@@ -12,6 +12,22 @@ from app.domain.workbench.errors import IdempotencyConflict
 class FormalMethodRepositoryMixin:
     session: AsyncSession
 
+    async def incubation_asset(self, owner, reference):
+        return await self.session.scalar(
+            text("""SELECT asset_id FROM workbench_incubation_tool_bindings
+        WHERE owner_actor_id=:owner AND method_id=:method_id AND version=:version AND digest=:digest"""),
+            {"owner": owner, **reference.model_dump()},
+        )
+
+    async def select_incubation_asset(self, owner, reference, asset_id):
+        await self.session.execute(
+            text("""INSERT INTO workbench_incubation_tool_bindings
+        (owner_actor_id,method_id,version,digest,asset_id) VALUES(:owner,:method_id,:version,:digest,:asset)
+        ON CONFLICT(owner_actor_id,method_id,version) DO UPDATE SET asset_id=EXCLUDED.asset_id
+        WHERE workbench_incubation_tool_bindings.digest=EXCLUDED.digest"""),
+            {"owner": owner, **reference.model_dump(), "asset": asset_id},
+        )
+
     async def list_formal_methods(self, owner):
         rows = (
             (

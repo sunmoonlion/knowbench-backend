@@ -32,7 +32,7 @@ def freeze(request, result):
     return FrozenFormalMethod.model_validate(
         {
             "contract": "knowlab/frozen-formal-method/v1",
-            "owner_subject": "author",
+            "owner_subject": request.owner_subject,
             "reference": {
                 "method_id": request.method_id,
                 "version": 1,
@@ -45,7 +45,7 @@ def freeze(request, result):
     )
 
 
-async def setup_plan(db, *, accept=True):
+async def setup_plan(db, *, accept=True, public_leaf=False):
     case = {
         "case_id": "echo",
         "input": {"values": {"to": "test@example.test"}},
@@ -59,7 +59,7 @@ async def setup_plan(db, *, accept=True):
         },
     }
     leaf_request, asset, remote, factory, conductor = await direct_setup(
-        db, cases=[case], remote=EchoRemote()
+        db, cases=[case], remote=EchoRemote(), public_review=public_leaf
     )
     await conductor.advance(str(leaf_request.run_id))
     await approve(db, leaf_request, factory, await status(db, leaf_request, factory))
@@ -67,11 +67,45 @@ async def setup_plan(db, *, accept=True):
     result = await status(db, leaf_request, factory)
     assert result["status"] == "passed", result
     leaf = freeze(leaf_request, result)
+    if public_leaf:
+        leaf = FrozenFormalMethod.model_validate(
+            {**leaf.model_dump(mode="json", by_alias=True), "visibility": "public"}
+        )
     async with db() as session:
         repo = WorkbenchRepository(session)
         await factory(repo).formal_sources.register(leaf, caller="knowlab")
         async with repo.transaction():
             await repo.purge_test_run(str(leaf_request.run_id))
+    request = plan_request(leaf_request, leaf, case)
+    remote.calls.clear()
+    if accept:
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            result = await FormalExecutions(repo, factory(repo)).accept(
+                request, caller="knowlab"
+            )
+            assert result["status"] == "pending", result
+    return SimpleNamespace(
+        request=request,
+        leaf=leaf,
+        asset=asset,
+        remote=remote,
+        factory=factory,
+        conductor=conductor,
+        owner=OWNER,
+    )
+
+
+async def advance(db, ctx):
+    for _ in range(12):
+        await ctx.conductor.advance(str(ctx.request.run_id))
+        result = await status(db, ctx.request, ctx.factory)
+        if result["actions"] or result["status"] in ("passed", "failed", "cancelled"):
+            return result
+    raise AssertionError("Expert did not reach approval or terminal state")
+
+
+def plan_request(leaf_request, leaf, case):
     document = leaf_request.model_dump(mode="json", by_alias=True)
     definition = deepcopy(document["draft"]["definition"])
     slot = definition["procedure"]["inputs"]["to"]
@@ -125,30 +159,4 @@ async def setup_plan(db, *, accept=True):
         dependencies=[leaf.reference.model_dump(mode="json")],
     )
     document["execution"]["suite"] = suite.model_dump(mode="json")
-    request = FormalMethodExecutionRequest.model_validate(document)
-    remote.calls.clear()
-    if accept:
-        async with db() as session:
-            repo = WorkbenchRepository(session)
-            result = await FormalExecutions(repo, factory(repo)).accept(
-                request, caller="knowlab"
-            )
-            assert result["status"] == "pending", result
-    return SimpleNamespace(
-        request=request,
-        leaf=leaf,
-        asset=asset,
-        remote=remote,
-        factory=factory,
-        conductor=conductor,
-        owner=OWNER,
-    )
-
-
-async def advance(db, ctx):
-    for _ in range(12):
-        await ctx.conductor.advance(str(ctx.request.run_id))
-        result = await status(db, ctx.request, ctx.factory)
-        if result["actions"] or result["status"] in ("passed", "failed", "cancelled"):
-            return result
-    raise AssertionError("Expert did not reach approval or terminal state")
+    return FormalMethodExecutionRequest.model_validate(document)

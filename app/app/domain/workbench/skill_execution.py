@@ -108,13 +108,13 @@ def public_call(call: dict) -> dict:
     return copy
 
 
-def method_script_input(asset, draft, arguments, resources):
+def method_script_input(asset, draft, arguments, resources, *, bound_source=None):
     from app.domain.workbench.formal_execution import direct_procedure, validate_values
     from app.domain.workbench.formal_method_execution_generated import bounded_json
     from app.domain.workbench.skill_package import skill_manifest_digest
 
     procedure = direct_procedure(draft)
-    source = draft.source
+    source = bound_source or draft.source
     if (
         source is None
         or source.kind != "skill_script"

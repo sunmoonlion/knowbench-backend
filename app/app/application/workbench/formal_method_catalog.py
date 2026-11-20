@@ -376,6 +376,35 @@ class FormalMethodCatalog:
                     "Formal method admission evidence is invalid"
                 ) from exc
 
+    async def shared_tool(self, grant):
+        owner = await self.repo.actor_for_subject(grant.owner_subject)
+        row = (
+            await self.repo.formal_method(
+                owner, str(grant.reference.method_id), grant.reference.version
+            )
+            if owner
+            else None
+        )
+        if not row:
+            raise NotFound("Licensed tool registration is unavailable")
+        try:
+            resolved = await self._resolve(
+                owner, grant.reference, row, "host", public=True
+            )
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            IndexError,
+            AttributeError,
+            InvalidOperation,
+        ) as exc:
+            raise CapabilityError("Shared tool admission evidence is invalid") from exc
+        await self.formal_sources.check_delivery_source(
+            owner, resolved.frozen, market=True
+        )
+        return resolved.frozen
+
     async def resolve_owned_admission(
         self, owner, reference: MethodRef, *, resolved
     ) -> FrozenFormalMethod:
@@ -393,6 +422,12 @@ class FormalMethodCatalog:
             try:
                 frozen = FrozenFormalMethod.model_validate(row["document"])
                 if not isinstance(frozen.draft.definition.procedure, Orchestration):
+                    if frozen.visibility == "public":
+                        return (
+                            await self._resolve(
+                                owner, reference, row, "host", public=True
+                            )
+                        ).frozen
                     return (
                         await self.resolve_owned(owner, reference, caller="host")
                     ).frozen
@@ -424,7 +459,9 @@ class FormalMethodCatalog:
                     "Formal expert admission evidence is invalid"
                 ) from exc
 
-    async def _admission(self, owner, reference, row, *, orchestration=False):
+    async def _admission(
+        self, owner, reference, row, *, orchestration=False, public=False
+    ):
         frozen = FrozenFormalMethod.model_validate(row["document"])
         _require(
             str(row["owner_actor_id"]) == str(owner)
@@ -438,8 +475,8 @@ class FormalMethodCatalog:
             "Formal method identity does not match its author registration",
         )
         _require(
-            frozen.visibility == "private",
-            "This entry supports only the author's private methods",
+            frozen.visibility == ("public" if public else "private"),
+            "Formal method visibility differs from the required admission",
         )
         execution_ref = frozen.validation.execution
         _require(
@@ -573,8 +610,10 @@ class FormalMethodCatalog:
 
         return frozen, request, evidence
 
-    async def _resolve(self, owner, reference, row, caller):
-        frozen, request, evidence = await self._admission(owner, reference, row)
+    async def _resolve(self, owner, reference, row, caller, *, public=False):
+        frozen, request, evidence = await self._admission(
+            owner, reference, row, public=public
+        )
         direct_procedure(frozen.draft, caller=caller)
         _require(
             len(frozen.draft.definition.access_requirements) == 1

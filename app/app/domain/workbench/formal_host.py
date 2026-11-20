@@ -72,7 +72,7 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
         step = steps[index]
         frozen = dependency_for_step(snapshot, step)
         source, slot, method_id = (
-            frozen.draft.source,
+            snapshot.execution_source(frozen),
             execution_slot(snapshot, index),
             str(frozen.reference.method_id),
         )

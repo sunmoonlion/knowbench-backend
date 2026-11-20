@@ -26,6 +26,7 @@ from app.application.workbench.test_runs import KnowbotTestService
 from app.bootstrap.workbench import (
     capability_service,
     incubation_service,
+    knowmart_summoner,
     test_run_service,
 )
 from app.domain.workbench.errors import WorkbenchError
@@ -89,6 +90,7 @@ def formal_methods(
 ) -> FormalMethods:
     return FormalMethods(
         WorkbenchRepository(session),
+        market=knowmart_summoner(),
         operations=get_settings().workbench_capability_operations,
         script_tariff=get_settings().workbench_script_tariff,
         source_licenses=get_settings().workbench_source_licenses,
@@ -126,6 +128,51 @@ class DeliverySelection(Strict):
     owner_subject: str = Field(min_length=1, max_length=512)
     reference: MethodRef
     skill: MethodRef | None = None
+
+
+class SharedToolBinding(Strict):
+    subject: str = Field(min_length=1, max_length=512)
+    reference: MethodRef
+    asset_id: UUID
+    revision: int = Field(ge=1, strict=True)
+
+
+@router.put("/incubation-tool-binding")
+async def select_incubation_tool_binding(
+    _: FormalCaller, body: SharedToolBinding, svc: FormalService
+):
+    try:
+        return _out(
+            await svc.choose_incubation_asset(
+                body.subject, body.reference, body.asset_id, body.revision
+            )
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+class SharedToolsQuery(Strict):
+    subject: str = Field(min_length=1, max_length=512)
+    reference: MethodRef | None = None
+    after: UUID | None = None
+    limit: int = Field(default=30, strict=True, ge=1, le=100)
+
+
+@router.post("/incubation-tool-versions")
+async def incubation_tool_versions(
+    _: FormalCaller, body: SharedToolsQuery, svc: FormalService
+):
+    try:
+        return _out(
+            await svc.shared_tools(
+                body.subject,
+                reference=body.reference,
+                after=str(body.after) if body.after else None,
+                limit=body.limit,
+            )
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.post("/formal-method-self-review")

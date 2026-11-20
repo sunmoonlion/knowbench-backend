@@ -68,6 +68,38 @@ class KnowmartSummonClient:
             allowed.update(permitted)
         return allowed
 
+    async def incubation_tools(self, subject, *, reference=None, after=None, limit=30):
+        from pydantic import ValidationError
+
+        from app.domain.workbench.incubation_tools import IncubationGrants
+
+        query = {
+            "subject": subject,
+            "after": after,
+            "limit": limit,
+            "reference": reference.model_dump(mode="json") if reference else None,
+        }
+        try:
+            _, raw = await self._connect().request(
+                "POST", "/formal-methods/incubation-tools", json=query
+            )
+            page = IncubationGrants.model_validate(raw)
+        except (BadGatewayError, ServiceUnavailableError, ValidationError) as exc:
+            raise KnowbotUnavailable("Incubation permissions are unavailable") from exc
+        if (
+            page.subject != subject
+            or len(page.items) > limit
+            or any(
+                g.owner_subject == subject or (reference and g.reference != reference)
+                for g in page.items
+            )
+            or (reference and (page.next or len(page.items) > 1))
+        ):
+            raise KnowbotUnavailable(
+                "KnowMart returned a different incubation permission"
+            )
+        return page
+
     async def summon(
         self, *, owner_subject: str, knowbot_id: str, version: str
     ) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-"""Resolve an exact private dependency closure before executing any method.
+"""Resolve exact registered dependencies and authorized tools for an incubation run.
 
 Definition compilation proves structure. Each leaf must independently retain
 real host execution qualification and its current reviewed source and policy.
@@ -7,7 +7,6 @@ Nothing here creates a grant or executes a call.
 
 from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.formal_method_admission_generated import FrozenFormalMethod
 from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
     compile_method,
@@ -19,7 +18,7 @@ from app.domain.workbench.formal_method_plan_generated import (
 )
 
 
-async def resolve_plan(capabilities, owner, draft, method_id):
+async def resolve_plan(capabilities, owner, draft, method_id, *, bindings=None):
     return await resolve_owned_plan(
         capabilities.repo,
         capabilities.formal_sources,
@@ -27,15 +26,19 @@ async def resolve_plan(capabilities, owner, draft, method_id):
         owner,
         draft,
         method_id,
+        bindings=bindings,
     )
 
 
-async def resolve_owned_plan(repo, formal_sources, operations, owner, draft, method_id):
+async def resolve_owned_plan(
+    repo, formal_sources, operations, owner, draft, method_id, *, bindings=None
+):
     catalog = FormalMethodCatalog(repo, formal_sources, operations)
     async with repo.transaction():
         resolved = {}
         postorder = []
         assets = set()
+        grants = {}
 
         async def collect(current, ancestors):
             if not isinstance(current.procedure, Orchestration):
@@ -53,10 +56,7 @@ async def resolve_owned_plan(repo, formal_sources, operations, owner, draft, met
                     continue
                 if len(resolved) >= 1000:
                     raise CapabilityError("Formal dependency closure limit")
-                row = await repo.formal_method(owner, str(ref.method_id), ref.version)
-                if row is None:
-                    raise CapabilityError("A dependency has no private registration")
-                frozen = FrozenFormalMethod.model_validate(row["document"])
+                frozen, grant = await formal_sources.dependency(owner, ref)
                 if (
                     frozen.reference != ref
                     or "host" not in frozen.draft.allowed_callers
@@ -65,7 +65,13 @@ async def resolve_owned_plan(repo, formal_sources, operations, owner, draft, met
                 resolved[key] = frozen
                 source = frozen.draft.source
                 if source is not None and source.asset_id is not None:
-                    assets.add(str(source.asset_id))
+                    publisher = owner
+                    if grant:
+                        publisher = await repo.actor_for_subject(grant.owner_subject)
+                        binding = await formal_sources.bind_tool(owner, frozen, grant)
+                        grants[key] = (grant, binding)
+                        assets.add((str(owner), str(binding.source.asset_id)))
+                    assets.add((str(publisher), str(source.asset_id)))
                 await collect(frozen.draft.definition, (*ancestors, ref.method_id))
                 postorder.append(key)
 
@@ -86,13 +92,21 @@ async def resolve_owned_plan(repo, formal_sources, operations, owner, draft, met
         # Acquire all mutable asset locks in one global order, including those
         # buried below already-qualified experts. Never recurse while acquiring
         # locks in a caller-controlled graph order.
-        for asset_id in sorted(assets):
-            await repo.capability_asset(owner, asset_id, lock=True)
+        for actor, asset_id in sorted(assets):
+            await repo.capability_asset(actor, asset_id, lock=True)
         for key in postorder:
             frozen = resolved[key]
-            admitted = await catalog.resolve_owned_admission(
-                owner, frozen.reference, resolved=resolved
-            )
+            if key in grants:
+                grant, binding = grants[key]
+                admitted = await catalog.shared_tool(grant)
+                if await formal_sources.bind_tool(owner, admitted, grant) != binding:
+                    raise CapabilityError("Incubation source binding changed")
+                if bindings is not None:
+                    bindings.append(binding)
+            else:
+                admitted = await catalog.resolve_owned_admission(
+                    owner, frozen.reference, resolved=resolved
+                )
             if admitted != frozen:
                 raise CapabilityError("Formal dependency admission changed")
         return tuple(

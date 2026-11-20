@@ -143,6 +143,7 @@ class Capabilities:
 
         self.formal_sources = FormalMethods(
             repo,
+            market=formal_market,
             operations=operations,
             script_tariff=script_tariff,
             source_licenses=source_licenses,

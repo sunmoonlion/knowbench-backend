@@ -23,11 +23,16 @@ async def dispatch(svc, owner, call, intent, asset):
         task = await repo.get_task(host["task_id"], owner_actor_id=owner)
         snapshot = snapshot_for_task(task)
         draft = snapshot.draft
+        bound_source = None
         if snapshot.dependencies:
             step = execution_steps(snapshot)[int(task["current_step"])]
-            draft = dependency_for_step(snapshot, step).draft
+            leaf = dependency_for_step(snapshot, step)
+            draft = leaf.draft
+            bound_source = snapshot.execution_source(leaf)
         resources = await repo.skill_package_files(owner, asset["id"])
-        payload = method_script_input(asset, draft, intent["arguments"], resources)
+        payload = method_script_input(
+            asset, draft, intent["arguments"], resources, bound_source=bound_source
+        )
     except Exception:
         await settle(
             repo,

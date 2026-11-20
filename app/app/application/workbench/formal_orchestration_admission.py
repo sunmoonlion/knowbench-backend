@@ -90,7 +90,7 @@ def verify_leaf_authority(
     tree_host=None,
 ):
     """Strict historical one-level leaf proof; approval is checked at consumption."""
-    source = leaf.draft.source
+    source = snapshot.execution_source(leaf)
     require(
         source is not None and source.kind in ("mcp", "skill_script"),
         "Sealed leaf implementation is unsupported",
@@ -226,6 +226,15 @@ def _old_case(
         and snapshot.definition_digest == frozen.reference.digest,
         "Sealed expert snapshot differs from its execution request",
     )
+    require(
+        {ref_key(b.reference) for b in snapshot.bindings}
+        == {
+            ref_key(f.reference)
+            for f in snapshot.dependencies
+            if f.owner_subject != request.owner_subject
+        },
+        "Foreign dependency has no exact consumer binding",
+    )
     plan = unique_plan(snapshot.draft.definition)
     expected = {ref_key(step.candidates[0]) for step in plan}
     require(
@@ -340,8 +349,13 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
         == {ref_key(r) for r in frozen.validation.dependencies}
         and len(request.dependencies) == len(compiled.dependencies)
         and all(
-            resolved[(r.method_id, r.version)].owner_subject == frozen.owner_subject
-            and resolved[(r.method_id, r.version)].visibility == "private"
+            (
+                resolved[(r.method_id, r.version)].owner_subject == frozen.owner_subject
+                or (
+                    resolved[(r.method_id, r.version)].visibility == "public"
+                    and resolved[(r.method_id, r.version)].draft.source is not None
+                )
+            )
             for r in expanded.dependencies
         ),
         "Expert dependency closure differs from its owned frozen versions",
@@ -484,6 +498,15 @@ def _tree_case(
             "leaf_count": len(plan.leaf_nodes),
         },
         "Sealed tree definition or dependency closure changed",
+    )
+    require(
+        {ref_key(b.reference) for b in snapshot.bindings}
+        == {
+            ref_key(f.reference)
+            for f in snapshot.dependencies
+            if f.owner_subject != request.owner_subject
+        },
+        "Foreign dependency has no exact consumer binding",
     )
     task_id = _identity(identities, "task", result.task_id)
     root_id = _identity(identities, "method_call", item["root_call_id"])

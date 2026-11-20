@@ -108,10 +108,15 @@ class FormalHostCalls:
             if caller != "host":
                 raise CapabilityError("Formal orchestration cannot use a model probe")
             _, step, frozen, arguments = await step_context(self.repo, task, attempt)
+            bindings = []
             live = await resolve_plan(
-                self.capabilities, owner, snapshot.draft, snapshot.method_id
+                self.capabilities,
+                owner,
+                snapshot.draft,
+                snapshot.method_id,
+                bindings=bindings,
             )
-            if live != snapshot.dependencies:
+            if live != snapshot.dependencies or tuple(bindings) != snapshot.bindings:
                 raise CapabilityError("Formal dependency admission changed")
             draft, slot = (
                 frozen.draft,
@@ -244,7 +249,7 @@ class FormalHostCalls:
                 raise CapabilityError(
                     "Model probe limits or permissions differ from its test"
                 )
-        source = draft.source
+        source = snapshot.execution_source(frozen) if frozen else draft.source
         if source is None or not await self.capabilities.formal_sources._source(
             owner, request.owner_subject, source
         ):

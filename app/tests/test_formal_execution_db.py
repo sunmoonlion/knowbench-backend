@@ -126,7 +126,7 @@ async def status(db, request, factory):
     async with db() as s:
         repo = WorkbenchRepository(s)
         return await FormalExecutions(repo, factory(repo)).status(
-            "author", str(request.run_id), caller="knowlab"
+            request.owner_subject, str(request.run_id), caller="knowlab"
         )
 
 
@@ -135,11 +135,11 @@ async def approve(db, request, factory, result, decision="accept"):
     async with db() as s:
         repo = WorkbenchRepository(s)
         return await FormalExecutions(repo, factory(repo)).decide(
-            "author",
+            request.owner_subject,
             str(request.run_id),
             action["call_id"],
             FormalExecutionDecision(
-                owner_subject="author",
+                owner_subject=request.owner_subject,
                 case_id=action["case_id"],
                 repetition=action["repetition"],
                 token=action["token"],

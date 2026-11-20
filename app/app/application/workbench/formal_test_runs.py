@@ -87,8 +87,8 @@ class FormalExecutions:
         self.formal = capabilities.formal_sources
         self.now = now or (lambda: datetime.now(UTC))
 
-    async def reviewed_policy(self, owner, request):
-        source = request.draft.source
+    async def reviewed_policy(self, owner, request, *, source=None):
+        source = source or request.draft.source
         if source is None:
             raise CapabilityError(
                 "Formal execution requires a reviewed implementation source"
@@ -454,14 +454,30 @@ class FormalExecutions:
                 owner, request.owner_subject, request.draft.source
             )
             if isinstance(request.draft.definition.procedure, Orchestration):
+                bindings = []
                 leaves = await resolve_plan(
-                    self.capabilities, owner, request.draft, request.method_id
+                    self.capabilities,
+                    owner,
+                    request.draft,
+                    request.method_id,
+                    bindings=bindings,
                 )
                 policies = {}
                 for leaf in leaves:
                     if leaf.draft.source is None:
                         continue
-                    policy = await self.reviewed_policy(owner, leaf)
+                    policy = await self.reviewed_policy(
+                        owner,
+                        leaf,
+                        source=next(
+                            (
+                                b.source
+                                for b in bindings
+                                if b.reference == leaf.reference
+                            ),
+                            None,
+                        ),
+                    )
                     policies[fingerprint(leaf.reference.model_dump(mode="json"))] = (
                         policy.policy_digest
                     )
@@ -791,6 +807,7 @@ async def advance_formal(conductor, run_id):
             task_id = str(current["task_id"])
         else:
             dependencies = ()
+            bindings = []
             if isinstance(request.draft.definition.procedure, Orchestration):
                 try:
                     dependencies = await resolve_plan(
@@ -798,6 +815,7 @@ async def advance_formal(conductor, run_id):
                         account.actor_id,
                         request.draft,
                         request.method_id,
+                        bindings=bindings,
                     )
                 except WorkbenchError as exc:
                     await svc.finish(
@@ -821,6 +839,7 @@ async def advance_formal(conductor, run_id):
                 draft=request.draft,
                 arguments=case.input.values,
                 dependencies=dependencies,
+                bindings=tuple(bindings),
                 definition_digest=request.draft.definition.digest(),
                 caller=case.caller,
                 model_prompt=case.input.model_prompt,

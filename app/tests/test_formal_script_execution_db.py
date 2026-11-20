@@ -109,7 +109,7 @@ class Executor:
         pass
 
 
-async def script_setup(db, executor=None, *, limit="1"):
+async def script_setup(db, executor=None, *, limit="1", public_review=False):
     await admission_setup(db)
     env, _, _ = await seed(db)
     executor = executor or Executor()
@@ -132,7 +132,14 @@ async def script_setup(db, executor=None, *, limit="1"):
             for x in (await svc.formal_sources.sources("author"))["items"]
             if x["kind"] == "skill_script"
         )
-    record = license_record(source)
+    terms = {"origin": "test/skill", "notices": ["Test package"]}
+    record = license_record(
+        source,
+        rights={"execute": True, "deliver": public_review},
+        delivery_terms=terms if public_review else None,
+    )
+    if public_review:
+        source["delivery_terms"] = terms
     source["license_basis"] = record.basis
     doc = validation_request(source).model_dump(mode="json", by_alias=True)
     access = deepcopy(ACCESS)
@@ -184,6 +191,24 @@ async def script_setup(db, executor=None, *, limit="1"):
     )
     req = FormalMethodExecutionRequest.model_validate(doc)
 
+    from app.domain.workbench.source_licenses import BusinessCoverageReview
+
+    reviews = (
+        (
+            BusinessCoverageReview(
+                subject="author",
+                method_id=req.method_id,
+                definition_digest=req.draft.definition.digest(),
+                source_digest=req.draft.source.fingerprint(),
+                suite_digest=suite.digest,
+                evidence=record.evidence,
+                expires_at=record.expires_at,
+            ),
+        )
+        if public_review
+        else ()
+    )
+
     def factory(repo):
         return Capabilities(
             repo,
@@ -195,6 +220,7 @@ async def script_setup(db, executor=None, *, limit="1"):
             if isinstance(executor, SkillExecutor)
             else TARIFF,
             source_licenses=(record,),
+            business_reviews=reviews,
         )
 
     conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)

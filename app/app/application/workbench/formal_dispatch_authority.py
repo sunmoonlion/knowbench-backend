@@ -109,6 +109,18 @@ async def check_formal_dispatch(svc, owner, call, asset, intent):
             raise CapabilityError("Formal conversation scope changed before dispatch")
     if host:
         task = await repo.get_task(host["task_id"], owner_actor_id=owner)
+        if (task.get("pack_snapshot") or {}).get("bindings") and intent.get(
+            "execution_kind"
+        ) != "formal_script":
+            from app.application.workbench.formal_host_calls import FormalHostCalls
+
+            context = await FormalHostCalls(svc).context(
+                owner, host["task_id"], host["attempt_id"]
+            )
+            if context.identity != call["digest"]:
+                raise CapabilityError(
+                    "Incubation tool authority changed before dispatch"
+                )
         if (
             str(session.get("active_task_id")) != host["task_id"]
             or task["state"] != TaskState.RUNNING

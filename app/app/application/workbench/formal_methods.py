@@ -37,12 +37,14 @@ class FormalMethods:
         repo,
         *,
         operations=(),
+        market=None,
         script_tariff=None,
         source_licenses=(),
         business_reviews=(),
         now: Callable[[], datetime] | None = None,
     ):
         self.repo = repo
+        self.market = market
         self.operations = OperationCatalog(
             tuple(operations), script_tariff=script_tariff
         )
@@ -194,6 +196,141 @@ class FormalMethods:
             )
         return source.license_basis != "pending"
 
+    async def dependency(self, owner, reference, *, shared=True):
+        row = await self.repo.formal_method(
+            owner, str(reference.method_id), reference.version
+        )
+        grant = None
+        if row is None and shared and self.market is not None:
+            subject = await self.repo.subject_of_actor(owner)
+            page = await self.market.incubation_tools(subject, reference=reference)
+            if len(page.items) == 1:
+                grant = page.items[0]
+                publisher = await self.repo.actor_for_subject(grant.owner_subject)
+                if publisher:
+                    row = await self.repo.formal_method(
+                        publisher, str(reference.method_id), reference.version
+                    )
+        if not row or row["caller"] != "knowlab":
+            raise CapabilityError("Dependency has no accessible registration")
+        frozen = FrozenFormalMethod.model_validate(row["document"])
+        if frozen.reference != reference or (
+            grant
+            and (
+                frozen.owner_subject != grant.owner_subject
+                or frozen.visibility != "public"
+                or frozen.draft.source is None
+                or frozen.draft.source.kind not in ("mcp", "skill_script")
+                or "host" not in frozen.draft.allowed_callers
+            )
+        ):
+            raise CapabilityError("Dependency identity or host qualification changed")
+        return frozen, grant
+
+    async def binding_options(self, owner, frozen):
+        from app.domain.workbench.formal_execution import same_implementation
+
+        subject = await self.repo.subject_of_actor(owner)
+        options = {}
+        for asset in await self.repo.capability_assets(owner):
+            for source in self._sources(asset, subject, now=self.now()):
+                if source.license_basis != "pending" and same_implementation(
+                    frozen.draft.source, source
+                ):
+                    options[source.asset_id] = (
+                        source,
+                        asset["name"],
+                        asset["detail"].get("account_label"),
+                    )
+        preferred = await self.repo.incubation_asset(owner, frozen.reference)
+        selected = preferred
+        if selected is None and len(options) == 1:
+            selected = next(iter(options))
+        return options, selected if selected in options else None
+
+    async def bind_tool(self, owner, frozen, grant):
+        from app.domain.workbench.formal_execution import IncubationBinding
+
+        options, selected = await self.binding_options(owner, frozen)
+        if selected is None:
+            raise CapabilityError(
+                "Select a matching licensed installation for this tool"
+            )
+        return IncubationBinding(
+            reference=frozen.reference,
+            listing_id=grant.listing_id,
+            source=options[selected][0],
+        )
+
+    async def choose_incubation_asset(self, subject, reference, asset_id, revision):
+        from app.application.workbench.formal_method_catalog import FormalMethodCatalog
+
+        async with self.repo.transaction():
+            owner = await self._owner(subject)
+            frozen, grant = await self.dependency(owner, reference)
+            if not grant:
+                raise Forbidden("A shared-tool permission is required")
+            await FormalMethodCatalog(self.repo, self, self.operations).shared_tool(
+                grant
+            )
+            options, _ = await self.binding_options(owner, frozen)
+            if (
+                asset_id not in options
+                or options[asset_id][0].asset_revision != revision
+            ):
+                raise CapabilityError("The selected installation changed")
+            await self.repo.select_incubation_asset(owner, reference, asset_id)
+        return {
+            "reference": reference.model_dump(mode="json"),
+            "asset_id": str(asset_id),
+            "revision": revision,
+        }
+
+    async def shared_tools(self, subject, *, reference=None, after=None, limit=30):
+        from app.application.workbench.formal_method_catalog import FormalMethodCatalog
+        from app.domain.workbench.errors import WorkbenchError
+
+        owner = await self.repo.actor_for_subject(subject)
+        if owner is None:
+            return {"items": [], "next": None}
+        if self.market is None:
+            raise CapabilityError("KnowMart incubation permissions are unavailable")
+        page = await self.market.incubation_tools(
+            subject, reference=reference, after=after, limit=limit
+        )
+        items = []
+        catalog = FormalMethodCatalog(self.repo, self, self.operations)
+        for grant in page.items:
+            async with self.repo.transaction():
+                try:
+                    frozen = await catalog.shared_tool(grant)
+                    options, selected = await self.binding_options(owner, frozen)
+                except (WorkbenchError, ValueError):
+                    continue
+                if not options:
+                    continue
+                item = {
+                    "reference": frozen.reference.model_dump(mode="json"),
+                    "scope": grant.scope,
+                    "title": frozen.draft.definition.capability_declaration.title,
+                }
+                if reference:
+                    item["definition"] = frozen.draft.definition.model_dump(
+                        mode="json", by_alias=True
+                    )
+                    item["installations"] = [
+                        {
+                            "asset_id": str(key),
+                            "revision": value.asset_revision,
+                            "name": name,
+                            "account": account,
+                        }
+                        for key, (value, name, account) in options.items()
+                    ]
+                    item["selected"] = str(selected) if selected else None
+                items.append(item)
+        return {"items": items, "next": str(page.next) if page.next else None}
+
     async def _compile(self, owner: str, method_id, definition, *, documents=None):
         resolved: dict = {}
 
@@ -213,16 +350,9 @@ class FormalMethods:
                                 "One frozen version has conflicting digests"
                             )
                         continue
-                    row = await self.repo.formal_method(
-                        owner, str(ref.method_id), ref.version
+                    frozen, _ = await self.dependency(
+                        owner, ref, shared=documents is None
                     )
-                    if row is None or row["caller"] != "knowlab":
-                        raise CapabilityError(
-                            "Dependency has no admitted version for this author"
-                        )
-                    frozen = FrozenFormalMethod.model_validate(row["document"])
-                    if frozen.reference != ref:
-                        raise CapabilityError("Dependency changed")
                     if documents is not None:
                         documents.append(frozen)
                     resolved[key] = FrozenMethod(ref, frozen.draft.definition)
@@ -541,7 +671,7 @@ class FormalMethods:
                     raise Forbidden(
                         "Formal experts require actual orchestration execution evidence"
                     )
-                await resolve_owned_plan(
+                dependencies = await resolve_owned_plan(
                     self.repo,
                     self,
                     self.operations,
@@ -549,6 +679,12 @@ class FormalMethods:
                     frozen.draft,
                     frozen.reference.method_id,
                 )
+                if frozen.visibility == "public" and any(
+                    dep.owner_subject != frozen.owner_subject for dep in dependencies
+                ):
+                    raise Forbidden(
+                        "Incubation permission does not grant public distribution"
+                    )
             if not await self._source(owner, frozen.owner_subject, frozen.draft.source):
                 raise Forbidden("Source execution rights have not been verified")
             compilation = await self._compile(

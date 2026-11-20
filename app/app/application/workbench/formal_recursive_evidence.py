@@ -469,7 +469,7 @@ class _Tree:
         refs = attempt.get("refs") or {}
         actual = refs.get("formal_result") or {}
         leaf = self.frozen[(node.reference.method_id, node.reference.version)]
-        source = leaf.draft.source
+        source = self.snapshot.execution_source(leaf)
         _require(
             source is not None and len(leaf.draft.definition.access_requirements) == 1,
             "leaf_source_or_access_missing",
@@ -718,7 +718,9 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
         )
         for frozen in snapshot.dependencies:
             row = await repo.formal_method(
-                owner, str(frozen.reference.method_id), frozen.reference.version
+                await repo.actor_for_subject(frozen.owner_subject),
+                str(frozen.reference.method_id),
+                frozen.reference.version,
             )
             _require(
                 row is not None
