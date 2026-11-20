@@ -5,6 +5,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
+from formal_method_use_support import with_listings
 from sqlalchemy import text
 from test_capabilities_db import OWNER
 from test_formal_execution_db import approve, setup, status
@@ -62,7 +63,7 @@ async def admitted(db, *, cases=None):
         await FormalExecutions(repo, factory(repo)).formal.register(
             frozen, caller="knowlab"
         )
-    return frozen, request, asset, factory, remote
+    return frozen, request, asset, with_listings(factory, frozen), remote
 
 
 def catalog(repo, factory):

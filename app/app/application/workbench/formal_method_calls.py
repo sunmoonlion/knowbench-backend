@@ -23,6 +23,7 @@ from app.domain.workbench.formal_execution import (
 )
 from app.domain.workbench.formal_method_admission_generated import FrozenFormalMethod
 from app.domain.workbench.formal_method_execution_generated import bounded_json
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_authorization import (
     MethodAuthorization,
     PermissionGrant,
@@ -63,7 +64,17 @@ class FormalMethodCalls:
             # A directory may resolve several sources; match selection/prepare's
             # stable asset order across concurrent conversations of this owner.
             await self.repo.capability_assets(owner, lock=True)
-            return {"items": await self._catalog.list_owned(owner, caller=caller)}
+            items = await self._catalog.list_owned(owner, caller=caller)
+        eligible = await self.capabilities.eligible_formal_refs(
+            owner, [item["reference"] for item in items]
+        )
+        return {
+            "items": [
+                item
+                for item in items
+                if MethodRef.model_validate(item["reference"]) in eligible
+            ]
+        }
 
     async def _session(self, owner, session_id, *, active=False):
         session = await self.repo.get_session(
@@ -81,6 +92,9 @@ class FormalMethodCalls:
         return session
 
     async def _intent(self, owner, request, root_id, *, model=None):
+        await self.capabilities.require_formal_use(
+            owner, request.reference.model_dump(mode="json")
+        )
         caller = "model" if model else "host"
         resolved = await self._catalog.resolve_owned(
             owner, request.reference, caller=caller

@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.application.ports.workbench import (
     AppServerConnector,
     EventPublisher,
-    KnowmartSummoner,
     Provisioner,
     RelayAdmin,
     WorkbenchStore,
@@ -59,7 +58,7 @@ def agent_release_store(settings) -> ReleaseStore:
 
 
 @lru_cache(maxsize=1)
-def knowmart_summoner() -> KnowmartSummoner:
+def knowmart_summoner() -> KnowmartSummonClient:
     """向 knowmart 取分身清单（令牌缓存在里面，进程内共用）。"""
     return KnowmartSummonClient()
 
@@ -508,6 +507,7 @@ def capability_service(repo):
             )
         ),
         cipher,
+        formal_market=knowmart_summoner(),
         oauth_providers=settings.workbench_connection_oauth_providers,
         oauth_transport=OAuthTransport(),
         web_origin=settings.web_frontend_base_url,

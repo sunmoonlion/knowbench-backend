@@ -3,6 +3,7 @@
 import asyncio
 from uuid import uuid4
 
+from formal_method_use_support import with_listings
 from sqlalchemy import text
 from test_capabilities_db import OWNER, body
 from test_formal_execution_db import approve, settle, setup, status
@@ -70,6 +71,7 @@ async def test_directory_reverse_source_order_cannot_deadlock_preparation(db):
             repo = WorkbenchRepository(session)
             await factory(repo).formal_sources.register(frozen, caller="knowlab")
         versions.append(frozen)
+    factory = with_listings(factory, *versions)
     _, _, directory_session = await seed(db, root="/home/u/research/catalog-locks")
     _, _, prepare_session = await seed(db, root="/home/u/research/prepare-locks")
     async with db() as session:

@@ -5,6 +5,7 @@ from copy import deepcopy
 from uuid import uuid4
 
 import pytest
+from formal_method_use_support import with_listings
 from formal_model_support import ModelServer, setup
 from sqlalchemy import text
 from test_capabilities_db import OWNER
@@ -83,7 +84,7 @@ async def model_admitted(db, *, mixed=False):
             ] == "registered"
         assert len(fake.turn_inputs) == 1 and len(remote.calls) == (2 if mixed else 1)
         assert not fake.failures
-        return frozen, request, factory, remote
+        return frozen, request, with_listings(factory, frozen), remote
     finally:
         if runner:
             await close(runner)

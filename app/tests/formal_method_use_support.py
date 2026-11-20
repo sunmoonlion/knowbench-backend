@@ -9,6 +9,32 @@ from app.domain.workbench.formal_method_admission_generated import FrozenFormalM
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
+class TestListings:
+    __test__ = False
+
+    def __init__(self, versions):
+        self.versions = {(v.owner_subject, v.reference) for v in versions}
+
+    async def eligible_formal_refs(self, subject, references):
+        from app.domain.workbench.formal_method_generated import MethodRef
+
+        requested = {MethodRef.model_validate(ref) for ref in references}
+        return {
+            ref for owner, ref in self.versions if owner == subject and ref in requested
+        }
+
+
+def with_listings(factory, *versions):
+    listings = TestListings(versions)
+
+    def build(repo):
+        caps = factory(repo)
+        caps.formal_market = listings
+        return caps
+
+    return build
+
+
 async def admitted(db, *, remote=None, kind="chat", purge=True):
     request, asset, remote, factory, conductor = await execution_setup(
         db, remote=remote
@@ -49,4 +75,4 @@ async def admitted(db, *, remote=None, kind="chat", purge=True):
                 {"id": sid, "kind": kind},
             )
     remote.calls.clear()
-    return frozen, asset, remote, factory, sid
+    return frozen, asset, remote, with_listings(factory, frozen), sid

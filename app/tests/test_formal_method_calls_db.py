@@ -378,3 +378,45 @@ async def test_lost_committed_dispatch_recovers_unknown_without_authority_refres
             )
         recovered = await FormalMethodCalls(factory(repo)).request(OWNER, sid, body)
         assert recovered["status"] == "unknown" and not remote.calls
+
+
+async def test_incubation_needs_no_listing_but_normal_use_requires_live_listing(
+    db, monkeypatch
+):
+    from formal_method_use_support import TestListings, admitted
+
+    frozen, _, remote, factory, sid = await admitted(db, purge=False)
+    body = FormalMethodCallRequest(
+        request_id=uuid4(),
+        reference=frozen.reference,
+        values={"to": "test@example.test"},
+    )
+    async with db() as session:
+        caps = factory(WorkbenchRepository(session))
+        review = await caps.formal_sources.self_review_outputs(
+            "author", frozen.reference
+        )
+        assert review["samples"] and review["samples"][0]["steps"][0]["artifact"]
+        svc = FormalMethodCalls(caps)
+        caps.formal_market = TestListings([])
+        assert await svc.catalog(OWNER, sid) == {"items": []}
+        with pytest.raises(Forbidden):
+            await svc.request(OWNER, sid, body)
+        caps.formal_market = TestListings([frozen])
+        waiting = await svc.request(OWNER, sid, body)
+        child = waiting["call"]
+        caps.formal_market = TestListings([])
+        with pytest.raises(Forbidden):
+            await svc.decide(OWNER, child["id"], approval(child))
+        assert not remote.calls
+
+        caps.formal_market = TestListings([frozen])
+        before_send = caps._check_before_send
+
+        async def withdraw_then_check(*args):
+            caps.formal_market.versions.clear()
+            await before_send(*args)
+
+        monkeypatch.setattr(caps, "_check_before_send", withdraw_then_check)
+        failed = await svc.decide(OWNER, child["id"], approval(child))
+        assert failed["status"] == "failed" and not remote.calls

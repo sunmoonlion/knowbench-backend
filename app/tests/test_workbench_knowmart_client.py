@@ -91,3 +91,37 @@ async def test_unconfigured_summon_is_unavailable() -> None:
         await KnowmartSummonClient({}).summon(
             owner_subject="u", knowbot_id=KNOWBOT, version="1"
         )
+
+
+async def test_formal_use_decisions_bind_owner_and_each_pinned_version():
+    import json
+    from uuid import uuid4
+
+    from app.domain.workbench.formal_method_generated import MethodRef
+
+    owner = "test/author"
+    ref = {"method_id": str(uuid4()), "digest": "sha256:" + "0" * 64}
+    refs = [{**ref, "version": n} for n in range(1, 102)]
+    sizes = []
+
+    def handler(request):
+        assert request.url.path.endswith("/formal-methods/eligible")
+        assert request.headers["authorization"] == "Bearer service-token"
+        query = json.loads(request.content)
+        assert query["owner_subject"] == owner
+        batch = query["references"]
+        sizes.append(len(batch))
+        return httpx.Response(200, json={"owner_subject": owner, "allowed": batch[:1]})
+
+    result = await _client(handler).eligible_formal_refs(owner, refs)
+    assert sizes == [100, 1]
+    assert result == {MethodRef.model_validate(refs[i]) for i in (0, 100)}
+    for reply in [
+        {"owner_subject": "other", "allowed": []},
+        {"owner_subject": owner, "allowed": [refs[1]]},
+        {"owner_subject": owner, "allowed": [{**refs[0], "digest": "bad"}]},
+    ]:
+        with pytest.raises(KnowbotUnavailable):
+            await _client(
+                lambda _, reply=reply: httpx.Response(200, json=reply)
+            ).eligible_formal_refs(owner, refs[:1])

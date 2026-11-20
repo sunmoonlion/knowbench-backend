@@ -89,6 +89,10 @@ async def test_nested_qualified_methods_preserve_each_call_and_private_registrat
 
         async with repo.transaction():
             await repo.purge_test_run(str(ctx.request.run_id))
+        review = await ctx.factory(repo).formal_sources.self_review_outputs(
+            "author", frozen.reference
+        )
+        assert len(review["samples"][0]["steps"]) >= len(plan.leaf_nodes) + 1
         retained = {
             (f.reference.method_id, f.reference.version): f
             for f in snapshot.dependencies

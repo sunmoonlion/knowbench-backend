@@ -14,6 +14,8 @@ from app.domain.workbench.states import TaskState
 
 async def check_formal_dispatch(svc, owner, call, asset, intent):
     repo = svc.repo
+    if intent.get("execution_kind") in ("formal_method", "formal_method_model"):
+        await svc.require_formal_use(owner, intent["formal_method"]["reference"])
     if asset["status"] != "active" or asset["revision"] != intent["revision"]:
         raise CapabilityError("The approved connection changed")
     auth = intent.get("authorization") or {}

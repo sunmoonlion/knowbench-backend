@@ -96,6 +96,7 @@ class Capabilities:
         remote: McpPort,
         cipher: Any = None,
         *,
+        formal_market=None,
         oauth_providers=(),
         oauth_transport=None,
         web_origin="",
@@ -122,6 +123,7 @@ class Capabilities:
         self.oauth = ConnectionOAuth(
             repo, oauth_providers, oauth_transport, remote, cipher, web_origin
         )
+        self.formal_market = formal_market
         self.task_outputs_url = task_outputs_url
         internal_urls = {
             task_outputs_url,
@@ -468,6 +470,18 @@ class Capabilities:
                 "Conversation execution changed; reload its capability scope"
             )
         return session
+
+    async def eligible_formal_refs(self, owner, references):
+        if not references:
+            return set()
+        subject = await self.repo.subject_of_actor(owner)
+        if not subject or self.formal_market is None:
+            raise CapabilityError("Formal method market qualification is unavailable")
+        return await self.formal_market.eligible_formal_refs(subject, references)
+
+    async def require_formal_use(self, owner, reference):
+        if not await self.eligible_formal_refs(owner, [reference]):
+            raise Forbidden("This method version is not listed for the owner")
 
     async def _locked_session(self, owner, session_id):
         """Task (when present) precedes Session, then capability rows.

@@ -128,6 +128,19 @@ class DeliverySelection(Strict):
     skill: MethodRef | None = None
 
 
+@router.post("/formal-method-self-review")
+async def formal_self_review(
+    _: FormalCaller,
+    subject: Annotated[str, Query(min_length=1, max_length=512)],
+    reference: MethodRef,
+    svc: FormalService,
+):
+    try:
+        return _out(await svc.self_review_outputs(subject, reference))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.post("/users/{subject}/formal-method-delivery-check")
 async def author_delivery_check(
     _: FormalCaller, subject: str, reference: MethodRef, svc: FormalService

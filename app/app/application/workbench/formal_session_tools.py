@@ -90,6 +90,9 @@ class FormalSessionTools:
 
     async def resolve(self, owner, reference):
         reference = MethodRef.model_validate(reference)
+        await self.capabilities.require_formal_use(
+            owner, reference.model_dump(mode="json")
+        )
         resolved = await self.catalog.resolve_owned(owner, reference, caller="model")
         frozen, asset, policy = resolved.frozen, resolved.asset, resolved.policy
         procedure = direct_procedure(frozen.draft, caller="model")

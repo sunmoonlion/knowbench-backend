@@ -60,6 +60,8 @@ async def test_only_explicit_qualified_reference_is_mounted_and_experts_do_not_i
         assert (await svc.selection(OWNER, sid))["formal_methods"] == chosen[
             "formal_methods"
         ]
+        svc.formal_market.versions.clear()
+        assert await FormalSessionTools(svc).available(OWNER, runtime) == {}
     assert len(remote.calls) == before
 
 

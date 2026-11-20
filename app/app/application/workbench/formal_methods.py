@@ -272,6 +272,69 @@ class FormalMethods:
         ):
             raise Forbidden("Source has no reviewed delivery right")
 
+    async def self_review_outputs(self, subject, reference):
+        """Return only verified test outputs to the authenticated incubator on author submission."""
+        import json
+
+        async with self.repo.transaction():
+            owner = await self._owner(subject)
+            row = await self.repo.formal_method(
+                owner, str(reference.method_id), reference.version
+            )
+            if not row or row["caller"] != "knowlab":
+                raise NotFound("Registered version not found")
+            frozen = FrozenFormalMethod.model_validate(row["document"])
+            if frozen.reference != reference or frozen.owner_subject != subject:
+                raise Forbidden("Different registered version")
+            run = await self.repo.formal_validation(
+                owner, str(frozen.validation.run_id)
+            )
+            evidence = (run or {}).get("execution_evidence")
+            execution = frozen.validation.execution
+            samples = []
+            size = 0
+            complete = bool(
+                execution
+                and evidence
+                and fingerprint(evidence) == execution.evidence_digest
+            )
+            if complete and evidence is not None:
+                for case in evidence["cases"]:
+                    result = case["result"]
+                    if not case["validated"] or result["status"] != "passed":
+                        complete = False
+                        break
+                    if result["outcome"] == "rejected":
+                        continue
+                    key = f"{result['case_id']}:{result['repetition']}"
+                    outputs = case.get("outputs")
+                    if outputs is None:
+                        outputs = await self.repo.get_test_case_outputs(
+                            str(frozen.validation.run_id), key
+                        )
+                    if not isinstance(outputs, dict) or digest(outputs) != case.get(
+                        "outputs_digest"
+                    ):
+                        complete = False
+                        break
+                    artifacts = [outputs]
+                    for step in case.get("steps", []):
+                        artifacts.extend(
+                            step[k] for k in ("outputs", "method_outputs") if k in step
+                        )
+                    sample = {"steps": [{"artifact": v} for v in artifacts]}
+                    size += len(json.dumps(sample, ensure_ascii=False).encode())
+                    if size > 1024 * 1024:
+                        complete = False
+                        break
+                    samples.append(sample)
+            return {
+                "owner_subject": subject,
+                "reference": reference.model_dump(mode="json"),
+                "run_id": str(frozen.validation.run_id),
+                "samples": samples if complete else [],
+            }
+
     async def delivery(self, subject, reference, *, market, skill=None):
         async with self.repo.transaction():
             owner = await self._owner(subject)

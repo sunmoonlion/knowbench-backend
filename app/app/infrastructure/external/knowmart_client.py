@@ -13,6 +13,7 @@ from urllib.parse import quote
 
 from app.application.errors.exceptions import BadGatewayError, ServiceUnavailableError
 from app.domain.workbench.errors import KnowbotUnavailable, NoSuchExpert
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.infrastructure.external.service_client import ServiceClient, service_relation
 
 NOT_FOUND = frozenset({"knowbot_not_found", "not_found"})
@@ -31,6 +32,41 @@ class KnowmartSummonClient:
                 raise KnowbotUnavailable("summoning from knowmart is not configured")
             self._client = ServiceClient(relation, **self._options)
         return self._client
+
+    async def eligible_formal_refs(
+        self, subject: str, references: list[dict]
+    ) -> set[MethodRef]:
+        allowed = set()
+        for offset in range(0, len(references), 100):
+            batch = references[offset : offset + 100]
+            try:
+                _, body = await self._connect().request(
+                    "POST",
+                    "/formal-methods/eligible",
+                    json={"owner_subject": subject, "references": batch},
+                )
+            except (BadGatewayError, ServiceUnavailableError) as exc:
+                raise KnowbotUnavailable(
+                    "Formal method listing is unavailable"
+                ) from exc
+            if (
+                not isinstance(body, dict)
+                or body.get("owner_subject") != subject
+                or not isinstance(body.get("allowed"), list)
+            ):
+                raise KnowbotUnavailable("KnowMart returned an invalid use decision")
+            try:
+                permitted = set(
+                    MethodRef.model_validate(ref) for ref in body["allowed"]
+                )
+            except ValueError as exc:
+                raise KnowbotUnavailable(
+                    "Invalid reference in KnowMart use decision"
+                ) from exc
+            if not permitted.issubset(MethodRef.model_validate(ref) for ref in batch):
+                raise KnowbotUnavailable("KnowMart returned a different method version")
+            allowed.update(permitted)
+        return allowed
 
     async def summon(
         self, *, owner_subject: str, knowbot_id: str, version: str
