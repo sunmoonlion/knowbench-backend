@@ -695,47 +695,52 @@ async def advance_formal(conductor, run_id):
                 .get("queued_behind")
             )
             attempts = await repo.list_attempts(task_id)
-            refs = (attempts[-1].get("refs") or {}) if attempts else {}
-            call_id = refs.get("capability_call_id")
-            elapsed_wait = int(current["waited_seconds"] or 0)
-            if (
-                isinstance(request.draft.definition.procedure, Orchestration)
-                and call_id
-            ):
-                # Sum each real approval interval once across completed steps.
-                # Replacing the current call must not erase earlier waiting time.
-                total_wait = timedelta()
-                seen_calls = set()
-                for prior in attempts:
-                    prior_call = (prior.get("refs") or {}).get("capability_call_id")
-                    if not prior_call or prior_call in seen_calls:
-                        continue
-                    seen_calls.add(prior_call)
-                    observed = await repo.capability_call(
-                        str(task["owner_actor_id"]), prior_call
+            # Queue and approval waits are disjoint ledger intervals. Rebuild
+            # both from their timestamps, independent of polling and restarts.
+            queue_events = await repo.list_task_events(
+                task_id, types=("task/queued", "task/dequeued")
+            )
+            queued_at = None
+            total_wait = timedelta()
+            for event in queue_events:
+                if event["type"] == "task/queued" and queued_at is None:
+                    queued_at = event["created_at"]
+                elif event["type"] == "task/dequeued" and queued_at is not None:
+                    total_wait += max(
+                        timedelta(), min(now, event["created_at"]) - queued_at
                     )
-                    if observed.get("interaction_id"):
-                        interaction = await repo.get_interaction(
-                            str(observed["interaction_id"])
-                        )
-                        until = min(now, interaction["consumed_at"] or now)
-                        total_wait += max(
-                            timedelta(), until - interaction["created_at"]
-                        )
-                # Keep sub-second intervals until after the complete sum. Taking
-                # int per step lets many short waits evade the run's wait limit.
-                elapsed_wait = int(total_wait.total_seconds())
-            elif call_id:
-                call = await repo.capability_call(str(task["owner_actor_id"]), call_id)
-                if call.get("interaction_id"):
+                    queued_at = None
+            if queued_at is not None:
+                until = (
+                    min(now, task["updated_at"])
+                    if task["state"] in TASK_TERMINAL
+                    else now
+                )
+                total_wait += max(timedelta(), until - queued_at)
+            seen_calls = set()
+            for prior in attempts:
+                prior_call = (prior.get("refs") or {}).get("capability_call_id")
+                if not prior_call or prior_call in seen_calls:
+                    continue
+                seen_calls.add(prior_call)
+                observed = await repo.capability_call(
+                    str(task["owner_actor_id"]), prior_call
+                )
+                if observed.get("interaction_id"):
                     interaction = await repo.get_interaction(
-                        str(call["interaction_id"])
+                        str(observed["interaction_id"])
                     )
                     until = min(now, interaction["consumed_at"] or now)
-                    elapsed_wait = max(
-                        0, int((until - interaction["created_at"]).total_seconds())
-                    )
-            elif waiting and current["waiting_since"] is not None:
+                    total_wait += max(timedelta(), until - interaction["created_at"])
+            elapsed_wait = max(
+                int(current["waited_seconds"] or 0), int(total_wait.total_seconds())
+            )
+            if (
+                not queue_events
+                and not seen_calls
+                and waiting
+                and current["waiting_since"] is not None
+            ):
                 elapsed_wait += max(
                     0, int((now - current["waiting_since"]).total_seconds())
                 )

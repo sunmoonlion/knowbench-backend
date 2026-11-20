@@ -799,6 +799,24 @@ class Ledger:
                     _turn_open(task, task.get("active_attempt_id")) if live else None
                 ),
             )
+            if is_formal_host(task):
+                from app.application.workbench.formal_recursive_runtime import (
+                    settle_ancestors,
+                )
+                from app.domain.workbench.formal_execution import (
+                    recursive_plan,
+                    snapshot_for_task,
+                )
+
+                try:
+                    snapshot = snapshot_for_task(task)
+                except (ValueError, TypeError):
+                    # Cancellation must remain possible for an invalid frozen snapshot.
+                    snapshot = None
+                if snapshot is not None and recursive_plan(snapshot):
+                    await settle_ancestors(
+                        self.repo, task, snapshot, outcome="cancelled"
+                    )
             # WAITING 时那一轮可能还卡在等人批准、等人回答，在跑的那一轮还在 Codex 里：
             # 都要调用方照样发一次中断把它收住（interrupt），不然 Codex 要等到时限
             return {

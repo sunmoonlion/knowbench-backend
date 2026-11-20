@@ -204,10 +204,11 @@ async def test_plan_intake_requires_current_real_host_qualified_leaves(db, chang
 
 
 @pytest.mark.parametrize(
-    "seconds,expected,expired", [(0.9, 1, False), (30.9, 61, True)]
+    "seconds,queued,expected,expired",
+    [(0.9, 0, 1, False), (30.9, 0, 61, True), (0.9, 60, 61, True)],
 )
 async def test_approval_wait_is_summed_before_rounding_and_enforces_total_limit(
-    db, seconds, expected, expired
+    db, seconds, queued, expected, expired
 ):
     from datetime import UTC, datetime, timedelta
 
@@ -233,6 +234,26 @@ async def test_approval_wait_is_summed_before_rounding_and_enforces_total_limit(
     async with db() as session:
         repo = WorkbenchRepository(session)
         async with repo.transaction():
+            if queued:
+                tid = first["cases"][0]["task_id"]
+                task = await repo.get_task(tid)
+                for kind, stamp in (
+                    ("task/queued", start - timedelta(seconds=queued)),
+                    ("task/dequeued", start),
+                ):
+                    await repo.append_event(
+                        session_id=str(task["session_id"]),
+                        kind="task",
+                        event_type=kind,
+                        task_id=tid,
+                        payload={},
+                    )
+                    await session.execute(
+                        text(
+                            "UPDATE workbench_session_events SET created_at=:stamp WHERE task_id=:tid AND event_type=:kind"
+                        ),
+                        {"tid": tid, "kind": kind, "stamp": stamp},
+                    )
             for i, view in enumerate((first, second)):
                 action = view["actions"][0]
                 created = start + timedelta(seconds=i * 32)

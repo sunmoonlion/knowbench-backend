@@ -326,6 +326,23 @@ async def test_real_mcp_adapter_outcomes_are_recorded_without_retry(
         assert len(calls) == dispatches
 
 
+async def test_non_oauth_owner_can_explicitly_replace_disconnected_credential(db):
+    from app.domain.workbench.capabilities import ConnectionRenew
+
+    _, asset, _, _, remote = await prepared(db)
+    async with db() as session:
+        svc = service(WorkbenchRepository(session), remote)
+        prior = await svc.action(
+            OWNER, asset["id"], AssetAction(revision=1, action="disconnect")
+        )
+        renewed = await svc.renew(
+            OWNER,
+            asset["id"],
+            ConnectionRenew(revision=prior["revision"], token="replacement"),
+        )
+        assert renewed["status"] == "active" and not renewed["default_selected"]
+
+
 @pytest.mark.parametrize("change", ["refresh", "renew", "disable_enable"])
 async def test_changed_connection_does_not_block_chat_or_reuse_old_approval(db, change):
     from app.domain.workbench.capabilities import ConnectionRenew
@@ -344,11 +361,16 @@ async def test_changed_connection_does_not_block_chat_or_reuse_old_approval(db, 
             )
         elif change == "disable_enable":
             await svc.action(
+                OWNER, asset["id"], AssetAction(revision=1, action="default_on")
+            )
+            disabled = await svc.action(
                 OWNER, asset["id"], AssetAction(revision=1, action="disable")
             )
-            await svc.action(
+            assert disabled["default_selected"] is False
+            enabled = await svc.action(
                 OWNER, asset["id"], AssetAction(revision=2, action="enable")
             )
+            assert enabled["default_selected"] is False
         else:
             await svc.action(
                 OWNER, asset["id"], AssetAction(revision=1, action="refresh")
@@ -608,48 +630,27 @@ async def test_migration_down_up_preserves_existing_sessions(db):
     from alembic.runtime.migration import MigrationContext
 
     _, _, sid = await seed(db)
-    path = (
-        Path(__file__).resolve().parents[1]  # noqa: ASYNC240 - test-only migration module
-        / "alembic/versions/20261114_0041_calls.py"
-    )
-    spec = importlib.util.spec_from_file_location("capability_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    authority_path = path.with_name("20261114_0042_authorizations.py")
-    authority_spec = importlib.util.spec_from_file_location(
-        "authority_migration", authority_path
-    )
-    authority_module = importlib.util.module_from_spec(authority_spec)
-    authority_spec.loader.exec_module(authority_module)
-    following = []
-    for filename in (
-        "20261114_0043_formal_methods.py",
-        "20261115_0044_direct_method_grants.py",
-        "20261115_0045_formal_execution_evidence.py",
-        "20261119_0046_skill_files.py",
-    ):
-        later_spec = importlib.util.spec_from_file_location(
-            filename[:-3], path.with_name(filename)
-        )
-        later = importlib.util.module_from_spec(later_spec)
-        later_spec.loader.exec_module(later)
-        following.append(later)
+    directory = Path(__file__).resolve().parents[1] / "alembic/versions"  # noqa: ASYNC240
+    revisions = []
+    for path in sorted(directory.glob("20*.py")):
+        if path.name < "20261114_0041":
+            continue
+        spec = importlib.util.spec_from_file_location(path.stem, path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        revisions.append(module)
     async with db() as s:
         conn = await s.connection()
 
         def cycle(sync):
             with Operations.context(MigrationContext.configure(sync)):
-                for later in reversed(following):
-                    later.downgrade()
-                authority_module.downgrade()
-                module.downgrade()
+                for revision in reversed(revisions):
+                    revision.downgrade()
                 assert sync.execute(
                     text("SELECT id FROM workbench_sessions WHERE id=:s"), {"s": sid}
                 ).scalar()
-                module.upgrade()
-                authority_module.upgrade()
-                for later in following:
-                    later.upgrade()
+                for revision in revisions:
+                    revision.upgrade()
 
         await conn.run_sync(cycle)
         await s.commit()

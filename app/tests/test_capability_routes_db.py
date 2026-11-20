@@ -93,6 +93,21 @@ async def test_http_contract_authentication_approval_and_mcp_scope(db):
         ).json()
         call = listed["calls"][0]
         assert call["id"] == call_id and not remote.calls
+        from app.infrastructure.storage.postgres import get_db_session
+
+        async def route_session():
+            async with db() as session:
+                yield session
+
+        app.dependency_overrides[get_db_session] = route_session
+        async with db() as session:
+            stored = await WorkbenchRepository(session).capability_call(OWNER, call_id)
+        url_decision = f"/api/workbench/interactions/{stored['interaction_id']}/respond"
+        invalid = {"token": "x" * 32}
+        app.dependency_overrides[get_web_current_user] = lambda: principal(OTHER)
+        assert (await http.post(url_decision, json=invalid)).status_code == 404
+        app.dependency_overrides[get_web_current_user] = lambda: principal(OWNER)
+        assert (await http.post(url_decision, json=invalid)).status_code == 422
         done = await http.post(
             f"/api/workbench/capability-calls/{call_id}/decision",
             json=approval(call).model_dump(),

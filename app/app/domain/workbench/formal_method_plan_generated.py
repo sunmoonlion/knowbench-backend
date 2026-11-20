@@ -14,8 +14,6 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import UUID
 
-from jsonschema import Draft202012Validator
-
 from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
     Kind,
@@ -232,7 +230,7 @@ def _validate_slots(slots: dict[str, ValueSlot], values: Any) -> dict:
         if name not in values:
             if slot.required or slot.on_missing != "omit":
                 raise ValueError(f"Missing plan value: {name}")
-        elif not Draft202012Validator(slot.schema_).is_valid(values[name]):
+        elif not slot.accepts(values[name]):
             raise ValueError(f"Plan value does not match its schema: {name}")
     return copy.deepcopy(values)
 

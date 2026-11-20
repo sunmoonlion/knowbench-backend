@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Any, Literal
 from uuid import UUID
 
-from jsonschema import Draft202012Validator
 from pydantic import Field, model_validator
 
 from app.domain.workbench.capabilities import digest
@@ -269,7 +268,7 @@ def validate_values(slots: dict, values: Any) -> dict:
         if name not in values:
             if slot.required or slot.on_missing != "omit":
                 raise ValueError(f"Missing method value: {name}")
-        elif not Draft202012Validator(slot.schema_).is_valid(values[name]):
+        elif not slot.accepts(values[name]):
             raise ValueError(f"Method value does not match its schema: {name}")
     return values
 

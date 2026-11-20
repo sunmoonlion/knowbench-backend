@@ -7,6 +7,7 @@ from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import snapshot_for_task
 from app.domain.workbench.projects import CODEX_VERSION
 
+PROBE_PASSIVE_ITEMS = ("agentMessage", "reasoning", "userMessage")
 PROBE_TOOL = "formal_probe_call"
 PROBE_SERVER = "sunmoon_capabilities"
 PROBE_ISOLATION = f"codex-{CODEX_VERSION}/formal-probe-v1"
@@ -113,15 +114,9 @@ class FormalProbeGuard:
 
     def observe(self, item):
         kind = item.get("type")
-        if kind in (
-            "commandExecution",
-            "webSearch",
-            "fileChange",
-            "collabAgentToolCall",
-            "dynamicToolCall",
-        ):
-            self.failure = "unexpected_tool"
         if kind != "mcpToolCall":
+            if kind not in PROBE_PASSIVE_ITEMS:
+                self.failure = "unexpected_tool"
             return
         if item.get("server") != PROBE_SERVER or item.get("tool") != PROBE_TOOL:
             self.failure = "unexpected_tool"

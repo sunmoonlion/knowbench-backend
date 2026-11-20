@@ -161,7 +161,7 @@ class McpOperation(BaseModel):
     def resolve(self, arguments: dict[str, Any]) -> dict[str, Any]:
         attachments = []
         if self.inline_attachments_field:
-            files = arguments.get(self.inline_attachments_field)
+            files = arguments.get(self.inline_attachments_field, [])
             if not isinstance(files, list) or len(files) > 100:
                 raise CapabilityError("Invalid outbound attachment list")
             for item in files:

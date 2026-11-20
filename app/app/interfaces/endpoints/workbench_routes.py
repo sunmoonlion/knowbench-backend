@@ -1415,7 +1415,9 @@ async def respond_interaction(
         if v is not None
     }
     try:
-        interaction = await repo.get_interaction(interaction_id)
+        interaction = await repo.get_interaction(
+            interaction_id, owner_actor_id=_actor(principal)
+        )
         capability_call = ((interaction.get("prompt") or {}).get("subject") or {}).get(
             "capability_call_id"
         )

@@ -153,6 +153,18 @@ async def test_later_subtree_failure_preserves_completed_prefix_and_never_replay
         async with db() as session:
             repo = WorkbenchRepository(session)
             if failure == "cancel":
+                from app.application.workbench.ledger import Ledger
+
+                task = await repo.get_task(tid)
+                attempt = await repo.get_attempt(str(task["active_attempt_id"]))
+                parent_id = attempt["refs"]["parent_method_call_id"]
+                await Ledger(repo).request_cancel(tid, owner_actor_id=ctx.owner)
+                parent = next(
+                    c
+                    for c in await repo.list_task_calls(ctx.owner, tid)
+                    if c["id"] == parent_id
+                )
+                assert parent["status"] == "cancelled"
                 await FormalExecutions(repo, ctx.factory(repo)).cancel(
                     "author", str(ctx.request.run_id), caller="knowlab"
                 )

@@ -271,7 +271,6 @@ class ConnectionOAuth:
                         asset["id"],
                         asset["revision"],
                         status="active",
-                        default_selected=asset["default_selected"],
                         detail=detail,
                         secret=self.encrypt(creds),
                     )
@@ -302,7 +301,6 @@ class ConnectionOAuth:
             asset["id"],
             asset["revision"],
             status="reauth_required",
-            default_selected=False,
             detail=detail,
             secret=None,
         )
@@ -422,7 +420,6 @@ class ConnectionOAuth:
                 asset_id,
                 revision,
                 status="disconnected",
-                default_selected=False,
                 detail=detail,
                 secret=None,
             )
@@ -445,7 +442,6 @@ class ConnectionOAuth:
                         asset_id,
                         saved["revision"],
                         status="disconnected",
-                        default_selected=False,
                         detail=detail,
                         secret=None,
                     )
@@ -488,7 +484,6 @@ class ConnectionOAuth:
                     asset_id,
                     body.revision,
                     status=status,
-                    default_selected=current["default_selected"],
                     detail=detail,
                     secret=secret,
                 )

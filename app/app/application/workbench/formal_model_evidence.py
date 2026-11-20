@@ -12,6 +12,7 @@ from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_execution import direct_procedure, snapshot_for_task
 from app.domain.workbench.formal_model import (
+    PROBE_PASSIVE_ITEMS,
     PROBE_SERVER,
     PROBE_TOOL,
     validate_model_call,
@@ -280,15 +281,10 @@ async def collect_model_provenance(
             if kind in calls:
                 item = payload.get("item") or {}
                 require(started < event["cursor"] < finished, "model_item_outside_turn")
-                if item.get("type") in (
-                    "commandExecution",
-                    "webSearch",
-                    "fileChange",
-                    "collabAgentToolCall",
-                    "dynamicToolCall",
-                ):
-                    errors.append("unexpected_model_tool")
                 if item.get("type") != "mcpToolCall":
+                    require(
+                        item.get("type") in PROBE_PASSIVE_ITEMS, "unexpected_model_tool"
+                    )
                     continue
                 require(
                     item.get("id") == tool_call

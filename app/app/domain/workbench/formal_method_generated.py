@@ -50,6 +50,14 @@ class ValueSlot(Strict):
     meaning: dict[Name, Text] = Field(max_length=20)
     on_missing: Literal["pause", "fail", "omit"]
 
+    def accepts(self, value: Any) -> bool:
+        try:
+            return Draft202012Validator(self.schema_).is_valid(value)
+        except RecursionError:
+            # Recursive local schemas can legitimately describe finite trees.
+            # A validation that cannot finish never certifies a value.
+            return False
+
     @model_validator(mode="after")
     def valid(self):
         # No remote schema fetching during either incubation or execution.

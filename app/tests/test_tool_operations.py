@@ -159,3 +159,11 @@ def test_settings_reject_ambiguous_or_unapproved_bindings_and_unknown_conditions
         "WORKBENCH_CAPABILITY_OPERATIONS", "[" + policy.model_dump_json() + "]"
     )
     assert Settings(_env_file=None).workbench_capability_operations == (policy,)
+
+
+def test_optional_reviewed_attachment_can_be_omitted():
+    policy = definition(inline_attachments_field="files")
+    args = {"message": {"to": ["a@example.test"]}}
+    assert policy.resolve(args)["attachments"] == []
+    with pytest.raises(CapabilityError):
+        policy.resolve({**args, "files": None})

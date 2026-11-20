@@ -434,6 +434,7 @@ async def test_completed_provenance_reconciles_events_budget_and_isolation_witho
         "resources",
         "config",
         "native_tool",
+        "unknown_item",
         "raw_usage",
         "model_identity",
     ],
@@ -519,7 +520,11 @@ async def test_missing_or_changed_model_facts_never_qualify(mutation):
         w.events[-1]["payload"]["model"] = "another-model"
     else:
         event = deepcopy(w.events[1])
-        event["payload"]["item"] = {"type": "commandExecution"}
+        event["payload"]["item"] = {
+            "type": "unrecognizedItem"
+            if mutation == "unknown_item"
+            else "commandExecution"
+        }
         w.events.append(event)
     proof = await collect(w)
     assert not proof["validated"] and proof["errors"], mutation

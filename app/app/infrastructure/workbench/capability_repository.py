@@ -189,20 +189,19 @@ class CapabilityRepositoryMixin:
             return row(existing)
 
     async def capability_update(
-        self, owner, asset_id, revision, *, status, default_selected, detail, secret
+        self, owner, asset_id, revision, *, status, detail, secret
     ):
         result = (
             (
                 await self.session.execute(
                     text("""UPDATE workbench_capability_assets
-          SET revision=revision+1,status=:status,default_selected=CASE WHEN :status IN ('disconnected','reauth_required') THEN false ELSE default_selected END,detail=cast(:detail as jsonb),secret=:secret,updated_at=now()
+          SET revision=revision+1,status=:status,default_selected=CASE WHEN :status = 'active' AND status = 'active' THEN default_selected ELSE false END,detail=cast(:detail as jsonb),secret=:secret,updated_at=now()
           WHERE id=:id AND owner_actor_id=:o AND revision=:revision RETURNING *"""),
                     dict(
                         id=asset_id,
                         o=owner,
                         revision=revision,
                         status=status,
-                        default_selected=default_selected,
                         detail=json.dumps(detail),
                         secret=secret,
                     ),

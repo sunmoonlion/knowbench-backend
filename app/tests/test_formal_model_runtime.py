@@ -57,6 +57,7 @@ def test_repeated_observation_is_not_a_second_invocation():
         "fileChange",
         "collabAgentToolCall",
         "dynamicToolCall",
+        "unrecognizedItem",
     ],
 )
 def test_native_tool_observation_fails_the_probe(kind):

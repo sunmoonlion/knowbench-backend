@@ -166,7 +166,6 @@ class WorkbenchStore(Protocol):
         revision: int,
         *,
         status: str,
-        default_selected: bool,
         detail: dict[str, Any],
         secret: str | None,
     ) -> dict[str, Any]: ...
@@ -542,7 +541,11 @@ class WorkbenchStore(Protocol):
     ) -> str: ...
 
     async def get_interaction(
-        self, interaction_id: str, *, for_update: bool = False
+        self,
+        interaction_id: str,
+        *,
+        for_update: bool = False,
+        owner_actor_id: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def list_interactions(

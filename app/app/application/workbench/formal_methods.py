@@ -483,11 +483,15 @@ class FormalMethods:
             locks = []
             selected = None
             for method in sorted(
-                documents, key=lambda m: (m.reference.method_id, m.reference.version)
+                documents,
+                key=lambda m: str(m.draft.source.asset_id) if m.draft.source else "",
             ):
                 if method.owner_subject != subject:
                     raise Forbidden("Dependency is owned by another author")
                 await self.check_delivery_source(owner, method, market=market)
+            for method in sorted(
+                documents, key=lambda m: (m.reference.method_id, m.reference.version)
+            ):
                 source = method.draft.source
                 locks.append(
                     {

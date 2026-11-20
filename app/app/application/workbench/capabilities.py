@@ -366,7 +366,6 @@ class Capabilities:
                 asset_id,
                 body.revision,
                 status="active",
-                default_selected=asset["default_selected"],
                 detail=detail,
                 secret=self.cipher.encrypt(body.token.encode()).decode()
                 if body.token
@@ -392,11 +391,7 @@ class Capabilities:
         if asset["detail"].get("auth") == "oauth":
             return await self.oauth.action(owner, asset, body)
         detail = dict(asset["detail"])
-        status, default, secret = (
-            asset["status"],
-            asset["default_selected"],
-            asset["secret"],
-        )
+        status, secret = asset["status"], asset["secret"]
         if body.action == "refresh":
             if asset["kind"] != "connection" or status != "active":
                 raise CapabilityError("Only active connections can be checked")
@@ -408,7 +403,7 @@ class Capabilities:
         elif body.action == "disconnect":
             if asset["kind"] != "connection":
                 raise CapabilityError("Use remove to uninstall a Skill")
-            status, default, secret = "disconnected", False, None
+            status, secret = "disconnected", None
             detail["revocation"] = (
                 "local_access_removed; revoke bearer credential at provider if required"
             )
@@ -416,7 +411,7 @@ class Capabilities:
             if asset["kind"] != "skill":
                 raise CapabilityError("Use disconnect for an MCP connection")
             # Preserve immutable content and past receipts; revoke further use.
-            status, default, secret = "disconnected", False, None
+            status, secret = "disconnected", None
         elif body.action in ("enable", "disable"):
             if status == "disconnected":
                 raise CapabilityError(
@@ -424,18 +419,13 @@ class Capabilities:
                 )
             status = "active" if body.action == "enable" else "disabled"
         else:
-            default = body.action == "default_on"
-            if default and status != "active":
-                raise CapabilityError(
-                    "Only active capabilities can be selected by default"
-                )
+            raise CapabilityError("Unsupported capability action")
         async with self.repo.transaction():
             updated = await self.repo.capability_update(
                 owner,
                 asset_id,
                 body.revision,
                 status=status,
-                default_selected=default,
                 detail=detail,
                 secret=secret,
             )

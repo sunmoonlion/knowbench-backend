@@ -1206,14 +1206,24 @@ class WorkbenchRepository(
         return iid
 
     async def get_interaction(
-        self, interaction_id: str, *, for_update: bool = False
+        self,
+        interaction_id: str,
+        *,
+        for_update: bool = False,
+        owner_actor_id: str | None = None,
     ) -> dict[str, Any]:
+        owner_filter = ""
+        params = {"id": interaction_id}
+        if owner_actor_id is not None:
+            owner_filter = " AND EXISTS (SELECT 1 FROM workbench_sessions s WHERE s.id = workbench_interactions.session_id AND s.owner_actor_id = :owner)"
+            params["owner"] = owner_actor_id
         r = await self.session.execute(
             text(
                 "select * from workbench_interactions where id = :id"
+                + owner_filter
                 + (" for update" if for_update else "")
             ),
-            {"id": interaction_id},
+            params,
         )
         row = r.mappings().first()
         if row is None:
