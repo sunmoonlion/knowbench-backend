@@ -25,6 +25,7 @@ from app.domain.workbench.resource_delegation import (
     ResourceDelegation,
     ResourceDelegationCatalog,
 )
+from app.domain.workbench.review_routes import ReviewRoute
 from app.domain.workbench.script_pricing import ScriptTariff
 from app.domain.workbench.source_licenses import (
     BusinessCoverageReview,
@@ -348,6 +349,17 @@ class Settings(BaseSettings):
     workbench_sandbox_global_limit: int = Field(
         default=20, ge=0, validation_alias="WORKBENCH_SANDBOX_GLOBAL_LIMIT"
     )
+    workbench_review_routes: tuple[ReviewRoute, ...] = Field(
+        default=(), max_length=128, validation_alias="WORKBENCH_REVIEW_ROUTES"
+    )
+
+    @field_validator("workbench_review_routes")
+    @classmethod
+    def unique_review_routes(cls, routes):
+        if len({(r.provider, r.model) for r in routes}) != len(routes):
+            raise ValueError("Duplicate review provider/model route")
+        return routes
+
     workbench_sandbox_model_provider: str = Field(
         default="", validation_alias="WORKBENCH_SANDBOX_MODEL_PROVIDER"
     )

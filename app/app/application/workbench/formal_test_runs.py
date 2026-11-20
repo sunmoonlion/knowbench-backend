@@ -115,6 +115,7 @@ class FormalExecutions:
         return owner, run, request
 
     async def accept(self, request, *, caller):
+        self.formal.require_supported_graph(request.draft)
         run_id = str(request.run_id)
         async with self.repo.transaction():
             await self.repo.lock_formal_execution(run_id)

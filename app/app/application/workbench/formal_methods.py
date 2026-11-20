@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from app.domain.workbench.capabilities import CapabilityError, digest
-from app.domain.workbench.errors import Forbidden, NotFound
+from app.domain.workbench.errors import Forbidden, NotFound, RuntimeCapabilityGap
 from app.domain.workbench.formal_method_admission_generated import (
     CONTRACT,
     GOVERNANCE_CHECKS,
@@ -51,6 +51,12 @@ class FormalMethods:
         self.source_licenses = SourceLicenseCatalog(tuple(source_licenses))
         self.business_reviews = tuple(business_reviews)
         self.now = now or (lambda: datetime.now(UTC))
+
+    @staticmethod
+    def require_supported_graph(draft):
+        graph = draft.definition.procedure
+        if isinstance(graph, Orchestration) and graph.collaboration:
+            raise RuntimeCapabilityGap("Runner lacks isolated collaboration execution")
 
     def business_review(self, subject, method_id, draft, suite_digest):
         if draft.source is None:
@@ -225,6 +231,7 @@ class FormalMethods:
             )
         ):
             raise CapabilityError("Dependency identity or host qualification changed")
+        self.require_supported_graph(frozen.draft)
         return frozen, grant
 
     async def binding_options(self, owner, frozen):
@@ -540,6 +547,7 @@ class FormalMethods:
             return result
 
     async def validate(self, request: FormalMethodValidationRequest, *, caller: str):
+        self.require_supported_graph(request.draft)
         async with self.repo.transaction():
             owner = await self._owner(request.owner_subject)
             prior = await self.repo.formal_validation(
@@ -607,6 +615,7 @@ class FormalMethods:
             ).model_dump(mode="json")
 
     async def register(self, frozen: FrozenFormalMethod, *, caller: str):
+        self.require_supported_graph(frozen.draft)
         if (
             isinstance(frozen.draft.definition.procedure, Orchestration)
             and frozen.visibility != "private"

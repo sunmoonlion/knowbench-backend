@@ -63,6 +63,11 @@ class BudgetExhausted(WorkbenchError):
     http_status = 409
 
 
+class RuntimeCapabilityGap(WorkbenchError):
+    code = "runtime_capability_gap"
+    http_status = 409
+
+
 class MethodPlanInvalid(WorkbenchError):
     code = "method_plan_invalid"
     http_status = 409

@@ -210,6 +210,50 @@
       "title": "CapabilityDeclaration",
       "type": "object"
     },
+    "CollaborationStep": {
+      "additionalProperties": false,
+      "properties": {
+        "review_requirements": {
+          "maxProperties": 100,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,47}$": {
+              "enum": [
+                "isolated_reviewer",
+                "different_model_family"
+              ],
+              "type": "string"
+            }
+          },
+          "title": "Review Requirements",
+          "type": "object"
+        },
+        "isolation_group": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Isolation Group"
+        },
+        "handoff_from": {
+          "default": [],
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Handoff From",
+          "type": "array"
+        }
+      },
+      "title": "CollaborationStep",
+      "type": "object"
+    },
     "DataTransfer": {
       "additionalProperties": false,
       "properties": {
@@ -860,6 +904,25 @@
     "Orchestration": {
       "additionalProperties": false,
       "properties": {
+        "collaboration": {
+          "anyOf": [
+            {
+              "maxProperties": 100,
+              "minProperties": 1,
+              "patternProperties": {
+                "^[A-Za-z][A-Za-z0-9_-]{0,47}$": {
+                  "$ref": "#/$defs/CollaborationStep"
+                }
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Collaboration"
+        },
         "kind": {
           "const": "orchestration",
           "title": "Kind",

@@ -40,6 +40,12 @@ from app.domain.workbench.formal_method_execution_generated import (
 )
 from app.domain.workbench.formal_method_generated import MethodRef, Strict
 from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
+from app.domain.workbench.review_routes import (
+    ReviewRoutePreview,
+    ReviewRouteQuery,
+    RouteKey,
+    preview_routes,
+)
 from app.domain.workbench.test_runs import CASE_ID, RUN_ID, Answers, RunRequest
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
@@ -135,6 +141,29 @@ class SharedToolBinding(Strict):
     reference: MethodRef
     asset_id: UUID
     revision: int = Field(ge=1, strict=True)
+
+
+@router.post("/formal-review-route-preview", response_model=ReviewRoutePreview)
+async def formal_review_route_preview(_: FormalCaller, body: ReviewRouteQuery):
+    settings = get_settings()
+    provider, model = (
+        settings.workbench_sandbox_model_provider,
+        settings.workbench_sandbox_model,
+    )
+    try:
+        default = (
+            RouteKey(provider=provider, model=model) if provider and model else None
+        )
+    except ValidationError:
+        # Legacy sandbox defaults may not identify a catalog route.
+        default = None
+    result = preview_routes(
+        body,
+        settings.workbench_review_routes,
+        default,
+        settings.workbench_model_prices(),
+    )
+    return _out(result.model_dump(mode="json"))
 
 
 @router.put("/incubation-tool-binding")
