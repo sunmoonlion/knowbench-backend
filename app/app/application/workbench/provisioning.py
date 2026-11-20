@@ -249,6 +249,7 @@ class SandboxProvisioning:
             "provider_base_url": credential.get("base_url")
             or self.provisioner.config.provider_base_url,
             "model_key": model_key,
+            "model_credential_id": str(credential["id"]),
             "relay_token": sandbox_token,
             "relay_user": identity["relay_user"],
         }

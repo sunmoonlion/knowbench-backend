@@ -276,7 +276,22 @@ RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_formal_instruction_
 有同级 `sunmoonun` 仓、断网探针镜像及测试库时，在后端 `app/` 运行下列用例。非并列检出可将 `SANDBOX_INSTRUCTION_RELAY` 指向对应的沙箱源码文件。
 
 ```sh
-RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_requests_db.py
+RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_requests_db.py tests/test_instruction_control_db.py
 ```
 
-该用例把沙箱转发器源码挂入固定版本的镜像，使用 PostgreSQL 账本和独立的回环供应商。沙箱与宿主通过测试进程管道交换放行决定和回执。部署环境仍须由受信宿主装配单次执行专用的控制通道，并限制沙箱的可达出口。KnowLab 正式试跑和冻结资格仍待接入。
+本地联调用只读、无外网的 Codex 0.170.0 容器。容器只交出本次模型请求并收回 SSE 响应。进程外的可信转发器经验证证书的 HTTPS 调 KnowBench 正式路由，独立的回环供应商提供测试响应。数据库为 PostgreSQL。用例同时核对同轮第二次请求、真实轮次编号、用量及取消后的迟到回执。
+
+### 纯指令转发器的控制接口
+
+可信宿主在开启 Attempt 时记录专用转发器的 UID。放行和回执共用 KnowBench 签名的短期专用票据，绑定所有者、根 Task、Attempt、用户沙箱、转发器 UID 和模型凭据编号。转发器从独立挂载的票据文件取令牌，用自身的 UID 和 Attempt 编号请求内网 HTTPS。票据只交付给该 Attempt 的可信转发器。控制路由本身不签发票据。
+
+| 入口 | 何时调用 | 核验与恢复 |
+| --- | --- | --- |
+| `POST /api/internal/v1/instruction-control/claim` | 发送模型请求前 | 重核票据与持久绑定、实际装载的凭据编号、供应商地址、模型、工作稿及预算。提交唯一名额后返回允许转发的地址和请求体。 |
+| `POST /api/internal/v1/instruction-control/receipt` | 收到供应商终结用量后 | 核对原 Attempt、轮次、响应编号和 token 明细，沿用预留时的价目。取消或路由停用后仍能补交原回执。 |
+
+`WORKBENCH_INSTRUCTION_ROUTES` 默认为空。每条运营配置包含 `provider`、`model`、`base_url`、`price_key`、`context_tokens`、`output_tokens`；单供应商只需一条。上下文上界由实际供应商核定。供给器收到凭据编号后，将编号、供应商、模型、接入地址和密钥合成一个 Secret 项供转发器投影，轮换时整项读取。
+
+转发器在自己的回执目录写入本次供应商回执并持久化，再向 KnowBench 提交。若确认丢失，重启后调用 `InstructionControl.reconcile()`，只补发原回执。执行票据可由可信宿主为原绑定续签。回执目录须跨该转发进程重启保留，清理由宿主在确认结算后执行。
+
+部署仍须创建专用转发器与隔离执行单元，按实际 Pod UID 交付票据，约束执行单元的唯一出口，并验收中断恢复。KnowLab 作者入口及冻结仍待接入。

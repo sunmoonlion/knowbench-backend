@@ -2,14 +2,12 @@
 
 import asyncio
 import json
-import os
 from contextlib import asynccontextmanager
 from dataclasses import replace
 from decimal import Decimal
-from pathlib import Path
 
 import pytest
-from test_formal_instruction_db import ARGS, ENTRY, PROBES, install
+from test_formal_instruction_db import ARGS, ENTRY, install
 from test_workbench_ledger_db import OWNER, handover, seed
 from test_workbench_ledger_db import db as db
 
@@ -22,7 +20,6 @@ from app.domain.workbench.formal_execution import (
     FORMAL_RUNTIME,
     FormalTaskSnapshot,
     PinnedFormalMethod,
-    snapshot_for_task,
 )
 from app.domain.workbench.instruction_requests import InstructionRoute, instruction_job
 from app.domain.workbench.pricing import Price, PriceList, Usage
@@ -319,134 +316,3 @@ async def test_default_provider_credential_can_only_use_its_deployment_endpoint(
     async with host(default_url=ROUTE.base_url) as svc:
         attempt = await svc.open(OWNER, task, caller="knowlab")
         assert (await svc.repo.get_attempt(attempt))["model"] == ROUTE.model
-
-
-def sandbox_relay():
-    configured = os.getenv("SANDBOX_INSTRUCTION_RELAY")
-    if configured:
-        return Path(configured).resolve(strict=True)
-    checkout = PROBES.parents[4] / "sunmoonun"
-    return (
-        checkout
-        / "infrastructure/applications/component-images/sandbox-platform/image/instruction_responses.py"
-    ).resolve(strict=True)
-
-
-@pytest.mark.skipif(
-    os.getenv("RUN_CODEX_INSTRUCTION_PROBE") != "1",
-    reason="requires pinned local Codex",
-)
-async def test_codex_outbound_second_post_stops_before_provider_with_root_charge(db):
-    host, task, cred, original = await setup(db)
-    async with host() as svc:
-        attempt = await svc.open(OWNER, task, caller="knowlab")
-        snapshot = snapshot_for_task(await svc.repo.get_task(task))
-        req, entry = await svc.formal.prepare_instruction_trial(
-            "author", snapshot.run_id, ARGS, caller="knowlab"
-        )
-        job = {"credential_id": str(cred["id"]), **instruction_job(req, entry, ARGS)}
-    proc = await asyncio.create_subprocess_exec(
-        "docker",
-        "run",
-        "--rm",
-        "--pull=never",
-        "-i",
-        "--network",
-        "none",
-        "--read-only",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--tmpfs",
-        "/tmp:exec",
-        "-e",
-        "HOME=/tmp",
-        "-e",
-        "CODEX_HOME=/tmp/probe-home",
-        "-v",
-        f"{PROBES}:/probe:ro",
-        "-v",
-        f"{sandbox_relay().parent}:/meter-code:ro",
-        "-e",
-        "PYTHONPATH=/meter-code",
-        "--entrypoint",
-        "python3",
-        "luna-local/sandbox:codex-0.170.0",
-        "/probe/codex_instruction.py",
-        "--host-meter",
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-    )
-
-    async def reply(obj):
-        proc.stdin.write((json.dumps(obj) + "\n").encode())
-        await proc.stdin.drain()
-
-    try:
-        async with asyncio.timeout(65):
-            await reply(job)
-            seen = []
-            while True:
-                line = await proc.stdout.readline()
-                assert line, "Probe stopped before reporting the metered turn"
-                event = json.loads(line)
-                if isinstance(event, list):
-                    (run,) = event
-                    break
-                async with host() as svc:
-                    if "claim" in event:
-                        try:
-                            url, body = await svc.claim(
-                                OWNER,
-                                task,
-                                attempt,
-                                caller="knowlab",
-                                credential_id=event["credential_id"],
-                                turn_id=event["turn"],
-                                body=event["claim"],
-                            )
-                        except IdempotencyConflict:
-                            seen.append("refused")
-                            await reply({"refused": True})
-                        else:
-                            assert (
-                                url == ROUTE.base_url + "/responses"
-                                and body["max_output_tokens"] == 500
-                            )
-                            seen.append("sent")
-                            await reply({"outgoing": body, "url": url})
-                    else:
-                        res = event["receipt"]
-                        usage = res["usage"]
-                        assert usage == {
-                            "input_tokens": 1,
-                            "output_tokens": 1,
-                            "total_tokens": 2,
-                        }
-                        await svc.receipt(
-                            OWNER,
-                            task,
-                            attempt,
-                            turn_id=event["turn"],
-                            response_id=res["id"],
-                            usage=Usage.from_responses(usage),
-                        )
-                        seen.append("receipt")
-                        await reply({"recorded": True})
-            assert await proc.wait() == 0
-    finally:
-        if proc.returncode is None:
-            proc.kill()
-            await proc.wait()
-    assert seen == ["sent", "receipt", "refused"]
-    assert run["requests"] == run["refused"] == 1 and run["status"] == "failed"
-    async with host() as svc:
-        await Ledger(svc.repo).attempt_transition(attempt, AttemptState.FAILED)
-        row = await svc.repo.get_attempt(attempt)
-        assert row["turn_ids"] == [run["turn"]] and run["usage"]["totalTokens"] == 2
-        budget = (await svc.repo.get_task(task))["budget"]
-        assert (
-            Decimal(budget["used"]) == Decimal("0.000006")
-            and Decimal(budget["reserved"]) == 0
-        )

@@ -3,6 +3,8 @@
 import json
 from dataclasses import asdict, dataclass
 
+from pydantic import ConfigDict, StrictInt
+
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.pricing import Price, PriceList, Usage, cost_of
 from app.domain.workbench.provider_url import validate_provider_base_url
@@ -12,12 +14,14 @@ from app.domain.workbench.provider_url import validate_provider_base_url
 class InstructionRoute:
     """Trusted deployment route. context_tokens is the provider-enforced maximum."""
 
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
     provider: str
     model: str
     base_url: str
     price_key: str
-    context_tokens: int
-    output_tokens: int
+    context_tokens: StrictInt
+    output_tokens: StrictInt
 
     def quote(self, prices: PriceList):
         price = prices.of(self.price_key)

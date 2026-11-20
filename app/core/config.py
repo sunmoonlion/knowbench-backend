@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -20,7 +20,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.domain.cross_app import Source, Target, parse_sources, parse_targets
 from app.domain.workbench.connection_oauth import OAuthProvider
+from app.domain.workbench.instruction_requests import InstructionRoute
 from app.domain.workbench.pricing import DEFAULT_PRICES_JSON, PriceList, parse_prices
+from app.domain.workbench.provider_url import validate_provider_base_url
 from app.domain.workbench.resource_delegation import (
     ResourceDelegation,
     ResourceDelegationCatalog,
@@ -349,6 +351,31 @@ class Settings(BaseSettings):
     workbench_sandbox_global_limit: int = Field(
         default=20, ge=0, validation_alias="WORKBENCH_SANDBOX_GLOBAL_LIMIT"
     )
+    workbench_instruction_routes: tuple[InstructionRoute, ...] = Field(
+        default=(), max_length=128
+    )
+
+    @field_validator("workbench_instruction_routes")
+    @classmethod
+    def unique_instruction_routes(cls, routes):
+        routes = tuple(
+            replace(r, base_url=validate_provider_base_url(r.base_url)) for r in routes
+        )
+        if any(
+            not r.provider
+            or not r.model
+            or not r.price_key
+            or not 0 < r.output_tokens <= r.context_tokens
+            for r in routes
+        ):
+            raise ValueError(
+                "Instruction route requires a provider, model, tariff and token bounds"
+            )
+        keys = {(r.provider, r.model, r.base_url) for r in routes}
+        if len(keys) != len(routes):
+            raise ValueError("Duplicate instruction provider/model/endpoint route")
+        return routes
+
     workbench_review_routes: tuple[ReviewRoute, ...] = Field(
         default=(), max_length=128, validation_alias="WORKBENCH_REVIEW_ROUTES"
     )

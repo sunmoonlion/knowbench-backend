@@ -12,8 +12,9 @@ import base64
 import json
 import secrets
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Any
+from uuid import UUID
 
 from joserfc import jwt
 from joserfc.errors import JoseError
@@ -38,6 +39,16 @@ class Issued:
     token: str
     jti: str
     expires_at: int
+
+
+@dataclass(frozen=True)
+class InstructionGateway:
+    owner: UUID
+    task: UUID
+    attempt: UUID
+    sandbox: UUID
+    gateway: UUID
+    credential: UUID
 
 
 class TokenIssuer:
@@ -72,6 +83,31 @@ class TokenIssuer:
             {"alg": ALG, "kid": self.kid, "typ": "JWT"}, payload, self.key
         )
         return Issued(token=token, jti=jti, expires_at=payload["exp"])
+
+    def instruction_ticket(
+        self, binding: InstructionGateway, *, ttl_seconds: int = 300
+    ) -> Issued:
+        return self._issue(
+            {
+                "aud": "instruction-control",
+                "binding": {k: str(v) for k, v in asdict(binding).items()},
+            },
+            ttl_seconds,
+        )
+
+    def instruction_identity(self, token: str) -> InstructionGateway | None:
+        try:
+            claims = verify(
+                token,
+                self.public_pem(),
+                audience="instruction-control",
+                issuer=self.issuer,
+            )
+            return InstructionGateway(
+                **{k: UUID(v) for k, v in claims["binding"].items()}
+            )
+        except (JoseError, ValueError, TypeError, AttributeError, KeyError):
+            return None
 
     def agent_token(
         self, relay_user: str, *, ttl_seconds: int = AGENT_TTL_SECONDS

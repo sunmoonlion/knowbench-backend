@@ -5,10 +5,12 @@ and forwards only after the claim transaction has committed.
 """
 
 from decimal import Decimal
+from uuid import UUID
 
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.tokens import InstructionGateway
 from app.domain.workbench.capabilities import CapabilityError, digest
-from app.domain.workbench.errors import IdempotencyConflict
+from app.domain.workbench.errors import Forbidden, IdempotencyConflict
 from app.domain.workbench.formal_execution import snapshot_for_task
 from app.domain.workbench.instruction_requests import (
     InstructionRoute,
@@ -18,6 +20,37 @@ from app.domain.workbench.instruction_requests import (
 from app.domain.workbench.pricing import Price, PriceList, Usage, cost_of
 from app.domain.workbench.provider_url import validate_provider_base_url
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState
+
+
+async def gateway_binding(repo, owner: UUID, task_id: UUID, attempt_id: UUID):
+    """Trusted host signs only the gateway and credential pinned when opening this Attempt."""
+    await repo.get_task(str(task_id), owner_actor_id=str(owner))
+    attempt = await repo.get_attempt(str(attempt_id))
+    refs = attempt.get("refs") or {}
+    gateway = refs.get("instruction_gateway")
+    if str(attempt["task_id"]) != str(task_id) or not gateway:
+        raise Forbidden("Attempt has no instruction gateway binding")
+    quote = refs["instruction_quote"]
+    return InstructionGateway(
+        owner,
+        task_id,
+        attempt_id,
+        UUID(gateway["sandbox"]),
+        UUID(gateway["uid"]),
+        UUID(quote["credential_id"]),
+    ), quote
+
+
+async def issue_instruction_ticket(
+    repo, issuer, owner: UUID, task_id: UUID, attempt_id: UUID, *, gateway_uid: UUID
+):
+    """The trusted scheduler supplies the UID observed for the gateway receiving the ticket."""
+    binding, _ = await gateway_binding(repo, owner, task_id, attempt_id)
+    if binding.gateway != gateway_uid:
+        raise Forbidden(
+            "Cannot deliver the instruction ticket to a replacement gateway"
+        )
+    return issuer.instruction_ticket(binding)
 
 
 class InstructionRequests:
@@ -74,7 +107,7 @@ class InstructionRequests:
             "snapshot_digest": task["pack_digest"],
         }, instruction_job(request, entry, snapshot.arguments)
 
-    async def open(self, owner, task_id, *, caller):
+    async def open(self, owner, task_id, *, caller, gateway_uid: UUID | None = None):
         async with self.repo.transaction(independent=True):
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
@@ -86,6 +119,17 @@ class InstructionRequests:
                 or await self.repo.list_attempts(task_id)
             ):
                 raise IdempotencyConflict("Instruction task already started or closed")
+            gateway = {}
+            if gateway_uid is not None:
+                session = await self.repo.get_session(
+                    str(task["session_id"]), owner_actor_id=owner
+                )
+                gateway = {
+                    "instruction_gateway": {
+                        "uid": str(gateway_uid),
+                        "sandbox": str(UUID(str(session["sandbox_id"]))),
+                    }
+                }
             ledger = Ledger(self.repo)
             opened = await ledger.open_attempt(
                 task_id,
@@ -93,6 +137,7 @@ class InstructionRequests:
                 step_version=task["pack_digest"],
                 reserve=Decimal(quote["maximum"]),
                 meta={
+                    **gateway,
                     "instruction_quote": quote,
                     "model": self.route.model,
                     "model_provider": self.route.provider,
@@ -157,59 +202,67 @@ class InstructionRequests:
     async def receipt(
         self, owner, task_id, attempt_id, *, turn_id, response_id, usage: Usage
     ):
-        """Called only with complete provider usage. A lost response leaves the hold intact."""
-        async with self.repo.transaction():
-            await self.repo.get_task(task_id, owner_actor_id=owner, for_update=True)
-            attempt = await self.repo.get_attempt(attempt_id, for_update=True)
-            refs = dict(attempt["refs"])
-            claim = refs.get("instruction_request")
-            if (
-                str(attempt["task_id"]) != task_id
-                or not claim
-                or claim["turn_id"] != turn_id
-                or not isinstance(response_id, str)
-                or not 0 < len(response_id) <= 256
-            ):
-                raise IdempotencyConflict(
-                    "Usage does not identify the claimed instruction"
-                )
-            quote = refs["instruction_quote"]
-            tokens = usage.as_json()
-            if (
-                any(type(n) is not int or n < 0 for n in tokens.values())
-                or usage.output > claim["output_tokens"]
-                or usage.total - usage.output > quote["context_tokens"]
-            ):
-                raise CapabilityError(
-                    "Provider usage differs from the instruction limits"
-                )
-            rates = quote["rates"]
-            price = Price(
-                input=Decimal(rates["input"]),
-                cached_input=Decimal(rates["cached_input"]),
-                cache_write=Decimal(rates["cache_write"]),
-                output=Decimal(rates["output"]),
+        await record_instruction_receipt(
+            self.repo,
+            owner,
+            task_id,
+            attempt_id,
+            turn_id=turn_id,
+            response_id=response_id,
+            usage=usage,
+        )
+
+
+async def record_instruction_receipt(
+    repo, owner, task_id, attempt_id, *, turn_id, response_id, usage: Usage
+):
+    """Called only with complete provider usage. A lost response leaves the hold intact."""
+    async with repo.transaction():
+        await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
+        attempt = await repo.get_attempt(attempt_id, for_update=True)
+        refs = dict(attempt["refs"])
+        claim = refs.get("instruction_request")
+        if (
+            str(attempt["task_id"]) != task_id
+            or not claim
+            or claim["turn_id"] != turn_id
+            or not isinstance(response_id, str)
+            or not 0 < len(response_id) <= 256
+        ):
+            raise IdempotencyConflict("Usage does not identify the claimed instruction")
+        quote = refs["instruction_quote"]
+        tokens = usage.as_json()
+        if (
+            any(type(n) is not int or n < 0 for n in tokens.values())
+            or usage.output > claim["output_tokens"]
+            or usage.total - usage.output > quote["context_tokens"]
+        ):
+            raise CapabilityError("Provider usage differs from the instruction limits")
+        rates = quote["rates"]
+        price = Price(
+            input=Decimal(rates["input"]),
+            cached_input=Decimal(rates["cached_input"]),
+            cache_write=Decimal(rates["cache_write"]),
+            output=Decimal(rates["output"]),
+        )
+        amount = cost_of(usage, price)
+        bill = {
+            "response_id": response_id,
+            "turn_id": turn_id,
+            "tokens": tokens,
+            "amount": str(amount),
+        }
+        previous = refs.get("instruction_usage")
+        if previous is not None:
+            if previous != bill:
+                raise IdempotencyConflict("Conflicting instruction usage receipt")
+            return
+        await repo.update_attempt(attempt_id, refs={**refs, "instruction_usage": bill})
+        if attempt["status"] in ATTEMPT_TERMINAL:
+            await Ledger(repo).record_late_cost(
+                task_id,
+                attempt_id=attempt_id,
+                consumed=Decimal(bill["amount"]),
+                tokens=tokens,
+                turn_id=turn_id,
             )
-            amount = cost_of(usage, price)
-            bill = {
-                "response_id": response_id,
-                "turn_id": turn_id,
-                "tokens": tokens,
-                "amount": str(amount),
-            }
-            previous = refs.get("instruction_usage")
-            if previous is not None:
-                if previous != bill:
-                    raise IdempotencyConflict("Conflicting instruction usage receipt")
-                return
-            await self.repo.update_attempt(
-                attempt_id, refs={**refs, "instruction_usage": bill}
-            )
-            if attempt["status"] in ATTEMPT_TERMINAL:
-                await Ledger(self.repo).record_late_cost(
-                    task_id,
-                    attempt_id=attempt_id,
-                    consumed=Decimal(bill["amount"]),
-                    tokens=tokens,
-                    turn_id=turn_id,
-                )

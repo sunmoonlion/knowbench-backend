@@ -1,13 +1,11 @@
 """Isolated Codex instruction rehearsal. Only synthetic data and loopback providers."""
 
-import importlib
 import json
 import os
 import signal
 import subprocess
 import sys
 import threading
-from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from uuid import uuid4
@@ -71,7 +69,6 @@ class RelayServer(HTTPServer):
     fixture: TrialServer
     turn: str
     turn_ready: threading.Event
-    credential_id: str
 
 
 class MeteredRelay(BaseHTTPRequestHandler):
@@ -87,63 +84,19 @@ class MeteredRelay(BaseHTTPRequestHandler):
             self.send_error(403)
             return
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-        forward = importlib.import_module("instruction_responses").forward
-
-        def claim(raw, credential_id):
-            print(
-                json.dumps(
-                    {
-                        "claim": raw,
-                        "credential_id": credential_id,
-                        "turn": self.server.turn,
-                    }
-                ),
-                flush=True,
-            )
-            decision = json.loads(sys.stdin.readline())
-            if "outgoing" not in decision:
-                raise PermissionError()
-            return decision["url"], decision["outgoing"]
-
-        def receipt(response_id, usage):
-            print(
-                json.dumps(
-                    {
-                        "receipt": {"id": response_id, "usage": usage},
-                        "turn": self.server.turn,
-                    }
-                ),
-                flush=True,
-            )
-            assert json.loads(sys.stdin.readline()) == {"recorded": True}
-
-        def start():
-            self.send_response(200)
-            self.send_header("Content-Type", "text/event-stream")
-            self.end_headers()
-
-        # The fixture substitutes loopback for the configured TLS socket.
-        def connect(host, port, *, timeout):
-            assert (host, port) == ("instruction.example.test", 443)
-            return HTTPConnection(
-                "127.0.0.1", self.server.fixture.server_port, timeout=timeout
-            )
-
-        try:
-            forward(
-                body,
-                endpoint="https://instruction.example.test/v1/responses",
-                credential_id=self.server.credential_id,
-                api_key=None,
-                claim=claim,
-                receipt=receipt,
-                start=start,
-                write=self.wfile.write,
-                connect=connect,
-            )
-        except PermissionError:
+        # Only model input and provider output cross this simulated Pod attach.
+        # The provider, control ticket and model key are outside this container.
+        print(json.dumps({"forward": body, "turn": self.server.turn}), flush=True)
+        response = json.loads(sys.stdin.readline())
+        if "events" not in response:
             self.server.fixture.refused += 1
             self.send_error(403, "Request has no dispatch permission")
+            return
+        captures.append(body)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.end_headers()
+        self.wfile.write(response["events"].encode())
 
 
 def main():
@@ -161,12 +114,12 @@ def main():
     cwd = Path("/tmp/instruction-work")
     cwd.mkdir()
     server = TrialServer(("127.0.0.1", 0), InstructionProvider)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
+    if not metered:
+        threading.Thread(target=server.serve_forever, daemon=True).start()
     relay = None
     if metered:
         relay = RelayServer(("127.0.0.1", 0), MeteredRelay)
         relay.fixture = server
-        relay.credential_id = job["credential_id"]
         relay.turn_ready = threading.Event()
         threading.Thread(target=relay.serve_forever, daemon=True).start()
     port = (relay or server).server_port
@@ -335,7 +288,8 @@ stream_max_retries = 0
             if relay:
                 relay.shutdown()
                 relay.server_close()
-            server.shutdown()
+            if not metered:
+                server.shutdown()
             server.server_close()
 
 

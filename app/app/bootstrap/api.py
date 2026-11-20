@@ -146,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 "/api/workbench/",
                 "/api/agent-pairing/",
                 "/api/agent-install/",
+                "/api/internal/v1/instruction-control/",
             )
         ) or request.url.path == ("/api/internal/v1/delivery/metrics"):
             response.headers["Cache-Control"] = "no-store"
