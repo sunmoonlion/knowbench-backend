@@ -254,11 +254,11 @@ def direct_tool_procedure(draft: FormalMethodDraft) -> ToolProcedure:
     if (
         not isinstance(procedure, ToolProcedure)
         or procedure.implementation.kind
-        not in ("mcp", "skill_script", "registered_script")
+        not in ("mcp", "skill_script", "registered_script", "service_function")
         or procedure.max_model_turns != 0
     ):
         raise ValueError(
-            "Execution requires a zero-turn MCP or isolated script implementation"
+            "Execution requires a zero-turn MCP, script or service function"
         )
     return procedure
 
@@ -267,10 +267,12 @@ def direct_procedure(
     draft: FormalMethodDraft, *, caller: str = "host"
 ) -> ToolProcedure:
     procedure = direct_tool_procedure(draft)
-    if procedure.implementation.kind in ("skill_script", "registered_script") and (
-        caller != "host" or draft.allowed_callers != ("host",)
-    ):
-        raise ValueError("An isolated script method requires host execution")
+    if procedure.implementation.kind in (
+        "skill_script",
+        "registered_script",
+        "service_function",
+    ) and (caller != "host" or draft.allowed_callers != ("host",)):
+        raise ValueError("This implementation requires host execution")
     if caller not in {"host", "model"} or caller not in draft.allowed_callers:
         raise ValueError("Formal method does not allow this caller")
     return procedure

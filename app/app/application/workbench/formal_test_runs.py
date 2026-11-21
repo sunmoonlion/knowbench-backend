@@ -96,6 +96,13 @@ class FormalExecutions:
                 "Formal execution requires a reviewed implementation source"
             )
         asset = await self.formal.registry.execution_asset(owner, source)
+        if source.kind == "service_function" and (
+            self.capabilities.fact_function is None
+            or request.draft.allowed_callers != ("host",)
+        ):
+            raise CapabilityError(
+                "Function trial requires the host and configured KnowBase"
+            )
         registration = live_registration(request.draft, asset)
         if (
             source.kind in ("skill_script", "registered_script")
@@ -643,6 +650,8 @@ class FormalExecutions:
             if "model" in request.draft.allowed_callers
             else "knowbench/formal-script-host/v1"
             if script_cases
+            else "knowbench/formal-function-host/v1"
+            if request.draft.source and request.draft.source.kind == "service_function"
             else "knowbench/formal-mcp-host/v1",
             cases=evidence_cases,
             model_cost=str(await self.repo.test_run_spent(run_id) - script_total),

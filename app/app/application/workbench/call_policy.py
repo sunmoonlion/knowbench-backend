@@ -47,7 +47,7 @@ def authorize_operation(
         policy = operations.formal_policy(registration)
         check_access(access, policy, arguments)
         return CallDecision(policy.resolve(arguments), True)
-    if registration.source in ("mcp", "a2a"):
+    if registration.source in ("mcp", "a2a", "service_function"):
         if operations is None:
             raise CapabilityError("External operation policy is unavailable")
         policy = operations.require(registration)

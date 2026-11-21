@@ -15,7 +15,6 @@ from test_workbench_ledger_db import db as db
 from app.application.workbench.formal_methods import FormalMethods
 from app.bootstrap.api import create_app
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.errors import RuntimeCapabilityGap
 from app.domain.workbench.formal_method_admission_generated import FormalMethodSource
 from app.domain.workbench.service_functions import FunctionRevision, ServiceFunction
 from app.infrastructure.storage.postgres import get_db_session
@@ -73,8 +72,7 @@ async def test_author_requires_an_incubation_registration_and_exact_current_lice
         assert pin(first).items() <= source.items()
         parsed = FormalMethodSource.model_validate(source)
         async with repo.transaction():
-            with pytest.raises(RuntimeCapabilityGap):
-                await methods._source(str(owner), "author", parsed)
+            assert await methods._source(str(owner), "author", parsed)
         revoked = FormalMethods(
             repo, source_licenses=[granted[0].model_copy(update={"status": "revoked"})]
         )

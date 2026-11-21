@@ -55,6 +55,30 @@ class SceneRegistry:
         }
 
     async def execution_asset(self, owner, source):
+        if source.kind == "service_function":
+            from app.domain.workbench.source_licenses import SourceIdentity
+
+            pin = SourceIdentity(
+                kind=source.kind,
+                source=source.source,
+                entry=source.entry,
+                version=source.version,
+                digest=source.digest,
+            )
+            rows = await self.repo.incubation_function_revisions([pin])
+            if len(rows) != 1 or "step" not in rows[0].contract.scenes:
+                raise CapabilityError(
+                    "Function has no matching executable registration"
+                )
+            return {
+                "kind": source.kind,
+                "id": source.digest,
+                "revision": int(source.version),
+                "name": source.source + "/" + source.entry,
+                "status": "active",
+                "detail": {},
+                "function": rows[0],
+            }
         if source.is_registered:
             revision = await self.check_direct_source(owner, source)
             return self.registered_asset(source, revision)

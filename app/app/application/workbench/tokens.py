@@ -197,6 +197,22 @@ class TokenIssuer:
             return None
         return str(owner), str(claims.get("sandbox") or "")
 
+    def function_ticket(
+        self, subject, sandbox, call_id, function_digest, arguments_digest
+    ):
+        return self._issue(
+            {
+                "aud": "knowbase-function",
+                "azp": "knowbench",
+                "sub": subject,
+                "sandbox": sandbox,
+                "call_id": str(call_id),
+                "function_digest": function_digest,
+                "arguments_digest": arguments_digest,
+            },
+            60,
+        )
+
     def data_token(
         self,
         subject: str,

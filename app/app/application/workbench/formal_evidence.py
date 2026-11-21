@@ -347,12 +347,12 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             "interaction_identity_mismatch",
         )
         subject = (interaction.get("prompt") or {}).get("subject") or {}
-        if source.kind == "registered_script":
+        if source.kind in ("registered_script", "service_function"):
             require(
                 subject.get("registered_source")
                 == intent.get("registered_source")
                 == source.model_dump(mode="json"),
-                "registered_script_approval_mismatch",
+                f"{source.kind}_approval_mismatch",
             )
         require(
             subject.get("capability_call_id") == call_id
@@ -511,6 +511,15 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
                 require(
                     call["status"] == "succeeded", "success_without_adapter_success"
                 )
+                if source.kind == "service_function":
+                    governance["function_receipt"] = adapter_result.get(
+                        "function_receipt"
+                    )
+                    require(
+                        adapter_result.get("function_receipt")
+                        == {"call_id": call_id, "digest": source.digest},
+                        "function_receipt_mismatch",
+                    )
                 returned = structured_outputs(request.draft, adapter_result)
                 bounded_json(returned)
                 require(

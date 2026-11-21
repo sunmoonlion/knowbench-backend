@@ -795,6 +795,7 @@ async def decide_call(
             if call["detail"].get("execution_kind") not in (
                 "formal_mcp",
                 "formal_probe",
+                "formal_function",
                 "formal_script",
                 "formal_instruction",
             ):

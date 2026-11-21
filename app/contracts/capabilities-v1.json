@@ -3118,6 +3118,183 @@
         "title": "ConnectorApproval",
         "type": "object"
       },
+      "FormalFunctionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_function",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source"
+        ],
+        "title": "FormalFunctionDetail",
+        "type": "object"
+      },
+      "FormalMethodSource": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "asset_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Revision"
+          },
+          "kind": {
+            "enum": [
+              "platform",
+              "mcp",
+              "skill_instruction",
+              "skill_script",
+              "service_function",
+              "registered_script",
+              "registered_instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "entry": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Entry",
+            "type": "string"
+          },
+          "license_basis": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "License Basis",
+            "type": "string"
+          },
+          "delivery_terms": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillDeliveryTerms"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "asset_id",
+          "asset_revision",
+          "kind",
+          "source",
+          "version",
+          "digest",
+          "entry",
+          "license_basis"
+        ],
+        "title": "FormalMethodSource",
+        "type": "object"
+      },
       "FormalModelCallDetail": {
         "additionalProperties": false,
         "properties": {
@@ -3620,6 +3797,34 @@
         "title": "RegistryScriptDetail",
         "type": "object"
       },
+      "SkillDeliveryTerms": {
+        "additionalProperties": false,
+        "description": "Publishable provenance and verbatim notices from the operator's review.",
+        "properties": {
+          "origin": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$",
+            "title": "Origin",
+            "type": "string"
+          },
+          "notices": {
+            "items": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Notices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "origin",
+          "notices"
+        ],
+        "title": "SkillDeliveryTerms",
+        "type": "object"
+      },
       "Tool": {
         "additionalProperties": false,
         "properties": {
@@ -3737,6 +3942,9 @@
           },
           {
             "$ref": "#/$defs/RegistryScriptDetail"
+          },
+          {
+            "$ref": "#/$defs/FormalFunctionDetail"
           },
           {
             "$ref": "#/$defs/FormalScriptDetail"
@@ -3911,6 +4119,9 @@
               },
               {
                 "$ref": "#/$defs/RegistryScriptDetail"
+              },
+              {
+                "$ref": "#/$defs/FormalFunctionDetail"
               },
               {
                 "$ref": "#/$defs/FormalScriptDetail"
@@ -4154,6 +4365,183 @@
         "title": "ConnectorApproval",
         "type": "object"
       },
+      "FormalFunctionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_function",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source"
+        ],
+        "title": "FormalFunctionDetail",
+        "type": "object"
+      },
+      "FormalMethodSource": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "asset_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Revision"
+          },
+          "kind": {
+            "enum": [
+              "platform",
+              "mcp",
+              "skill_instruction",
+              "skill_script",
+              "service_function",
+              "registered_script",
+              "registered_instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "entry": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Entry",
+            "type": "string"
+          },
+          "license_basis": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "License Basis",
+            "type": "string"
+          },
+          "delivery_terms": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillDeliveryTerms"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "asset_id",
+          "asset_revision",
+          "kind",
+          "source",
+          "version",
+          "digest",
+          "entry",
+          "license_basis"
+        ],
+        "title": "FormalMethodSource",
+        "type": "object"
+      },
       "FormalModelCallDetail": {
         "additionalProperties": false,
         "properties": {
@@ -4654,6 +5042,34 @@
           "approval_digest"
         ],
         "title": "RegistryScriptDetail",
+        "type": "object"
+      },
+      "SkillDeliveryTerms": {
+        "additionalProperties": false,
+        "description": "Publishable provenance and verbatim notices from the operator's review.",
+        "properties": {
+          "origin": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$",
+            "title": "Origin",
+            "type": "string"
+          },
+          "notices": {
+            "items": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Notices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "origin",
+          "notices"
+        ],
+        "title": "SkillDeliveryTerms",
         "type": "object"
       },
       "Tool": {
@@ -5309,6 +5725,9 @@
                 "$ref": "#/$defs/RegistryScriptDetail"
               },
               {
+                "$ref": "#/$defs/FormalFunctionDetail"
+              },
+              {
                 "$ref": "#/$defs/FormalScriptDetail"
               },
               {
@@ -5548,6 +5967,183 @@
           "revoked"
         ],
         "title": "ConnectorApproval",
+        "type": "object"
+      },
+      "FormalFunctionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_function",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source"
+        ],
+        "title": "FormalFunctionDetail",
+        "type": "object"
+      },
+      "FormalMethodSource": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "asset_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Revision"
+          },
+          "kind": {
+            "enum": [
+              "platform",
+              "mcp",
+              "skill_instruction",
+              "skill_script",
+              "service_function",
+              "registered_script",
+              "registered_instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "entry": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Entry",
+            "type": "string"
+          },
+          "license_basis": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "License Basis",
+            "type": "string"
+          },
+          "delivery_terms": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillDeliveryTerms"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "asset_id",
+          "asset_revision",
+          "kind",
+          "source",
+          "version",
+          "digest",
+          "entry",
+          "license_basis"
+        ],
+        "title": "FormalMethodSource",
         "type": "object"
       },
       "FormalModelCallDetail": {
@@ -6051,6 +6647,34 @@
           "approval_digest"
         ],
         "title": "RegistryScriptDetail",
+        "type": "object"
+      },
+      "SkillDeliveryTerms": {
+        "additionalProperties": false,
+        "description": "Publishable provenance and verbatim notices from the operator's review.",
+        "properties": {
+          "origin": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$",
+            "title": "Origin",
+            "type": "string"
+          },
+          "notices": {
+            "items": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Notices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "origin",
+          "notices"
+        ],
+        "title": "SkillDeliveryTerms",
         "type": "object"
       },
       "Tool": {
@@ -6296,6 +6920,9 @@
                 "$ref": "#/$defs/RegistryScriptDetail"
               },
               {
+                "$ref": "#/$defs/FormalFunctionDetail"
+              },
+              {
                 "$ref": "#/$defs/FormalScriptDetail"
               },
               {
@@ -6537,6 +7164,85 @@
         "title": "ConnectorApproval",
         "type": "object"
       },
+      "FormalFunctionDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_function",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source"
+        ],
+        "title": "FormalFunctionDetail",
+        "type": "object"
+      },
       "FormalMethodInvocation": {
         "additionalProperties": false,
         "properties": {
@@ -6606,6 +7312,104 @@
           "detail"
         ],
         "title": "FormalMethodInvocation",
+        "type": "object"
+      },
+      "FormalMethodSource": {
+        "additionalProperties": false,
+        "properties": {
+          "asset_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Id"
+          },
+          "asset_revision": {
+            "anyOf": [
+              {
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asset Revision"
+          },
+          "kind": {
+            "enum": [
+              "platform",
+              "mcp",
+              "skill_instruction",
+              "skill_script",
+              "service_function",
+              "registered_script",
+              "registered_instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "source": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Source",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Version",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          },
+          "entry": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "Entry",
+            "type": "string"
+          },
+          "license_basis": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "title": "License Basis",
+            "type": "string"
+          },
+          "delivery_terms": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/SkillDeliveryTerms"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          }
+        },
+        "required": [
+          "asset_id",
+          "asset_revision",
+          "kind",
+          "source",
+          "version",
+          "digest",
+          "entry",
+          "license_basis"
+        ],
+        "title": "FormalMethodSource",
         "type": "object"
       },
       "FormalModelCallDetail": {
@@ -7109,6 +7913,34 @@
           "approval_digest"
         ],
         "title": "RegistryScriptDetail",
+        "type": "object"
+      },
+      "SkillDeliveryTerms": {
+        "additionalProperties": false,
+        "description": "Publishable provenance and verbatim notices from the operator's review.",
+        "properties": {
+          "origin": {
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$",
+            "title": "Origin",
+            "type": "string"
+          },
+          "notices": {
+            "items": {
+              "maxLength": 8192,
+              "minLength": 1,
+              "pattern": "\\S",
+              "type": "string"
+            },
+            "maxItems": 16,
+            "title": "Notices",
+            "type": "array"
+          }
+        },
+        "required": [
+          "origin",
+          "notices"
+        ],
+        "title": "SkillDeliveryTerms",
         "type": "object"
       },
       "Tool": {

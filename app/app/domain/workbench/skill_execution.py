@@ -77,6 +77,7 @@ def public_call(call: dict) -> dict:
         "read_approval_until",
     ):
         copy["detail"].pop(key, None)
+    copy["detail"].pop("function_arguments", None)
     copy["detail"].pop("invocation", None)  # Host identity is internal evidence.
     copy["detail"].pop("operation", None)  # Reviewed policy snapshot is internal.
     copy["detail"].pop("access", None)  # Frozen method permission is internal evidence.

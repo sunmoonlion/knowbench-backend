@@ -371,6 +371,20 @@ class FormalHostCalls:
             access=access,
             operation_digest=policy.policy_digest,
         )
+        if source.kind == "service_function":
+            if (
+                not self.capabilities.fact_function
+                or caller != "host"
+                or policy.read_result_id_field
+                or policy.effect != "read"
+                or policy.operation != "query_facts"
+            ):
+                raise CapabilityError("Missing reviewed host fact-query policy")
+            if not any(
+                r.resource_role == "scope" and r.argument_path == ("scope",)
+                for r in policy.resources
+            ):
+                raise CapabilityError("Fact queries require a declared data scope")
         if not decision.requires_approval:
             raise CapabilityError("Formal external operations require exact approval")
         knowbase_read = None
@@ -413,11 +427,11 @@ class FormalHostCalls:
             "source_asset_id": str(source.asset_id) if source.asset_id else None,
             **(
                 {"registered_source": source.model_dump(mode="json")}
-                if source.kind == "registered_script"
+                if source.kind in ("registered_script", "service_function")
                 else {}
             ),
             "connection_id": None
-            if source.kind in ("skill_script", "registered_script")
+            if source.kind in ("skill_script", "registered_script", "service_function")
             else asset["id"],
             "revision": asset["revision"],
             "connection_name": asset["name"],
@@ -430,6 +444,12 @@ class FormalHostCalls:
         }
         if source.kind in ("skill_script", "registered_script"):
             intent["script_quote"] = decision.operation["script_quote"]
+        if source.kind == "service_function":
+            from app.application.workbench.data_relay import run_ref
+
+            intent["function_arguments"] = dict(arguments)
+            if arguments.get("scope") == "run":
+                intent["function_arguments"]["run"] = await run_ref(self.repo, task)
         artifact_read = None
         if (
             self.capabilities.task_outputs_url
@@ -542,7 +562,12 @@ class FormalHostCalls:
                     not in (
                         ("formal_probe",)
                         if model is not None
-                        else ("formal_mcp", "formal_script", "formal_instruction")
+                        else (
+                            "formal_function",
+                            "formal_mcp",
+                            "formal_script",
+                            "formal_instruction",
+                        )
                     )
                     or (
                         model is not None
@@ -723,7 +748,13 @@ class FormalHostCalls:
         host = intent.get("formal_probe" if is_model else "formal_host") or {}
         if (
             intent.get("execution_kind")
-            not in ("formal_mcp", "formal_script", "formal_instruction", "formal_probe")
+            not in (
+                "formal_function",
+                "formal_mcp",
+                "formal_script",
+                "formal_instruction",
+                "formal_probe",
+            )
             or str(task["id"]) != host.get("task_id")
             or str(call["task_id"]) != host.get("task_id")
             or str(call["attempt_id"]) != host.get("attempt_id")

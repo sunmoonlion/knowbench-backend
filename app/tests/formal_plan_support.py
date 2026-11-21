@@ -105,7 +105,15 @@ async def advance(db, ctx):
     raise AssertionError("Expert did not reach approval or terminal state")
 
 
-def plan_request(leaf_request, leaf, case, *, input_name="to", output_name="receipt"):
+def plan_request(
+    leaf_request,
+    leaf,
+    case,
+    *,
+    input_name="to",
+    output_name="receipt",
+    repeat_input=False,
+):
     document = leaf_request.model_dump(mode="json", by_alias=True)
     definition = deepcopy(document["draft"]["definition"])
     slot = definition["procedure"]["inputs"][input_name]
@@ -115,7 +123,9 @@ def plan_request(leaf_request, leaf, case, *, input_name="to", output_name="rece
         ("first", {"source": "caller", "name": input_name}, []),
         (
             "second",
-            {"source": "step", "step": "first", "output": output_name},
+            {"source": "caller", "name": input_name}
+            if repeat_input
+            else {"source": "step", "step": "first", "output": output_name},
             ["first"],
         ),
     ):

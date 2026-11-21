@@ -251,9 +251,15 @@ class OperationCatalog:
         return policy
 
     def require(self, tool: ToolRegistration) -> McpOperation:
-        if tool.source not in ("mcp", "a2a"):
+        if tool.source not in ("mcp", "a2a", "service_function"):
             raise CapabilityError(
                 "Tool has no matching reviewed operation; contact the administrator"
+            )
+        from app.domain.workbench.fact_function import DESTINATION
+
+        if (tool.service == DESTINATION) != (tool.source == "service_function"):
+            raise CapabilityError(
+                "Registered service functions have a dedicated dispatch path"
             )
         return self.require_source(tool.service, tool.name, tool.descriptor_digest)
 

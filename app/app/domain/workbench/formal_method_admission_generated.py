@@ -125,11 +125,17 @@ class FormalMethodSource(Strict):
 
     @property
     def authorization_id(self):
+        if self.kind == "service_function":
+            return self.digest
         return UUID(self.source) if self.is_registered else self.asset_id
 
     @property
     def authorization_revision(self):
-        return int(self.version) if self.is_registered else self.asset_revision
+        return (
+            int(self.version)
+            if self.is_registered or self.kind == "service_function"
+            else self.asset_revision
+        )
 
     def fingerprint(self) -> str:
         import hashlib

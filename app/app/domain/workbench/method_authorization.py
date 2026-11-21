@@ -15,7 +15,8 @@ from app.domain.workbench.method_capabilities import AccessRequirement, Requirem
 from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 
 # Installed entries and author-registered versions occupy separate namespaces.
-_SCRIPT_BINDINGS = {
+_SOURCE_BINDINGS = {
+    "service_function": ("service_function_digest", "service_function_version"),
     "skill_script": ("script_asset_id", "script_revision"),
     "skill_instruction": ("instruction_asset_id", "instruction_revision"),
     "registered_instruction": (
@@ -27,7 +28,7 @@ _SCRIPT_BINDINGS = {
 
 
 def grant_binding(kind, identity, revision):
-    id_field, revision_field = _SCRIPT_BINDINGS.get(
+    id_field, revision_field = _SOURCE_BINDINGS.get(
         kind, ("connection_id", "connection_revision")
     )
     return {id_field: identity, revision_field: revision}
@@ -38,6 +39,12 @@ class PermissionGrant(Requirement):
     confirmation_context: str = Field(pattern=r"^[a-f0-9]{64}$")
     connection_id: UUID | None = Field(default=None, exclude_if=lambda v: v is None)
     connection_revision: int | None = Field(
+        default=None, strict=True, ge=1, exclude_if=lambda v: v is None
+    )
+    service_function_digest: str | None = Field(
+        default=None, pattern=r"^sha256:[0-9a-f]{64}$", exclude_if=lambda v: v is None
+    )
+    service_function_version: int | None = Field(
         default=None, strict=True, ge=1, exclude_if=lambda v: v is None
     )
     script_asset_id: UUID | None = Field(default=None, exclude_if=lambda v: v is None)
@@ -81,6 +88,7 @@ class PermissionGrant(Requirement):
     def valid(self):
         revisions = (
             (self.connection_id, self.connection_revision),
+            (self.service_function_digest, self.service_function_version),
             (self.script_asset_id, self.script_revision),
             (self.registered_instruction_id, self.registered_instruction_version),
             (self.registered_script_id, self.registered_script_version),
@@ -94,7 +102,8 @@ class PermissionGrant(Requirement):
                 "Specify exactly one connection, Skill or registered source revision"
             )
         if (
-            self.script_asset_id
+            self.service_function_digest
+            or self.script_asset_id
             or self.instruction_asset_id
             or self.registered_instruction_id
             or self.registered_script_id
@@ -104,7 +113,7 @@ class PermissionGrant(Requirement):
             or self.recipient_call_id is None
         ):
             raise ValueError(
-                "A script or instruction permission must name a direct recipient"
+                "This implementation permission must name a direct recipient"
             )
         if self.expires_at.tzinfo is None:
             raise ValueError("Permission expiry must include a timezone")
@@ -119,7 +128,7 @@ class PermissionGrant(Requirement):
         return self
 
     def matches_asset(self, kind, asset_id, revision):
-        id_field, revision_field = _SCRIPT_BINDINGS.get(
+        id_field, revision_field = _SOURCE_BINDINGS.get(
             kind, ("connection_id", "connection_revision")
         )
         identity = getattr(self, id_field)
@@ -165,6 +174,8 @@ def covers(
     if (
         parent.grant_id != child.grant_id
         or parent.confirmation_context != child.confirmation_context
+        or parent.service_function_digest != child.service_function_digest
+        or parent.service_function_version != child.service_function_version
         or parent.connection_id != child.connection_id
         or parent.connection_revision != child.connection_revision
         or parent.registered_instruction_id != child.registered_instruction_id

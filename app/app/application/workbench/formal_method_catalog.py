@@ -511,6 +511,15 @@ class FormalMethodCatalog:
                         )
                         self._verify_cases(owner, frozen, request, evidence, None, None)
                         return frozen
+                    if (
+                        frozen.draft.source
+                        and frozen.draft.source.kind == "service_function"
+                    ):
+                        return (
+                            await self._resolve(
+                                owner, reference, row, "host", function_step=True
+                            )
+                        ).frozen
                     if frozen.visibility == "public":
                         return (
                             await self._resolve(
@@ -651,6 +660,9 @@ class FormalMethodCatalog:
                     if frozen.draft.source
                     and frozen.draft.source.kind
                     in ("skill_script", "registered_script")
+                    else "knowbench/formal-function-host/v1"
+                    if frozen.draft.source
+                    and frozen.draft.source.kind == "service_function"
                     else "knowbench/formal-mcp-host/v1"
                 )
             )
@@ -713,7 +725,9 @@ class FormalMethodCatalog:
 
         return frozen, request, evidence
 
-    async def _resolve(self, owner, reference, row, caller, *, public=False):
+    async def _resolve(
+        self, owner, reference, row, caller, *, public=False, function_step=False
+    ):
         frozen, request, evidence = await self._admission(
             owner, reference, row, public=public
         )
@@ -727,7 +741,12 @@ class FormalMethodCatalog:
         _require(
             source is not None
             and (
-                source.kind == "registered_script"
+                (
+                    function_step
+                    and caller == "host"
+                    and source.kind == "service_function"
+                )
+                or source.kind == "registered_script"
                 or source.kind in ("mcp", "skill_script")
                 and source.asset_id is not None
             ),
@@ -909,6 +928,12 @@ class FormalMethodCatalog:
                     governance.get("script_cost"),
                     str(result.call_id),
                     operation["script_quote"],
+                )
+            if source.kind == "service_function" and result.outcome == "succeeded":
+                _require(
+                    governance.get("function_receipt")
+                    == {"call_id": str(result.call_id), "digest": source.digest},
+                    "Missing exact function receipt",
                 )
             approval = governance["approval"]
             if result.outcome == "rejected":

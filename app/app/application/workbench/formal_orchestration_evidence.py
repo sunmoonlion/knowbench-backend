@@ -100,7 +100,7 @@ async def _approval(
     source = snapshot_for_task(task).execution_source(leaf)
     assert source is not None
     inference = source.is_instruction
-    if source.is_registered:
+    if source.is_registered or source.kind == "service_function":
         _require(
             subject.get("registered_source")
             == intent.get("registered_source")
@@ -243,7 +243,8 @@ async def _approval(
             if inference
             else {
                 "destination": declared["data_transfer"]["destination"]
-                if source.kind in ("skill_script", "registered_script")
+                if source.kind
+                in ("skill_script", "registered_script", "service_function")
                 else source.source,
                 "arguments_digest": digest(inputs),
             }
@@ -263,6 +264,13 @@ async def _approval(
         "exact_child_direct_grant_missing",
     )
     metering = {}
+    if source.kind == "service_function":
+        receipt = intent["result"].get("function_receipt")
+        _require(
+            receipt == {"call_id": str(call["id"]), "digest": source.digest},
+            "function_receipt_mismatch",
+        )
+        metering.update(function_receipt=receipt, function_descriptor=intent["tool"])
     if source.kind in ("skill_script", "registered_script"):
         from app.application.workbench.script_budget import cost_proof
 

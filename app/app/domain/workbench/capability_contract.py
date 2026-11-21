@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import Field
 
 from app.domain.workbench.capabilities import Strict
+from app.domain.workbench.formal_method_admission_generated import FormalMethodSource
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_capabilities import (
     AccessRequirement,
@@ -196,6 +197,13 @@ class HostCallDetail(CommonCallDetail):
     connection_id: UUID
 
 
+class FormalFunctionDetail(CommonCallDetail):
+    execution_kind: Literal["formal_function"]
+    source_asset_id: None
+    connection_id: None
+    registered_source: FormalMethodSource
+
+
 class FormalScriptDetail(CommonCallDetail):
     execution_kind: Literal["formal_script"]
     source_asset_id: UUID
@@ -253,6 +261,7 @@ class Call(Strict):
         CallDetail
         | HostCallDetail
         | RegistryScriptDetail
+        | FormalFunctionDetail
         | FormalScriptDetail
         | ModelProbeCallDetail
         | FormalModelCallDetail

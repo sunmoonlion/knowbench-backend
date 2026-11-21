@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 from app.application.workbench.call_policy import authorize_operation
 from app.application.workbench.tool_registry import registered_call
 from app.domain.workbench.capabilities import CapabilityError, digest
+from app.domain.workbench.formal_host import host_intent_digest
 from app.domain.workbench.method_authorization import (
     MethodAuthorization,
     check_delegation,
@@ -17,7 +18,22 @@ async def check_formal_dispatch(svc, owner, call, intent):
     if intent.get("execution_kind") in ("formal_method", "formal_method_model"):
         await svc.require_formal_use(owner, intent["formal_method"]["reference"])
     host = intent.get("formal_host") or intent.get("formal_probe")
-    if intent.get("execution_kind") == "formal_script":
+    if intent.get("execution_kind") == "formal_function":
+        from app.application.workbench.formal_host_calls import FormalHostCalls
+
+        context = await FormalHostCalls(svc).context(
+            owner, host["task_id"], host["attempt_id"]
+        )
+
+        if (
+            context.identity != call["digest"]
+            or host_intent_digest(intent) != context.identity
+        ):
+            raise CapabilityError(
+                "Function registration, approval or data scope changed"
+            )
+        asset, registration = context.asset, context.registration
+    elif intent.get("execution_kind") == "formal_script":
         from app.application.workbench.formal_host_calls import FormalHostCalls
 
         context = await FormalHostCalls(svc).context(

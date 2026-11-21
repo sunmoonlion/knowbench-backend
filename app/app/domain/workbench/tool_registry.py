@@ -15,6 +15,7 @@ from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.tool_schema import schema_validator
 
 ToolSource = Literal[
+    "service_function",
     "platform",
     "knowbase",
     "mcp",

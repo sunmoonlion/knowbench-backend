@@ -220,9 +220,10 @@ class FormalMethods:
                 raise CapabilityError(
                     "Service function registration or incubation license changed"
                 )
-            raise RuntimeCapabilityGap(
-                "Service function trial execution is unavailable"
-            )
+            from app.domain.workbench.fact_function import require_fact_source
+
+            require_fact_source(source)
+            return True
         if source.asset_id is None:
             # Platform implementations need their own reviewed source records;
             # being built in does not exempt them from incubation.
@@ -706,6 +707,16 @@ class FormalMethods:
                 raise Forbidden(
                     "Registered script methods require verified script execution"
                 )
+            if frozen.draft.source and frozen.draft.source.kind == "service_function":
+                if (
+                    frozen.validation.execution is None
+                    or frozen.visibility != "private"
+                    or (run.get("execution_evidence") or {}).get("adapter")
+                    != "knowbench/formal-function-host/v1"
+                ):
+                    raise Forbidden(
+                        "Function registration requires private host function execution evidence"
+                    )
             if frozen.draft.source and frozen.draft.source.is_instruction:
                 if (
                     frozen.visibility != "private"

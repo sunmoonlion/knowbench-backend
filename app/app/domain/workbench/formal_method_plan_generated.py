@@ -84,7 +84,8 @@ def expand_unique_plan(
             turns = current.procedure.max_model_turns
             if not (
                 (
-                    implementation in ("mcp", "skill_script", "registered_script")
+                    implementation
+                    in ("mcp", "skill_script", "registered_script", "service_function")
                     and turns == 0
                 )
                 or (

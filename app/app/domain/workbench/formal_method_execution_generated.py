@@ -313,15 +313,16 @@ class FormalMethodExecutionRequest(Strict):
                     )
             elif (
                 p.implementation.kind
-                not in ("mcp", "skill_script", "registered_script")
+                not in ("mcp", "skill_script", "registered_script", "service_function")
                 or (
-                    p.implementation.kind in ("skill_script", "registered_script")
+                    p.implementation.kind
+                    in ("skill_script", "registered_script", "service_function")
                     and self.draft.allowed_callers != ("host",)
                 )
                 or p.max_model_turns != 0
             ):
                 raise ValueError(
-                    "Execution supports zero-turn MCP or host-only scripts"
+                    "Execution supports zero-turn MCP or host-only scripts and service functions"
                 )
         else:
             plan = unique_plan(self.draft.definition)

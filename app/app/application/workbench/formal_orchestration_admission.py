@@ -97,6 +97,7 @@ def verify_leaf_authority(
         and source.kind
         in (
             "mcp",
+            "service_function",
             "skill_script",
             "registered_script",
             "skill_instruction",
@@ -124,6 +125,24 @@ def verify_leaf_authority(
             registration.descriptor_digest,
         )
         policy_digest = digest(operation)
+    elif source.kind == "service_function":
+        from app.domain.workbench.fact_function import (
+            registration as function_registration,
+        )
+
+        registration = function_registration(
+            source, item["governance"]["function_descriptor"]
+        )
+        require(
+            item["governance"].get("function_receipt")
+            == {"call_id": item["call_id"], "digest": source.digest},
+            "Function receipt differs from the sealed source",
+        )
+        policy = operations.formal_policy(registration)
+        registration_id, descriptor_digest = (
+            registration.tool_id,
+            registration.descriptor_digest,
+        )
     elif source.kind in ("skill_script", "registered_script"):
         registration = script_registration(leaf.draft)
         policy = operations.formal_policy(registration)

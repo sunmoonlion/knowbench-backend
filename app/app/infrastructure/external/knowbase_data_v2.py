@@ -327,6 +327,35 @@ class KnowbaseDataV2(KnowbaseClient):
             token,
         )
 
+    async def invoke_query_facts(self, token, body):
+        from app.domain.workbench.capabilities import (
+            CapabilityError,
+            CapabilityOutcomeUnknown,
+        )
+
+        url = (
+            self._base().removesuffix(BASE_V2)
+            + "/api/internal/v1/functions/query_facts/1"
+        )
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport, follow_redirects=False
+            ) as client:
+                response = await client.post(
+                    url, json=body, headers={"Authorization": "Bearer " + token}
+                )
+        except httpx.HTTPError as exc:
+            raise CapabilityOutcomeUnknown("No definitive function receipt") from exc
+        if response.status_code >= 500:
+            raise CapabilityOutcomeUnknown(
+                "KnowBase did not confirm the function result"
+            )
+        if response.status_code != 200:
+            raise CapabilityError(
+                f"KnowBase refused the fact query (HTTP {response.status_code})"
+            )
+        return response.json()
+
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]:
         """把一条 JSON-RPC 原样交给 knowbase 数据 MCP；令牌是工作台当场签的
         `knowbase-data` 令牌。只回 JSON（knowbase 不开流）。"""

@@ -113,6 +113,7 @@ class Capabilities:
         source_licenses=(),
         business_reviews=(),
         resource_delegations=(),
+        fact_function=None,
         knowbase_reader=None,
         task_outputs_url="",
     ):
@@ -135,6 +136,7 @@ class Capabilities:
         }
         if self.oauth.urls & internal_urls:
             raise ValueError("An OAuth provider cannot claim an internal service URL")
+        self.fact_function = fact_function
         self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.instruction_service = instruction_service
@@ -1947,6 +1949,7 @@ class Capabilities:
 
             return (await FormalMethodCalls(self).decide(owner, call_id, body))["call"]
         if peek["detail"].get("execution_kind") in (
+            "formal_function",
             "formal_mcp",
             "formal_script",
             "formal_instruction",
@@ -2131,6 +2134,7 @@ class Capabilities:
             ):
                 raise CapabilityError("The read approval expired or was revoked")
             if intent.get("execution_kind") in (
+                "formal_function",
                 "formal_mcp",
                 "formal_script",
                 "formal_probe",
@@ -2247,7 +2251,32 @@ class Capabilities:
                 # The runner reconciles the asynchronous Job into this same call.
                 return public_call(await self.repo.capability_call(owner, call_id))
             else:
-                if (
+                if intent.get("execution_kind") == "formal_function":
+                    subject = await self.repo.subject_of_actor(owner)
+                    if not subject or self.fact_function is None:
+                        raise CapabilityError(
+                            "KnowBase function execution is unavailable"
+                        )
+                    session = await self.repo.get_session(
+                        call["session_id"], owner_actor_id=owner
+                    )
+                    await before_send()
+                    receipt = await self.fact_function.invoke(
+                        connection["function"],
+                        subject=subject,
+                        sandbox=str(session["sandbox_id"]),
+                        call_id=call_id,
+                        arguments=intent["function_arguments"],
+                    )
+                    result = {
+                        "isError": False,
+                        "structuredContent": receipt["output"],
+                        "function_receipt": {
+                            "call_id": receipt["call_id"],
+                            "digest": receipt["digest"],
+                        },
+                    }
+                elif (
                     self.task_outputs_url
                     and connection["detail"]["url"] == self.task_outputs_url
                     and intent["tool"]["name"] == TASK_OUTPUT_TOOL
