@@ -300,7 +300,6 @@ async def decide_formal_execution(
         raise _http(exc) from exc
 
 
-@router.get("/users/{subject}/registry/incubation-methods", include_in_schema=False)
 @router.get("/users/{subject}/method-skill-center/incubation-methods")
 async def method_skill_center_incubation_methods(
     _: FormalCaller,

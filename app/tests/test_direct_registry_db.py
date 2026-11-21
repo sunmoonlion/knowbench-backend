@@ -44,10 +44,7 @@ async def test_author_registers_without_skill_or_incubation(
         }
         assert (await client.put(path, json=draft)).status_code == 403
         r1, r2 = await asyncio.gather(
-            client.put(path, json=draft, headers=headers),
-            client.put(
-                f"/api/workbench/registry/sources/{sid}/1", json=draft, headers=headers
-            ),
+            *(client.put(path, json=draft, headers=headers) for _ in range(2))
         )
         assert r1.status_code == r2.status_code == 200, (r1.text, r2.text)
         assert (
