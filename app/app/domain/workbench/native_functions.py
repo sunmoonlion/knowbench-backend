@@ -5,6 +5,7 @@ from typing import Any
 
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.data_function import DATA_QUERIES, QUERY_PERMISSIONS
+from app.domain.workbench.expert_match import DirectorySnapshot
 from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.records import PAGE_ENTRIES
 from app.domain.workbench.service_functions import FunctionRevision, ServiceFunction
@@ -159,7 +160,116 @@ def compute_revision():
     return FunctionRevision.build("knowbench", COMPUTE, 1, contract)
 
 
+def _object(properties, *, optional=()):
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": [key for key in properties if key not in optional],
+        "additionalProperties": False,
+    }
+
+
+def _array(items):
+    return {"type": "array", "items": items}
+
+
+def _task_revision(name, permission, output):
+    spec = TOOLS[name]
+    return FunctionRevision.build(
+        "knowbench",
+        name,
+        1,
+        ServiceFunction(
+            operation=name,
+            description=spec["description"],
+            scenes=["native", "step"],
+            required_permissions=[permission],
+            input_schema=spec["inputSchema"],
+            output_schema=output,
+        ),
+    )
+
+
+def discover_source_tools_revision():
+    text = {"type": "string"}
+    source = _object(
+        {
+            "channel": text,
+            "name": text,
+            "services": _array(text),
+            "service": {"type": ["string", "null"]},
+            "license": text,
+            "kind": {"const": "supplier_response"},
+            "readings": _array(text),
+            "tools": _array(
+                {"type": "object", "properties": {"name": text}, "required": ["name"]}
+            ),
+        }
+    )
+    return _task_revision(
+        "discover_source_tools",
+        "task.supplier_catalog.read",
+        _object({"sources": _array(source)}),
+    )
+
+
+def find_subject_revision():
+    text = {"type": "string"}
+    output = _object(
+        {"found": _array(_object({"subject": text, "name": text})), "message": text},
+        optional=("message",),
+    )
+    return _task_revision("find_subject", "task.subject_directory.read", output)
+
+
+def request_data_revision():
+    text = {"type": "string"}
+    output = _object(
+        {
+            "status": {"const": "listed"},
+            "request": text,
+            "items": _array(_object({"name": text, "status": text})),
+            "message": text,
+        }
+    )
+    return _task_revision("request_data", "task.data_requests.propose", output)
+
+
+def find_expert_revision():
+    text = {"type": "string"}
+    public = _object(
+        {
+            "knowbot_id": text,
+            "name": text,
+            "tagline": text,
+            "version": text,
+            "scope": _object({key: text for key in ("does", "does_not", "elsewhere")}),
+            "price": {"type": ["string", "number", "null"]},
+            "free": {"type": "boolean"},
+        }
+    )
+    snapshot = DirectorySnapshot.model_json_schema()
+    definitions = snapshot.pop("$defs")
+    snapshot["properties"]["directory_digest"] = {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+    }
+    snapshot["required"].append("directory_digest")
+    output = {
+        "$defs": definitions,
+        "oneOf": [
+            snapshot,
+            _object({"experts": _array(public), "note": text}, optional=("note",)),
+        ],
+    }
+    return _task_revision("find_expert", "task.expert_directory.read", output)
+
+
 LOCAL_REVISIONS = {
+    "discover_source_tools": discover_source_tools_revision,
+    "find_subject": find_subject_revision,
+    "request_data": request_data_revision,
+    "find_expert": find_expert_revision,
     COMPUTE: compute_revision,
     PROJECT_LIST: project_list_revision,
     PROJECT_READ: project_read_revision,
@@ -222,6 +332,8 @@ def native_registration(revision):
         and revision != LOCAL_REVISIONS[revision.name]()
     ):
         raise CapabilityError("Local function differs from its registered contract")
+    if revision.provider == "knowbench" and "annotations" in TOOLS[revision.name]:
+        descriptor["annotations"] = TOOLS[revision.name]["annotations"]
     if revision.name in DATA_QUERIES and revision.contract.required_permissions != [
         QUERY_PERMISSIONS[revision.name]
     ]:

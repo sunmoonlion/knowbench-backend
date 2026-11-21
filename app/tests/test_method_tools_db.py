@@ -195,7 +195,7 @@ async def test_mcp_http_rejects_missing_metadata_and_unselected_tool_before_disp
         dispatched.append(args)
         raise AssertionError("unauthorized call reached a tool")
 
-    monkeypatch.setattr(workbench_mcp, "call", unexpected)
+    monkeypatch.setattr(workbench_mcp, "dispatch", unexpected)
     args = {"task": ctx[0], "name": "irrelevant"}
     meta = await observed(db, ctx, "find_subject", args)
     async with client(served) as http:

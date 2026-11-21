@@ -34,7 +34,7 @@ def authorize_operation(
 
     External operations require a human decision or a matching, live scoped
     read receipt. Callers check the receipt only after verifying this policy.
-    Platform and KnowBase operations retain their resource-owner checks at
+    KnowBench and KnowBase functions retain their resource-owner checks at
     dispatch; they are not authorized by a remote readOnlyHint annotation.
     """
     registration.validate_arguments(arguments)
@@ -50,7 +50,7 @@ def authorize_operation(
                 "operation": native_function.name,
                 "effect": "write"
                 if native_function.provider == "knowbench"
-                and native_function.name == COMPUTE
+                and native_function.name in (COMPUTE, "request_data")
                 else "read",
                 "registered_source": native_function.model_dump(exclude={"contract"}),
                 "required_permissions": native_function.contract.required_permissions,
@@ -78,14 +78,7 @@ def authorize_operation(
         if method:
             check_access(access, policy, arguments)
         return CallDecision(operation, True)
-    if registration.source == "platform":
-        # Import locally to keep the registration projection independent of policy.
-        from app.application.workbench.tool_registry import PLATFORM_TOOLS
-
-        current = PLATFORM_TOOLS.get(registration.name)
-        if current is None or current != registration:
-            raise CapabilityError("Unregistered platform operation")
-    elif registration.source != "skill_script":
+    if registration.source != "skill_script":
         raise CapabilityError("Unsupported operation adapter")
     return CallDecision(
         {
@@ -99,13 +92,11 @@ def authorize_operation(
             "capability_ref": registration.source,
             "version": registration.descriptor_digest,
             "operation": registration.name,
-            "effect": "execute"
-            if registration.source in ("skill_script", "registered_script")
-            else "read",
+            "effect": "execute",
             "resources": [],
             "arguments_digest": digest(arguments),
         },
-        registration.source in ("skill_script", "registered_script"),
+        True,
     )
 
 

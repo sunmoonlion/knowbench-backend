@@ -702,6 +702,7 @@ async def request_data(
     asked: list[dict[str, Any]],
     *,
     now: datetime | None = None,
+    call_id: str | None = None,
 ) -> dict[str, Any]:
     """专家提出要哪些数据（第 0 步，或运行中发现还要一份没钉的）：清单出新修订、列进
     用户的确认清单，任务在步骤边界停下等用户确认。模型不能替用户确认（0043 第 3.3 节
@@ -714,7 +715,7 @@ async def request_data(
         raise DataChoiceInvalid(f"ask for 1 to {MAX_REQUEST_NEEDS} items")
     if row.get("resolution_id") is None:
         # 本地测试提采无远程修订锁，编号和追加必须在同一短事务内完成。
-        return await _ask_the_tester(repo, task_id, asked, now)
+        return await _ask_the_tester(repo, task_id, asked, now, call_id)
     detail = dict(row.get("detail") or {})
     requests = list(detail.get("requests") or [])
     number = len(requests) + 1
@@ -739,6 +740,7 @@ async def request_data(
     items = [i for i in fresh.get("items") or [] if i.get("need_key") in keys]
     request = {
         "id": f"r{number}",
+        **({"call_id": call_id} if call_id else {}),
         "revision": int(fresh["revision"]),
         "needs": [n.model_dump(mode="json") for n in needs],
         "labels": [n.name for n in needs],
@@ -826,6 +828,7 @@ async def _ask_the_tester(
     task_id: str,
     asked: list[dict[str, Any]],
     now: datetime | None,
+    call_id: str | None,
 ) -> dict[str, Any]:
     async with repo.transaction():
         row = await _request_row(repo, task_id)
@@ -839,6 +842,7 @@ async def _ask_the_tester(
         needs = [_asked_need(a, number, n) for n, a in enumerate(asked, start=1)]
         request = {
             "id": f"r{number}",
+            **({"call_id": call_id} if call_id else {}),
             "needs": [n.model_dump(mode="json") for n in needs],
             "labels": [n.name for n in needs],
             "statuses": [],

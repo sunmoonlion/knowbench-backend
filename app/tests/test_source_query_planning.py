@@ -59,10 +59,12 @@ async def test_discovery_uses_authenticated_task_owner_not_model_input(monkeypat
     supply = AsyncMock()
     supply.source_tools.return_value = {"sources": []}
     monkeypatch.setattr(workbench_mcp, "knowfeed_supply", lambda: supply)
-    assert await workbench_mcp.call(
+    assert await workbench_mcp._execute_local(
         records,
         "discover_source_tools",
         {"task": "task-a", "owner": "attacker", "service": "financial_docs"},
+        None,
+        {"id": "test-call"},
     ) == {"sources": []}
     records._working.assert_awaited_once_with("task-a")
     supply.source_tools.assert_awaited_once_with("owner-a", "financial_docs")

@@ -103,15 +103,7 @@ async def test_the_handshake_and_the_list_of_tools(served):
             assert specs[name].get("annotations", {}).get("readOnlyHint") is not True
         # knowbase 没配：数据工具不列，项目、要数据、查主体与计算照常；v1 的三个读数据
         # 工具（list_my_data、read_my_data、read_my_table）没了（decisions ⑰）
-        assert names == [
-            "compute",
-            "list_project_conversations",
-            "read_project_conversation",
-            "discover_source_tools",
-            "find_subject",
-            "request_data",
-            "find_expert",
-        ]
+        assert names == sorted(LOCAL_REVISIONS)
         # 只读：除了 compute（只记计算记录）与 request_data（只列进用户的确认清单）没有
         # 写的工具（find_subject 只查证券名录，find_expert 只查专家目录）；都要带委托编号
         for spec in listed["result"]["tools"]:

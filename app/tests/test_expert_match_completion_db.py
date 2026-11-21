@@ -19,6 +19,8 @@ from app.application.workbench.find_expert import (
     find_expert,
     match_receipt,
 )
+from app.domain.workbench.native_functions import find_expert_revision
+from app.domain.workbench.tool_schema import schema_validator
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
@@ -67,7 +69,12 @@ async def test_evidence_failure_reworks_with_reason_before_success(
                 idempotency_key="match-validation",
                 match_contract="knowbench/expert-match/v2",
             )
-            await find_expert(repo, port, await repo.get_task(made["task_id"]))
+            snapshot = await find_expert(
+                repo, port, await repo.get_task(made["task_id"])
+            )
+            schema_validator(find_expert_revision().contract.output_schema).validate(
+                snapshot
+            )
         await drive(runner)
         assert len(fake.turn_inputs) == 2
         reason = (

@@ -369,7 +369,7 @@ def test_exact_source_lookup_preserves_descriptor_and_mcp_source_checks():
         with pytest.raises(CapabilityError):
             catalog.require_source(url, name, descriptor)
     with pytest.raises(CapabilityError):
-        catalog.require(ToolRegistration.discover("platform", URL, TOOLS[0]))
+        catalog.require(ToolRegistration.discover("skill_script", URL, TOOLS[0]))
 
 
 def tree_shape():

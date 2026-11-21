@@ -8,12 +8,11 @@ import pytest
 
 from app.application.workbench.capabilities import Capabilities
 from app.application.workbench.tool_registry import (
-    PLATFORM_TOOLS,
     mcp_catalog,
-    platform_catalog,
     registered_call,
 )
 from app.domain.workbench.capabilities import CapabilityError, ConnectionCreate
+from app.domain.workbench.native_functions import find_expert_revision
 from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.tool_registry import ToolRegistration, ToolRegistry
 from app.interfaces.mcp.workbench_mcp import handle
@@ -89,20 +88,18 @@ def test_accounts_share_definition_but_frozen_call_cannot_change_schema_or_tool(
 async def test_native_mcp_lists_the_same_registered_definitions_without_losing_hints():
     response = await handle(
         SimpleNamespace(
-            repo=SimpleNamespace(scene_function_revisions=AsyncMock(return_value=[]))
+            repo=SimpleNamespace(
+                scene_function_revisions=AsyncMock(
+                    return_value=[find_expert_revision()]
+                )
+            )
         ),
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         owner="synthetic",
         per_minute=10,
     )
     listed = response["result"]["tools"]
-    assert listed == platform_catalog([]).descriptors()
-    assert {t["name"]: t for t in listed} == {
-        name: {"name": name, **spec}
-        for name, spec in TOOLS.items()
-        if name in PLATFORM_TOOLS
-    }
-    assert all(tool.source == "platform" for tool in PLATFORM_TOOLS.values())
+    assert listed == [{"name": "find_expert", **TOOLS["find_expert"]}]
 
 
 async def test_native_mcp_does_not_publish_colliding_data_definitions():
@@ -118,7 +115,7 @@ async def test_native_mcp_does_not_publish_colliding_data_definitions():
         per_minute=10,
         relay=relay,
     )
-    assert response["result"]["tools"] == platform_catalog().descriptors()
+    assert response["result"]["tools"] == []
     relay.tools.assert_not_awaited()
 
 

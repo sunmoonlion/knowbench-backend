@@ -84,9 +84,9 @@ class CallLedger:
         arguments: dict[str, Any],
         *,
         task_id: str | None = None,
-        function=None,
+        function,
     ) -> tuple[dict, bool]:
-        if function and task_id and "step" not in function.contract.scenes:
+        if task_id and "step" not in function.contract.scenes:
             raise RecordsRefused("This function is unavailable to a task step")
         decision = authorize_operation(
             registration, arguments, native_function=function

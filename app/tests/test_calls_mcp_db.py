@@ -128,7 +128,7 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
         await fake.close()
 
 
-@pytest.mark.parametrize("operation", [PROJECT_LIST, PROJECT_READ, COMPUTE])
+@pytest.mark.parametrize("operation", list(LOCAL_REVISIONS))
 async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
     served, db, monkeypatch, operation
 ):
@@ -136,13 +136,22 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
 
     from app.interfaces.mcp import workbench_mcp
 
-    fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
+    fake, runner, ids = await world(
+        db,
+        [SCOPE, PROFILE, unbalanced()],
+        extra_tools=("discover_source_tools", "find_subject", "find_expert"),
+    )
     original = workbench_mcp.dispatch
     args = {"task": ids["task"]}
     if operation == PROJECT_READ:
         args["conversation"] = ids["chat"]
     elif operation == COMPUTE:
         args.update(name="reuse", expression="x", inputs={"x": "c1"})
+
+    elif operation == "request_data":
+        args["needs"] = [{"reason": "test"}]
+    elif operation == "find_subject":
+        args["name"] = "test"
 
     async def withdraw(*args, **kwargs):
         async with db() as session, session.begin():
@@ -196,6 +205,159 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
                 )
                 == 0
             )
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+async def test_registered_data_planning_and_expert_directory(served, db, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from test_find_expert_db import FREE, Directory
+    from test_workbench_expert_data_db import PROPOSED
+
+    from app.interfaces.mcp import workbench_mcp
+
+    supplier = {
+        "channel": "owner-channel",
+        "service": "documents",
+        "services": ["documents"],
+        "license": "self",
+        "kind": "supplier_response",
+        "readings": ["original", "text"],
+        "name": "Owner supplier",
+        "tools": [{"name": "report", "inputSchema": {"type": "object"}}],
+    }
+    subjects = [
+        {"subject": code, "name": "同名"} for code in ("subject-a", "subject-b")
+    ]
+    feed = SimpleNamespace(
+        configured=lambda: True,
+        securities=AsyncMock(return_value=subjects),
+        source_tools=AsyncMock(return_value={"sources": [supplier]}),
+    )
+    directory = Directory([FREE])
+    base = SimpleNamespace(
+        add_needs=AsyncMock(
+            return_value={
+                "revision": 2,
+                "items": [{"need_key": "req1_1", "status": "to_confirm"}],
+            }
+        )
+    )
+    monkeypatch.setattr(workbench_mcp, "knowfeed_supply", lambda: feed)
+    monkeypatch.setattr(workbench_mcp, "knowmart_catalog", lambda: directory)
+    monkeypatch.setattr(workbench_mcp, "knowbase_v2", lambda: base)
+    calls = {
+        "discover_source_tools": {"service": "documents"},
+        "find_subject": {"name": "同名"},
+        "find_expert": {},
+        "request_data": {"needs": PROPOSED[:1]},
+    }
+    fake, runner, ids = await world(
+        db,
+        [SCOPE, PROFILE, unbalanced()],
+        extra_tools=tuple(k for k in calls if k != "request_data"),
+    )
+    try:
+        async with db() as session, session.begin():
+            await session.execute(
+                text(
+                    "INSERT INTO auth_user (id,issuer,subject,roles,scopes) VALUES (:owner,'https://casdoor.test','directory-owner','[]','[]')"
+                ),
+                {"owner": OWNER},
+            )
+            await WorkbenchRepository(session).insert_task_resolution(
+                {
+                    "task_id": ids["task"],
+                    "resolution_id": "res-1",
+                    "grant_ref": "knowbench:run:planning",
+                    "revision": 1,
+                    "consumer": "expert:k@1",
+                    "params": {},
+                    "status": "ready",
+                }
+            )
+        answers = {}
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
+            for name, fields in calls.items():
+                message = tool(name, task=ids["task"], **fields)
+                forged = tool(name, task=ids["task"], owner="another-user", **fields)
+                denied = (await http.post(URL, json=forged, headers=bearer())).json()[
+                    "result"
+                ]
+                assert denied["isError"]
+                answer = (await http.post(URL, json=message, headers=bearer())).json()[
+                    "result"
+                ]
+                assert answer["isError"] is False, answer
+                answers[name] = answer
+        assert answers["discover_source_tools"]["structuredContent"] == {
+            "sources": [supplier]
+        }
+        assert answers["find_subject"]["structuredContent"] == {"found": subjects}
+        [expert] = answers["find_expert"]["structuredContent"]["experts"]
+        assert expert == {k: v for k, v in FREE.items() if k != "owned"}
+        proposal = answers["request_data"]["structuredContent"]
+        assert (proposal["status"], proposal["request"]) == ("listed", "r1")
+
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            [proposal_row] = (await repo.get_task_resolution(ids["task"]))["detail"][
+                "requests"
+            ]
+            assert (
+                proposal_row["status"] == "pending"
+                and proposal_row["call_id"]
+                == answers["request_data"]["_meta"]["call_id"]
+            )
+            for name, answer in answers.items():
+                row = (
+                    (
+                        await session.execute(
+                            text("SELECT * FROM workbench_calls WHERE id=:id"),
+                            {"id": answer["_meta"]["call_id"]},
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+                assert (
+                    row["status"] == "succeeded" and str(row["task_id"]) == ids["task"]
+                )
+                op = row["detail"]["operation"]
+                revision = LOCAL_REVISIONS[name]()
+                assert op["registered_source"] == revision.model_dump(
+                    exclude={"contract"}
+                )
+                assert (
+                    op["required_permissions"] == revision.contract.required_permissions
+                )
+                assert op["effect"] == ("write" if name == "request_data" else "read")
+                invocation = row["detail"]["invocation"]
+                message = tool(name, task=ids["task"], **calls[name])
+                message["params"]["_meta"] = {
+                    "threadId": invocation["thread_id"],
+                    "callId": invocation["call_id"],
+                    "x-codex-turn-metadata": {
+                        "thread_id": invocation["thread_id"],
+                        "turn_id": invocation["turn_id"],
+                    },
+                }
+                async with client(served) as http:
+                    replay = (
+                        await http.post(URL, json=message, headers=bearer())
+                    ).json()["result"]
+                assert replay == answer
+        feed.source_tools.assert_awaited_once_with("directory-owner", "documents")
+        feed.securities.assert_awaited_once_with("同名", 10)
+        assert directory.asked == ["directory-owner"]
+        base.add_needs.assert_awaited_once()
+        assert base.add_needs.await_args.args[:2] == ("directory-owner", "res-1")
     finally:
         await close(runner)
         await fake.close()

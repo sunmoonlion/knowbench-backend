@@ -2,7 +2,7 @@
 
 资料操作从方法技能管理中心查可见版本。按聊天、工作或当前专家步骤核权后，
 工作台将会话或委托换成资料授权引用，签发只覆盖本次调用的票据，交 KnowBase 执行。
-项目、计算和资料请求沿各自的工作台操作执行。
+七项工作台操作同样按已登记版本执行，在本委托范围调用各自的处理函数。
 """
 
 from __future__ import annotations
@@ -26,11 +26,7 @@ from app.application.workbench.method_tools import MethodToolGuard
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.scoped_data_functions import ScopedDataFunctions
 from app.application.workbench.tokens import TokenIssuer
-from app.application.workbench.tool_registry import (
-    PLATFORM_TOOLS,
-    platform_catalog,
-    registered_functions,
-)
+from app.application.workbench.tool_registry import registered_functions
 from app.bootstrap.workbench import (
     knowbase_v2,
     knowfeed_supply,
@@ -47,6 +43,7 @@ from app.domain.workbench.native_functions import (
     PROJECT_READ,
 )
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
+from app.domain.workbench.tool_registry import ToolRegistry
 from app.domain.workbench.tool_schema import schema_validator
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -100,32 +97,6 @@ def _tool_error(mid: Any, message: str) -> dict[str, Any]:
     return _ok(mid, {"content": [{"type": "text", "text": message}], "isError": True})
 
 
-async def call(
-    records: ProjectRecords,
-    name: str,
-    args: dict[str, Any],
-) -> Any:
-    if name == "request_data":
-        working = await records._working(args.get("task"))
-        return await request_data(
-            records.repo, knowbase_v2(), working, args.get("needs") or []
-        )
-    if name == "discover_source_tools":
-        working = await records._working(args.get("task"))
-        subject = await records.repo.subject_of_actor(str(working["owner_actor_id"]))
-        if subject is None:
-            return {"sources": []}
-        return await knowfeed_supply().source_tools(subject, args.get("service"))
-    if name == "find_subject":
-        await records._working(args.get("task"))
-        return await find_subject(knowfeed_supply(), args.get("name"))
-    if name == "find_expert":
-        # 找专家（请专家方案设计第 4.9 节）：凭这件「找专家」委托，查这个用户的 knowmart 目录
-        working = await records._working(args.get("task"))
-        return await find_expert(records.repo, knowmart_catalog(), working)
-    raise ValueError(f"unknown tool {name}")
-
-
 async def handle(
     records: ProjectRecords,
     message: dict[str, Any],
@@ -148,10 +119,10 @@ async def handle(
                 "capabilities": {"tools": {"listChanged": False}},
                 "serverInfo": SERVER_KNOWFEED,
                 "instructions": (
-                    "Read-only records of the user's project, the user's data pinned "
-                    "to this task or readable in this conversation, and exact "
-                    "computation on that data. Pass the task id from the step "
-                    "instructions, or in a chat the conversation id."
+                    "Use the registered tools available to this conversation or task. "
+                    "For task operations copy the task id from the current step. "
+                    "For conversation data use the current conversation id. "
+                    "Discovering a supplier or proposing data does not authorize collection."
                 ),
             },
         )
@@ -164,9 +135,7 @@ async def handle(
             functions = await registered_functions(
                 records.repo, data_available=bool(relay and relay.available)
             )
-            tools = platform_catalog(
-                [reg for _, reg in functions.values()]
-            ).descriptors()
+            tools = ToolRegistry([reg for _, reg in functions.values()]).descriptors()
         except WorkbenchError as exc:
             return _err(mid, -32003, exc.message)
         return _ok(mid, {"tools": tools})
@@ -174,7 +143,7 @@ async def handle(
         return None if mid is None else _err(mid, -32601, f"method not found: {method}")
     name = str(params.get("name") or "")
     args = params.get("arguments") or {}
-    if name not in PLATFORM_TOOLS and name not in BINDINGS:
+    if name not in BINDINGS:
         return _err(mid, -32602, f"unknown tool: {name}")
     if not isinstance(args, dict):
         return _err(mid, -32602, "arguments must be an object")
@@ -190,117 +159,117 @@ async def handle(
             "name/expression/inputs, or task plus batch. An empty object performs "
             "no calculation; do not repeat it. This does not mean the task was deleted.",
         )
-    ledger = CallLedger(records.repo, owner) if guard is not None else None
-    receipt = None
-    function = None
-    if name in BINDINGS and guard is None:
+    if guard is None:
         return _tool_error(mid, "A verified runtime invocation is required")
-    if guard is not None:
-        assert ledger is not None
-        try:
-            invocation, task_id = await guard.check(name, args, params.get("_meta"))
-            if name in BINDINGS:
-                functions = await registered_functions(
-                    records.repo,
-                    data_available=bool(relay and relay.available),
-                    name=name,
+    ledger = CallLedger(records.repo, owner)
+    try:
+        invocation, task_id = await guard.check(name, args, params.get("_meta"))
+        functions = await registered_functions(
+            records.repo,
+            data_available=bool(relay and relay.available),
+            name=name,
+        )
+        if name not in functions:
+            raise CapabilityError("Function is not registered for native execution")
+        function, registration = functions[name]
+        receipt, fresh = await ledger.begin(
+            invocation, registration, args, task_id=task_id, function=function
+        )
+        if not fresh:
+            response = receipt["detail"].get("response")
+            if response is None:
+                return _tool_error(
+                    mid,
+                    "This call is already recorded and may have executed; it will not be repeated.",
                 )
-                if name not in functions:
-                    raise CapabilityError(
-                        "Function is not registered for native execution"
-                    )
-                function, registration = functions[name]
-            else:
-                registration = PLATFORM_TOOLS[name]
-            receipt, fresh = await ledger.begin(
-                invocation, registration, args, task_id=task_id, function=function
-            )
-            if not fresh:
-                response = receipt["detail"].get("response")
-                if response is None:
-                    return _tool_error(
-                        mid,
-                        "This call is already recorded and may have executed; it will not be repeated.",
-                    )
-                return {"jsonrpc": "2.0", "id": mid, **response}
-        except WorkbenchError as exc:
-            log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
-            return _tool_error(mid, exc.message)
+            return {"jsonrpc": "2.0", "id": mid, **response}
+    except WorkbenchError as exc:
+        log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
+        return _tool_error(mid, exc.message)
     response, status = await dispatch(
         records, mid, name, args, relay, function=function, receipt=receipt
     )
-    if receipt is not None:
-        assert ledger is not None
-        if "result" in response:
-            metadata = response["result"].get("_meta")
-            if not isinstance(metadata, dict):
-                metadata = {}
-            response["result"]["_meta"] = {
-                **metadata,
-                "call_id": receipt["id"],
-                "call_status": status,
-            }
-        await ledger.finish(receipt, response, status)
+    if "result" in response:
+        metadata = response["result"].get("_meta")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        response["result"]["_meta"] = {
+            **metadata,
+            "call_id": receipt["id"],
+            "call_status": status,
+        }
+    await ledger.finish(receipt, response, status)
     return response
 
 
-async def dispatch(records, mid, name, args, relay, *, function=None, receipt=None):
+async def _execute_local(records, name, args, relay, receipt):
+    if name == PROJECT_LIST:
+        return await records.list_conversations(args["task"], call_id=receipt["id"])
+    if name == PROJECT_READ:
+        return await records.read_conversation(
+            args["task"],
+            args["conversation"],
+            args.get("page", 1),
+            call_id=receipt["id"],
+        )
+    if name == COMPUTE:
+        reader = relay.reader_for_call(receipt["id"]) if relay else None
+        return await KnowbotCompute(records, reader, call_id=receipt["id"]).execute(
+            args
+        )
+    working = await records._working(args["task"])
+    if name == "request_data":
+        return await request_data(
+            records.repo, knowbase_v2(), working, args["needs"], call_id=receipt["id"]
+        )
+    if name == "discover_source_tools":
+        subject = await records.repo.subject_of_actor(str(working["owner_actor_id"]))
+        if subject is None:
+            return {"sources": []}
+        return await knowfeed_supply().source_tools(subject, args.get("service"))
+    if name == "find_subject":
+        return await find_subject(knowfeed_supply(), args.get("name"))
+    if name == "find_expert":
+        # 找专家（请专家方案设计第 4.9 节）：凭这件「找专家」委托，查这个用户的 knowmart 目录
+        return await find_expert(records.repo, knowmart_catalog(), working)
+    raise CapabilityError("Missing local function implementation")
+
+
+async def dispatch(records, mid, name, args, relay, *, function, receipt):
     try:
-        if name in BINDINGS:
-            current = (
-                await registered_functions(
-                    records.repo,
-                    data_available=bool(relay and relay.available),
-                    name=name,
-                )
-            ).get(name)
-            if (
-                not receipt
-                or not function
-                or not current
-                or current[0] != function
-                or (
-                    receipt["detail"]["operation"].get("registered_source")
-                    != function.model_dump(exclude={"contract"})
-                )
-            ):
-                return _tool_error(
-                    mid, "Registered function changed before dispatch"
-                ), "failed"
-            if function.provider == "knowbench":
-                if name == PROJECT_LIST:
-                    output = await records.list_conversations(
-                        args["task"], call_id=receipt["id"]
-                    )
-                elif name == PROJECT_READ:
-                    output = await records.read_conversation(
-                        args["task"],
-                        args["conversation"],
-                        args.get("page", 1),
-                        call_id=receipt["id"],
-                    )
-                elif name == COMPUTE:
-                    reader = relay.reader_for_call(receipt["id"]) if relay else None
-                    output = await KnowbotCompute(
-                        records, reader, call_id=receipt["id"]
-                    ).execute(args)
-                else:
-                    raise CapabilityError("Missing local function implementation")
-                result = jsonable_encoder(output)
-                if not schema_validator(function.contract.output_schema).is_valid(
-                    result
-                ):
-                    raise CapabilityError(
-                        "Local result differs from the registered contract"
-                    )
-            elif name in DATA_QUERIES and relay is not None:
-                result = await relay.data_query(function, args, receipt["id"])
-            else:
+        current = (
+            await registered_functions(
+                records.repo,
+                data_available=bool(relay and relay.available),
+                name=name,
+            )
+        ).get(name)
+        if (
+            not receipt
+            or not function
+            or not current
+            or current[0] != function
+            or (
+                receipt["detail"]["operation"].get("registered_source")
+                != function.model_dump(exclude={"contract"})
+            )
+        ):
+            return _tool_error(
+                mid, "Registered function changed before dispatch"
+            ), "failed"
+        if function.provider == "knowbench":
+            output = await _execute_local(records, name, args, relay, receipt)
+            result = jsonable_encoder(output)
+            if not schema_validator(function.contract.output_schema).is_valid(result):
                 raise CapabilityError(
-                    "Registered function has no available execution binding"
+                    "Local result differs from the registered contract"
                 )
+        elif name in DATA_QUERIES and relay is not None:
+            result = await relay.data_query(function, args, receipt["id"])
         else:
-            result = jsonable_encoder(await call(records, name, args))
+            raise CapabilityError(
+                "Registered function has no available execution binding"
+            )
         rendered = json.dumps(result, ensure_ascii=False, allow_nan=False)
     except WorkbenchError as exc:
         log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)

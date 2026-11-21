@@ -106,7 +106,7 @@ def test_remote_claims_and_changed_descriptors_cannot_select_or_override_policy(
     for changed in [
         ToolRegistration.discover("mcp", URL + "/other", TOOL),
         ToolRegistration.discover("mcp", URL, {**TOOL, "description": "changed"}),
-        ToolRegistration.discover("platform", URL, TOOL),
+        ToolRegistration.discover("skill_script", URL, TOOL),
     ]:
         with pytest.raises(CapabilityError, match="reviewed"):
             catalog.require(changed)

@@ -5,7 +5,6 @@ from app.domain.workbench.errors import NotFound
 from app.domain.workbench.formal_method_admission_generated import FrozenFormalMethod
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.native_functions import BINDINGS, native_registration
-from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.registry_views import (
     FormalRegistration,
     InstallationEntry,
@@ -77,13 +76,6 @@ async def formal_registration(
     )
 
 
-PLATFORM_TOOLS = {
-    name: ToolRegistration.discover("platform", "knowbench", {"name": name, **spec})
-    for name, spec in TOOLS.items()
-    if name not in BINDINGS
-}
-
-
 async def registered_functions(repo, *, data_available, name=None):
     bindings = {n: pin for n, pin in BINDINGS.items() if name is None or name == n}
     if not data_available:
@@ -93,10 +85,6 @@ async def registered_functions(repo, *, data_available, name=None):
     for revision in rows:
         result[revision.name] = (revision, native_registration(revision))
     return result
-
-
-def platform_catalog(functions=()) -> ToolRegistry:
-    return ToolRegistry([*functions, *PLATFORM_TOOLS.values()])
 
 
 def mcp_catalog(url: str, tools: list[dict], *, protocol="mcp") -> ToolRegistry:

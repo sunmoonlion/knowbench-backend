@@ -16,7 +16,6 @@ from app.domain.workbench.tool_schema import schema_validator
 
 ToolSource = Literal[
     "service_function",
-    "platform",
     "mcp",
     "a2a",
     "skill_script",
@@ -53,7 +52,7 @@ class ToolRegistration:
         schema_validator(schema)
         # JSON storage makes nested schemas immutable too; a caller receives a copy.
         material = {"name": name, "description": description, "inputSchema": schema}
-        if source == "platform":
+        if source == "service_function":
             # Preserve provider-owned presentation hints. They are not policy input.
             for field in ("annotations", "title", "outputSchema"):
                 if field in descriptor:
