@@ -6,7 +6,7 @@ from typing import Any
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.workbench.errors import IdempotencyConflict
+from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 from app.domain.workbench.native_registry import NATIVE_ACTIONS
 
 
@@ -27,6 +27,92 @@ class FormalMethodRepositoryMixin:
         ON CONFLICT(owner_actor_id,method_id,version) DO UPDATE SET asset_id=EXCLUDED.asset_id
         WHERE workbench_incubation_tool_bindings.digest=EXCLUDED.digest"""),
             {"owner": owner, **reference.model_dump(), "asset": asset_id},
+        )
+
+    async def direct_registrations(self, owner):
+        rows = await self.session.execute(
+            text("""
+            SELECT source_id,version,kind,name,digest FROM workbench_registry_sources
+            WHERE owner_actor_id=:owner ORDER BY name, source_id, version DESC
+        """),
+            {"owner": owner},
+        )
+        return rows.mappings().all()
+
+    async def direct_revision(self, owner, source_id, version, digest):
+        row = (
+            (
+                await self.session.execute(
+                    text("""
+            SELECT source_id,version,kind,name,digest,content FROM workbench_registry_sources
+            WHERE owner_actor_id=:owner AND source_id=:id AND version=:version AND digest=:digest
+        """),
+                    {
+                        "owner": owner,
+                        "id": source_id,
+                        "version": version,
+                        "digest": digest,
+                    },
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if row is None:
+            raise NotFound("Registered source revision not found")
+        return row
+
+    async def register_direct_revision(self, owner, source_id, version, draft):
+        params = {
+            "owner": owner,
+            "id": source_id,
+            "version": version,
+            **draft.model_dump(),
+            "digest": draft.content_digest(),
+        }
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 71))"),
+            {"key": f"{owner}:{source_id}"},
+        )
+        # A retry of any committed revision succeeds even after a newer edit.
+        previous = (
+            (
+                await self.session.execute(
+                    text("""
+            SELECT source_id,version,kind,name,digest FROM workbench_registry_sources
+            WHERE owner_actor_id=:owner AND source_id=:id AND version<=:version
+            ORDER BY version DESC LIMIT 1
+        """),
+                    params,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if previous and previous["version"] == version:
+            if any(previous[k] != params[k] for k in ("name", "kind", "digest")):
+                raise IdempotencyConflict(
+                    "This source version already has different content"
+                )
+            return previous
+        expected = previous["version"] + 1 if previous else 1
+        if version != expected or (previous and previous["kind"] != draft.kind):
+            raise StaleStateVersion(
+                "Expected the next revision of the same registered source"
+            )
+        return (
+            (
+                await self.session.execute(
+                    text("""
+            INSERT INTO workbench_registry_sources(owner_actor_id, source_id, version, kind, name, content, digest)
+            VALUES (:owner,:id,:version,:kind,:name,:content,:digest)
+            RETURNING source_id,version,kind,name,digest
+        """),
+                    params,
+                )
+            )
+            .mappings()
+            .one()
         )
 
     async def registry_inventory(self, owner):

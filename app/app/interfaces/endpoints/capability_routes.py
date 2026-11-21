@@ -66,6 +66,11 @@ from app.domain.workbench.formal_method_calls import (
 )
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.native_registry import NATIVE_ACTIONS
+from app.domain.workbench.registry_sources import (
+    RegisteredSource,
+    SourceDraft,
+    SourceRevision,
+)
 from app.domain.workbench.registry_views import (
     FormalRegistration,
     InstalledRegistration,
@@ -109,6 +114,55 @@ def formal_service(svc=Depends(service)):
     from app.application.workbench.formal_method_calls import FormalMethodCalls
 
     return FormalMethodCalls(svc)
+
+
+@router.get("/workbench/registry/sources", response_model=list[RegisteredSource])
+async def list_direct_sources(
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await svc.repo.direct_registrations(_actor(user))
+
+
+@router.put(
+    "/workbench/registry/sources/{source_id}/{version}", response_model=RegisteredSource
+)
+async def register_direct_source(
+    source_id: UUID,
+    body: SourceDraft,
+    response: Response,
+    version: int = Path(ge=1, le=2147483647),
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        async with svc.repo.transaction():
+            return await svc.repo.register_direct_revision(
+                _actor(user), source_id, version, body
+            )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get(
+    "/workbench/registry/sources/{source_id}/{version}", response_model=SourceRevision
+)
+async def read_direct_source(
+    source_id: UUID,
+    response: Response,
+    version: int = Path(ge=1, le=2147483647),
+    digest: str = Query(pattern=r"^sha256:[a-f0-9]{64}$"),
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.repo.direct_revision(_actor(user), source_id, version, digest)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/workbench/registry/activity", response_model=list[RegistryEvent])
