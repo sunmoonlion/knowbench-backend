@@ -311,4 +311,4 @@ RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_request
 RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_runner_db.py tests/test_instruction_runner_codex.py
 ```
 
-恢复联调用实际 runner 命令入口、Codex WebSocket、HTTPS 控制服务和 PostgreSQL。供给器返回测试容器的位置，供应商为本地合成服务。另在独立 Kubernetes API 测供给器生命周期。KnowLab 作者入口、冻结和专家叶子仍待目标集群调度、网络策略与真实供应商计量验收。
+恢复联调用实际 runner 命令入口、Codex WebSocket、HTTPS 控制服务和 PostgreSQL。供给器返回测试容器的位置，供应商为本地合成服务。另在 sunmoon-kind 临时命名空间实测同节点与跨节点的网络策略、回执卷、网关进程重启补交及 PVC/PV 回收，接收方使用合成账单。KnowLab 作者入口、冻结和专家叶子仍待真实供应商计量验收后接入。
