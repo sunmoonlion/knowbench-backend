@@ -731,6 +731,16 @@ class FormalMethods:
                     raise Forbidden(
                         "Execution evidence is missing or differs from the receipt"
                     )
+            if frozen.draft.source and frozen.draft.source.kind == "skill_instruction":
+                if (
+                    frozen.visibility != "private"
+                    or frozen.validation.execution is None
+                    or (run.get("execution_evidence") or {}).get("adapter")
+                    != "knowbench/formal-instruction-host/v1"
+                ):
+                    raise Forbidden(
+                        "Instruction registration requires private single-turn execution evidence"
+                    )
             if isinstance(frozen.draft.definition.procedure, Orchestration):
                 from app.application.workbench.formal_orchestration import (
                     resolve_owned_plan,

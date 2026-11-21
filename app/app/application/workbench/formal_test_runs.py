@@ -30,6 +30,7 @@ from app.domain.workbench.formal_execution import (
     case_key,
     recursive_plan,
     snapshot_for_task,
+    validate_values,
 )
 from app.domain.workbench.formal_method_admission_generated import (
     CONTRACT,
@@ -82,8 +83,9 @@ def initial_case(case, repetition, row=None):
 
 
 class FormalExecutions:
-    def __init__(self, repo, capabilities, *, now=None):
+    def __init__(self, repo, capabilities, *, now=None, instruction_service=None):
         self.repo, self.capabilities = repo, capabilities
+        self.instruction_service = instruction_service
         self.formal = capabilities.formal_sources
         self.now = now or (lambda: datetime.now(UTC))
 
@@ -139,6 +141,8 @@ class FormalExecutions:
                     )
                 if (
                     not isinstance(request.draft.definition.procedure, Orchestration)
+                    and request.draft.definition.procedure.implementation.kind
+                    != "skill_instruction"
                     and len(request.draft.definition.access_requirements) != 1
                 ):
                     raise CapabilityError(
@@ -164,6 +168,41 @@ class FormalExecutions:
                     await resolve_plan(
                         self.capabilities, owner, request.draft, request.method_id
                     )
+                elif (
+                    request.draft.source
+                    and request.draft.source.kind == "skill_instruction"
+                ):
+                    if self.instruction_service is None:
+                        raise CapabilityError(
+                            "Dedicated instruction execution is disabled"
+                        )
+                    service = await self.instruction_service(self.formal, owner)
+                    quote = service.route.quote(service.prices)
+                    minimum = Decimal(quote["maximum"]) * len(expanded(request))
+                    if (
+                        request.execution.budget.currency != quote["currency"]
+                        or Decimal(request.execution.budget.limit) < minimum
+                    ):
+                        raise CapabilityError(
+                            f"Instruction trial requires a budget of at least {minimum} {quote['currency']}"
+                        )
+                    cases = request.execution.suite.cases
+                    try:
+                        await self.formal.prepare_instruction_trial(
+                            request.owner_subject,
+                            run_id,
+                            cases[0].input.values,
+                            caller=caller,
+                        )
+                        for case in cases[1:]:
+                            validate_values(
+                                request.draft.definition.procedure.inputs,
+                                case.input.values,
+                            )
+                    except ValueError as exc:
+                        raise CapabilityError(
+                            "Instruction case inputs do not match the declared slots"
+                        ) from exc
                 else:
                     await self.reviewed_policy(owner, request)
                 await self.repo.insert_test_run(
@@ -450,6 +489,9 @@ class FormalExecutions:
         )
         governed = all(e["validated"] for e in evidence_cases)
         leaves = ()
+        instruction = bool(
+            request.draft.source and request.draft.source.kind == "skill_instruction"
+        )
         try:
             licensed = await self.formal._source(
                 owner, request.owner_subject, request.draft.source
@@ -490,7 +532,7 @@ class FormalExecutions:
                     for evidence_case in evidence_cases
                     for step in evidence_case.get("steps", [])
                 )
-            else:
+            elif not instruction:
                 policy = await self.reviewed_policy(owner, request)
                 licensed = licensed and all(
                     not e["governance"]
@@ -541,7 +583,9 @@ class FormalExecutions:
             request_digest=request.fingerprint(),
             suite=request.execution.suite.reference().model_dump(mode="json"),
             definition_digest=request.draft.definition.digest(),
-            adapter="knowbench/formal-orchestration-tree-host/v1"
+            adapter="knowbench/formal-instruction-host/v1"
+            if instruction
+            else "knowbench/formal-orchestration-tree-host/v1"
             if any(
                 e.get("adapter") == "knowbench/formal-orchestration-tree-host/v1"
                 for e in evidence_cases
@@ -557,7 +601,11 @@ class FormalExecutions:
             model_cost=str(await self.repo.test_run_spent(run_id) - script_total),
             **({"script_cost": str(script_total)} if script_cases else {}),
             external_provider_billing=(
-                "metered_scripts" if script_cases else "reviewed_no_incremental_fee"
+                "metered_model_request"
+                if instruction
+                else "metered_scripts"
+                if script_cases
+                else "reviewed_no_incremental_fee"
             )
             if licensed
             else "unverified",
@@ -600,7 +648,9 @@ class FormalExecutions:
                             "scenario": "Real-service business effectiveness beyond the supplied assertions",
                             "reason": "This run checks typed outputs and governance, not every natural-language business rule or supplier scenario",
                             "scope": (
-                                "Private use within the tested definition, sources and approved container tariffs"
+                                "Private use of the tested single-turn instruction and its metered model route"
+                                if instruction
+                                else "Private use within the tested definition, sources and approved container tariffs"
                                 if script_cases
                                 else "Private use within the tested definition and source; only adapters reviewed as having no incremental provider fees are admitted"
                             ),
@@ -884,7 +934,13 @@ async def advance_formal(conductor, run_id):
                 session_id=session["session_id"],
                 project_id=account.project_id,
             )
-            if case.caller == "model" and not made.get("queued_behind"):
+            if (
+                case.caller == "model"
+                or (
+                    request.draft.source
+                    and request.draft.source.kind == "skill_instruction"
+                )
+            ) and not made.get("queued_behind"):
                 talk = await repo.get_session(session["session_id"])
                 await repo.enqueue_command(
                     session_id=session["session_id"],

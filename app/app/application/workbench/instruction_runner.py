@@ -22,7 +22,6 @@ from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import BudgetExhausted, IdempotencyConflict, NotFound
 from app.domain.workbench.formal_execution import snapshot_for_task, validate_values
 from app.domain.workbench.models import InteractionPrompt
-from app.domain.workbench.provider_url import validate_provider_base_url
 from app.domain.workbench.states import (
     ATTEMPT_TERMINAL,
     TASK_TERMINAL,
@@ -65,23 +64,13 @@ class InstructionRunner:
         return self.units is not None and self.issuer is not None
 
     async def service(self, repo, owner):
-        cred = await repo.model_request_credential(owner) or {}
-        # Use the same configured model and account endpoint projected into the sandbox.
-        url = cred.get("base_url") or self.default_url
-        route = next(
-            (
-                r
-                for r in self.routes
-                if url
-                and (r.provider, r.model, r.base_url)
-                == (cred.get("provider"), self.model, validate_provider_base_url(url))
-            ),
-            None,
-        )
-        if not route:
-            raise CapabilityError("No authorized instruction model route")
-        return InstructionRequests(
-            self.formal(repo), route, self.prices, default_base_url=self.default_url
+        return await InstructionRequests.for_account(
+            self.formal(repo),
+            owner,
+            routes=self.routes,
+            model=self.model,
+            prices=self.prices,
+            default_url=self.default_url,
         )
 
     async def start(self, task_id):

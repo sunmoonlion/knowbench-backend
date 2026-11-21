@@ -293,14 +293,31 @@ class FormalMethodExecutionRequest(Strict):
     def supported(self):
         p = self.draft.definition.procedure
         if isinstance(p, ToolProcedure):
-            if (
+            if self.dependencies:
+                raise ValueError("Direct trials cannot dispatch other methods")
+            if p.implementation.kind == "skill_instruction":
+                if (
+                    self.draft.allowed_callers != ("host",)
+                    or p.max_model_turns != 1
+                    or p.implementation.requirement_ids
+                    or self.draft.definition.access_requirements
+                    or self.draft.definition.what_requires_approval
+                    or any(
+                        c.expected.outcome != "succeeded"
+                        for c in self.execution.suite.cases
+                    )
+                ):
+                    raise ValueError(
+                        "Instruction trials require host-only single-turn output cases "
+                        "without tools"
+                    )
+            elif (
                 p.implementation.kind not in ("mcp", "skill_script")
                 or (
                     p.implementation.kind == "skill_script"
                     and self.draft.allowed_callers != ("host",)
                 )
                 or p.max_model_turns != 0
-                or self.dependencies
             ):
                 raise ValueError(
                     "Execution supports zero-turn MCP or host-only scripts"

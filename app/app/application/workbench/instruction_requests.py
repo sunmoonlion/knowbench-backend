@@ -66,6 +66,21 @@ class InstructionRequests:
         self.route, self.prices = route, prices
         self.default_base_url = default_base_url
 
+    @classmethod
+    async def for_account(cls, formal, owner, *, routes, model, prices, default_url):
+        credential = await formal.repo.model_request_credential(owner) or {}
+        url = credential.get("base_url") or default_url
+        if url:
+            url = validate_provider_base_url(url)
+            for route in routes:
+                if (route.provider, route.model, route.base_url) == (
+                    credential.get("provider"),
+                    model,
+                    url,
+                ):
+                    return cls(formal, route, prices, default_base_url=default_url)
+        raise CapabilityError("No authorized instruction model route")
+
     async def authority(self, owner, task, caller):
         snapshot = snapshot_for_task(task)
         subject = await self.repo.subject_of_actor(owner)
@@ -87,6 +102,11 @@ class InstructionRequests:
             raise CapabilityError("Instruction task does not control its session")
         credential = await self.repo.model_request_credential(owner)
         quote = self.route.quote(self.prices)
+        context = (task.get("original_input") or {}).get("client_context") or {}
+        if context.get("entry") == "formal-method-execution" and Decimal(
+            quote["maximum"]
+        ) > Decimal(task["budget"]["limit"]):
+            raise CapabilityError("Instruction route exceeds the frozen case budget")
         base_url = (credential or {}).get("base_url") or self.default_base_url
         if (
             credential is None

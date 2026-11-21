@@ -15,6 +15,7 @@ from uuid import uuid4
 
 import pytest
 from test_formal_instruction_db import PROBES
+from test_formal_instruction_trial_db import AuthorTrial
 from test_instruction_control_db import https_control, sandbox_relay
 from test_instruction_requests_db import PRICES, ROUTE
 from test_instruction_runner_db import drive, stack
@@ -37,7 +38,8 @@ from app.interfaces.http.internal import instruction_control
 async def test_real_instruction_runner(
     db, make_client, monkeypatch, tmp_path, late_receipt
 ):
-    s = await stack(db)
+    trial = AuthorTrial()
+    s = await stack(db, author_trial=trial.start)
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
     monkeypatch.syspath_prepend(str(PROBES))
@@ -270,6 +272,7 @@ async def test_real_instruction_runner(
                         )["response_id"]
                         == attempt["refs"]["instruction_usage"]["response_id"]
                     )
+                    await trial.finish(db)
                 finally:
                     for v in (relay, provider):
                         await asyncio.to_thread(v.shutdown)

@@ -41,10 +41,16 @@ BILL = Usage(input=1, output=1)
 
 
 async def setup(
-    db, *, budget="1", credential_url=ROUTE.base_url, route=ROUTE, prices=PRICES
+    db,
+    *,
+    budget="1",
+    credential_url=ROUTE.base_url,
+    route=ROUTE,
+    prices=PRICES,
+    author_trial=None,
 ):
     license, req, asset = await install(db)
-    _, sandbox, sid = await seed(db)
+    env, sandbox, sid = await seed(db)
     snapshot = FormalTaskSnapshot(
         runtime_contract=FORMAL_RUNTIME,
         run_id=req.run_id,
@@ -67,16 +73,19 @@ async def setup(
                 sandbox_id=sandbox,
                 base_url=credential_url,
             )
-        led = Ledger(repo)
-        task = (
-            await led.handover(
-                handover(sid, budget=budget),
-                owner_actor_id=OWNER,
-                snapshot=PinnedFormalMethod(snapshot, "trial-1"),
-            )
-        )["task_id"]
-        await led.transition(task, TaskState.VALIDATING)
-        await led.transition(task, TaskState.QUEUED)
+        if author_trial is None:
+            led = Ledger(repo)
+            task = (
+                await led.handover(
+                    handover(sid, budget=budget),
+                    owner_actor_id=OWNER,
+                    snapshot=PinnedFormalMethod(snapshot, "trial-1"),
+                )
+            )["task_id"]
+            await led.transition(task, TaskState.VALIDATING)
+            await led.transition(task, TaskState.QUEUED)
+    if author_trial is not None:
+        task = await author_trial(db, req, license, env)
 
     @asynccontextmanager
     async def host(route=route, licenses=(license,), default_url=""):

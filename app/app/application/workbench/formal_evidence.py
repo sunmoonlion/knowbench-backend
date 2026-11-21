@@ -4,6 +4,8 @@ This collector grants nothing and runs no operation. Expected business failures
 may be valid evidence; uncertain dispatch and unproved authority never qualify.
 """
 
+from decimal import InvalidOperation
+
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_adapter import host_kind, retained_registration
@@ -103,14 +105,18 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             "execution_not_terminal",
         )
         model = case.caller == "model"
-        if not model:
-            require(attempt.get("turn_ids") == [], "unexpected_model_turns")
-        require(
-            refs.get("kind") == "formal_method"
-            and refs.get("slot") == "direct"
-            and refs.get("snapshot_digest") == task["pack_digest"],
-            "attempt_snapshot_mismatch",
+        instruction = bool(
+            request.draft.source and request.draft.source.kind == "skill_instruction"
         )
+        if not model and not instruction:
+            require(attempt.get("turn_ids") == [], "unexpected_model_turns")
+        if not instruction:
+            require(
+                refs.get("kind") == "formal_method"
+                and refs.get("slot") == "direct"
+                and refs.get("snapshot_digest") == task["pack_digest"],
+                "attempt_snapshot_mismatch",
+            )
         require(
             str(snapshot.run_id) == str(request.run_id)
             and snapshot.case_id == case.case_id
@@ -196,6 +202,22 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             "execution_outcome_unqualified",
         )
         call_id = result.get("call_id")
+        if instruction:
+            from app.application.workbench.instruction_evidence import (
+                instruction_evidence,
+            )
+
+            evidence["governance"] = await instruction_evidence(
+                repo, task, attempt, request, outputs
+            )
+            require(
+                evidence["governance"] is not None
+                and outcome == "succeeded"
+                and call_id is None,
+                "instruction_evidence_missing",
+            )
+            evidence["validated"] = not errors
+            return evidence
         if call_id is None:
             if model:
                 errors.append("model_call_evidence_missing")
@@ -503,6 +525,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         evidence["validated"] = not errors
     except (
         WorkbenchError,
+        InvalidOperation,
         ValueError,
         KeyError,
         TypeError,
