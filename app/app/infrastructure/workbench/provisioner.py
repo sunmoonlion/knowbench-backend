@@ -7,7 +7,11 @@ from typing import Any
 
 import httpx
 
-from app.application.workbench.provisioning import ProvisionerFailed
+from app.application.workbench.provisioning import (
+    InstructionPrepareNotSent,
+    ProvisionerFailed,
+    ProvisioningUnavailable,
+)
 
 
 @dataclass(frozen=True)
@@ -67,3 +71,56 @@ class HttpProvisioner:
         if r.status_code != 200:
             raise ProvisionerFailed(f"provisioner returned {r.status_code}")
         return r.json()
+
+
+class InstructionUnits:
+    """Access the private instruction provisioner with the platform service credential."""
+
+    def __init__(self, url, token, transport=None):
+        self.url, self.token, self.transport = url, token, transport
+
+    async def request(
+        self, owner, task, method, path, *, body=None, params=None, absent=False
+    ):
+        async with httpx.AsyncClient(
+            base_url=self.url,
+            transport=self.transport,
+            trust_env=False,
+            timeout=30,
+            headers={"Authorization": f"Bearer {self.token}"},
+        ) as client:
+            try:
+                result = await client.request(
+                    method,
+                    f"/v1/instruction-executions/{owner}/{task}/{path}",
+                    json=body,
+                    params=params,
+                )
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout) as exc:
+                if method == "POST" and path == "prepare":
+                    raise InstructionPrepareNotSent(
+                        "Instruction reservation was not sent"
+                    ) from exc
+                raise ProvisionerFailed("Instruction provisioner unavailable") from exc
+            except httpx.HTTPError as exc:
+                raise ProvisionerFailed("Instruction provisioner unavailable") from exc
+        if path == "prepare" and result.status_code == 503:
+            # Only these explicit pre-creation refusals prove no reservation exists.
+            try:
+                detail = result.json().get("detail")
+            except (ValueError, AttributeError):
+                detail = None
+            if isinstance(detail, dict) and detail.get("code") in (
+                "instruction_prepare_disabled",
+                "instruction_control_origin_invalid",
+            ):
+                raise ProvisioningUnavailable(
+                    "Instruction provisioner is not configured"
+                )
+        if absent and result.status_code == 404:
+            return None
+        if result.status_code != 200:
+            raise ProvisionerFailed(
+                f"Instruction provisioner returned {result.status_code}"
+            )
+        return result.json()

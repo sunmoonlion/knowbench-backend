@@ -23,22 +23,32 @@ from app.domain.workbench.states import (
 
 
 class FormalExecution:
-    def __init__(self, stores, capabilities):
+    def __init__(self, stores, capabilities, *, instructions=None):
+        self.instructions = instructions
         self.stores, self.capabilities = stores, capabilities
 
     async def drive(self, task_id: str) -> str:
         async with self.stores() as repo:
             task = await repo.get_task(task_id)
-            if (task.get("pack_snapshot") or {}).get("draft", {}).get(
-                "definition", {}
-            ).get("procedure", {}).get("kind") == "orchestration":
-                from app.application.workbench.formal_orchestration_execution import (
-                    FormalOrchestrationExecution,
-                )
+            definition = (
+                (task.get("pack_snapshot") or {}).get("draft", {}).get("definition", {})
+            )
+            procedure = definition.get("procedure", {})
+        if procedure.get("kind") == "orchestration":
+            from app.application.workbench.formal_orchestration_execution import (
+                FormalOrchestrationExecution,
+            )
 
-                return await FormalOrchestrationExecution(
-                    self.stores, self.capabilities
-                ).drive(task_id)
+            return await FormalOrchestrationExecution(
+                self.stores, self.capabilities
+            ).drive(task_id)
+        if (procedure.get("implementation") or {}).get("kind") == "skill_instruction":
+            # The conductor observes the Task. Only the runner owns the dedicated execution connection.
+            if self.instructions is not None:
+                await self.instructions.drive(task_id)
+                async with self.stores() as repo:
+                    return (await repo.get_task(task_id))["state"]
+            return task["state"]
         async with self.stores() as repo, repo.transaction():
             led = Ledger(repo)
             task = await repo.get_task(task_id, for_update=True)

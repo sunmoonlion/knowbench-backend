@@ -2206,9 +2206,12 @@ class Runner:
         reader: Any = None,
         fixed_as_plan_owners: frozenset[str] = frozenset(),
         capabilities: Any = None,
+        instructions: Any = None,
     ):
         self.records = records
         self.capabilities = capabilities
+        self.instructions = instructions
+        self.instruction_cleanup: asyncio.Task | None = None
         self.script_receipts: asyncio.Task | None = None
         self.fixed_as_plan_owners = fixed_as_plan_owners  # SDD 0050；默认没人
         self.deliverables = deliverables
@@ -2263,6 +2266,8 @@ class Runner:
 
     async def _shutdown(self) -> None:
         running = list(self.driving.values())
+        if self.instruction_cleanup:
+            running.append(self.instruction_cleanup)
         if self.script_receipts:
             running.append(self.script_receipts)
         for task in running:
@@ -2497,6 +2502,12 @@ class Runner:
         finally:
             self.driving.pop(task_id, None)
 
+    async def _cleanup_instructions(self, sandbox_ids):
+        try:
+            await self.instructions.reconcile(sandbox_ids)
+        except Exception:
+            log.exception("could not reconcile instruction execution units")
+
     async def _script_receipts(self) -> None:
         try:
             async with self.stores() as repo:
@@ -2533,6 +2544,14 @@ class Runner:
                 commands = await repo.claim_commands(claimed_by=self.runner_id)
         for sandbox_id in lost:
             await self._drop_link(sandbox_id, "lease lost to another runner")
+        if (
+            self.instructions
+            and held
+            and (not self.instruction_cleanup or self.instruction_cleanup.done())
+        ):
+            self.instruction_cleanup = asyncio.create_task(
+                self._cleanup_instructions(sorted(held))
+            )
         unattended = await self._reconcile()
         for task in unattended:
             if not self._busy(task["id"]):
@@ -2584,12 +2603,12 @@ class Runner:
                 if str(task["session_id"]) != str(session_id):
                     raise RuntimeError("Task command belongs to another session")
                 if is_formal_host(task):
-                    if kind == "task.drive" and not self._busy(task["id"]):
-                        self.driving[task["id"]] = asyncio.create_task(
-                            self._drive_formal(task["id"]), name=f"drive:{task['id']}"
+                    task_id = str(task["id"])
+                    if kind == "task.drive" and not self._busy(task_id):
+                        self.driving[task_id] = asyncio.create_task(
+                            self._drive_formal(task_id), name=f"drive:{task_id}"
                         )
-                    # Host work has neither a Codex environment to reconnect
-                    # nor a model turn to interrupt, even for stale commands.
+                    # Formal host work never reconnects or interrupts the ordinary session.
                     return
             link = await self.link_for(str(session["sandbox_id"]), repo)
         if kind == "task.reconnect":
@@ -2872,7 +2891,9 @@ class Runner:
         from app.application.workbench.formal_execution import FormalExecution
 
         try:
-            await FormalExecution(self.stores, self.capabilities).drive(task_id)
+            await FormalExecution(
+                self.stores, self.capabilities, instructions=self.instructions
+            ).drive(task_id)
         except Exception:  # noqa: BLE001
             # Keep the persisted call/approval as authority. The same driver or
             # test deadline can recover it; a model crash handler cannot infer

@@ -10,7 +10,9 @@ import asyncio
 import json
 import logging
 import os
+import socket
 from collections.abc import Callable, Mapping
+from ipaddress import ip_address
 from typing import Any
 
 import websockets
@@ -76,18 +78,49 @@ class AppServerClient:
         self.closed.set()
         self.server_info: dict[str, Any] = {}
 
+    @classmethod
+    def instruction_worker(cls, address, token, **handlers):
+        ip = ip_address(address)
+        host = f"[{ip}]" if ip.version == 6 else str(ip)
+        client = cls(f"ws://{host}:47800", token, **handlers)
+        client._worker_address = str(ip)
+        return client
+
+    _worker_address: str | None = None
+
     @property
     def connected(self) -> bool:
         return self._ws is not None and not self.closed.is_set()
 
     async def connect(self) -> None:
-        self._ws = await connect(
-            self.url,
-            additional_headers={"Authorization": f"Bearer {self._token}"},
-            max_size=None,
-            ping_interval=20,
-            ping_timeout=20,
-        )
+        sock = None
+        try:
+            if self._worker_address is not None:
+                # A connected socket pins this credential to the supplied Pod and prevents
+                # environment proxies or WebSocket redirects from receiving its bearer.
+                family = (
+                    socket.AF_INET6 if ":" in self._worker_address else socket.AF_INET
+                )
+                sock = socket.socket(family, socket.SOCK_STREAM)
+                sock.setblocking(False)
+                await asyncio.wait_for(
+                    asyncio.get_running_loop().sock_connect(
+                        sock, (self._worker_address, 47800)
+                    ),
+                    10,
+                )
+            self._ws = await connect(
+                self.url,
+                additional_headers={"Authorization": f"Bearer {self._token}"},
+                max_size=None if sock is None else 2 * 1024 * 1024,
+                ping_interval=20,
+                ping_timeout=20,
+                sock=sock,
+            )
+        except BaseException:
+            if sock is not None:
+                sock.close()
+            raise
         self.closed.clear()
         self._reader = asyncio.create_task(
             self._read_loop(), name=f"app-server-reader:{self.url}"

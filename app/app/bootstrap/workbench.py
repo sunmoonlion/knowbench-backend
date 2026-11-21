@@ -35,7 +35,10 @@ from app.application.workbench.test_runs import (
 from app.domain.workbench.pricing import PriceList
 from app.infrastructure.external.knowmart_client import KnowmartSummonClient
 from app.infrastructure.workbench.agent_release import S3ReleaseStore
-from app.infrastructure.workbench.app_server_client import WsAppServerConnector
+from app.infrastructure.workbench.app_server_client import (
+    AppServerClient,
+    WsAppServerConnector,
+)
 from app.infrastructure.workbench.provisioner import HttpProvisioner, ProvisionerConfig
 from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.relay_admin import WsRelayAdmin
@@ -244,9 +247,36 @@ def build_runner(
     deliverables: DeliverableCheck | None = None,
     fixed_as_plan_owners: frozenset[str] = frozenset(),
 ) -> Runner:
+    from app.application.workbench.instruction_runner import InstructionRunner
+    from app.application.workbench.tokens import TokenIssuer
+    from app.infrastructure.workbench.provisioner import InstructionUnits
+
+    stores, connector = workbench_stores(session_factory), app_server_connector()
+    settings = get_settings()
+    units = issuer = None
+    if settings.workbench_provisioner_url and settings.workbench_provisioner_token:
+        units = InstructionUnits(
+            settings.workbench_provisioner_url, settings.workbench_provisioner_token
+        )
+    if settings.workbench_token_signing_key:
+        issuer = TokenIssuer(
+            settings.workbench_token_signing_key, issuer=settings.workbench_token_issuer
+        )
+    instructions = InstructionRunner(
+        stores,
+        lambda repo: capability_service(repo).formal_sources,
+        units,
+        AppServerClient.instruction_worker,
+        issuer,
+        routes=settings.workbench_instruction_routes,
+        model=settings.workbench_sandbox_model,
+        prices=prices or settings.workbench_model_prices(),
+        default_url=settings.workbench_sandbox_provider_base_url,
+    )
     return Runner(
-        workbench_stores(session_factory),
-        connector=app_server_connector(),
+        stores,
+        instructions=instructions,
+        connector=connector,
         publisher=publisher,
         runner_id=runner_id,
         environment_key=environment_key,

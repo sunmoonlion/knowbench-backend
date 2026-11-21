@@ -803,6 +803,10 @@ class WorkbenchStore(Protocol):
         """接管一个沙箱时：上一个 runner 手里未决的工具审批作废（app-server 那边的请求已随连接消失，Codex 会重发）。"""
         ...
 
+    async def claim_instruction_cleanup(
+        self, sandbox_ids: list[str]
+    ) -> list[tuple[str, str, str]]: ...
+
     async def unsettled_tasks(self, sandbox_ids: list[str]) -> list[dict[str, Any]]:
         """这些沙箱上要有人推的委托：受理了还没排进项目队列的、核验中的、排队的、在跑的、
         等着 Codex 那一轮里的请求（审批、反问）的。

@@ -66,7 +66,7 @@ class InstructionRequests:
         self.route, self.prices = route, prices
         self.default_base_url = default_base_url
 
-    async def _authority(self, owner, task, caller):
+    async def authority(self, owner, task, caller):
         snapshot = snapshot_for_task(task)
         subject = await self.repo.subject_of_actor(owner)
         request, entry = await self.formal.prepare_instruction_trial(
@@ -107,12 +107,14 @@ class InstructionRequests:
             "snapshot_digest": task["pack_digest"],
         }, instruction_job(request, entry, snapshot.arguments)
 
-    async def open(self, owner, task_id, *, caller, gateway_uid: UUID | None = None):
+    async def open(
+        self, owner, task_id, *, caller, gateway_uid: UUID | None = None, managed=False
+    ):
         async with self.repo.transaction(independent=True):
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
             )
-            quote, _ = await self._authority(owner, task, caller)
+            quote, _ = await self.authority(owner, task, caller)
             if (
                 task["state"] != TaskState.QUEUED
                 or task.get("cancel_requested_at")
@@ -138,6 +140,7 @@ class InstructionRequests:
                 reserve=Decimal(quote["maximum"]),
                 meta={
                     **gateway,
+                    **({"instruction_unit": {"pending": True}} if managed else {}),
                     "instruction_quote": quote,
                     "model": self.route.model,
                     "model_provider": self.route.provider,
@@ -166,11 +169,16 @@ class InstructionRequests:
             refs = dict(attempt["refs"])
             if refs.get("instruction_request"):
                 raise IdempotencyConflict("Instruction request already claimed")
-            quote, job = await self._authority(owner, task, caller)
+            quote, job = await self.authority(owner, task, caller)
             verify_instruction_body(body, job)
             if (
                 attempt["status"] != AttemptState.RUNNING
+                or refs.get("instruction_unit", {}).get("protocol_error")
                 or refs.get("permission_revocation")
+                or (
+                    "instruction_unit" in refs
+                    and refs.get("runtime_turn_id") != turn_id
+                )
                 or refs.get("runtime_turn_id") not in (None, turn_id)
                 or refs.get("instruction_quote") != quote
                 or credential_id != quote["credential_id"]

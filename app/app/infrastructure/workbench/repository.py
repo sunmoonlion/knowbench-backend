@@ -3064,6 +3064,27 @@ class WorkbenchRepository(
             for m in r.mappings().all()
         ]
 
+    async def claim_instruction_cleanup(self, sandbox_ids):
+        rows = await self.session.execute(
+            text("""
+            with due as (
+                select a.id, t.owner_actor_id from workbench_attempts a
+                join workbench_tasks t on t.id=a.task_id
+                join workbench_sessions s on s.id=t.session_id
+                where s.sandbox_id::text = any(:sbs)
+                  and a.ended_at is not null and a.refs->'instruction_unit'->>'pending'='true'
+                  and coalesce((a.refs->'instruction_unit'->>'retry_after')::bigint, 0) <= extract(epoch from now())
+                order by coalesce((a.refs->'instruction_unit'->>'retry_after')::bigint, 0), a.id
+                limit 16 for update of a skip locked
+            ) update workbench_attempts a set refs=jsonb_set(a.refs,'{instruction_unit,retry_after}',
+                      to_jsonb(extract(epoch from now())::bigint + 15))
+              from due where a.id=due.id returning due.owner_actor_id, a.task_id, a.id"""),
+            {"sbs": list(sandbox_ids)},
+        )
+        return [
+            (str(owner), str(task), str(attempt)) for owner, task, attempt in rows.all()
+        ]
+
     async def unsettled_tasks(self, sandbox_ids: list[str]) -> list[dict[str, Any]]:
         if not sandbox_ids:
             return []

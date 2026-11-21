@@ -43,6 +43,10 @@ class ProvisionerFailed(WorkbenchError):
     http_status = 502
 
 
+class InstructionPrepareNotSent(ProvisionerFailed):
+    """Connection establishment failed before the reservation could reach the provisioner."""
+
+
 class SandboxCapacityFull(WorkbenchError):
     """F-SBX-08：全局沙箱数到上限。已有沙箱的用户不受影响（更新照常），新用户稍后再试。"""
 

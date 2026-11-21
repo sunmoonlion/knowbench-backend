@@ -294,4 +294,21 @@ RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_request
 
 转发器在自己的回执目录写入本次供应商回执并持久化，再向 KnowBench 提交。若确认丢失，重启后调用 `InstructionControl.reconcile()`，只补发原回执。执行票据可由可信宿主为原绑定续签。回执目录须跨该转发进程重启保留，清理由宿主在确认结算后执行。
 
-部署仍须创建专用转发器与隔离执行单元，按实际 Pod UID 交付票据，约束执行单元的唯一出口，并验收中断恢复。KnowLab 作者入口及冻结仍待接入。
+### runner 领取与恢复纯指令试跑
+
+已受理的工程试跑由 KnowBench runner 推进。runner 在开 Pod 前核对校验运行、执行许可、本人账号及运营报价，先在根任务上预留一次请求的预算。预算不足进入资源等待。在专用执行容器新建只读 Codex 线程，将容器 UID 和线程号持久写到同一次 Attempt 后才发起轮次。取得真实轮次号并记账后，转发器才能占用供应商请求名额。线程历史只保留在专用执行 Pod 的临时卷。
+
+| 中断位置 | 再次领取时的动作 |
+| --- | --- |
+| 预留 Pod 的响应丢失 | 按所有者与任务只读查询原预留。已确认未建立连接才可重试创建。供给器明确报告控制源关闭时结束试跑。 |
+| 已经发起轮次，缺少轮次号 | 保留原 Attempt，等到十分钟执行期限后交回失败。 |
+| 已知轮次，结果尚未入账 | 只读同一执行容器的原线程历史，核对完整轮次、输出契约和原用量回执后交付。 |
+| 用户取消，用量待回 | 停执行容器，保留网关、预留预算与回执卷，向原网关续票。账本核销后，先回收实例，再按卷身份回收凭证。原网关丢失且用量未知时保留凭证待查。 |
+
+在后端 `app/` 下设置测试库的 `AGENT_TEST_DATABASE_URL`，使用本地锁定的 Codex 镜像复跑：
+
+```sh
+RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_runner_db.py tests/test_instruction_runner_codex.py
+```
+
+恢复联调用实际 runner 命令入口、Codex WebSocket、HTTPS 控制服务和 PostgreSQL。供给器返回测试容器的位置，供应商为本地合成服务。另在独立 Kubernetes API 测供给器生命周期。KnowLab 作者入口、冻结和专家叶子仍待目标集群调度、网络策略与真实供应商计量验收。
