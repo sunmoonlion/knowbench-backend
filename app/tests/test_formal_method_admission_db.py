@@ -404,7 +404,7 @@ async def test_stored_asset_license_label_has_no_authority(db):
         )
 
 
-async def reviewed_skill_fixture(db):
+async def reviewed_skill_fixture(db, kind):
     """Real installation/storage/registration, simulated Skill execution evidence."""
     from test_formal_method_routes import validation_body
     from test_skill_package import archive
@@ -417,6 +417,7 @@ async def reviewed_skill_fixture(db):
     await setup(db)
     raw = {
         "SKILL.md": "Read the notice",
+        "summary.py": "print(1)\n",
         "NOTICE": "原声明\n",
         "assets/demo.bin": b"\xff\x00",
     }
@@ -436,7 +437,7 @@ async def reviewed_skill_fixture(db):
         unsigned = next(
             x
             for x in (await FormalMethods(repo).sources("author"))["items"]
-            if str(x["asset_id"]) == str(asset["id"])
+            if str(x["asset_id"]) == str(asset["id"]) and x["kind"] == kind
         )
         record = license_record(
             unsigned,
@@ -447,11 +448,13 @@ async def reviewed_skill_fixture(db):
         source = next(
             x
             for x in (await svc.sources("author"))["items"]
-            if x["asset_id"] == unsigned["asset_id"]
+            if x["asset_id"] == unsigned["asset_id"] and x["kind"] == kind
         )
         body = validation_body()
         body["draft"]["source"] = source
-        impl = body["draft"]["definition"]["procedure"]["implementation"]
+        procedure = body["draft"]["definition"]["procedure"]
+        procedure["max_model_turns"] = 1 if kind == "skill_instruction" else 0
+        impl = procedure["implementation"]
         impl.update(
             {k: source[k] for k in ("kind", "source", "version", "digest", "entry")}
         )
@@ -507,12 +510,17 @@ async def reviewed_skill_fixture(db):
         return raw, record, review, public
 
 
+async def test_public_instruction_with_business_review_is_refused(db):
+    with pytest.raises(Forbidden, match="private single-turn execution evidence"):
+        await reviewed_skill_fixture(db, "skill_instruction")
+
+
 async def test_skill_delivery_retains_notices_and_rechecks_before_loading_files(
     db, monkeypatch
 ):
     from base64 import b64decode
 
-    raw, record, review, public = await reviewed_skill_fixture(db)
+    raw, record, review, public = await reviewed_skill_fixture(db, "skill_script")
     async with db() as session:
         repo = WorkbenchRepository(session)
         svc = FormalMethods(repo, source_licenses=(record,), business_reviews=(review,))
