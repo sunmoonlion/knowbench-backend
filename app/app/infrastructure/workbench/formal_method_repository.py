@@ -40,6 +40,23 @@ class FormalMethodRepositoryMixin:
         )
         return [str(task_id) for task_id in rows]
 
+    async def incubation_function_revisions(self, identities):
+        from app.infrastructure.workbench.service_functions import checked_revision
+
+        result = await self.session.execute(
+            text("""
+            SELECT f.* FROM workbench_registry_service_functions f
+            JOIN jsonb_to_recordset(CAST(:identities AS jsonb))
+              AS pin(source text, entry text, version text, digest text)
+              ON (f.provider,f.name,f.version::text,f.digest) =
+                 (pin.source,pin.entry,pin.version,pin.digest)
+            WHERE f.contract->'scenes' @> '["incubation"]'::jsonb
+            ORDER BY f.provider,f.name,f.version DESC
+        """),
+            {"identities": json.dumps([pin.model_dump() for pin in identities])},
+        )
+        return [checked_revision(row) for row in result.mappings()]
+
     async def direct_registrations(self, owner):
         rows = await self.session.execute(
             text("""

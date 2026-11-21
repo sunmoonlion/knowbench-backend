@@ -23,9 +23,7 @@ class LicenseRecord(BaseModel):
 
 
 class SourceIdentity(LicenseRecord):
-    # Platform code needs a reviewed implementation record, not a descriptor
-    # digest. This catalog cannot introduce that missing platform source path.
-    kind: Literal["mcp", "skill_instruction", "skill_script"]
+    kind: Literal["mcp", "skill_instruction", "skill_script", "service_function"]
     source: Text
     version: Text
     digest: Digest
@@ -126,6 +124,15 @@ class SourceLicenseCatalog:
         ):
             return None
         return record
+
+    def incubation_functions(self, subject: str, *, now: datetime):
+        return [
+            record
+            for record in self._records.values()
+            if record.subject == subject
+            and record.source.kind == "service_function"
+            and self.executable(subject, record.source, now=now) is not None
+        ]
 
     def execution_basis(
         self, subject: str, source: SourceIdentity, *, now: datetime

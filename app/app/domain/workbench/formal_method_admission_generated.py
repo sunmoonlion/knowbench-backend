@@ -5,6 +5,7 @@ A browser supplies a run identity, never a successful report. Source declaration
 are pinned author input; the runtime must resolve ownership, revision and rights.
 """
 
+import re
 from datetime import datetime
 from typing import Annotated, Literal
 from uuid import UUID
@@ -62,6 +63,7 @@ class FormalMethodSource(Strict):
         "mcp",
         "skill_instruction",
         "skill_script",
+        "service_function",
         "registered_script",
         "registered_instruction",
     ]
@@ -92,7 +94,21 @@ class FormalMethodSource(Strict):
                 raise ValueError(
                     "A registered source requires an exact source ID and version"
                 )
-        if self.kind in ("platform", "registered_script", "registered_instruction"):
+        if self.kind == "service_function" and not (
+            re.fullmatch(r"[a-z][a-z0-9-]{0,31}", self.source)
+            and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,95}", self.entry)
+            and re.fullmatch(r"[1-9][0-9]{0,9}", self.version)
+            and int(self.version) <= 2147483647
+        ):
+            raise ValueError(
+                "Expected the registered provider, function name and version"
+            )
+        if self.kind in (
+            "service_function",
+            "platform",
+            "registered_script",
+            "registered_instruction",
+        ):
             if self.asset_id is not None or self.asset_revision is not None:
                 raise ValueError("This implementation does not name an installed asset")
         elif self.asset_id is None or self.asset_revision is None:

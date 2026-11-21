@@ -203,6 +203,26 @@ class FormalMethods:
                         "Registered entry is not a supported script path"
                     ) from exc
             return True
+        if source.kind == "service_function":
+            identity = SourceIdentity(
+                kind=source.kind,
+                source=source.source,
+                entry=source.entry,
+                version=source.version,
+                digest=source.digest,
+            )
+            record = self.source_licenses.executable(subject, identity, now=self.now())
+            if (
+                record is None
+                or record.basis != source.license_basis
+                or not await self.repo.incubation_function_revisions([identity])
+            ):
+                raise CapabilityError(
+                    "Service function registration or incubation license changed"
+                )
+            raise RuntimeCapabilityGap(
+                "Service function trial execution is unavailable"
+            )
         if source.asset_id is None:
             # Platform implementations need their own reviewed source records;
             # being built in does not exempt them from incubation.

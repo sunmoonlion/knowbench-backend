@@ -1,5 +1,7 @@
 """Provider registrations. The primary key serializes concurrent first writers."""
 
+import json
+
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,8 +20,15 @@ async def read_revision(session: AsyncSession, provider: str, name: str, version
     row = result.mappings().one_or_none()
     if row is None:
         raise NotFoundError()
+    return checked_revision(dict(row, provider=provider, name=name, version=version))
+
+
+def checked_revision(row):
     revision = FunctionRevision.build(
-        provider, name, version, ServiceFunction.model_validate(row["contract"])
+        row["provider"],
+        row["name"],
+        row["version"],
+        ServiceFunction.model_validate(row["contract"]),
     )
     if revision.digest != row["digest"]:
         raise ConcurrencyConflictError(code="service_function_digest_mismatch")
@@ -48,3 +57,44 @@ async def register_revision(session: AsyncSession, proposed: FunctionRevision):
                 code="service_function_version_conflict",
             )
         return stored
+
+
+async def function_page(session, query, limit, offset):
+    result = await session.execute(
+        text("""
+        SELECT provider, name, version, digest, contract->>'description' AS description
+        FROM workbench_registry_service_functions
+        WHERE strpos(lower(provider || '/' || name), lower(:query)) > 0 OR digest=:query
+        ORDER BY provider, name, version DESC LIMIT :limit OFFSET :offset
+    """),
+        {"query": query, "limit": limit + 1, "offset": offset},
+    )
+    rows = result.mappings().all()
+    return {"items": rows[:limit], "has_more": len(rows) > limit}
+
+
+async def referencing_methods(session, revision, limit, offset):
+    result = await session.execute(
+        text("""
+        SELECT method_id, version, digest,
+          document #>> '{draft,definition,capability_declaration,title}' AS title
+        FROM workbench_formal_methods
+        WHERE caller='knowlab' AND document #> '{draft,source}' @> CAST(:pin AS jsonb)
+        ORDER BY method_id, version DESC LIMIT :limit OFFSET :offset
+    """),
+        {
+            "pin": json.dumps(
+                {
+                    "kind": "service_function",
+                    "source": revision.provider,
+                    "entry": revision.name,
+                    "version": str(revision.version),
+                    "digest": revision.digest,
+                }
+            ),
+            "limit": limit + 1,
+            "offset": offset,
+        },
+    )
+    rows = result.mappings().all()
+    return {"items": rows[:limit], "has_more": len(rows) > limit}

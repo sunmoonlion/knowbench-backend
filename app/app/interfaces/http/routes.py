@@ -16,6 +16,7 @@ from app.interfaces.endpoints.knowfeed_status_routes import (
 from app.interfaces.endpoints.workbench_routes import router as workbench_router
 from app.interfaces.http.admin.auth import router as admin_auth_router
 from app.interfaces.http.admin.diagnostics import router as admin_diagnostics_router
+from app.interfaces.http.admin.service_functions import router as admin_functions_router
 from app.interfaces.http.internal.delivery_metrics import (
     router as delivery_metrics_router,
 )
@@ -40,6 +41,7 @@ router = APIRouter()
 router.include_router(admin_auth_router)
 router.include_router(web_auth_router)
 router.include_router(admin_diagnostics_router)
+router.include_router(admin_functions_router)
 router.include_router(delivery_metrics_router)
 router.include_router(instruction_control_router)
 router.include_router(service_function_router)

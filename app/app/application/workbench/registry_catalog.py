@@ -74,6 +74,33 @@ class SceneRegistry:
                 self.direct_source(row)
                 for row in await self.repo.direct_registrations(owner)
             )
+            licenses = self.methods.source_licenses.incubation_functions(
+                subject, now=now
+            )
+            if licenses:
+                bases = {record.source.key(): record.basis for record in licenses}
+                for revision in await self.repo.incubation_function_revisions(
+                    [r.source for r in licenses]
+                ):
+                    key = (
+                        "service_function",
+                        revision.provider,
+                        str(revision.version),
+                        revision.digest,
+                        revision.name,
+                    )
+                    candidates.append(
+                        FormalMethodSource(
+                            asset_id=None,
+                            asset_revision=None,
+                            kind="service_function",
+                            source=revision.provider,
+                            version=str(revision.version),
+                            digest=revision.digest,
+                            entry=revision.name,
+                            license_basis=bases[key],
+                        )
+                    )
             return {"items": [src.model_dump(mode="json") for src in candidates]}
 
     async def author_versions(self, subject, limit, offset, *, all_versions=False):

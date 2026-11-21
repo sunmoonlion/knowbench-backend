@@ -51,6 +51,7 @@ class FormalRegistration(Strict):
     source_revision: int | None
     source_kind: (
         Literal[
+            "service_function",
             "platform",
             "mcp",
             "skill_instruction",
