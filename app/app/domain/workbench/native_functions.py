@@ -4,7 +4,7 @@ import copy
 from typing import Any
 
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.fact_function import FACT_QUERIES
+from app.domain.workbench.data_function import DATA_QUERIES, QUERY_PERMISSIONS
 from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.service_functions import FunctionRevision, ServiceFunction
 from app.domain.workbench.tool_registry import ToolRegistration
@@ -12,7 +12,7 @@ from app.domain.workbench.tool_registry import ToolRegistration
 PROJECT_LIST = "list_project_conversations"
 BINDINGS = {
     PROJECT_LIST: ("knowbench", 1),
-    **{name: ("knowbase", 1) for name in FACT_QUERIES},
+    **{name: ("knowbase", 1) for name in DATA_QUERIES},
 }
 
 
@@ -96,10 +96,10 @@ def native_registration(revision):
         raise CapabilityError("Missing native function binding")
     if revision.name == PROJECT_LIST and revision != project_list_revision():
         raise CapabilityError("Local function differs from its registered contract")
-    if revision.name in FACT_QUERIES and revision.contract.required_permissions != [
-        "facts.read"
+    if revision.name in DATA_QUERIES and revision.contract.required_permissions != [
+        QUERY_PERMISSIONS[revision.name]
     ]:
-        raise CapabilityError("Unsupported fact query permissions")
+        raise CapabilityError("Unsupported data query permissions")
     return ToolRegistration.discover(
         "service_function",
         f"{revision.provider}/{revision.name}/{revision.version}/{revision.digest}",

@@ -77,17 +77,18 @@ async def test_missing_route_is_an_error_and_recovers_without_cache_expiry(caplo
     assert seen[0].headers["authorization"].startswith("Bearer ")
     assert seen[0].headers["authorization"] not in caplog.text
     advertised = catalog()
-    advertised["result"]["tools"].append(
-        {"name": "query_facts", "inputSchema": {"type": "object"}}
+    advertised["result"]["tools"].extend(
+        {"name": name, "inputSchema": {"type": "object"}}
+        for name in ("list_inputs", "query_facts")
     )
     response = httpx.Response(200, json=advertised)
     restored = await listed(relay)
     specs = {tool["name"]: tool for tool in restored["result"]["tools"]}
     assert RELAYED <= specs.keys()
-    assert {"list_inputs", "read_input"} <= specs.keys()
+    assert "list_inputs" not in specs and "read_input" in specs
     assert "query_facts" not in specs
-    assert specs["list_inputs"]["inputSchema"]["required"] == ["task"]
-    assert "run" not in specs["list_inputs"]["inputSchema"]["properties"]
+    assert specs["read_input"]["inputSchema"]["required"] == ["task"]
+    assert "run" not in specs["read_input"]["inputSchema"]["properties"]
     assert len(seen) == 2
     await listed(relay)
     assert len(seen) == 2

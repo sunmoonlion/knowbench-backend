@@ -113,7 +113,7 @@ class Capabilities:
         source_licenses=(),
         business_reviews=(),
         resource_delegations=(),
-        fact_function=None,
+        data_function=None,
         knowbase_reader=None,
         task_outputs_url="",
     ):
@@ -136,7 +136,7 @@ class Capabilities:
         }
         if self.oauth.urls & internal_urls:
             raise ValueError("An OAuth provider cannot claim an internal service URL")
-        self.fact_function = fact_function
+        self.data_function = data_function
         self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.instruction_service = instruction_service
@@ -2253,7 +2253,7 @@ class Capabilities:
             else:
                 if intent.get("execution_kind") == "formal_function":
                     subject = await self.repo.subject_of_actor(owner)
-                    if not subject or self.fact_function is None:
+                    if not subject or self.data_function is None:
                         raise CapabilityError(
                             "KnowBase function execution is unavailable"
                         )
@@ -2261,7 +2261,7 @@ class Capabilities:
                         call["session_id"], owner_actor_id=owner
                     )
                     await before_send()
-                    receipt = await self.fact_function.invoke(
+                    receipt = await self.data_function.invoke(
                         connection["function"],
                         subject=subject,
                         sandbox=str(session["sandbox_id"]),

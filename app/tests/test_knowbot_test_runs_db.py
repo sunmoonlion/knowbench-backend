@@ -1519,21 +1519,32 @@ async def test_knowlab_cancels_a_running_test(db):
         await fake.close()
 
 
-async def test_a_case_with_its_test_set_reads_its_pinned_data_through_the_relay(db):
-    """带测试集的用例委托没有清单那一行：数据中继按用例换成 knowlab 签测试授权用的 ref
-    （`<run_id>:<case_id>`），读得到钉住的那份。"""
+async def test_a_case_lists_pinned_inputs_with_its_test_set_grant(db):
+    from uuid import uuid4
+
+    from test_service_function_management_db import input_listing_revision
+
     from app.application.workbench.data_relay import DataRelay
     from app.application.workbench.records import ProjectRecords
     from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
+    from app.application.workbench.tool_registry import registered_functions
+    from app.infrastructure.workbench.service_functions import register_revision
 
-    class DataMcp:
-        def __init__(self) -> None:
-            self.seen: list[dict] = []
+    class DataService:
+        def __init__(self):
+            self.seen = []
 
-        async def data_mcp(self, token: str, message: dict) -> dict:
-            self.seen.append(message)
-            return {"jsonrpc": "2.0", "id": message["id"], "result": {"items": [PIN]}}
+        async def invoke_data_query(self, name, token, body):
+            self.seen.append((name, body))
+            return {
+                "call_id": body["call_id"],
+                "digest": body["digest"],
+                "output": {"inputs": [PIN]},
+            }
 
+    revision = input_listing_revision()
+    async with db() as session:
+        await register_revision(session, revision)
     fake = ScriptedAppServer([])
     await fake.start()
     try:
@@ -1543,7 +1554,7 @@ async def test_a_case_with_its_test_set_reads_its_pinned_data_through_the_relay(
         await accept(db, RunRequest.model_validate(body))
         await KnowbotTestConductor(workbench_stores(db)).tick()
         task = await one_task(db)
-        kb = DataMcp()
+        kb = DataService()
         async with db() as s:
             repo = WorkbenchRepository(s)
             relay = DataRelay(
@@ -1552,13 +1563,24 @@ async def test_a_case_with_its_test_set_reads_its_pinned_data_through_the_relay(
                 TokenIssuer(generate_private_key_pem()),
                 sandbox="u-test",
             )
-            got = await relay.call(7, "list_inputs", {"task": str(task["id"])})
-        assert got["result"] == {"items": [PIN]} and got["id"] == 7
-        [message] = kb.seen
-        assert message["params"] == {
-            "name": "list_inputs",
-            "arguments": {"run": "knowlab-run-relay1:c1"},
-        }
+            catalog = await registered_functions(
+                repo, data_available=True, name="list_inputs"
+            )
+            call_id = str(uuid4())
+            got = await relay.data_query(
+                catalog["list_inputs"][0], {"task": str(task["id"])}, call_id
+            )
+        assert got == {"inputs": [PIN]}
+        assert kb.seen == [
+            (
+                "list_inputs",
+                {
+                    "call_id": call_id,
+                    "digest": revision.digest,
+                    "arguments": {"scope": "run", "run": "knowlab-run-relay1:c1"},
+                },
+            )
+        ]
     finally:
         await fake.close()
 

@@ -1,4 +1,4 @@
-"""Dispatch the registered KnowBase fact query with host-bound data scope."""
+"""Dispatch registered KnowBase data queries with host-bound data scope."""
 
 from uuid import uuid4
 
@@ -8,29 +8,35 @@ from app.domain.workbench.capabilities import (
     CapabilityOutcomeUnknown,
     digest,
 )
+from app.domain.workbench.data_function import (
+    DATA_QUERIES,
+    QUERY_PERMISSIONS,
+    descriptor,
+    destination,
+)
 from app.domain.workbench.errors import (
     ComputeRefused,
     RecordsRefused,
     UserDataUnavailable,
 )
-from app.domain.workbench.fact_function import FACT_QUERIES, descriptor, destination
 from app.domain.workbench.states import TASK_TERMINAL
 from app.domain.workbench.tool_registry import ToolRegistration
 from app.domain.workbench.tool_schema import schema_validator
 
 
-class FactFunction:
+class DataFunction:
     def __init__(self, client, issuer):
         self.client, self.issuer = client, issuer
 
     async def invoke(self, revision, *, subject, sandbox, call_id, arguments):
         if (
             (revision.provider, revision.version) != ("knowbase", 1)
-            or revision.name not in FACT_QUERIES
+            or revision.name not in DATA_QUERIES
             or revision.contract.operation != revision.name
-            or revision.contract.required_permissions != ["facts.read"]
+            or revision.contract.required_permissions
+            != [QUERY_PERMISSIONS[revision.name]]
         ):
-            raise CapabilityError("Unsupported fact query binding")
+            raise CapabilityError("Unsupported data query binding")
         if not schema_validator(revision.contract.input_schema).is_valid(arguments):
             raise CapabilityError("Invalid registered function input")
         ticket = self.issuer.function_ticket(
@@ -41,7 +47,7 @@ class FactFunction:
             "digest": revision.digest,
             "arguments": arguments,
         }
-        receipt = await self.client.invoke_fact_query(revision.name, ticket.token, body)
+        receipt = await self.client.invoke_data_query(revision.name, ticket.token, body)
         if (
             not isinstance(receipt, dict)
             or receipt.get("call_id") != str(call_id)

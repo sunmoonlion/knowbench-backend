@@ -220,9 +220,9 @@ class FormalMethods:
                 raise CapabilityError(
                     "Service function registration or incubation license changed"
                 )
-            from app.domain.workbench.fact_function import require_fact_source
+            from app.domain.workbench.data_function import require_data_source
 
-            require_fact_source(source)
+            require_data_source(source)
             return True
         if source.asset_id is None:
             # Platform implementations need their own reviewed source records;

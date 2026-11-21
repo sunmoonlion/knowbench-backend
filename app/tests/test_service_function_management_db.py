@@ -35,6 +35,22 @@ def revision(provider="knowbase", version=1, *, name="query_facts", **changes):
     )
 
 
+def input_listing_revision():
+    return revision(
+        name="list_inputs",
+        required_permissions=["inputs.list"],
+        scenes=["step", "native"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "run": {"type": "string"},
+                "session": {"type": "string"},
+                "scope": {"enum": ["run"]},
+            },
+        },
+    )
+
+
 def pin(r):
     return {
         "kind": "service_function",

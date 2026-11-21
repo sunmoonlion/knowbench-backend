@@ -93,7 +93,7 @@ class DataPort:
         self.calls = []
         self.read_ids = []
 
-    async def invoke_fact_query(self, name, token, body):
+    async def invoke_data_query(self, name, token, body):
         claims = verify(
             token,
             self.issuer.public_pem(),

@@ -97,7 +97,7 @@ class FormalExecutions:
             )
         asset = await self.formal.registry.execution_asset(owner, source)
         if source.kind == "service_function" and (
-            self.capabilities.fact_function is None
+            self.capabilities.data_function is None
             or request.draft.allowed_callers != ("host",)
         ):
             raise CapabilityError(

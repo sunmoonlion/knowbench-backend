@@ -46,8 +46,8 @@ from app.bootstrap.workbench import (
     workbench_store,
 )
 from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.data_function import DATA_QUERIES
 from app.domain.workbench.errors import ComputeRefused, WorkbenchError
-from app.domain.workbench.fact_function import FACT_QUERIES
 from app.domain.workbench.native_functions import (
     BINDINGS,
     PROJECT_LIST,
@@ -349,8 +349,8 @@ async def dispatch(
                     raise CapabilityError(
                         "Local result differs from the registered contract"
                     )
-            elif name in FACT_QUERIES and relay is not None:
-                result = await relay.fact_query(function, args, receipt["id"])
+            elif name in DATA_QUERIES and relay is not None:
+                result = await relay.data_query(function, args, receipt["id"])
             else:
                 raise CapabilityError(
                     "Registered function has no available execution binding"

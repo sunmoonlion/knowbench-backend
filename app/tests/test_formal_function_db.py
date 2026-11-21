@@ -4,6 +4,7 @@ import json
 from uuid import uuid4
 
 import httpx
+import pytest
 from formal_plan_support import freeze, plan_request
 from joserfc import jwt
 from joserfc.jwk import ECKey
@@ -17,25 +18,39 @@ from test_source_licenses import license_record
 from test_workbench_ledger_db import db as db
 from test_workbench_ledger_db import seed
 
-from app.application.workbench.fact_function import FactFunction
+from app.application.workbench.data_function import DataFunction
 from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.test_runs import KnowbotTestConductor
 from app.application.workbench.tokens import TokenIssuer
 from app.bootstrap.workbench import workbench_stores
-from app.domain.workbench.capabilities import digest
+from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.capability_contract import Call
-from app.domain.workbench.fact_function import descriptor, destination, registration
+from app.domain.workbench.data_function import descriptor, destination, registration
 from app.domain.workbench.formal_execution import FORMAL_RUNTIME
 from app.domain.workbench.formal_method_admission_generated import FormalMethodSource
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
     FormalTestSuiteDraft,
 )
+from app.domain.workbench.native_functions import native_registration
 from app.domain.workbench.skill_execution import public_call
 from app.domain.workbench.tool_operations import ResourceBinding
 from app.infrastructure.external.knowbase_data_v2 import KnowbaseDataV2
 from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.infrastructure.workbench.service_functions import register_revision
+
+
+def test_input_listing_rejects_a_fact_read_permission():
+    wrong = revision(
+        name="list_inputs",
+        scenes=["native", "step"],
+        required_permissions=["facts.read"],
+        input_schema={"type": "object", "properties": {"scope": {"enum": ["run"]}}},
+    )
+    with pytest.raises(CapabilityError):
+        native_registration(wrong)
+    with pytest.raises(CapabilityError):
+        descriptor(wrong)
 
 
 async def test_approved_host_function_freezes_with_exact_provider_receipt(db):
@@ -192,7 +207,7 @@ async def exercise_function(
 
     def factory(repo):
         svc = host_service(repo, record, Remote(), operations=(op,))
-        svc.fact_function = FactFunction(client, issuer)
+        svc.data_function = DataFunction(client, issuer)
         return svc
 
     conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)

@@ -255,9 +255,9 @@ class OperationCatalog:
             raise CapabilityError(
                 "Tool has no matching reviewed operation; contact the administrator"
             )
-        from app.domain.workbench.fact_function import FACT_QUERIES, destination
+        from app.domain.workbench.data_function import DATA_QUERIES, destination
 
-        if (tool.service in {destination(name) for name in FACT_QUERIES}) != (
+        if (tool.service in {destination(name) for name in DATA_QUERIES}) != (
             tool.source == "service_function"
         ):
             raise CapabilityError(

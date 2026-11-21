@@ -327,14 +327,14 @@ class KnowbaseDataV2(KnowbaseClient):
             token,
         )
 
-    async def invoke_fact_query(self, name, token, body):
+    async def invoke_data_query(self, name, token, body):
         from app.domain.workbench.capabilities import (
             CapabilityError,
             CapabilityOutcomeUnknown,
         )
-        from app.domain.workbench.fact_function import FACT_QUERIES
+        from app.domain.workbench.data_function import DATA_QUERIES
 
-        if name not in FACT_QUERIES:
+        if name not in DATA_QUERIES:
             raise CapabilityError("Unsupported KnowBase function")
         url = (
             self._base().removesuffix(BASE_V2) + f"/api/internal/v1/functions/{name}/1"
@@ -354,7 +354,7 @@ class KnowbaseDataV2(KnowbaseClient):
             )
         if response.status_code != 200:
             raise CapabilityError(
-                f"KnowBase refused the fact query (HTTP {response.status_code})"
+                f"KnowBase refused the data query (HTTP {response.status_code})"
             )
         return response.json()
 

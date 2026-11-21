@@ -373,18 +373,18 @@ class FormalHostCalls:
         )
         if source.kind == "service_function":
             if (
-                not self.capabilities.fact_function
+                not self.capabilities.data_function
                 or caller != "host"
                 or policy.read_result_id_field
                 or policy.effect != "read"
                 or policy.operation != source.entry
             ):
-                raise CapabilityError("Missing reviewed host fact-query policy")
+                raise CapabilityError("Missing reviewed host data-query policy")
             if not any(
                 r.resource_role == "scope" and r.argument_path == ("scope",)
                 for r in policy.resources
             ):
-                raise CapabilityError("Fact queries require a declared data scope")
+                raise CapabilityError("Data queries require a declared data scope")
         if not decision.requires_approval:
             raise CapabilityError("Formal external operations require exact approval")
         knowbase_read = None

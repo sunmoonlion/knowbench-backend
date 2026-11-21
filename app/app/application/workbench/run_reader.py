@@ -16,8 +16,8 @@ from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
+from app.application.workbench.data_function import DataFunction
 from app.application.workbench.data_relay import KnowbaseDataClient, run_ref
-from app.application.workbench.fact_function import FactFunction
 from app.application.workbench.tokens import TokenIssuer
 from app.domain.workbench import compute as calc
 from app.domain.workbench.errors import (
@@ -55,7 +55,7 @@ class RunReader:
     ) -> dict[str, Decimal]:
         """按事实编号取数；不在这件委托的授权里、没有、不是数，都回 ComputeRefused。"""
         wanted = list(dict.fromkeys(refs))
-        got = await FactFunction(self.knowbase, self.issuer).read_task_refs(
+        got = await DataFunction(self.knowbase, self.issuer).read_task_refs(
             repo, task, await run_ref(repo, task), wanted, self.parent_call_id
         )
         rows = {str(f.get("ref")): f for f in got.get("facts") or []}

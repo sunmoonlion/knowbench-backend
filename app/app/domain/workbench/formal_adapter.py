@@ -55,7 +55,7 @@ def script_registration(draft):
 def retained_registration(draft, tool):
     source = draft.source
     if source.kind == "service_function":
-        from app.domain.workbench.fact_function import registration
+        from app.domain.workbench.data_function import registration
 
         return registration(source, tool)
     if host_kind(source) == "formal_script":
@@ -75,7 +75,7 @@ def retained_registration(draft, tool):
 def live_registration(draft, asset):
     source = draft.source
     if source.kind == "service_function" and asset["kind"] == "service_function":
-        from app.domain.workbench.fact_function import descriptor, registration
+        from app.domain.workbench.data_function import descriptor, registration
 
         return registration(source, descriptor(asset["function"]))
     if source.kind == "registered_script" and asset["kind"] == source.kind:

@@ -8,7 +8,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sample_replies import PROFILE, SCOPE
-from test_service_function_management_db import revision
+from test_service_function_management_db import input_listing_revision, revision
 from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
@@ -317,13 +317,15 @@ class FakeDataMcp:
     def __init__(self) -> None:
         self.seen: list[tuple[dict, dict]] = []
 
-    async def invoke_fact_query(self, name, token, body):
+    async def invoke_data_query(self, name, token, body):
         from joserfc import jwt
 
         claims = jwt.decode(token, ISSUER.key).claims
         self.function_call = (claims, body)
         output = {"facts": []}
-        if name == "read_facts":
+        if name == "list_inputs":
+            output = {"run": body["arguments"]["run"], "inputs": []}
+        elif name == "read_facts":
             assert body["arguments"]["refs"] == [self.FACT]
             output = {
                 "facts": [{"ref": self.FACT, "value": "1500.000000"}],
@@ -347,26 +349,17 @@ class FakeDataMcp:
                 "id": message["id"],
                 "result": {
                     "tools": [
-                        {
-                            "name": "list_inputs",
-                            "description": "x",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {"run": {"type": "string"}},
-                                "required": ["run"],
-                            },
-                        },
                         {"name": "not_relayed", "inputSchema": {"type": "object"}},
                         *[
                             {"name": name, "inputSchema": {"type": "object"}}
-                            for name in sorted(RELAYED - {"list_inputs"})
+                            for name in sorted(RELAYED)
                         ],
                     ]
                 },
             }
         name = message["params"]["name"]
         structured = {"ok": True}
-        assert name != "read_facts"
+        assert name not in {"read_facts", "list_inputs"}
         return {
             "jsonrpc": "2.0",
             "id": message["id"],
@@ -409,6 +402,8 @@ async def test_the_data_tools_are_relayed_to_knowbase(
     )
     async with db() as session:
         await register_revision(session, fact)
+        listing = input_listing_revision()
+        await register_revision(session, listing)
         await register_revision(
             session,
             revision(
@@ -475,23 +470,26 @@ async def test_the_data_tools_are_relayed_to_knowbase(
             relayed = {t["name"]: t for t in listed["result"]["tools"]}
             assert "not_relayed" not in relayed
             schema = relayed["list_inputs"]["inputSchema"]
-            assert schema["required"] == ["task"] and "run" not in schema["properties"]
+            assert set(schema["properties"]) == {"task", "conversation", "scope"}
 
             got = await http.post(
                 URL, json=tool("list_inputs", task=ids["task"]), headers=bearer()
             )
-            assert got.json()["result"]["structuredContent"] == {"ok": True}
-            claims, message = fake_kb.seen[-1]
-            # 换成请专家时服务端生成的那个 ref（不是客户端的幂等钥匙）
-            assert message["params"]["arguments"] == {"run": "knowbench:run:relay-1"}
-            assert (claims["aud"], claims["sub"], claims["azp"], claims["tools"]) == (
-                "knowbase-data",
+            ref = "knowbench:run:relay-1"
+            result = got.json()["result"]
+            assert result["structuredContent"] == {"run": ref, "inputs": []}
+            claims, body = fake_kb.function_call
+            assert body["arguments"] == {"scope": "run", "run": ref}
+            assert (
+                body["digest"] == listing.digest
+                and body["call_id"] == result["_meta"]["call_id"]
+            )
+            assert (claims["aud"], claims["sub"], claims["azp"], claims["sandbox"]) == (
+                "knowbase-function",
                 "casdoor-alice",
                 "knowbench",
-                ["list_inputs"],
+                "u-abc",
             )
-            assert claims["sandbox"] == "u-abc" and claims["exp"] - claims["iat"] <= 300
-
             market = await http.post(
                 URL,
                 json=tool("query_facts", scope="market", codes=["IS.REVENUE"]),
@@ -524,6 +522,7 @@ async def test_the_data_tools_are_relayed_to_knowbase(
                 )
                 assert fake_kb.function_call[1]["call_id"] == body["call_id"]
 
+            relayed_count = len(fake_kb.seen)
             chat = await http.post(
                 URL,
                 json=tool("read_input", conversation=ids["chat"], material_id="m"),
@@ -550,7 +549,7 @@ async def test_the_data_tools_are_relayed_to_knowbase(
                 "does not belong to this execution"
                 in held.json()["result"]["content"][0]["text"]
             )
-            assert fake_kb.seen[-1][1]["params"]["arguments"].get("session") is None
+            assert len(fake_kb.seen) == relayed_count
             stranger = await http.post(
                 URL,
                 json=tool("list_inputs", task=str(uuid.uuid4())),

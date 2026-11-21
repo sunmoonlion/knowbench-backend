@@ -126,7 +126,7 @@ def verify_leaf_authority(
         )
         policy_digest = digest(operation)
     elif source.kind == "service_function":
-        from app.domain.workbench.fact_function import (
+        from app.domain.workbench.data_function import (
             registration as function_registration,
         )
 

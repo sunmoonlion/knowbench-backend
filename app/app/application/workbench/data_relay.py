@@ -2,7 +2,7 @@
 
 聊天和工作以 conversation 解析当前账号的资料会话，专家以 task 解析本次委托的
 运行授权。scope=market 由 KnowBase 核市场资格。run 和 session 只由宿主填写。
-已登记的事实函数使用绑定调用 ID、版本和参数的签名票据直接派发；其余中继读工具
+已登记的数据函数使用绑定调用 ID、版本和参数的签名票据直接派发；其余中继读工具
 仍按操作签发数据 MCP 令牌。两条路径均在 KnowBase 执行时核对资料授权。
 """
 
@@ -18,21 +18,21 @@ from typing import Any, Protocol
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.records import ProjectRecords, as_id
 from app.application.workbench.tokens import TokenIssuer
+from app.domain.workbench.data_function import DATA_QUERIES
 from app.domain.workbench.errors import RecordsRefused, UserDataUnavailable
-from app.domain.workbench.fact_function import FACT_QUERIES
 from app.domain.workbench.knowbots import DATA_MCP_TOOLS
 from app.domain.workbench.native_functions import workbench_data_descriptor
 
 NO_SCOPE = frozenset({"describe_items", "lookup"})
 # 中继的工具：专家步骤能用的那几个，加会话里列他名下资料的 list_library
-RELAYED = (DATA_MCP_TOOLS | {"list_library"}) - FACT_QUERIES
+RELAYED = (DATA_MCP_TOOLS | {"list_library"}) - DATA_QUERIES
 _TOOLS_TTL_SECONDS = 600
 _tools_cache: OrderedDict[tuple, tuple[float, list[dict[str, Any]]]] = OrderedDict()
 log = logging.getLogger(__name__)
 
 
 class KnowbaseDataClient(Protocol):
-    async def invoke_fact_query(self, name: str, token: str, body: dict) -> dict: ...
+    async def invoke_data_query(self, name: str, token: str, body: dict) -> dict: ...
 
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -152,18 +152,18 @@ class DataRelay:
             await self.records._noted(working, name)
         return {**reply, "id": mid}
 
-    async def fact_query(self, revision, args, call_id):
-        from app.application.workbench.fact_function import FactFunction
+    async def data_query(self, revision, args, call_id):
+        from app.application.workbench.data_function import DataFunction
 
         if not self.available:
             raise UserDataUnavailable("The data service is unavailable")
         if (args.get("task") and args.get("conversation")) or (
             args.get("scope") == "market" and ("task" in args or "conversation" in args)
         ):
-            raise RecordsRefused("Use one data scope for this fact query")
+            raise RecordsRefused("Use one data scope for this data query")
         working, forwarded = await self.forward_arguments(revision.name, args)
         forwarded.setdefault("scope", "run")
-        receipt = await FactFunction(self.knowbase, self.issuer).invoke(
+        receipt = await DataFunction(self.knowbase, self.issuer).invoke(
             revision,
             subject=await self._subject(),
             sandbox=self.sandbox,

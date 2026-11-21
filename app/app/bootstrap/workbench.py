@@ -480,12 +480,12 @@ def capability_service(repo):
 
     settings = get_settings()
     cipher = connection_keys(settings)
-    fact_function = None
+    data_function = None
     if settings.workbench_token_signing_key and knowbase_v2().data_mcp_configured:
-        from app.application.workbench.fact_function import FactFunction
+        from app.application.workbench.data_function import DataFunction
         from app.application.workbench.tokens import TokenIssuer
 
-        fact_function = FactFunction(
+        data_function = DataFunction(
             knowbase_v2(),
             TokenIssuer(
                 settings.workbench_token_signing_key,
@@ -572,7 +572,7 @@ def capability_service(repo):
         oauth_transport=OAuthTransport(),
         web_origin=settings.web_frontend_base_url,
         runtime_url=settings.workbench_capability_mcp_url,
-        fact_function=fact_function,
+        data_function=data_function,
         knowbase_reader=reader,
         task_outputs_url=(
             records_endpoint
