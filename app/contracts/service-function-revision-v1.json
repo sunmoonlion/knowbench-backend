@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "ServiceFunction": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "maxLength": 1024,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Description",
+          "type": "string"
+        },
+        "operation": {
+          "pattern": "^[a-zA-Z][a-zA-Z0-9_.-]{0,95}$",
+          "title": "Operation",
+          "type": "string"
+        },
+        "scenes": {
+          "items": {
+            "enum": [
+              "native",
+              "incubation",
+              "planning",
+              "step"
+            ],
+            "type": "string"
+          },
+          "maxItems": 4,
+          "minItems": 1,
+          "title": "Scenes",
+          "type": "array"
+        },
+        "required_permissions": {
+          "items": {
+            "pattern": "^[a-zA-Z][a-zA-Z0-9_.-]{0,95}$",
+            "type": "string"
+          },
+          "maxItems": 32,
+          "title": "Required Permissions",
+          "type": "array"
+        },
+        "input_schema": {
+          "additionalProperties": true,
+          "title": "Input Schema",
+          "type": "object"
+        },
+        "output_schema": {
+          "additionalProperties": true,
+          "title": "Output Schema",
+          "type": "object"
+        }
+      },
+      "required": [
+        "description",
+        "operation",
+        "scenes",
+        "required_permissions",
+        "input_schema",
+        "output_schema"
+      ],
+      "title": "ServiceFunction",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-zA-Z][a-zA-Z0-9_.-]{0,95}$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "integer"
+    },
+    "digest": {
+      "title": "Digest",
+      "type": "string"
+    },
+    "contract": {
+      "$ref": "#/$defs/ServiceFunction"
+    }
+  },
+  "required": [
+    "provider",
+    "name",
+    "version",
+    "digest",
+    "contract"
+  ],
+  "title": "FunctionRevision",
+  "type": "object"
+}

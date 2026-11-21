@@ -82,6 +82,9 @@ class MemoryRepository:
     async def actor_for_subject(self, subject):
         return {"author": OWNER, "other": OTHER}.get(subject)
 
+    async def direct_registrations(self, owner):
+        return []
+
     async def capability_assets(self, owner):
         return [a for a in self.assets.values() if a["owner_actor_id"] == owner]
 

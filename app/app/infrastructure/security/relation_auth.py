@@ -31,9 +31,14 @@ from app.domain.security import Principal
 from app.infrastructure.security.oidc import OidcProviderClient
 from core.config import Settings, get_settings
 
-Relation = Literal["testrun", "incubate", "supply-status", "method-delivery"]
+Relation = Literal[
+    "testrun", "incubate", "supply-status", "method-delivery", "function-publish"
+]
 # 只许这些调用方的关系；没列的照部署配的调用方
 RELATION_CALLERS: dict[str, frozenset[str]] = {
+    "function-publish": frozenset(
+        {"knowbase", "knowbench", "knowfeed", "knowlab", "knowmart"}
+    ),
     "method-delivery": frozenset({"knowmart"}),
     "incubate": frozenset({"knowlab"}),
     "supply-status": frozenset({"knowfeed"}),
@@ -145,11 +150,17 @@ class RelationServiceVerifier:
             raise UnauthorizedError(
                 "The service identity token is invalid", code="token_invalid"
             )
-        if subject not in binding.subjects:
+        identities = [
+            b
+            for b in bindings
+            if b.audience == binding.audience and subject in b.subjects
+        ]
+        if len({b.caller for b in identities}) != 1:
             raise ForbiddenError(
                 "The service identity is not bound to this relation",
                 code="service_subject_unbound",
             )
+        binding = identities[0]
         if binding.required_scope not in _scopes(claims):
             raise ForbiddenError(
                 "The service identity scope is not authorized",
@@ -236,3 +247,9 @@ async def require_method_delivery_service(
     authorization: str | None = Header(default=None, alias="Authorization"),
 ) -> ServiceCaller:
     return await relation_verifier("method-delivery").verify(_bearer(authorization))
+
+
+async def require_function_publisher(
+    authorization: str | None = Header(default=None, alias="Authorization"),
+) -> ServiceCaller:
+    return await relation_verifier("function-publish").verify(_bearer(authorization))
