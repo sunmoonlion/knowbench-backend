@@ -47,6 +47,15 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
             assert (
                 str(row["task_id"]) == ids["task"] and row["parent_call_id"] is not None
             )
+            assert (
+                await s.scalar(
+                    text(
+                        "SELECT count(*) FROM workbench_session_events WHERE event_type='records/read' AND payload->>'call_id'=:cid"
+                    ),
+                    {"cid": call_id},
+                )
+                == 1
+            )
             identity = row["detail"]["invocation"]
             assert not await repo.capability_calls(OWNER, str(row["session_id"]))
         message["params"]["_meta"] = {
@@ -72,6 +81,72 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
                     text("SELECT count(*) FROM workbench_calls WHERE origin='platform'")
                 )
                 == 1
+            )
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
+    served, db, monkeypatch
+):
+    from test_workbench_mcp_routes import rpc
+
+    from app.interfaces.mcp import workbench_mcp
+
+    fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
+    original = workbench_mcp.dispatch
+
+    async def withdraw(*args, **kwargs):
+        async with db() as session, session.begin():
+            await session.execute(
+                text(
+                    "DELETE FROM workbench_registry_service_functions WHERE provider='knowbench' AND name='list_project_conversations' AND version=1"
+                )
+            )
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(workbench_mcp, "dispatch", withdraw)
+    try:
+        async with AsyncClient(
+            transport=ObservedPlatformTransport(served, db, ids),
+            base_url="http://testserver",
+        ) as http:
+            response = (
+                await http.post(
+                    URL,
+                    json=tool("list_project_conversations", task=ids["task"]),
+                    headers=bearer(),
+                )
+            ).json()["result"]
+            assert response["isError"] and response["_meta"]["call_status"] == "failed"
+            assert "changed before dispatch" in response["content"][0]["text"]
+            tools = (
+                await http.post(URL, json=rpc("tools/list"), headers=bearer())
+            ).json()["result"]["tools"]
+            assert all(t["name"] != "list_project_conversations" for t in tools)
+            again = (
+                await http.post(
+                    URL,
+                    json=tool("list_project_conversations", task=ids["task"]),
+                    headers=bearer(),
+                )
+            ).json()
+            assert "not registered" in again["result"]["content"][0]["text"]
+        async with db() as session:
+            assert (
+                await session.scalar(
+                    text("SELECT count(*) FROM workbench_calls WHERE origin='platform'")
+                )
+                == 1
+            )
+            assert (
+                await session.scalar(
+                    text(
+                        "SELECT count(*) FROM workbench_session_events WHERE event_type='records/read'"
+                    )
+                )
+                == 0
             )
     finally:
         await close(runner)

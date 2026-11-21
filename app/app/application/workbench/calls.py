@@ -84,8 +84,13 @@ class CallLedger:
         arguments: dict[str, Any],
         *,
         task_id: str | None = None,
+        function=None,
     ) -> tuple[dict, bool]:
-        decision = authorize_operation(registration, arguments)
+        if function and task_id and "step" not in function.contract.scenes:
+            raise RecordsRefused("This function is unavailable to a task step")
+        decision = authorize_operation(
+            registration, arguments, native_function=function
+        )
         if decision.requires_approval:
             raise RecordsRefused("this operation requires the approved adapter path")
         intent = {

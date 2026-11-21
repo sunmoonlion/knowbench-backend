@@ -30,24 +30,19 @@ from app.application.workbench.records import ProjectRecords, as_id
 from app.application.workbench.tokens import TokenIssuer
 from app.domain.workbench.errors import RecordsRefused, UserDataUnavailable
 from app.domain.workbench.knowbots import DATA_MCP_TOOLS
+from app.domain.workbench.native_functions import workbench_data_descriptor
 
 NO_SCOPE = frozenset({"describe_items", "lookup"})
 # 中继的工具：专家步骤能用的那几个，加会话里列他名下资料的 list_library
-RELAYED = DATA_MCP_TOOLS | {"list_library"}
-_TASK = {
-    "type": "string",
-    "description": "The task id given in the step instructions.",
-}
-_CONVERSATION = {
-    "type": "string",
-    "description": "In a chat: the conversation id given in the instructions.",
-}
+RELAYED = (DATA_MCP_TOOLS | {"list_library"}) - {"query_facts"}
 _TOOLS_TTL_SECONDS = 600
 _tools_cache: OrderedDict[tuple, tuple[float, list[dict[str, Any]]]] = OrderedDict()
 log = logging.getLogger(__name__)
 
 
 class KnowbaseDataMcp(Protocol):
+    async def invoke_query_facts(self, token: str, body: dict) -> dict: ...
+
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]: ...
 
 
@@ -60,24 +55,6 @@ async def run_ref(repo: WorkbenchStore, task: dict[str, Any]) -> str:
     if not ref:
         raise RecordsRefused("this task has no data of the user to read")
     return str(ref)
-
-
-def rewrite(spec: dict[str, Any]) -> dict[str, Any]:
-    """knowbase 的工具定义 → 工作台的：run/session 换成 task/conversation。"""
-    out = copy.deepcopy(spec)
-    schema = out.setdefault("inputSchema", {"type": "object", "properties": {}})
-    props = schema.setdefault("properties", {})
-    had_run = props.pop("run", None) is not None
-    had_session = props.pop("session", None) is not None
-    if had_run:
-        props["task"] = _TASK
-    if had_session:
-        props["conversation"] = _CONVERSATION
-    required = [r for r in schema.get("required") or [] if r != "session"]
-    schema["required"] = ["task" if r == "run" else r for r in required]
-    if not schema["required"]:
-        schema.pop("required")
-    return out
 
 
 class DataRelay:
@@ -99,11 +76,15 @@ class DataRelay:
 
         self.reader = RunReader(knowbase, issuer)
 
+    @property
+    def available(self):
+        return getattr(self.knowbase, "data_mcp_configured", True) is not False
+
     async def tools(self) -> list[dict[str, Any]]:
         """只缓存完整的成功目录；配置了数据服务却发现失败时明确报错。"""
         # Deliberately unconfigured installations retain project-only tools.
         # A configured but broken service must never advertise a partial catalog.
-        if getattr(self.knowbase, "data_mcp_configured", True) is False:
+        if not self.available:
             return []
         try:
             subject = await self._subject()
@@ -137,7 +118,7 @@ class DataRelay:
                     continue
                 if name in specs or not isinstance(spec.get("inputSchema"), dict):
                     raise ValueError("invalid or duplicate tool definition")
-                specs[name] = rewrite(spec)
+                specs[name] = workbench_data_descriptor(spec)
             if set(specs) != RELAYED:
                 raise ValueError("incomplete tool catalog")
             tools = list(specs.values())
@@ -160,6 +141,48 @@ class DataRelay:
 
     async def call(self, mid: Any, name: str, args: dict[str, Any]) -> dict[str, Any]:
         """换好范围、签好令牌，转给 knowbase；回 knowbase 的 JSON-RPC 回复（编号换回来）。"""
+        if name not in RELAYED:
+            raise RecordsRefused("This operation has no data MCP binding")
+        working, forwarded = await self.forward_arguments(name, args)
+        token = self.issuer.data_token(
+            await self._subject(), sandbox=self.sandbox, tools=[name]
+        ).token
+        reply = await self.knowbase.data_mcp(
+            token,
+            {
+                "jsonrpc": "2.0",
+                "id": mid,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": forwarded},
+            },
+        )
+        if working is not None:
+            await self.records._noted(working, name)
+        return {**reply, "id": mid}
+
+    async def query_facts(self, revision, args, call_id):
+        from app.application.workbench.fact_function import FactFunction
+
+        if not self.available:
+            raise UserDataUnavailable("The data service is unavailable")
+        if (args.get("task") and args.get("conversation")) or (
+            args.get("scope") == "market" and ("task" in args or "conversation" in args)
+        ):
+            raise RecordsRefused("Use one data scope for this fact query")
+        working, forwarded = await self.forward_arguments("query_facts", args)
+        forwarded.setdefault("scope", "run")
+        receipt = await FactFunction(self.knowbase, self.issuer).invoke(
+            revision,
+            subject=await self._subject(),
+            sandbox=self.sandbox,
+            call_id=call_id,
+            arguments=forwarded,
+        )
+        if working is not None:
+            await self.records._noted(working, "query_facts", call_id=call_id)
+        return receipt["output"]
+
+    async def forward_arguments(self, name, args):
         if "run" in args or "session" in args:
             raise RecordsRefused("data service grants are assigned by the workbench")
         forwarded = {k: v for k, v in args.items() if k not in ("task", "conversation")}
@@ -176,21 +199,7 @@ class DataRelay:
                 raise RecordsRefused(
                     "give the task id (or, in a chat, the conversation)"
                 )
-        token = self.issuer.data_token(
-            await self._subject(), sandbox=self.sandbox, tools=[name]
-        ).token
-        reply = await self.knowbase.data_mcp(
-            token,
-            {
-                "jsonrpc": "2.0",
-                "id": mid,
-                "method": "tools/call",
-                "params": {"name": name, "arguments": forwarded},
-            },
-        )
-        if working is not None:
-            await self.records._noted(working, name)
-        return {**reply, "id": mid}
+        return working, forwarded
 
     async def _subject(self) -> str:
         subject = await self.repo.subject_of_actor(self.records.owner)

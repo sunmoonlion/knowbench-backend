@@ -71,7 +71,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         repo = WorkbenchRepository(s)
         ledger = CallLedger(repo, OWNER)
         first, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
+            invocation, PLATFORM_TOOLS["find_expert"], {"task": "task"}
         )
         assert (
             fresh
@@ -79,7 +79,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
             and first["source_asset_id"] is None
         )
         same, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
+            invocation, PLATFORM_TOOLS["find_expert"], {"task": "task"}
         )
         assert (
             not fresh and same["id"] == first["id"] and same["status"] == "dispatching"
@@ -87,7 +87,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         with pytest.raises(RecordsRefused, match="different operation"):
             await ledger.begin(
                 invocation,
-                PLATFORM_TOOLS["list_project_conversations"],
+                PLATFORM_TOOLS["find_expert"],
                 {"task": "changed"},
             )
         await ledger.finish(
@@ -96,7 +96,7 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
             "succeeded",
         )
         same, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
+            invocation, PLATFORM_TOOLS["find_expert"], {"task": "task"}
         )
         assert not fresh and same["detail"]["response"] == {
             "result": {"isError": False}
@@ -142,18 +142,14 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
 
         def migrate_existing(sync):
             with Operations.context(MigrationContext.configure(sync)):
-                execution_migration = migration(
-                    "20261115_0045_formal_execution_evidence.py"
-                )
-                direct_migration = migration("20261115_0044_direct_method_grants.py")
-                formal_migration = migration("20261114_0043_formal_methods.py")
-                authorization_migration = migration("20261114_0042_authorizations.py")
-                skill_migration = migration("20261119_0046_skill_files.py")
-                skill_migration.downgrade()
-                execution_migration.downgrade()
-                direct_migration.downgrade()
-                formal_migration.downgrade()
-                authorization_migration.downgrade()
+                versions = Path(__file__).resolve().parents[1] / "alembic" / "versions"
+                later = [
+                    migration(path.name)
+                    for path in sorted(versions.glob("20*.py"))
+                    if path.name > "20261114_0041_calls.py"
+                ]
+                for step in reversed(later):
+                    step.downgrade()
                 module.downgrade()
                 # Reproduce the former overloaded storage and active states.
                 sync.execute(
@@ -169,11 +165,8 @@ async def test_populated_migration_preserves_evidence_and_revokes_old_execution(
                     {"i": external["call_id"]},
                 )
                 module.upgrade()
-                authorization_migration.upgrade()
-                formal_migration.upgrade()
-                direct_migration.upgrade()
-                execution_migration.upgrade()
-                skill_migration.upgrade()
+                for step in later:
+                    step.upgrade()
                 assert (
                     sync.execute(
                         text("SELECT to_regclass('workbench_capability_calls')")
@@ -238,7 +231,7 @@ async def test_method_identity_survives_new_attempt(db):
             ToolInvocation(
                 sid, "thread", "retry-turn", "retry-tool", "sunmoon_workbench"
             ),
-            PLATFORM_TOOLS["list_project_conversations"],
+            PLATFORM_TOOLS["find_expert"],
             {"task": task_id},
             task_id=task_id,
         )
@@ -260,7 +253,7 @@ async def test_scope_change_after_authorization_cannot_create_a_false_parent(db)
         with pytest.raises(RecordsRefused, match="context changed"):
             await ledger.begin(
                 ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
-                PLATFORM_TOOLS["list_project_conversations"],
+                PLATFORM_TOOLS["find_expert"],
                 {"task": "task"},
                 task_id="other-task",
             )
@@ -276,7 +269,7 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
         repo = WorkbenchRepository(s)
         ledger = CallLedger(repo, OWNER)
         call, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
+            invocation, PLATFORM_TOOLS["find_expert"], {"task": "task"}
         )
         assert fresh
         async with repo.transaction():
@@ -287,7 +280,7 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
                 {"id": call["id"]},
             )
         same, fresh = await ledger.begin(
-            invocation, PLATFORM_TOOLS["list_project_conversations"], {"task": "task"}
+            invocation, PLATFORM_TOOLS["find_expert"], {"task": "task"}
         )
         assert not fresh and same["id"] == call["id"] and same["status"] == "unknown"
         assert "response" not in same["detail"]
@@ -312,7 +305,7 @@ async def test_session_cleanup_removes_call_tree_and_authority_only_for_that_ses
         else:
             await CallLedger(repo, OWNER).begin(
                 ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
-                PLATFORM_TOOLS["list_project_conversations"],
+                PLATFORM_TOOLS["find_expert"],
                 {"task": tid},
                 task_id=tid,
             )
@@ -373,7 +366,7 @@ async def test_call_migration_refuses_lossy_downgrade_and_preserves_history(db):
         repo = WorkbenchRepository(s)
         await CallLedger(repo, OWNER).begin(
             ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
-            PLATFORM_TOOLS["list_project_conversations"],
+            PLATFORM_TOOLS["find_expert"],
             {"task": tid},
             task_id=tid,
         )

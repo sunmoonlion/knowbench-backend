@@ -88,7 +88,9 @@ def test_accounts_share_definition_but_frozen_call_cannot_change_schema_or_tool(
 
 async def test_native_mcp_lists_the_same_registered_definitions_without_losing_hints():
     response = await handle(
-        SimpleNamespace(),  # no execution or repository is needed to list definitions
+        SimpleNamespace(
+            repo=SimpleNamespace(native_function_revisions=AsyncMock(return_value=[]))
+        ),
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         owner="synthetic",
         per_minute=10,
@@ -96,15 +98,21 @@ async def test_native_mcp_lists_the_same_registered_definitions_without_losing_h
     listed = response["result"]["tools"]
     assert listed == platform_catalog([]).descriptors()
     assert {t["name"]: t for t in listed} == {
-        name: {"name": name, **spec} for name, spec in TOOLS.items()
+        name: {"name": name, **spec}
+        for name, spec in TOOLS.items()
+        if name in PLATFORM_TOOLS
     }
     assert all(tool.source == "platform" for tool in PLATFORM_TOOLS.values())
 
 
 async def test_native_mcp_does_not_publish_colliding_data_definitions():
-    relay = SimpleNamespace(tools=AsyncMock(return_value=[{**TOOL, "name": "compute"}]))
+    relay = SimpleNamespace(
+        available=True, tools=AsyncMock(return_value=[{**TOOL, "name": "compute"}])
+    )
     response = await handle(
-        SimpleNamespace(),
+        SimpleNamespace(
+            repo=SimpleNamespace(native_function_revisions=AsyncMock(return_value=[]))
+        ),
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         owner="synthetic",
         per_minute=10,

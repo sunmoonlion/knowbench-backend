@@ -66,12 +66,14 @@ class ProjectRecords:
                 task_id=str(task["id"]),
             )
 
-    async def list_conversations(self, task: Any) -> dict[str, Any]:
+    async def list_conversations(
+        self, task: Any, *, call_id: str | None = None
+    ) -> dict[str, Any]:
         working = await self._working(task)
         rows = await self.repo.conversation_digests(
             project_id=str(working["project_id"]), owner_actor_id=self.owner
         )
-        await self._noted(working, "list_project_conversations")
+        await self._noted(working, "list_project_conversations", call_id=call_id)
         return {
             "conversations": [
                 {

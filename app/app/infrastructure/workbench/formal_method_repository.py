@@ -40,6 +40,33 @@ class FormalMethodRepositoryMixin:
         )
         return [str(task_id) for task_id in rows]
 
+    async def native_function_revisions(self, bindings):
+        from app.application.errors.exceptions import ConcurrencyConflictError
+        from app.domain.workbench.capabilities import CapabilityError
+        from app.infrastructure.workbench.service_functions import checked_revision
+
+        rows = await self.session.execute(
+            text("""
+            SELECT f.* FROM workbench_registry_service_functions f
+            JOIN jsonb_to_recordset(CAST(:bindings AS jsonb)) AS b(provider text,name text,version int)
+            USING (provider,name,version)
+            WHERE f.contract->'scenes' @> '["native"]'::jsonb
+            ORDER BY f.provider, f.name
+        """),
+            {
+                "bindings": json.dumps(
+                    [
+                        dict(provider=p, name=n, version=v)
+                        for n, (p, v) in bindings.items()
+                    ]
+                )
+            },
+        )
+        try:
+            return [checked_revision(row) for row in rows.mappings()]
+        except (ValueError, ConcurrencyConflictError) as exc:
+            raise CapabilityError("Invalid native function registration") from exc
+
     async def incubation_function_revisions(self, identities):
         from app.infrastructure.workbench.service_functions import checked_revision
 

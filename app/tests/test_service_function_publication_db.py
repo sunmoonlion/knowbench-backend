@@ -28,6 +28,7 @@ class Claims:
         if audience != "publish" or token not in (
             "knowbase",
             "knowfeed",
+            "knowbench",
             "author",
             "wrong-scope",
         ):

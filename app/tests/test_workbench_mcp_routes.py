@@ -8,6 +8,7 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sample_replies import PROFILE, SCOPE
+from test_service_function_management_db import revision
 from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
@@ -18,7 +19,9 @@ from tool_invocation_support import running_platform_world as world
 from app.application.workbench.data_relay import RELAYED
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.bootstrap.api import create_app
+from app.domain.workbench.native_functions import project_list_revision
 from app.infrastructure.storage.postgres import get_db_session
+from app.infrastructure.workbench.service_functions import register_revision
 from app.interfaces.endpoints.workbench_routes import (
     require_workbench_enabled,
     token_issuer,
@@ -47,7 +50,9 @@ def tool(tool_name, **arguments):
 
 
 @pytest.fixture
-def served(db, monkeypatch):  # noqa: F811
+async def served(db, monkeypatch):  # noqa: F811
+    async with db() as session:
+        await register_revision(session, project_list_revision())
     monkeypatch.setenv("WORKBENCH_ENABLED", "true")
     app = create_app(Settings())
 
@@ -270,10 +275,23 @@ async def test_a_result_too_large_for_the_model_is_refused_in_words(
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
 
-        async def huge(records, name, args, reader=None):
-            return {"text": "年" * (TOOL_RESULT_MAX_BYTES // 3 + 1)}
+        async def huge(records, task, *, call_id):
+            return {
+                "conversations": [
+                    {
+                        "conversation": ids["chat"],
+                        "kind": "chat",
+                        "title": "年" * (TOOL_RESULT_MAX_BYTES // 3 + 1),
+                        "started_at": "2026-11-21",
+                        "last_active_at": None,
+                        "turns": 1,
+                        "first_message": None,
+                        "current": False,
+                    }
+                ]
+            }
 
-        monkeypatch.setattr(workbench_mcp, "call", huge)
+        monkeypatch.setattr(workbench_mcp.ProjectRecords, "list_conversations", huge)
         async with AsyncClient(
             transport=ObservedPlatformTransport(served, db, ids),
             base_url="http://testserver",
@@ -298,6 +316,17 @@ class FakeDataMcp:
 
     def __init__(self) -> None:
         self.seen: list[tuple[dict, dict]] = []
+
+    async def invoke_query_facts(self, token, body):
+        from joserfc import jwt
+
+        claims = jwt.decode(token, ISSUER.key).claims
+        self.function_call = (claims, body)
+        return {
+            "call_id": body["call_id"],
+            "digest": body["digest"],
+            "output": {"facts": []},
+        }
 
     async def data_mcp(self, token, message):
         import base64
@@ -355,6 +384,25 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
     import app.interfaces.mcp.workbench_mcp as mcp
     from app.infrastructure.workbench.repository import WorkbenchRepository
 
+    fact = revision(
+        scenes=["native", "step"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scope": {"enum": ["market", "run"]},
+                "run": {"type": "string"},
+                "session": {"type": "string"},
+                "codes": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        output_schema={
+            "type": "object",
+            "required": ["facts"],
+            "properties": {"facts": {"type": "array"}},
+        },
+    )
+    async with db() as session:
+        await register_revision(session, fact)
     fake_kb = FakeDataMcp()
     monkeypatch.setattr(mcp, "knowbase_v2", lambda: fake_kb)
     relay_module._tools_cache.clear()
@@ -419,12 +467,26 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
             )
             assert claims["sandbox"] == "u-abc" and claims["exp"] - claims["iat"] <= 300
 
-            await http.post(
+            market = await http.post(
                 URL,
                 json=tool("query_facts", scope="market", codes=["IS.REVENUE"]),
                 headers=bearer(),
             )
-            assert "run" not in fake_kb.seen[-1][1]["params"]["arguments"]
+            market_result = market.json()["result"]
+            assert market_result["structuredContent"] == {"facts": []}, market_result
+            claims, body = fake_kb.function_call
+            assert body["arguments"] == {"scope": "market", "codes": ["IS.REVENUE"]}
+            assert (
+                claims["aud"] == "knowbase-function"
+                and claims["call_id"] == market_result["_meta"]["call_id"]
+            )
+            assert body["digest"] == fact.digest
+            assert "query_facts" in relayed
+            task_query = await http.post(
+                URL, json=tool("query_facts", task=ids["task"]), headers=bearer()
+            )
+            assert "not selected" in task_query.json()["result"]["content"][0]["text"]
+            assert fake_kb.function_call[1]["call_id"] == body["call_id"]
 
             chat = await http.post(
                 URL,

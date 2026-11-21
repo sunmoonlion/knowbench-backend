@@ -26,6 +26,7 @@ def authorize_operation(
     *,
     operations: OperationCatalog | None = None,
     method: bool = False,
+    native_function=None,
     access: dict | None = None,
     operation_digest: str | None = None,
 ) -> CallDecision:
@@ -37,6 +38,23 @@ def authorize_operation(
     dispatch; they are not authorized by a remote readOnlyHint annotation.
     """
     registration.validate_arguments(arguments)
+    if native_function is not None:
+        from app.domain.workbench.native_functions import native_registration
+
+        if method or native_registration(native_function) != registration:
+            raise CapabilityError(
+                "Native function registration differs from the selected operation"
+            )
+        return CallDecision(
+            {
+                "operation": native_function.name,
+                "effect": "read",
+                "registered_source": native_function.model_dump(exclude={"contract"}),
+                "required_permissions": native_function.contract.required_permissions,
+                "arguments_digest": digest(arguments),
+            },
+            False,
+        )
     if (
         registration.source in ("skill_script", "registered_script")
         and method

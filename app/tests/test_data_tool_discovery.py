@@ -49,7 +49,10 @@ def clear_catalog():
 def relay_for(kb, *, subject="alice", sandbox="sandbox-a", issuer=ISSUER):
     records = SimpleNamespace(
         owner=subject,
-        repo=SimpleNamespace(subject_of_actor=AsyncMock(return_value=subject)),
+        repo=SimpleNamespace(
+            subject_of_actor=AsyncMock(return_value=subject),
+            native_function_revisions=AsyncMock(return_value=[]),
+        ),
     )
     return DataRelay(records, kb, issuer, sandbox=sandbox)
 
@@ -73,11 +76,16 @@ async def test_missing_route_is_an_error_and_recovers_without_cache_expiry(caplo
     assert seen[0].url.path == "/api/mcp/data"
     assert seen[0].headers["authorization"].startswith("Bearer ")
     assert seen[0].headers["authorization"] not in caplog.text
-    response = httpx.Response(200, json=catalog())
+    advertised = catalog()
+    advertised["result"]["tools"].append(
+        {"name": "query_facts", "inputSchema": {"type": "object"}}
+    )
+    response = httpx.Response(200, json=advertised)
     restored = await listed(relay)
     specs = {tool["name"]: tool for tool in restored["result"]["tools"]}
     assert RELAYED <= specs.keys()
-    assert {"list_inputs", "read_input", "query_facts"} <= specs.keys()
+    assert {"list_inputs", "read_input"} <= specs.keys()
+    assert "query_facts" not in specs
     assert specs["list_inputs"]["inputSchema"]["required"] == ["task"]
     assert "run" not in specs["list_inputs"]["inputSchema"]["properties"]
     assert len(seen) == 2

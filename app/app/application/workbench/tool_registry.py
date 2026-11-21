@@ -4,6 +4,7 @@ from app.domain.workbench.capabilities import CapabilityError, tool_key
 from app.domain.workbench.errors import NotFound
 from app.domain.workbench.formal_method_admission_generated import FrozenFormalMethod
 from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.native_functions import BINDINGS, native_registration
 from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.registry_views import (
     FormalRegistration,
@@ -79,12 +80,25 @@ async def formal_registration(
 PLATFORM_TOOLS = {
     name: ToolRegistration.discover("platform", "knowbench", {"name": name, **spec})
     for name, spec in TOOLS.items()
+    if name not in BINDINGS
 }
 
 
-def platform_catalog(data_tools: list[dict]) -> ToolRegistry:
+async def registered_functions(repo, *, data_available, name=None):
+    bindings = {n: pin for n, pin in BINDINGS.items() if name is None or name == n}
+    if not data_available:
+        bindings.pop("query_facts", None)
+    rows = await repo.native_function_revisions(bindings)
+    result = {}
+    for revision in rows:
+        result[revision.name] = (revision, native_registration(revision))
+    return result
+
+
+def platform_catalog(data_tools: list[dict], functions=()) -> ToolRegistry:
     return ToolRegistry(
         [
+            *functions,
             *PLATFORM_TOOLS.values(),
             *(
                 ToolRegistration.discover("knowbase", "knowbase-data", tool)

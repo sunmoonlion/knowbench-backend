@@ -34,16 +34,26 @@ from app.application.workbench.method_tools import MethodToolGuard
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader
 from app.application.workbench.tokens import TokenIssuer
-from app.application.workbench.tool_registry import PLATFORM_TOOLS, platform_catalog
+from app.application.workbench.tool_registry import (
+    PLATFORM_TOOLS,
+    platform_catalog,
+    registered_functions,
+)
 from app.bootstrap.workbench import (
     knowbase_v2,
     knowfeed_supply,
     knowmart_catalog,
     workbench_store,
 )
+from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import ComputeRefused, WorkbenchError
+from app.domain.workbench.native_functions import (
+    BINDINGS,
+    PROJECT_LIST,
+)
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.domain.workbench.tool_registry import ToolRegistry
+from app.domain.workbench.tool_schema import schema_validator
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     require_workbench_enabled,
@@ -136,8 +146,6 @@ async def call(
             args.get("inputs"),
             args.get("round"),
         )
-    if name == "list_project_conversations":
-        return await records.list_conversations(args.get("task"))
     if name == "read_project_conversation":
         return await records.read_conversation(
             args.get("task"), args.get("conversation"), args.get("page", 1)
@@ -181,7 +189,12 @@ async def handle(
     if method == "tools/list":
         try:
             data_tools = await relay.tools() if relay is not None else []
-            tools = platform_catalog(data_tools).descriptors()
+            functions = await registered_functions(
+                records.repo, data_available=bool(relay and relay.available)
+            )
+            tools = platform_catalog(
+                data_tools, [reg for _, reg in functions.values()]
+            ).descriptors()
         except WorkbenchError as exc:
             return _err(mid, -32003, exc.message)
         return _ok(mid, {"tools": tools})
@@ -190,7 +203,7 @@ async def handle(
     name = str(params.get("name") or "")
     args = params.get("arguments") or {}
     relayed = relay is not None and name in RELAYED
-    if name not in PLATFORM_TOOLS and not relayed:
+    if name not in PLATFORM_TOOLS and name not in BINDINGS and not relayed:
         return _err(mid, -32602, f"unknown tool: {name}")
     if not isinstance(args, dict):
         return _err(mid, -32602, "arguments must be an object")
@@ -208,11 +221,25 @@ async def handle(
         )
     ledger = CallLedger(records.repo, owner) if guard is not None else None
     receipt = None
+    function = None
+    if name in BINDINGS and guard is None:
+        return _tool_error(mid, "A verified runtime invocation is required")
     if guard is not None:
         assert ledger is not None
         try:
             invocation, task_id = await guard.check(name, args, params.get("_meta"))
-            if relayed:
+            if name in BINDINGS:
+                functions = await registered_functions(
+                    records.repo,
+                    data_available=bool(relay and relay.available),
+                    name=name,
+                )
+                if name not in functions:
+                    raise CapabilityError(
+                        "Function is not registered for native execution"
+                    )
+                function, registration = functions[name]
+            elif relayed:
                 assert relay is not None
                 registration = ToolRegistry.resolve(
                     "knowbase", "knowbase-data", await relay.tools(), name
@@ -220,7 +247,7 @@ async def handle(
             else:
                 registration = PLATFORM_TOOLS[name]
             receipt, fresh = await ledger.begin(
-                invocation, registration, args, task_id=task_id
+                invocation, registration, args, task_id=task_id, function=function
             )
             if not fresh:
                 response = receipt["detail"].get("response")
@@ -233,7 +260,9 @@ async def handle(
         except WorkbenchError as exc:
             log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
             return _tool_error(mid, exc.message)
-    response, status = await dispatch(records, mid, name, args, relay, relayed)
+    response, status = await dispatch(
+        records, mid, name, args, relay, relayed, function=function, receipt=receipt
+    )
     if receipt is not None:
         assert ledger is not None
         if "result" in response:
@@ -249,7 +278,9 @@ async def handle(
     return response
 
 
-async def dispatch(records, mid, name, args, relay, relayed):
+async def dispatch(
+    records, mid, name, args, relay, relayed, *, function=None, receipt=None
+):
     try:
         if relayed:
             response = await relay.call(mid, name, args)
@@ -284,9 +315,45 @@ async def dispatch(records, mid, name, args, relay, relayed):
                     mid, "This result is too large; ask for a smaller part."
                 ), "unknown"
             return response, status
-        result = jsonable_encoder(
-            await call(records, name, args, relay.reader if relay else None)
-        )
+        if name in BINDINGS:
+            current = (
+                await registered_functions(
+                    records.repo,
+                    data_available=bool(relay and relay.available),
+                    name=name,
+                )
+            ).get(name)
+            if (
+                not receipt
+                or not function
+                or not current
+                or current[0] != function
+                or (
+                    receipt["detail"]["operation"].get("registered_source")
+                    != function.model_dump(exclude={"contract"})
+                )
+            ):
+                return _tool_error(
+                    mid, "Registered function changed before dispatch"
+                ), "failed"
+            if name == PROJECT_LIST:
+                result = jsonable_encoder(
+                    await records.list_conversations(
+                        args["task"], call_id=receipt["id"]
+                    )
+                )
+                if not schema_validator(function.contract.output_schema).is_valid(
+                    result
+                ):
+                    raise CapabilityError(
+                        "Local result differs from the registered contract"
+                    )
+            else:
+                result = await relay.query_facts(function, args, receipt["id"])
+        else:
+            result = jsonable_encoder(
+                await call(records, name, args, relay.reader if relay else None)
+            )
         rendered = json.dumps(result, ensure_ascii=False, allow_nan=False)
     except WorkbenchError as exc:
         log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
