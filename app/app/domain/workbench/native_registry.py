@@ -12,7 +12,7 @@ class NativeAction:
     interaction: Literal["approval", "question"] | None = None
 
 
-_ACTIONS = (
+NATIVE_ACTIONS = (
     NativeAction(
         "command",
         "commandExecution",
@@ -22,15 +22,22 @@ _ACTIONS = (
     NativeAction(
         "file_change", "fileChange", "item/fileChange/requestApproval", "approval"
     ),
-    # Codex permission-profile grants need a different response and an exact
-    # file/network scope. A command or file approval cannot grant that profile.
+    NativeAction(
+        "permissions",
+        request="item/permissions/requestApproval",
+        interaction="approval",
+    ),
     NativeAction("web_search", "webSearch"),
     NativeAction(
         "question", request="item/tool/requestUserInput", interaction="question"
     ),
 )
-NATIVE_REQUESTS = {action.request: action for action in _ACTIONS if action.request}
-_NATIVE_ITEMS = {action.item_type: action for action in _ACTIONS if action.item_type}
+NATIVE_REQUESTS = {
+    action.request: action for action in NATIVE_ACTIONS if action.request
+}
+_NATIVE_ITEMS = {
+    action.item_type: action for action in NATIVE_ACTIONS if action.item_type
+}
 
 
 def native_event_payload(method: str, params: dict) -> dict:

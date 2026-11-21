@@ -7,6 +7,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.workbench.errors import IdempotencyConflict
+from app.domain.workbench.native_registry import NATIVE_ACTIONS
 
 
 class FormalMethodRepositoryMixin:
@@ -27,6 +28,73 @@ class FormalMethodRepositoryMixin:
         WHERE workbench_incubation_tool_bindings.digest=EXCLUDED.digest"""),
             {"owner": owner, **reference.model_dump(), "asset": asset_id},
         )
+
+    async def registry_inventory(self, owner):
+        """Project only user-facing metadata. No credentials, file bodies or test evidence."""
+        params = {"owner": owner}
+        installations = await self.session.execute(
+            text("""
+            SELECT id AS asset_id, name, kind, revision, status, detail->>'account_label' AS account_label
+            FROM workbench_capability_assets WHERE owner_actor_id=:owner ORDER BY name,id
+        """),
+            params,
+        )
+        methods = await self.session.execute(
+            text("""
+            SELECT document->'reference' AS reference,
+                   document#>>'{draft,definition,capability_declaration,title}' AS title,
+                   document#>>'{draft,source,asset_id}' AS source_asset_id,
+                   (document#>>'{draft,source,asset_revision}')::int AS source_revision,
+                   document#>>'{draft,source,entry}' AS source_entry,
+                   document#>>'{draft,source,kind}' AS source_kind,
+                   document#>>'{draft,source,digest}' AS source_digest,
+                   document#>'{validation,dependencies}' AS dependencies
+            FROM workbench_formal_methods WHERE owner_actor_id=:owner ORDER BY title,method_id,version DESC
+        """),
+            params,
+        )
+        return {
+            "installed": installations.mappings().all(),
+            "formal": methods.mappings().all(),
+        }
+
+    async def registry_activity(self, owner):
+        """Recent metadata from original records. Trial sessions are private to incubation."""
+        result = await self.session.execute(
+            text("""
+            SELECT * FROM (
+              (SELECT 'call' AS kind, c.session_id, c.id::text AS record_id,
+                      CASE WHEN c.detail ? 'formal_method' OR c.detail ? 'formal_host' OR c.detail ? 'frozen' THEN 'formal'
+                           WHEN c.source_asset_id IS NOT NULL AND c.origin='managed' THEN 'installed'
+                           WHEN c.origin='platform' THEN 'platform' ELSE 'runtime' END AS path,
+                      c.source_asset_id AS asset_id, coalesce(c.detail#>'{formal_method,reference}',
+                        c.detail#>'{formal_host,reference}', c.detail#>'{frozen,reference}') AS reference,
+                      coalesce(c.detail#>>'{tool,name}', c.kind) AS action, c.status, c.created_at AS at
+               FROM workbench_calls c JOIN workbench_sessions s ON s.id=c.session_id
+               WHERE s.owner_actor_id=:owner AND c.owner_actor_id=:owner AND coalesce(s.origin,'') <> 'knowlab-test'
+               ORDER BY c.created_at DESC,c.id DESC LIMIT 40)
+              UNION ALL
+              (SELECT 'observation', e.session_id, e.id::text, 'native', NULL::uuid, NULL::jsonb, cast(:native_items AS jsonb) ->> (e.payload#>>'{item,type}'),
+                      coalesce(e.payload#>>'{item,status}', e.event_type), e.created_at
+               FROM workbench_session_events e JOIN workbench_sessions s ON s.id=e.session_id
+               WHERE s.owner_actor_id=:owner AND coalesce(s.origin,'') <> 'knowlab-test'
+                 AND e.event_type IN ('item/started','item/completed') AND cast(:native_items AS jsonb) ? (e.payload#>>'{item,type}')
+               ORDER BY e.created_at DESC,e.id DESC LIMIT 40)
+              UNION ALL
+              (SELECT 'approval', a.session_id, a.id::text, 'native', NULL::uuid, NULL::jsonb, a.method, a.decision, a.created_at
+               FROM workbench_approval_log a JOIN workbench_sessions s ON s.id=a.session_id
+               WHERE s.owner_actor_id=:owner AND coalesce(s.origin,'') <> 'knowlab-test'
+               ORDER BY a.created_at DESC,a.id DESC LIMIT 40)
+            ) activity ORDER BY at DESC,kind,record_id DESC LIMIT 40
+        """),
+            {
+                "owner": owner,
+                "native_items": json.dumps(
+                    {a.item_type: a.name for a in NATIVE_ACTIONS if a.item_type}
+                ),
+            },
+        )
+        return result.mappings().all()
 
     async def list_formal_methods(self, owner):
         rows = (

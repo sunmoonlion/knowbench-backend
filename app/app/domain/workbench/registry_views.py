@@ -1,5 +1,6 @@
 """Owner-scoped registration records. Neither view grants execution rights."""
 
+from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
@@ -32,3 +33,37 @@ class FormalRegistration(Strict):
     source_digest: str | None
     source_entry: str | None
     dependencies: tuple[MethodRef, ...]
+
+
+class InstallationSummary(Strict):
+    asset_id: UUID
+    name: str
+    kind: Literal["connection", "skill"]
+    revision: int
+    status: Literal["active", "disabled", "disconnected", "reauth_required"]
+    account_label: str | None
+
+
+class NativeRegistration(Strict):
+    name: str
+    item_type: str | None
+    request: str | None
+    interaction: Literal["approval", "question"] | None
+
+
+class RegistryInventory(Strict):
+    installed: list[InstallationSummary]
+    formal: list[FormalRegistration]
+    native: list[NativeRegistration]
+
+
+class RegistryEvent(Strict):
+    kind: Literal["call", "observation", "approval"]
+    session_id: UUID
+    record_id: str
+    path: Literal["installed", "formal", "native", "platform", "runtime"]
+    asset_id: UUID | None
+    reference: MethodRef | None
+    action: str
+    status: str
+    at: datetime

@@ -65,9 +65,12 @@ from app.domain.workbench.formal_method_calls import (
     FormalMethodInvocations,
 )
 from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.native_registry import NATIVE_ACTIONS
 from app.domain.workbench.registry_views import (
     FormalRegistration,
     InstalledRegistration,
+    RegistryEvent,
+    RegistryInventory,
 )
 from app.domain.workbench.skill_execution import public_result
 from app.domain.workbench.skill_installation import (
@@ -106,6 +109,27 @@ def formal_service(svc=Depends(service)):
     from app.application.workbench.formal_method_calls import FormalMethodCalls
 
     return FormalMethodCalls(svc)
+
+
+@router.get("/workbench/registry/activity", response_model=list[RegistryEvent])
+async def registry_activity(
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await svc.repo.registry_activity(_actor(user))
+
+
+@router.get("/workbench/registry", response_model=RegistryInventory)
+async def registry_inventory(
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    records = await svc.repo.registry_inventory(_actor(user))
+    return {**records, "native": NATIVE_ACTIONS}
 
 
 @router.get(

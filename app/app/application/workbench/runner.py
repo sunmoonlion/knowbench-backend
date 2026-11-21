@@ -51,11 +51,12 @@ from app.domain.workbench.data_planning import (
     DataPlanningGuard,
 )
 from app.domain.workbench.deliverables import changed_paths
-from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
+from app.domain.workbench.errors import MethodPlanInvalid, NotFound, StaleStateVersion
 from app.domain.workbench.expert_lookup import LOOKUP_SECONDS, LookupGuard
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.native_permissions import inside, permission_profile
 from app.domain.workbench.native_registry import NATIVE_REQUESTS, native_event_payload
 from app.domain.workbench.pricing import (
     DEFAULT_PRICES,
@@ -1496,6 +1497,9 @@ class SandboxLink:
                 rid, -32601, f"workbench does not handle {method}"
             )
             return
+        if action.name == "permissions":
+            await self._request_permissions(rid, method, params)
+            return
         request_id = f"{self.sandbox_id}:{rid}"
         category, tokens = classify(method, params)
         summary = {
@@ -1632,6 +1636,154 @@ class SandboxLink:
             tokens=tokens,
             after_decline=after_decline,
         )
+
+    async def _current_permissions(self, repo, session, params):
+        thread = session.get("thread_id")
+        env_id = session.get("environment_id")
+        if (
+            session.get("kind") != "work"
+            or session.get("wheel") != "user"
+            or session.get("active_task_id")
+            or session.get("archived_at")
+            or not thread
+            or not params.get("turnId")
+            or not params.get("itemId")
+            or thread != params.get("threadId")
+            or self.active_turns.get(thread) != params["turnId"]
+            or not env_id
+            or not inside(params.get("cwd"), session.get("project_root"))
+            or params.get("environmentId")
+            != (session.get("thread_settings") or {}).get(
+                "environmentId", self.runner.environment_key
+            )
+        ):
+            return None
+        try:
+            env = await repo.get_environment(
+                str(env_id), owner_actor_id=str(session["owner_actor_id"])
+            )
+        except NotFound:
+            return None
+        profile = permission_profile(
+            params.get("permissions"), session.get("project_root"), env
+        )
+        if profile:
+            return profile, str(env.get("device_id") or ""), str(env.get("host") or "")
+        return None
+
+    async def _request_permissions(self, rid, method, params):
+        client = self.client
+        assert client is not None
+        denied = {"permissions": {}, "scope": "turn"}
+        async with self.runner.stores() as repo:
+            sid = await self.session_for_thread(thread_id_of(params), repo)
+            if not sid:
+                await client.respond(rid, denied)
+                return
+            session = await repo.get_session(sid)
+            binding = await self._current_permissions(repo, session, params)
+            if not binding:
+                waiter = self.turn_waiters.get(params.get("turnId"))
+                if waiter and waiter.get("probe_guard"):
+                    waiter["probe_guard"].failure = "unexpected_native_approval"
+                async with repo.transaction():
+                    await repo.log_approval(
+                        session_id=sid,
+                        task_id=None,
+                        request_id=f"{self.sandbox_id}:{rid}",
+                        method=method,
+                        summary={
+                            "registry_action": "permissions",
+                            "reason": "outside_current_scope",
+                            "itemId": params.get("itemId"),
+                            "turnId": params.get("turnId"),
+                        },
+                        decision="decline",
+                        source="policy",
+                        interaction_id=None,
+                        wheel=session["wheel"],
+                        step_id=None,
+                    )
+                await client.respond(rid, denied)
+                return
+        profile = binding[0]
+        request_id = f"{self.sandbox_id}:{rid}"
+        subject = {
+            "request_id": request_id,
+            "method": method,
+            "registry_action": "permissions",
+            "category": "permissions",
+            "threadId": params["threadId"],
+            "turnId": params["turnId"],
+            "itemId": params["itemId"],
+            "cwd": params["cwd"],
+            "environmentId": params["environmentId"],
+            "permissions": profile,
+            "reason": params.get("reason"),
+        }
+        prompt = InteractionPrompt(
+            title="本轮需要额外权限",
+            question=(params.get("reason") or "请核对本轮访问范围")
+            + "\n"
+            + json.dumps(profile, ensure_ascii=False),
+            options=[
+                {"id": "accept", "label": "仅允许本轮"},
+                {"id": "decline", "label": "拒绝"},
+            ],
+            subject=subject,
+        )
+        where = {"task": None, "wheel": session["wheel"], "pack": None, "step": None}
+        opened = await self._open_ask(
+            session=session,
+            where=where,
+            kind="tool_approval",
+            prompt=prompt,
+            waiting_reason=WaitingReason.APPROVAL,
+        )
+        answer, source = await self._wait_answer(
+            request_id, thread_id=params["threadId"]
+        )
+        if source == "timeout":
+            await self._settle_timeout(session=session, where=where, opened=opened)
+        allowed = False
+        async with self.runner.stores() as repo:
+            async with repo.transaction():
+                current = await repo.get_session(
+                    sid, owner_actor_id=str(session["owner_actor_id"]), for_update=True
+                )
+                interaction = await repo.get_interaction(opened["interaction_id"])
+                if (
+                    source == "user"
+                    and answer
+                    and answer.get("decision") == "accept"
+                    and interaction["status"] == "consumed"
+                    and str(interaction["responded_by"])
+                    == str(session["owner_actor_id"])
+                    and (interaction.get("response") or {}).get("decision") == "accept"
+                    and interaction["prompt"]["subject"] == subject
+                    and client is self.client
+                    and current.get("environment_id") == session.get("environment_id")
+                    and current.get("project_root") == session.get("project_root")
+                ):
+                    allowed = binding == await self._current_permissions(
+                        repo, current, params
+                    )
+                await repo.log_approval(
+                    session_id=sid,
+                    task_id=None,
+                    request_id=request_id,
+                    method=method,
+                    summary=subject,
+                    decision="accept" if allowed else "decline",
+                    source=source,
+                    interaction_id=opened["interaction_id"],
+                    wheel=session["wheel"],
+                    step_id=None,
+                )
+        if client is self.client:
+            await client.respond(
+                rid, {"permissions": profile, "scope": "turn"} if allowed else denied
+            )
 
     async def _where(
         self, repo: WorkbenchStore, session: dict[str, Any]

@@ -163,7 +163,7 @@ def test_native_action_evidence_only_annotates_registered_observations():
     assert NATIVE_REQUESTS["item/fileChange/requestApproval"].name == "file_change"
     assert NATIVE_REQUESTS["item/tool/requestUserInput"].interaction == "question"
     assert "item/webSearch/requestApproval" not in NATIVE_REQUESTS
-    assert "item/permissions/requestApproval" not in NATIVE_REQUESTS
+    assert NATIVE_REQUESTS["item/permissions/requestApproval"].name == "permissions"
     command = {"item": {"type": "commandExecution", "id": "one", "status": "failed"}}
     assert native_event_payload("item/completed", command) == {
         **command,
