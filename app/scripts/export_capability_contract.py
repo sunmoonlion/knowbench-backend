@@ -330,6 +330,38 @@ probe_call = {
 examples["FormalProbeCall"] = Call.model_validate(probe_call).model_dump(
     mode="json", exclude_unset=True
 )
+function_probe = {
+    **probe_call,
+    "source_asset_id": None,
+    "connection_id": None,
+    "detail": {
+        **probe_call["detail"],
+        "source_asset_id": None,
+        "connection_id": None,
+        "registered_source": {
+            "kind": "service_function",
+            "source": "knowbase",
+            "version": "1",
+            "entry": "read_method_input",
+            "digest": reference["digest"],
+            "license_basis": "author_grant",
+            "asset_id": None,
+            "asset_revision": None,
+        },
+        "tool": {
+            "name": "read_method_input",
+            "description": "Read approved material",
+            "inputSchema": {"type": "object"},
+        },
+        "arguments": {"material_id": ID, "version_no": 1},
+        "purpose": "Review an approved report",
+        "connection_name": "KnowBase",
+        "account_label": "test",
+    },
+}
+examples["RegisteredFunctionProbe"] = Call.model_validate(function_probe).model_dump(
+    mode="json", exclude_unset=True
+)
 model_call = {
     **call,
     "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",

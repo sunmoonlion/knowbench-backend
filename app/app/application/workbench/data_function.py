@@ -28,7 +28,9 @@ class DataFunction:
     def __init__(self, client, issuer):
         self.client, self.issuer = client, issuer
 
-    async def invoke(self, revision, *, subject, sandbox, call_id, arguments):
+    async def invoke(
+        self, revision, *, subject, sandbox, call_id, arguments, method_read=None
+    ):
         if (
             (revision.provider, revision.version) != ("knowbase", 1)
             or revision.name not in DATA_QUERIES
@@ -39,8 +41,17 @@ class DataFunction:
             raise CapabilityError("Unsupported data query binding")
         if not schema_validator(revision.contract.input_schema).is_valid(arguments):
             raise CapabilityError("Invalid registered function input")
+        if (revision.name == "read_method_input") != (method_read is not None):
+            raise CapabilityError(
+                "Formal material reads require a verified method invocation"
+            )
         ticket = self.issuer.function_ticket(
-            subject, sandbox, call_id, revision.digest, digest(arguments)
+            subject,
+            sandbox,
+            call_id,
+            revision.digest,
+            digest(arguments),
+            **({"method_read": method_read} if method_read is not None else {}),
         )
         body = {
             "call_id": str(call_id),
@@ -87,6 +98,10 @@ class DataFunction:
                 raise CapabilityOutcomeUnknown(
                     "KnowBase returned a different material, rendition or offset"
                 )
+        if method_read is not None:
+            from app.application.workbench.knowbase_method_read import verify_material
+
+            verify_material(receipt["output"], method_read)
         return receipt
 
     async def host_read(

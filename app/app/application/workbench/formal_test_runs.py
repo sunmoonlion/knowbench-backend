@@ -22,7 +22,10 @@ from app.domain.workbench.errors import (
     NotFound,
     WorkbenchError,
 )
-from app.domain.workbench.formal_adapter import live_registration
+from app.domain.workbench.formal_adapter import (
+    function_evidence_adapter,
+    live_registration,
+)
 from app.domain.workbench.formal_execution import (
     FORMAL_RUNTIME,
     FormalTaskSnapshot,
@@ -98,7 +101,10 @@ class FormalExecutions:
         asset = await self.formal.registry.execution_asset(owner, source)
         if source.kind == "service_function" and (
             self.capabilities.data_function is None
-            or request.draft.allowed_callers != ("host",)
+            or (
+                source.entry != "read_method_input"
+                and request.draft.allowed_callers != ("host",)
+            )
         ):
             raise CapabilityError(
                 "Function trial requires the host and configured KnowBase"
@@ -646,12 +652,12 @@ class FormalExecutions:
             )
             else "knowbench/formal-orchestration-host/v1"
             if isinstance(request.draft.definition.procedure, Orchestration)
+            else function_evidence_adapter(request.draft)
+            if request.draft.source and request.draft.source.kind == "service_function"
             else "knowbench/formal-mcp-caller-probe/v1"
             if "model" in request.draft.allowed_callers
             else "knowbench/formal-script-host/v1"
             if script_cases
-            else "knowbench/formal-function-host/v1"
-            if request.draft.source and request.draft.source.kind == "service_function"
             else "knowbench/formal-mcp-host/v1",
             cases=evidence_cases,
             model_cost=str(await self.repo.test_run_spent(run_id) - script_total),

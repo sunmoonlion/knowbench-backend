@@ -374,13 +374,13 @@ class FormalHostCalls:
         if source.kind == "service_function":
             if (
                 not self.capabilities.data_function
-                or caller != "host"
+                or (caller != "host" and source.entry != "read_method_input")
                 or policy.read_result_id_field
                 or policy.effect != "read"
                 or policy.operation != source.entry
             ):
                 raise CapabilityError("Missing reviewed host data-query policy")
-            if not any(
+            if source.entry != "read_method_input" and not any(
                 r.resource_role == "scope" and r.argument_path == ("scope",)
                 for r in policy.resources
             ):
@@ -388,17 +388,12 @@ class FormalHostCalls:
         if not decision.requires_approval:
             raise CapabilityError("Formal external operations require exact approval")
         knowbase_read = None
-        reader = self.capabilities.knowbase_reader
-        if reader and asset["detail"].get("url") == reader.url:
-            from app.application.workbench.knowbase_method_read import (
-                TOOL,
-                read_binding,
-            )
+        if source.kind == "service_function" and source.entry == "read_method_input":
+            from app.application.workbench.knowbase_method_read import read_binding
 
             material = arguments.get("material_id")
             if (
-                source.entry != TOOL
-                or policy.effect != "read"
+                policy.effect != "read"
                 or not any(
                     r.resource_role == "material"
                     and r.argument_path == ("material_id",)
@@ -445,7 +440,7 @@ class FormalHostCalls:
         if source.kind in ("skill_script", "registered_script"):
             intent["script_quote"] = decision.operation["script_quote"]
         if source.kind == "service_function":
-            from app.application.workbench.data_relay import run_ref
+            from app.application.workbench.scoped_data_functions import run_ref
 
             intent["function_arguments"] = dict(arguments)
             if arguments.get("scope") == "run":

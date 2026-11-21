@@ -126,10 +126,15 @@ class FormalModelCalls:
                         "execution_kind": "formal_probe",
                         "tool": tool,
                         "implementation_tool": context.intent["tool"],
-                        "service_url": context.asset["detail"]["url"],
+                        "service_url": context.registration.service,
                         "operation_digest": context.access["operation_digest"],
                         "access": context.access,
-                        "source_asset_id": context.asset["id"],
+                        "source_asset_id": context.intent["source_asset_id"],
+                        **(
+                            {"registered_source": context.intent["registered_source"]}
+                            if "registered_source" in context.intent
+                            else {}
+                        ),
                         "revision": context.asset["revision"],
                     }
                 },

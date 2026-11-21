@@ -3667,6 +3667,95 @@
         "title": "ModelProbeCallDetail",
         "type": "object"
       },
+      "RegisteredFunctionProbeDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "RegisteredFunctionProbeDetail",
+        "type": "object"
+      },
       "RegisteredSource": {
         "additionalProperties": false,
         "properties": {
@@ -3953,6 +4042,9 @@
             "$ref": "#/$defs/ModelProbeCallDetail"
           },
           {
+            "$ref": "#/$defs/RegisteredFunctionProbeDetail"
+          },
+          {
             "$ref": "#/$defs/FormalModelCallDetail"
           }
         ],
@@ -4128,6 +4220,9 @@
               },
               {
                 "$ref": "#/$defs/ModelProbeCallDetail"
+              },
+              {
+                "$ref": "#/$defs/RegisteredFunctionProbeDetail"
               },
               {
                 "$ref": "#/$defs/FormalModelCallDetail"
@@ -4912,6 +5007,95 @@
           "runtime"
         ],
         "title": "ModelProbeCallDetail",
+        "type": "object"
+      },
+      "RegisteredFunctionProbeDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "RegisteredFunctionProbeDetail",
         "type": "object"
       },
       "RegisteredSource": {
@@ -5734,6 +5918,9 @@
                 "$ref": "#/$defs/ModelProbeCallDetail"
               },
               {
+                "$ref": "#/$defs/RegisteredFunctionProbeDetail"
+              },
+              {
                 "$ref": "#/$defs/FormalModelCallDetail"
               }
             ],
@@ -6519,6 +6706,95 @@
         "title": "ModelProbeCallDetail",
         "type": "object"
       },
+      "RegisteredFunctionProbeDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "RegisteredFunctionProbeDetail",
+        "type": "object"
+      },
       "RegisteredSource": {
         "additionalProperties": false,
         "properties": {
@@ -6927,6 +7203,9 @@
               },
               {
                 "$ref": "#/$defs/ModelProbeCallDetail"
+              },
+              {
+                "$ref": "#/$defs/RegisteredFunctionProbeDetail"
               },
               {
                 "$ref": "#/$defs/FormalModelCallDetail"
@@ -7783,6 +8062,95 @@
           "runtime"
         ],
         "title": "ModelProbeCallDetail",
+        "type": "object"
+      },
+      "RegisteredFunctionProbeDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "formal_probe",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "registered_source": {
+            "$ref": "#/$defs/FormalMethodSource"
+          },
+          "selection_revision": {
+            "title": "Selection Revision",
+            "type": "integer"
+          },
+          "runtime": {
+            "title": "Runtime",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "registered_source",
+          "selection_revision",
+          "runtime"
+        ],
+        "title": "RegisteredFunctionProbeDetail",
         "type": "object"
       },
       "RegisteredSource": {

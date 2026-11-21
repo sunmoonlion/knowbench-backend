@@ -118,8 +118,8 @@ async def test_native_mcp_does_not_publish_colliding_data_definitions():
         per_minute=10,
         relay=relay,
     )
-    assert "result" not in response
-    assert "collide" in response["error"]["message"]
+    assert response["result"]["tools"] == platform_catalog().descriptors()
+    relay.tools.assert_not_awaited()
 
 
 async def test_connection_registration_refuses_duplicate_tools_before_saving():

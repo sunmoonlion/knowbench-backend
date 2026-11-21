@@ -12,7 +12,7 @@ from formal_plan_support import advance, freeze
 from formal_recursive_support import accept_request
 from joserfc import jwt
 from joserfc.jwk import ECKey
-from test_capabilities_db import Remote, body
+from test_capabilities_db import Remote
 from test_formal_execution_db import approve
 from test_formal_host_calls_db import FORMAL_OPERATION
 from test_formal_method_admission_db import setup as admission_setup
@@ -25,7 +25,6 @@ from app.application.workbench.capabilities import Capabilities
 from app.application.workbench.formal_methods import FormalMethods
 from app.application.workbench.knowbase_method_read import (
     TOOL,
-    KnowbaseMethodReader,
     pending_read,
 )
 from app.application.workbench.test_runs import KnowbotTestConductor
@@ -58,7 +57,6 @@ def pinned_approval(subject_digest):
 
 
 class DataPeer:
-    data_mcp_url = "https://knowbase.example.test/api/mcp/data"
     material_id = str(uuid4())
     grant_id = str(uuid4())
 
@@ -83,56 +81,35 @@ class DataPeer:
         assert self.consent["path"][-1]["call_id"] == call_id
         self.consent = None
 
-    async def data_mcp(self, token, message):
+    async def invoke_data_query(self, name, token, body):
+        from app.domain.workbench.capabilities import CapabilityError
+
         claims = jwt.decode(token, self.key, algorithms=["ES256"]).claims
-        assert claims["tools"] == [TOOL] and claims["sub"] == "author"
-        if message["method"] == "tools/list":
-            assert "method_read" not in claims
-            return {
-                "result": {
-                    "tools": [
-                        {
-                            "name": TOOL,
-                            "description": "One approved text original",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "material_id": {"type": "string"},
-                                    "version_no": {"type": "integer"},
-                                },
-                                "required": ["material_id", "version_no"],
-                                "additionalProperties": False,
-                            },
-                        }
-                    ]
-                }
-            }
+        assert (
+            name == TOOL
+            and claims["aud"] == "knowbase-function"
+            and claims["sub"] == "author"
+        )
+        assert (
+            claims["call_id"] == body["call_id"]
+            and claims["function_digest"] == body["digest"]
+        )
         if claims["method_read"] != self.consent:
-            return {
-                "result": {
-                    "isError": True,
-                    "content": [{"type": "text", "text": "no consent"}],
-                }
-            }
-        assert message["params"]["arguments"] == {
-            "material_id": self.material_id,
-            "version_no": 1,
-        }
+            raise CapabilityError("KnowBase declined this read")
+        assert body["arguments"] == {"material_id": self.material_id, "version_no": 1}
         return {
-            "result": {
-                "isError": False,
-                "content": [{"type": "text", "text": "provider diagnostic"}],
-                "structuredContent": {
-                    "text": "verified",
-                    "source": {
-                        "version_no": 1,
-                        "material_id": self.material_id,
-                        "sha256": hashlib.sha256(b"verified").hexdigest(),
-                        "grant_id": self.grant_id,
-                        "method_call_id": self.consent["path"][-1]["call_id"],
-                    },
+            "call_id": body["call_id"],
+            "digest": body["digest"],
+            "output": {
+                "text": "verified",
+                "source": {
+                    "version_no": 1,
+                    "material_id": self.material_id,
+                    "sha256": hashlib.sha256(b"verified").hexdigest(),
+                    "grant_id": self.grant_id,
+                    "method_call_id": self.consent["path"][-1]["call_id"],
                 },
-            }
+            },
         }
 
 
@@ -230,18 +207,45 @@ def wrap(request, frozen):
 
 async def read_candidate(db, reader_peer):
     issuer, peer = reader_peer
-    reader = KnowbaseMethodReader(peer, issuer)
+    from test_service_function_management_db import pin, revision
+
+    from app.application.workbench.data_function import DataFunction
+    from app.domain.workbench.data_function import descriptor, destination
+    from app.domain.workbench.service_functions import FunctionRevision
+    from app.infrastructure.workbench.service_functions import register_revision
+
+    reader = DataFunction(peer, issuer)
     await admission_setup(db, licensed=True)
     env, sandbox, _ = await seed(db)
     remote = Remote()
-    tools = await reader.discover("author")
-    registration = ToolRegistration.discover("mcp", reader.url, tools[0])
+    rev = (
+        FunctionRevision.model_validate(peer.revision)
+        if hasattr(peer, "revision")
+        else revision(
+            name=TOOL,
+            required_permissions=["method.inputs.read"],
+            scenes=["incubation", "step"],
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "material_id": {"type": "string"},
+                    "version_no": {"type": "integer"},
+                },
+                "required": ["material_id", "version_no"],
+                "additionalProperties": False,
+            },
+        )
+    )
+    url = destination(TOOL)
+    registration = ToolRegistration.discover("service_function", url, descriptor(rev))
+    async with db() as session:
+        await register_revision(session, rev)
     operation = FORMAL_OPERATION.model_copy(
         update={
-            "service_url": reader.url,
+            "service_url": url,
             "tool_name": TOOL,
             "descriptor_digest": registration.descriptor_digest,
-            "operation": "read",
+            "operation": TOOL,
             "effect": "read",
             "capability_ref": "knowbase",
             "resources": (
@@ -254,17 +258,7 @@ async def read_candidate(db, reader_peer):
     params = {"material_id": peer.material_id, "version_no": 1}
     async with db() as session:
         repo = WorkbenchRepository(session)
-        service = Capabilities(
-            repo, remote, None, operations=(operation,), knowbase_reader=reader
-        )
-        await service.create_connection(
-            OWNER,
-            body(key="knowbase-read-connection").model_copy(
-                update={"url": reader.url, "token": None}
-            ),
-        )
-        source = (await service.formal_sources.sources("author"))["items"][0]
-        license = license_record(source)
+        license = license_record(pin(rev))
         source = (
             await FormalMethods(
                 repo, operations=(operation,), source_licenses=(license,)
@@ -278,7 +272,7 @@ async def read_candidate(db, reader_peer):
             None,
             operations=(operation,),
             source_licenses=(license,),
-            knowbase_reader=reader,
+            data_function=reader,
             runtime_url="http://testserver/api/mcp/capabilities",
         )
 
@@ -298,7 +292,7 @@ async def read_candidate(db, reader_peer):
             "requirement_id": "read",
             "capability_ref": "knowbase",
             "version": operation.version,
-            "operations": ["read"],
+            "operations": [TOOL],
             "resources": [
                 {
                     "resource_kind": "connector",
@@ -307,7 +301,7 @@ async def read_candidate(db, reader_peer):
                 }
             ],
             "data_transfer": {
-                "destination": reader.url,
+                "destination": url,
                 "argument_fields": list(params),
                 "purpose": "verify a report",
             },
@@ -492,7 +486,7 @@ async def run_model_read(db, ctx, sandbox, peer, mode):
     )
 
     doc = ctx.request.model_dump(mode="json", by_alias=True)
-    doc.update(request_id=str(uuid4()), run_id=str(uuid4()))
+    doc.update(request_id=str(uuid4()), run_id=str(uuid4()), method_id=str(uuid4()))
     doc["draft"]["allowed_callers"] = ["model"]
     args = {"material_id": peer.material_id, "version_no": 1}
     doc["execution"].update(
@@ -573,6 +567,18 @@ async def run_model_read(db, ctx, sandbox, peer, mode):
         if mode == "allowed":
             assert delivered["result"]["structuredContent"] == output
             assert json.loads(delivered["result"]["content"][0]["text"]) == output
+            trial = SimpleNamespace(
+                request=request, conductor=conductor, factory=ctx.factory
+            )
+            result = await advance(db, trial)
+            assert result["status"] == "passed", (
+                result.get("admission") or result["cases"]
+            )
+            async with db() as session:
+                receipt = await ctx.factory(
+                    WorkbenchRepository(session)
+                ).formal_sources.register(freeze(request, result), caller="knowlab")
+                assert receipt["status"] == "registered"
         else:
             assert "verified" not in json.dumps(delivered["result"])
     finally:

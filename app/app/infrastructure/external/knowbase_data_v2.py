@@ -1,5 +1,5 @@
 """knowbase 资料库第四版（契约 user-data/v2，SDD 0043、0048）：请专家的解析、确认、
-运行授权，会话登记，等数据时的服务路，数据 MCP 的中继。
+运行授权，会话登记，等数据时的服务路，以及已登记资料函数的调用。
 
 两种身份、拒绝与不可达见公共底子 `knowbase_client.py`：本人令牌（换来的用户令牌，`azp`
 是本应用），服务身份走关系 `user-data-read`；委托交付的成稿替用户写进产出区走关系
@@ -14,11 +14,9 @@ from typing import Any
 
 import httpx
 
-from app.application.errors.exceptions import ServiceUnavailableError
 from app.infrastructure.external.knowbase_client import KnowbaseClient, _segment
 
 BASE_V2 = "/api/internal/v2/user-data"
-DATA_MCP_PATH = "/api/mcp/data"
 READ = "user-data-read"
 OUTPUT = "user-data-output"
 log = logging.getLogger(__name__)
@@ -293,15 +291,11 @@ class KnowbaseDataV2(KnowbaseClient):
         )
         return body
 
-    # —— 数据 MCP 中继（0048）——
+    # —— 正式资料授权及已登记函数调用——
 
     @property
-    def data_mcp_configured(self) -> bool:
+    def function_configured(self) -> bool:
         return bool(self._environ.get("KNOWBASE_INTERNAL_URL", "").strip())
-
-    @property
-    def data_mcp_url(self) -> str:
-        return self._base().removesuffix(BASE_V2) + DATA_MCP_PATH
 
     async def method_parent_grant(self, token, read, sha256, expires_at):
         _, grant, _ = await self._send(
@@ -367,50 +361,3 @@ class KnowbaseDataV2(KnowbaseClient):
                 f"KnowBase refused the data query (HTTP {response.status_code})"
             )
         return response.json()
-
-    async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]:
-        """把一条 JSON-RPC 原样交给 knowbase 数据 MCP；令牌是工作台当场签的
-        `knowbase-data` 令牌。只回 JSON（knowbase 不开流）。"""
-        url = self.data_mcp_url
-        try:
-            async with httpx.AsyncClient(
-                timeout=self._timeout,
-                follow_redirects=False,
-                transport=self._transport,
-            ) as client:
-                response = await client.post(
-                    url,
-                    json=message,
-                    headers={
-                        "Authorization": f"Bearer {token}",
-                        "Accept": "application/json",
-                    },
-                )
-        except httpx.HTTPError as exc:
-            raise ServiceUnavailableError(
-                "knowbase is unreachable", code="knowbase_unavailable"
-            ) from exc
-        if response.status_code == 202 and "id" not in message:
-            return {}
-        if response.status_code != 200:
-            log.warning("knowbase_data_mcp_http_error status=%s", response.status_code)
-            raise ServiceUnavailableError(
-                f"knowbase data MCP returned HTTP {response.status_code}",
-                code="knowbase_mcp_http_error",
-            )
-        try:
-            reply = response.json()
-        except ValueError:
-            reply = None
-        if (
-            not isinstance(reply, dict)
-            or reply.get("jsonrpc") != "2.0"
-            or reply.get("id") != message.get("id")
-            or ("result" in reply) == ("error" in reply)
-            or not isinstance(reply.get("result", reply.get("error")), dict)
-        ):
-            raise ServiceUnavailableError(
-                "knowbase data MCP returned an invalid response",
-                code="knowbase_mcp_invalid_response",
-            )
-        return reply

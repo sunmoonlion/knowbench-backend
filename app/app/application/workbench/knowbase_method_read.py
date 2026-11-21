@@ -1,10 +1,9 @@
-"""A formal method read through the configured KnowBase data MCP and its owner consent."""
+"""A formal method read through the registered KnowBase function and its owner consent."""
 
 import hashlib
-import json
 from uuid import UUID
 
-from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.capabilities import CapabilityError, CapabilityOutcomeUnknown
 from app.domain.workbench.formal_execution import expanded_plan
 
 TOOL = "read_method_input"
@@ -61,109 +60,27 @@ async def read_binding(repo, task, snapshot, arguments, purpose, child, scopes):
     }
 
 
-class KnowbaseMethodReader:
-    def __init__(self, client, issuer):
-        self.client = client
-        self.issuer = issuer
-        self.url = client.data_mcp_url
-
-    async def rpc(
-        self, subject, method, params, binding=None, *, sandbox="formal-host"
+def verify_material(content, binding):
+    source = content.get("source")
+    if (
+        not isinstance(source, dict)
+        or not isinstance(content.get("text"), str)
+        or source.get("material_id") != binding["material_id"]
+        or type(source.get("version_no")) is not int
+        or source["version_no"] != binding["version_no"]
+        or source.get("method_call_id") != binding["path"][-1]["call_id"]
     ):
-        token = self.issuer.data_token(
-            subject, sandbox=sandbox, tools=[TOOL], method_read=binding
-        ).token
-        reply = await self.client.data_mcp(
-            token,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": method,
-                "params": params,
-            },
+        raise CapabilityOutcomeUnknown(
+            "KnowBase returned a different material or invocation"
         )
-        if "error" in reply or not isinstance(reply.get("result"), dict):
-            raise CapabilityError("KnowBase refused the method read request")
-        return reply["result"]
-
-    async def discover(self, subject):
-        result = await self.rpc(subject, "tools/list", {})
-        tools = result.get("tools")
-        if (
-            not isinstance(tools, list)
-            or len(tools) != 1
-            or tools[0].get("name") != TOOL
-        ):
-            raise CapabilityError("KnowBase method read is unavailable")
-        return tools
-
-    async def call(self, subject, intent, binding):
-        if (
-            intent.get("execution_kind") not in ("formal_mcp", "formal_probe")
-            or intent["tool"]["name"] != TOOL
-            or not binding
-        ):
-            raise CapabilityError(
-                "KnowBase method reads require a verified formal invocation"
-            )
-        result = await self.rpc(
-            subject,
-            "tools/call",
-            {"name": TOOL, "arguments": intent["arguments"]},
-            binding,
-            sandbox="formal-model"
-            if intent["execution_kind"] == "formal_probe"
-            else "formal-host",
-        )
-        if result.get("isError"):
-            return {
-                "isError": True,
-                "content": [
-                    {"type": "text", "text": "KnowBase declined this method read."}
-                ],
-            }
-        content = result.get("structuredContent")
-        source = content.get("source") if isinstance(content, dict) else None
-        if (
-            not isinstance(source, dict)
-            or not isinstance(content.get("text"), str)
-            or source.get("material_id") != binding["material_id"]
-            or type(source.get("version_no")) is not int
-            or source["version_no"] != binding["version_no"]
-            or source.get("method_call_id") != binding["path"][-1]["call_id"]
-        ):
-            raise CapabilityError(
-                "KnowBase returned a different material or invocation"
-            )
-        if source.get("sha256") != hashlib.sha256(content["text"].encode()).hexdigest():
-            raise CapabilityError("KnowBase text differs from its content digest")
-        try:
-            UUID(source["grant_id"])
-        except (KeyError, ValueError, TypeError, AttributeError) as exc:
-            raise CapabilityError(
-                "KnowBase omitted the resource grant receipt"
-            ) from exc
-        # Only the verified material and its receipt cross the caller boundary.
-        payload = {
-            "text": content["text"],
-            "source": {
-                k: source[k]
-                for k in (
-                    "material_id",
-                    "version_no",
-                    "method_call_id",
-                    "grant_id",
-                    "sha256",
-                )
-            },
-        }
-        return {
-            "isError": False,
-            "structuredContent": payload,
-            "content": [
-                {"type": "text", "text": json.dumps(payload, ensure_ascii=False)}
-            ],
-        }
+    if source.get("sha256") != hashlib.sha256(content["text"].encode()).hexdigest():
+        raise CapabilityOutcomeUnknown("KnowBase text differs from its content digest")
+    try:
+        UUID(source["grant_id"])
+    except (KeyError, ValueError, TypeError, AttributeError) as exc:
+        raise CapabilityOutcomeUnknown(
+            "KnowBase omitted the resource grant receipt"
+        ) from exc
 
 
 async def pending_read(svc, owner, call_id):
@@ -177,7 +94,7 @@ async def pending_read(svc, owner, call_id):
             str(call["task_id"]), owner_actor_id=owner, for_update=True
         )
         call = await svc.repo.capability_call(owner, str(call_id), lock=True)
-        if call["status"] != "awaiting_approval" or not svc.knowbase_reader:
+        if call["status"] != "awaiting_approval" or not svc.data_function:
             raise CapabilityError("This call has no pending KnowBase material read")
         formal = FormalHostCalls(svc)
         host = formal.pending_invocation(task, call)

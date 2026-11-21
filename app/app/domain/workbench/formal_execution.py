@@ -267,11 +267,20 @@ def direct_procedure(
     draft: FormalMethodDraft, *, caller: str = "host"
 ) -> ToolProcedure:
     procedure = direct_tool_procedure(draft)
-    if procedure.implementation.kind in (
-        "skill_script",
-        "registered_script",
-        "service_function",
-    ) and (caller != "host" or draft.allowed_callers != ("host",)):
+    if (
+        procedure.implementation.kind
+        in (
+            "skill_script",
+            "registered_script",
+            "service_function",
+        )
+        and not (
+            procedure.implementation.kind == "service_function"
+            and procedure.implementation.source == "knowbase"
+            and procedure.implementation.entry == "read_method_input"
+        )
+        and (caller != "host" or draft.allowed_callers != ("host",))
+    ):
         raise ValueError("This implementation requires host execution")
     if caller not in {"host", "model"} or caller not in draft.allowed_callers:
         raise ValueError("Formal method does not allow this caller")

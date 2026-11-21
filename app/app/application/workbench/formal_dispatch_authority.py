@@ -18,17 +18,37 @@ async def check_formal_dispatch(svc, owner, call, intent):
     if intent.get("execution_kind") in ("formal_method", "formal_method_model"):
         await svc.require_formal_use(owner, intent["formal_method"]["reference"])
     host = intent.get("formal_host") or intent.get("formal_probe")
-    if intent.get("execution_kind") == "formal_function":
+    function_probe = (
+        intent.get("execution_kind") == "formal_probe"
+        and (intent.get("registered_source") or {}).get("kind") == "service_function"
+    )
+    registered_function = (
+        intent.get("execution_kind") == "formal_function" or function_probe
+    )
+    if registered_function:
         from app.application.workbench.formal_host_calls import FormalHostCalls
 
         context = await FormalHostCalls(svc).context(
-            owner, host["task_id"], host["attempt_id"]
+            owner,
+            host["task_id"],
+            host["attempt_id"],
+            caller="model" if function_probe else "host",
         )
+        if function_probe:
+            from app.application.workbench.formal_model_calls import (
+                FormalModelCalls,
+                bind_model_intent,
+            )
+            from app.domain.workbench.formal_model import model_intent_digest
 
-        if (
-            context.identity != call["digest"]
-            or host_intent_digest(intent) != context.identity
-        ):
+            bind_model_intent(
+                context, await FormalModelCalls(svc).existing_model(owner, call)
+            )
+            approved_digest = model_intent_digest(intent)
+        else:
+            approved_digest = host_intent_digest(intent)
+
+        if context.identity != call["digest"] or approved_digest != context.identity:
             raise CapabilityError(
                 "Function registration, approval or data scope changed"
             )
@@ -122,9 +142,11 @@ async def check_formal_dispatch(svc, owner, call, intent):
             raise CapabilityError("Formal conversation scope changed before dispatch")
     if host:
         task = await repo.get_task(host["task_id"], owner_actor_id=owner)
-        if (task.get("pack_snapshot") or {}).get("bindings") and intent.get(
-            "execution_kind"
-        ) != "formal_script":
+        if (
+            not registered_function
+            and (task.get("pack_snapshot") or {}).get("bindings")
+            and intent.get("execution_kind") != "formal_script"
+        ):
             from app.application.workbench.formal_host_calls import FormalHostCalls
 
             context = await FormalHostCalls(svc).context(

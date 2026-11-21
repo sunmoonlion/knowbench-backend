@@ -82,11 +82,6 @@ def authorize_operation(
         current = PLATFORM_TOOLS.get(registration.name)
         if current is None or current != registration:
             raise CapabilityError("Unregistered platform operation")
-    elif registration.source == "knowbase":
-        from app.application.workbench.data_relay import RELAYED
-
-        if registration.service != "knowbase-data" or registration.name not in RELAYED:
-            raise CapabilityError("Unregistered data operation")
     elif registration.source != "skill_script":
         raise CapabilityError("Unsupported operation adapter")
     return CallDecision(

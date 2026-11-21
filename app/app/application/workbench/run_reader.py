@@ -17,7 +17,7 @@ from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.data_function import DataFunction
-from app.application.workbench.data_relay import KnowbaseDataClient, run_ref
+from app.application.workbench.scoped_data_functions import KnowbaseDataClient, run_ref
 from app.application.workbench.tokens import TokenIssuer
 from app.domain.workbench import compute as calc
 from app.domain.workbench.errors import (

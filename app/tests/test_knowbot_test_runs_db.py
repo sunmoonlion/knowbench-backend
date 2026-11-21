@@ -1524,8 +1524,8 @@ async def test_a_case_lists_pinned_inputs_with_its_test_set_grant(db):
 
     from test_service_function_management_db import input_listing_revision
 
-    from app.application.workbench.data_relay import DataRelay
     from app.application.workbench.records import ProjectRecords
+    from app.application.workbench.scoped_data_functions import ScopedDataFunctions
     from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
     from app.application.workbench.tool_registry import registered_functions
     from app.infrastructure.workbench.service_functions import register_revision
@@ -1557,7 +1557,7 @@ async def test_a_case_lists_pinned_inputs_with_its_test_set_grant(db):
         kb = DataService()
         async with db() as s:
             repo = WorkbenchRepository(s)
-            relay = DataRelay(
+            relay = ScopedDataFunctions(
                 ProjectRecords(repo, owner_actor_id=str(task["owner_actor_id"])),
                 kb,
                 TokenIssuer(generate_private_key_pem()),

@@ -386,7 +386,6 @@ async def list_capabilities(
             {"url": url, "authentication": ["none", "bearer"]}
             for url in svc.remote.allowed_urls
             if url not in svc.oauth.urls
-            and (not svc.knowbase_reader or url != svc.knowbase_reader.url)
         ]
         + [
             {
@@ -397,12 +396,7 @@ async def list_capabilities(
             }
             for p in svc.oauth.providers.values()
             if svc.cipher is not None
-        ]
-        + (
-            [{"url": svc.knowbase_reader.url, "authentication": ["none"]}]
-            if svc.knowbase_reader
-            else []
-        ),
+        ],
         "skill_formats": ["instruction-markdown", "skill-package-zip"],
         "runtime_enabled": bool(svc.runtime_url),
         "script_execution_enabled": svc.script_executor is not None,
@@ -722,7 +716,7 @@ async def approve_knowbase_read(
         if not datetime.now(UTC) < expiry <= request["expires_at"]:
             raise Forbidden("Consent expiry exceeds the pending read window")
         token = await user_token()
-        client = svc.knowbase_reader.client
+        client = svc.data_function.client
         if isinstance(body, ExistingParentApproval):
             grant_id = str(body.grant_id)
         else:

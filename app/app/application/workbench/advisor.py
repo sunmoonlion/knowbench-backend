@@ -480,7 +480,7 @@ class Advisor:
                     task_id
                     if self.records
                     and task.get("pack_source") in SNAPSHOT_SOURCES
-                    and knowbots.DATA_MCP_TOOLS & set(step.tools)
+                    and knowbots.EXPERT_DATA_TOOLS & set(step.tools)
                     else None
                 ),
                 ask_before_answers=answered["ask_before"],
@@ -1818,7 +1818,7 @@ class Advisor:
                 "the data tools: numbers still come from the data tools of this step.",
             ]
         if listed_data_task:
-            # 清单 v2 的专家（0048）：数据经工作台中继到 knowbase 数据 MCP，钉住的就是这件委托能读的
+            # 清单 v2 的专家（0048）：数据由工作台调用已登记的 KnowBase 函数，钉住的就是这件委托能读的
             parts += [
                 "",
                 "## The data of this task",

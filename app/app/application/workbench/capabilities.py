@@ -114,7 +114,6 @@ class Capabilities:
         business_reviews=(),
         resource_delegations=(),
         data_function=None,
-        knowbase_reader=None,
         task_outputs_url="",
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
@@ -130,14 +129,9 @@ class Capabilities:
         )
         self.formal_market = formal_market
         self.task_outputs_url = task_outputs_url
-        internal_urls = {
-            task_outputs_url,
-            knowbase_reader.url if knowbase_reader else "",
-        }
-        if self.oauth.urls & internal_urls:
+        if task_outputs_url in self.oauth.urls:
             raise ValueError("An OAuth provider cannot claim an internal service URL")
         self.data_function = data_function
-        self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
         self.instruction_service = instruction_service
         self.script_executor = script_executor
@@ -176,7 +170,13 @@ class Capabilities:
                 try:
                     policy = self.operations.require(
                         ToolRegistration.discover(
-                            self.oauth.protocols.get(spec.get("service_url"), "mcp"),
+                            "service_function"
+                            if runtime.get("formal_probe")
+                            and (spec.get("registered_source") or {}).get("kind")
+                            == "service_function"
+                            else self.oauth.protocols.get(
+                                spec.get("service_url"), "mcp"
+                            ),
                             spec.get("service_url", ""),
                             spec.get("implementation_tool", spec["tool"]),
                         )
@@ -219,15 +219,6 @@ class Capabilities:
             from app.application.workbench.task_output_reader import descriptor
 
             return [descriptor()]
-        if self.knowbase_reader and url == self.knowbase_reader.url:
-            if token:
-                raise CapabilityError(
-                    "KnowBase uses the authenticated workbench account"
-                )
-            subject = await self.repo.subject_of_actor(owner)
-            if not subject:
-                raise CapabilityError("The KnowBase account is unavailable")
-            return await self.knowbase_reader.discover(subject)
         return await self.remote.discover(url, token)
 
     async def create_connection(self, owner, body):
@@ -1545,6 +1536,10 @@ class Capabilities:
         runtime = selected["runtime"]
         spec = runtime.get("tools", {}).get(key)
         if spec is None:
+            if runtime.get("formal_probe"):
+                raise Forbidden(
+                    "Only the pinned candidate is available to this model probe"
+                )
             raise Forbidden("Tool is outside the selected scope")
         check_session_entry(key, spec, probe=bool(runtime.get("formal_probe")))
         if spec.get("execution_kind") == "formal_method_model":
@@ -2251,7 +2246,7 @@ class Capabilities:
                 # The runner reconciles the asynchronous Job into this same call.
                 return public_call(await self.repo.capability_call(owner, call_id))
             else:
-                if intent.get("execution_kind") == "formal_function":
+                if connection["kind"] == "service_function":
                     subject = await self.repo.subject_of_actor(owner)
                     if not subject or self.data_function is None:
                         raise CapabilityError(
@@ -2267,10 +2262,25 @@ class Capabilities:
                         sandbox=str(session["sandbox_id"]),
                         call_id=call_id,
                         arguments=intent["function_arguments"],
+                        method_read=knowbase_read,
                     )
                     result = {
                         "isError": False,
                         "structuredContent": receipt["output"],
+                        **(
+                            {
+                                "content": [
+                                    {
+                                        "type": "text",
+                                        "text": json.dumps(
+                                            receipt["output"], ensure_ascii=False
+                                        ),
+                                    }
+                                ]
+                            }
+                            if knowbase_read
+                            else {}
+                        ),
                         "function_receipt": {
                             "call_id": receipt["call_id"],
                             "digest": receipt["digest"],
@@ -2287,17 +2297,6 @@ class Capabilities:
 
                     await before_send()
                     result = await read_approved(self.repo, owner, call, intent)
-                elif (
-                    self.knowbase_reader
-                    and connection["detail"]["url"] == self.knowbase_reader.url
-                ):
-                    subject = await self.repo.subject_of_actor(owner)
-                    if not subject:
-                        raise CapabilityError("The KnowBase account is unavailable")
-                    await before_send()
-                    result = await self.knowbase_reader.call(
-                        subject, intent, knowbase_read
-                    )
                 elif connection["detail"].get("auth") == "oauth":
                     result = await self.oauth.call(
                         owner, connection, intent, before_send=before_send

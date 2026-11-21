@@ -26,6 +26,12 @@ def host_kind(source, *, instruction_leaf=False):
     return adapter
 
 
+def function_evidence_adapter(draft):
+    if "model" in draft.allowed_callers:
+        return "knowbench/formal-function-caller-probe/v1"
+    return "knowbench/formal-function-host/v1"
+
+
 def script_registration(draft):
     source = draft.source
     procedure = draft.definition.procedure

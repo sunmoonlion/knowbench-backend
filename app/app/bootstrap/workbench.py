@@ -481,33 +481,11 @@ def capability_service(repo):
     settings = get_settings()
     cipher = connection_keys(settings)
     data_function = None
-    if settings.workbench_token_signing_key and knowbase_v2().data_mcp_configured:
+    if settings.workbench_token_signing_key and knowbase_v2().function_configured:
         from app.application.workbench.data_function import DataFunction
         from app.application.workbench.tokens import TokenIssuer
 
         data_function = DataFunction(
-            knowbase_v2(),
-            TokenIssuer(
-                settings.workbench_token_signing_key,
-                issuer=settings.workbench_token_issuer,
-            ),
-        )
-    reader = None
-    read_urls = {
-        op.service_url
-        for op in settings.workbench_capability_operations
-        if op.tool_name == "read_method_input"
-    }
-    if (
-        read_urls
-        and settings.workbench_token_signing_key
-        and knowbase_v2().data_mcp_configured
-        and knowbase_v2().data_mcp_url in read_urls
-    ):
-        from app.application.workbench.knowbase_method_read import KnowbaseMethodReader
-        from app.application.workbench.tokens import TokenIssuer
-
-        reader = KnowbaseMethodReader(
             knowbase_v2(),
             TokenIssuer(
                 settings.workbench_token_signing_key,
@@ -521,7 +499,7 @@ def capability_service(repo):
     if (
         settings.workbench_skill_scripts_enabled
         and settings.workbench_token_signing_key
-        and knowbase_v2().data_mcp_configured
+        and knowbase_v2().function_configured
     ):
         from app.application.workbench.tokens import TokenIssuer
 
@@ -573,7 +551,6 @@ def capability_service(repo):
         web_origin=settings.web_frontend_base_url,
         runtime_url=settings.workbench_capability_mcp_url,
         data_function=data_function,
-        knowbase_reader=reader,
         task_outputs_url=(
             records_endpoint
             if settings.workbench_records_mcp_enabled

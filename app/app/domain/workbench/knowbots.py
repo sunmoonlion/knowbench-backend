@@ -9,7 +9,7 @@
 
 只认清单 v2（SDD 0043，decisions ⑭；v1 不留兼容，decisions ⑰）= 逻辑 + 作者挑选的数据
 （`bindings`，只带冻结的引用）；没有数据需求声明：委托第 0 步模型用 `request_data` 按问题
-提出要哪些数据、用户确认；读数据用 knowbase 数据 MCP 的工具（经工作台中继，0048），算数用
+提出要哪些数据、用户确认；读数据用 工作台按授权选择的 KnowBase 登记函数，算数用
 `compute`。
 """
 
@@ -35,8 +35,8 @@ KNOWBOT_ID = r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"
 VERSION = r"[1-9][0-9]{0,5}"
 REF = re.compile(rf"^({KNOWBOT_ID})@({VERSION})$")
 PROFILE = re.compile(rf"^{PREFIX}({KNOWBOT_ID})@({VERSION})$")
-# 分身能用的工具：knowbase 数据 MCP 的读工具（工作台中继，0048 第四节）、要数据、查主体、计算
-DATA_MCP_TOOLS: frozenset[str] = frozenset(
+# 分身能用的工具：可在当前步骤选择的 KnowBase 资料函数、要数据、查主体、计算
+EXPERT_DATA_TOOLS: frozenset[str] = frozenset(
     {
         "list_inputs",
         "read_input",
@@ -48,7 +48,7 @@ DATA_MCP_TOOLS: frozenset[str] = frozenset(
         "lookup",
     }
 )
-V2_TOOLS: frozenset[str] = DATA_MCP_TOOLS | {
+V2_TOOLS: frozenset[str] = EXPERT_DATA_TOOLS | {
     "compute",
     "request_data",
     "find_subject",

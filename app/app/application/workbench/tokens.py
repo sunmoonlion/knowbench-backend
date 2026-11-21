@@ -22,9 +22,6 @@ from joserfc.jwk import ECKey
 
 ALG = "ES256"
 RECORDS_AUDIENCE = "workbench-records"
-# knowbase 数据 MCP（0048 第三节）：工作台中继时一问一签，几分钟就过期
-DATA_AUDIENCE = "knowbase-data"
-DATA_TTL_SECONDS = 5 * 60
 AGENT_TTL_SECONDS = 30 * 24 * 3600  # 所有者 2026-10-09 定：仅代理 30 天
 WORKBENCH_SERVICE_TTL_SECONDS = (
     10 * 60
@@ -198,10 +195,18 @@ class TokenIssuer:
         return str(owner), str(claims.get("sandbox") or "")
 
     def function_ticket(
-        self, subject, sandbox, call_id, function_digest, arguments_digest
+        self,
+        subject,
+        sandbox,
+        call_id,
+        function_digest,
+        arguments_digest,
+        *,
+        method_read=None,
     ):
         return self._issue(
             {
+                **({"method_read": method_read} if method_read is not None else {}),
                 "aud": "knowbase-function",
                 "azp": "knowbench",
                 "sub": subject,
@@ -211,31 +216,6 @@ class TokenIssuer:
                 "arguments_digest": arguments_digest,
             },
             60,
-        )
-
-    def data_token(
-        self,
-        subject: str,
-        *,
-        sandbox: str,
-        tools: list[str],
-        ttl_seconds: int = DATA_TTL_SECONDS,
-        method_read: dict | None = None,
-    ) -> Issued:
-        """工作台中继 knowbase 数据 MCP 时当场签（0048 第三节）：`sub` 是用户（Casdoor
-        编号，knowbase 认的那个）、`azp` 是执行的应用、沙箱、只许这次调的工具。令牌只
-        证明「这个沙箱代这个用户、以 knowbench 名义在用」，能读什么由 knowbase 每次按
-        运行授权或会话范围核。"""
-        return self._issue(
-            {
-                **({"method_read": method_read} if method_read is not None else {}),
-                "aud": DATA_AUDIENCE,
-                "sub": subject,
-                "azp": "knowbench",
-                "sandbox": sandbox or "unknown",
-                "tools": list(tools),
-            },
-            ttl_seconds,
         )
 
 

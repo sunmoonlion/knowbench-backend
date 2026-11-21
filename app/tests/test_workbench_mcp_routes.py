@@ -20,7 +20,6 @@ from test_workbench_review_db import unbalanced
 from tool_invocation_support import ObservedPlatformTransport
 from tool_invocation_support import running_platform_world as world
 
-from app.application.workbench.data_relay import RELAYED
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.bootstrap.api import create_app
 from app.domain.workbench.native_functions import project_list_revision
@@ -354,38 +353,8 @@ class FakeDataMcp:
             "output": output,
         }
 
-    async def data_mcp(self, token, message):
-        import base64
-
-        body = token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(body + "=" * (-len(body) % 4)))
-        self.seen.append((claims, message))
-        if message["method"] == "tools/list":
-            return {
-                "jsonrpc": "2.0",
-                "id": message["id"],
-                "result": {
-                    "tools": [
-                        {"name": "not_relayed", "inputSchema": {"type": "object"}},
-                        *[
-                            {"name": name, "inputSchema": {"type": "object"}}
-                            for name in sorted(RELAYED)
-                        ],
-                    ]
-                },
-            }
-        name = message["params"]["name"]
-        structured = {"ok": True}
-        assert name not in {"read_facts", "list_inputs", "read_input"}
-        return {
-            "jsonrpc": "2.0",
-            "id": message["id"],
-            "result": {
-                "content": [{"type": "text", "text": json.dumps(structured)}],
-                "structuredContent": structured,
-                "isError": False,
-            },
-        }
+    async def data_mcp(self, *args):
+        raise AssertionError("Registered operations must not contact a data MCP")
 
 
 @pytest.mark.parametrize("fact_selected", [False, True])
@@ -396,7 +365,6 @@ async def test_the_data_tools_are_relayed_to_knowbase(
     ref，令牌当场签、只许这一个工具；全市场不要授权；没登记会话的对话读不了。"""
     from sqlalchemy import text
 
-    import app.application.workbench.data_relay as relay_module
     import app.interfaces.mcp.workbench_mcp as mcp
     from app.infrastructure.workbench.repository import WorkbenchRepository
 
@@ -439,7 +407,6 @@ async def test_the_data_tools_are_relayed_to_knowbase(
         )
     fake_kb = FakeDataMcp()
     monkeypatch.setattr(mcp, "knowbase_v2", lambda: fake_kb)
-    relay_module._tools_cache.clear()
     fake, runner, ids = await world(
         db,
         [SCOPE, PROFILE, unbalanced()],

@@ -12,7 +12,10 @@ from typing import Any, Literal
 from app.application.workbench.script_budget import case_script_cost
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import NotFound, WorkbenchError
-from app.domain.workbench.formal_adapter import live_registration
+from app.domain.workbench.formal_adapter import (
+    function_evidence_adapter,
+    live_registration,
+)
 from app.domain.workbench.formal_execution import (
     FORMAL_RUNTIME,
     FormalTaskSnapshot,
@@ -654,15 +657,15 @@ class FormalMethodCatalog:
                 == (
                     "knowbench/formal-instruction-host/v1"
                     if instruction
+                    else function_evidence_adapter(frozen.draft)
+                    if frozen.draft.source
+                    and frozen.draft.source.kind == "service_function"
                     else "knowbench/formal-mcp-caller-probe/v1"
                     if "model" in frozen.draft.allowed_callers
                     else "knowbench/formal-script-host/v1"
                     if frozen.draft.source
                     and frozen.draft.source.kind
                     in ("skill_script", "registered_script")
-                    else "knowbench/formal-function-host/v1"
-                    if frozen.draft.source
-                    and frozen.draft.source.kind == "service_function"
                     else "knowbench/formal-mcp-host/v1"
                 )
             )

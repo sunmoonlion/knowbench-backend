@@ -317,12 +317,18 @@ class FormalMethodExecutionRequest(Strict):
                 or (
                     p.implementation.kind
                     in ("skill_script", "registered_script", "service_function")
+                    and not (
+                        p.implementation.kind == "service_function"
+                        and p.implementation.source == "knowbase"
+                        and p.implementation.entry == "read_method_input"
+                    )
                     and self.draft.allowed_callers != ("host",)
                 )
                 or p.max_model_turns != 0
             ):
                 raise ValueError(
-                    "Execution supports zero-turn MCP or host-only scripts and service functions"
+                    "Use a zero-turn implementation with a permitted caller; "
+                    "scripts and ordinary service functions are host-only"
                 )
         else:
             plan = unique_plan(self.draft.definition)

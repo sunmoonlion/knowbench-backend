@@ -12,7 +12,7 @@ from app.domain.workbench.tool_registry import ToolRegistration
 PROJECT_LIST = "list_project_conversations"
 BINDINGS = {
     PROJECT_LIST: ("knowbench", 1),
-    **{name: ("knowbase", 1) for name in DATA_QUERIES},
+    **{name: ("knowbase", 1) for name in DATA_QUERIES if name != "read_method_input"},
 }
 
 
@@ -72,7 +72,9 @@ def workbench_data_descriptor(spec: dict[str, Any]) -> dict[str, Any]:
         props["task"] = _TASK
     if had_session:
         props["conversation"] = _CONVERSATION
-    required = [r for r in schema.get("required") or [] if r != "session"]
+    required = [
+        "conversation" if r == "session" else r for r in schema.get("required") or []
+    ]
     schema["required"] = ["task" if r == "run" else r for r in required]
     if not schema["required"]:
         schema.pop("required")

@@ -1,15 +1,8 @@
-"""工作台的工具服务：专家读本项目里别的对话与底稿（PRD/apps/investment.md 7.4），
-专家读用户的数据（knowbase 数据 MCP 中继，0048）、计算（SDD 0030 §3.2）。
+"""工作台向 Codex 暴露的 Streamable HTTP 工具入口。
 
-Streamable HTTP，只用 JSON 响应，不开流。和知识服务的工具并列，由沙箱里的 Codex 调用。
-- 鉴权：`Authorization: Bearer <令牌>`，令牌由工作台签发、工作台自己验，绑定用户；
-- 项目、计算的工具都要带 `task`（委托编号，专家每一步的说明里给）。能读哪个项目、
-  现在能不能读，每次调用按这个委托重新核对；对话里读数据带对话编号（这一轮的说明里给）；
-- 只读：没有改用户东西的工具。`compute` 只把算过的记进委托的计算记录（数值验收按它回查）。
-- 读数据：knowbase 数据 MCP 的读工具照它的定义挂在这里（工具层中继，
-  `data_relay.py`），带 `task` 或 `conversation`；第 0 步与运行中用 `request_data` 提出要
-  什么（decisions ⑭），列进用户的确认清单，任务在步骤边界停下等确认；`find_subject`
-  按名字查证券代码。
+资料操作从方法技能管理中心查可见版本。按聊天、工作或当前专家步骤核权后，
+工作台将会话或委托换成资料授权引用，签发只覆盖本次调用的票据，交 KnowBase 执行。
+项目、计算和资料请求沿各自的工作台操作执行。
 """
 
 from __future__ import annotations
@@ -26,13 +19,13 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workbench.calls import CallLedger
-from app.application.workbench.data_relay import RELAYED, DataRelay
 from app.application.workbench.expert_data import find_subject, request_data
 from app.application.workbench.find_expert import find_expert
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.method_tools import MethodToolGuard
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_reader import RunReader
+from app.application.workbench.scoped_data_functions import ScopedDataFunctions
 from app.application.workbench.tokens import TokenIssuer
 from app.application.workbench.tool_registry import (
     PLATFORM_TOOLS,
@@ -53,7 +46,6 @@ from app.domain.workbench.native_functions import (
     PROJECT_LIST,
 )
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
-from app.domain.workbench.tool_registry import ToolRegistry
 from app.domain.workbench.tool_schema import schema_validator
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -160,7 +152,7 @@ async def handle(
     *,
     owner: str,
     per_minute: int,
-    relay: DataRelay | None = None,
+    relay: ScopedDataFunctions | None = None,
     guard: MethodToolGuard | None = None,
 ) -> dict[str, Any] | None:
     method = message.get("method")
@@ -189,12 +181,11 @@ async def handle(
         return _ok(mid, {})
     if method == "tools/list":
         try:
-            data_tools = await relay.tools() if relay is not None else []
             functions = await registered_functions(
                 records.repo, data_available=bool(relay and relay.available)
             )
             tools = platform_catalog(
-                data_tools, [reg for _, reg in functions.values()]
+                [reg for _, reg in functions.values()]
             ).descriptors()
         except WorkbenchError as exc:
             return _err(mid, -32003, exc.message)
@@ -203,8 +194,7 @@ async def handle(
         return None if mid is None else _err(mid, -32601, f"method not found: {method}")
     name = str(params.get("name") or "")
     args = params.get("arguments") or {}
-    relayed = relay is not None and name in RELAYED
-    if name not in PLATFORM_TOOLS and name not in BINDINGS and not relayed:
+    if name not in PLATFORM_TOOLS and name not in BINDINGS:
         return _err(mid, -32602, f"unknown tool: {name}")
     if not isinstance(args, dict):
         return _err(mid, -32602, "arguments must be an object")
@@ -240,11 +230,6 @@ async def handle(
                         "Function is not registered for native execution"
                     )
                 function, registration = functions[name]
-            elif relayed:
-                assert relay is not None
-                registration = ToolRegistry.resolve(
-                    "knowbase", "knowbase-data", await relay.tools(), name
-                )
             else:
                 registration = PLATFORM_TOOLS[name]
             receipt, fresh = await ledger.begin(
@@ -262,7 +247,7 @@ async def handle(
             log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
             return _tool_error(mid, exc.message)
     response, status = await dispatch(
-        records, mid, name, args, relay, relayed, function=function, receipt=receipt
+        records, mid, name, args, relay, function=function, receipt=receipt
     )
     if receipt is not None:
         assert ledger is not None
@@ -279,43 +264,8 @@ async def handle(
     return response
 
 
-async def dispatch(
-    records, mid, name, args, relay, relayed, *, function=None, receipt=None
-):
+async def dispatch(records, mid, name, args, relay, *, function=None, receipt=None):
     try:
-        if relayed:
-            response = await relay.call(mid, name, args)
-            if not isinstance(response, dict) or ("error" in response) == (
-                "result" in response
-            ):
-                raise ValueError("invalid MCP result")
-            if "error" in response:
-                if (
-                    not isinstance(response["error"], dict)
-                    or type(response["error"].get("code")) is not int
-                    or not isinstance(response["error"].get("message"), str)
-                ):
-                    raise ValueError("invalid MCP error")
-                status = "failed"
-            else:
-                result = response["result"]
-                if not isinstance(result, dict) or not isinstance(
-                    result.get("content"), list
-                ):
-                    raise ValueError("invalid MCP tool result")
-                status = "failed" if result.get("isError") else "succeeded"
-            if (
-                len(
-                    json.dumps(response, ensure_ascii=False, allow_nan=False).encode(
-                        "utf-8"
-                    )
-                )
-                > TOOL_RESULT_MAX_BYTES
-            ):
-                return _tool_error(
-                    mid, "This result is too large; ask for a smaller part."
-                ), "unknown"
-            return response, status
         if name in BINDINGS:
             current = (
                 await registered_functions(
@@ -429,7 +379,7 @@ async def rpc(
     except ValueError:
         return JSONResponse(_err(None, -32700, "parse error"), status_code=400)
     records = ProjectRecords(workbench_store(session), owner_actor_id=owner)
-    relay = DataRelay(records, knowbase_v2(), issuer, sandbox=sandbox)
+    relay = ScopedDataFunctions(records, knowbase_v2(), issuer, sandbox=sandbox)
     guard = MethodToolGuard(
         records.repo,
         owner=owner,

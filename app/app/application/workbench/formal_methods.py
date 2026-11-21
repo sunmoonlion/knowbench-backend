@@ -12,6 +12,7 @@ from typing import Any
 from app.application.workbench.registry_catalog import SceneRegistry
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden, NotFound, RuntimeCapabilityGap
+from app.domain.workbench.formal_adapter import function_evidence_adapter
 from app.domain.workbench.formal_execution import validate_values
 from app.domain.workbench.formal_method_admission_generated import (
     CONTRACT,
@@ -718,10 +719,10 @@ class FormalMethods:
                     frozen.validation.execution is None
                     or frozen.visibility != "private"
                     or (run.get("execution_evidence") or {}).get("adapter")
-                    != "knowbench/formal-function-host/v1"
+                    != function_evidence_adapter(frozen.draft)
                 ):
                     raise Forbidden(
-                        "Function registration requires private host function execution evidence"
+                        "Function registration requires private function execution evidence for the declared callers"
                     )
             if frozen.draft.source and frozen.draft.source.is_instruction:
                 if (

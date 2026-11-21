@@ -75,7 +75,7 @@ class ScriptedAppServer:
         elif m == "thread/unsubscribe":
             await send({"id": rid, "result": {"status": "unsubscribed"}})
         elif m == "mcpServerStatus/list":
-            from app.domain.workbench.knowbots import DATA_MCP_TOOLS
+            from app.domain.workbench.knowbots import EXPERT_DATA_TOOLS
 
             await send(
                 {
@@ -87,7 +87,7 @@ class ScriptedAppServer:
                                 "runtimeStatus": "connected",
                                 "tools": {
                                     n: {"name": n, "inputSchema": {}}
-                                    for n in DATA_MCP_TOOLS
+                                    for n in EXPERT_DATA_TOOLS
                                 },
                             }
                         ],

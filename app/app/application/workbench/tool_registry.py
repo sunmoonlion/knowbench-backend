@@ -95,17 +95,8 @@ async def registered_functions(repo, *, data_available, name=None):
     return result
 
 
-def platform_catalog(data_tools: list[dict], functions=()) -> ToolRegistry:
-    return ToolRegistry(
-        [
-            *functions,
-            *PLATFORM_TOOLS.values(),
-            *(
-                ToolRegistration.discover("knowbase", "knowbase-data", tool)
-                for tool in data_tools
-            ),
-        ]
-    )
+def platform_catalog(functions=()) -> ToolRegistry:
+    return ToolRegistry([*functions, *PLATFORM_TOOLS.values()])
 
 
 def mcp_catalog(url: str, tools: list[dict], *, protocol="mcp") -> ToolRegistry:

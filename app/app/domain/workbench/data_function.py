@@ -12,6 +12,11 @@ QUERY_PERMISSIONS = {
     "read_facts": "facts.read",
     "list_inputs": "inputs.list",
     "read_input": "inputs.read",
+    "lookup": "materials.lookup",
+    "describe_items": "vocabulary.read",
+    "search_evidence": "evidence.search",
+    "list_library": "library.list",
+    "read_method_input": "method.inputs.read",
 }
 DATA_QUERIES = frozenset(QUERY_PERMISSIONS)
 
@@ -24,7 +29,7 @@ def destination(name):
 
 def require_data_source(source):
     if (
-        source.entry == "read_input"
+        source.entry in {"read_input", "lookup", "describe_items", "list_library"}
         or source.entry not in DATA_QUERIES
         or (
             source.kind,
@@ -52,15 +57,15 @@ def descriptor(revision):
         )
     schema = deepcopy(revision.contract.input_schema)
     # Only the host may translate the approved scope into the provider's actual grant.
-    if (
-        not isinstance(schema.get("properties"), dict)
-        or "scope" not in schema["properties"]
+    if not isinstance(schema.get("properties"), dict) or (
+        revision.name != "read_method_input" and "scope" not in schema["properties"]
     ):
         raise CapabilityError("Data query requires a registered scope argument")
     for name in ("run", "session"):
         schema["properties"].pop(name, None)
     schema["additionalProperties"] = False
-    schema["required"] = sorted(set(schema.get("required", [])) | {"scope"})
+    if revision.name != "read_method_input":
+        schema["required"] = sorted(set(schema.get("required", [])) | {"scope"})
     return {
         "name": revision.name,
         "description": revision.contract.description,

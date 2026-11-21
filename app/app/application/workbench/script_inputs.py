@@ -5,8 +5,8 @@ import hashlib
 import json
 
 from app.application.workbench.data_function import DataFunction
-from app.application.workbench.data_relay import forward_arguments
 from app.application.workbench.records import ProjectRecords
+from app.application.workbench.scoped_data_functions import forward_arguments
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.script_contract_generated import (
     MAX_INPUT_BYTES,

@@ -12,7 +12,7 @@ from app.application.ports.workbench import AppServerConnection, WorkbenchStore
 from app.application.workbench.catalog import SNAPSHOT_SOURCES
 from app.application.workbench.execution_plan import execution_for_task
 from app.application.workbench.method_tools import SERVER
-from app.domain.workbench.knowbots import DATA_MCP_TOOLS
+from app.domain.workbench.knowbots import EXPERT_DATA_TOOLS
 from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.states import TaskState, Wheel
 
@@ -94,7 +94,7 @@ async def declared_data_tools(repo: WorkbenchStore, thread_id: str) -> frozenset
     step = view.pack.step(int(task["current_step"])) if view else None
     if step is None or step.step_id != attempt["step_id"]:
         return frozenset()
-    return DATA_MCP_TOOLS & frozenset(step.tools)
+    return EXPERT_DATA_TOOLS & frozenset(step.tools)
 
 
 async def unavailable_data_tools(

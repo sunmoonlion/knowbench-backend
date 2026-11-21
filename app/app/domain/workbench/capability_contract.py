@@ -228,6 +228,15 @@ class ModelProbeCallDetail(CommonCallDetail):
     runtime: str
 
 
+class RegisteredFunctionProbeDetail(CommonCallDetail):
+    execution_kind: Literal["formal_probe"]
+    source_asset_id: None
+    connection_id: None
+    registered_source: FormalMethodSource
+    selection_revision: int
+    runtime: str
+
+
 class FormalModelCallDetail(CommonCallDetail):
     execution_kind: Literal["formal_method_model"]
     source_asset_id: UUID
@@ -264,6 +273,7 @@ class Call(Strict):
         | FormalFunctionDetail
         | FormalScriptDetail
         | ModelProbeCallDetail
+        | RegisteredFunctionProbeDetail
         | FormalModelCallDetail
     )
 
