@@ -6,7 +6,7 @@ from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.tool_registry import ToolRegistration
 
 # Logical permission destination; transport resolves only the configured internal KnowBase.
-FACT_QUERIES = frozenset({"query_facts", "query_metric"})
+FACT_QUERIES = frozenset({"query_facts", "query_metric", "read_facts"})
 
 
 def destination(name):

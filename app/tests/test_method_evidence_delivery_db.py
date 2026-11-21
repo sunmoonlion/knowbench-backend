@@ -91,6 +91,31 @@ class DataPort:
     def __init__(self):
         self.issuer = TokenIssuer(generate_private_key_pem())
         self.calls = []
+        self.read_ids = []
+
+    async def invoke_fact_query(self, name, token, body):
+        claims = verify(
+            token,
+            self.issuer.public_pem(),
+            audience="knowbase-function",
+            issuer=self.issuer.issuer,
+        )
+        args = body["arguments"]
+        assert name == "read_facts" and args == {
+            "run": GRANT,
+            "scope": "run",
+            "refs": [FACT],
+        }
+        assert (
+            claims["sub"] == "synthetic-author" and claims["call_id"] == body["call_id"]
+        )
+        self.calls.append((name, args))
+        self.read_ids.append(body["call_id"])
+        return {
+            "call_id": body["call_id"],
+            "digest": body["digest"],
+            "output": {"facts": [{"ref": FACT, "value": "1500.25"}], "not_found": []},
+        }
 
     async def data_mcp(self, token, message):
         claims = verify(
@@ -104,12 +129,8 @@ class DataPort:
         assert claims["sub"] == "synthetic-author" and claims["tools"] == [name]
         assert args["run"] == GRANT
         self.calls.append((name, args))
-        if name == "read_facts":
-            assert args["refs"] == [FACT]
-            content = {"facts": [{"ref": FACT, "value": "1500.25"}]}
-        else:
-            assert name == "read_input" and args["material_id"] == "synthetic-report"
-            content = {"pages": [{"page": 3, "text": PAGE}]}
+        assert name == "read_input" and args["material_id"] == "synthetic-report"
+        content = {"pages": [{"page": 3, "text": PAGE}]}
         return {
             "jsonrpc": "2.0",
             "id": message["id"],
@@ -139,7 +160,27 @@ class Files:
 async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
     db, tmp_path, fault, batch_mode
 ):
+    from test_service_function_management_db import revision
+
+    from app.infrastructure.workbench.service_functions import register_revision
+
     tid, sid = await task(db)
+    async with db() as session:
+        await register_revision(
+            session,
+            revision(
+                name="read_facts",
+                scenes=["step"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "scope": {"type": "string"},
+                        "refs": {"type": "array"},
+                        "run": {"type": "string"},
+                    },
+                },
+            ),
+        )
     await patch_catalog(db, tid, evidence_contracts)
     async with db() as session:
         repo = WorkbenchRepository(session)
@@ -278,6 +319,17 @@ async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
         final = await repo.get_artifact(task_id=tid, name=output_name("report_1"))
         handback = await repo.get_artifact(task_id=tid, name="handback")
         if fault is None:
+            calls = await repo.list_task_calls(OWNER, tid)
+            reads = [
+                c
+                for c in calls
+                if c["detail"].get("identity_basis") == "host_task_data_read"
+            ]
+            assert len(set(port.read_ids)) == len(port.read_ids) >= 2
+            assert {c["detail"]["function_receipt"]["call_id"] for c in reads} == set(
+                port.read_ids
+            )
+            assert all(c["status"] == "succeeded" and c["attempt_id"] for c in reads)
             assert final["workspace_path"] in files.checked
             assert (
                 (tmp_path / final["workspace_path"])

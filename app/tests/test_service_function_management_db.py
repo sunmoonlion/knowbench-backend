@@ -26,12 +26,12 @@ from core.config import Settings
 BASE = "/api/admin/v1/method-skill-center/functions"
 
 
-def revision(provider="knowbase", version=1, **changes):
+def revision(provider="knowbase", version=1, *, name="query_facts", **changes):
     return FunctionRevision.build(
         provider,
-        "query_facts",
+        name,
         version,
-        ServiceFunction.model_validate(CONTRACT | changes),
+        ServiceFunction.model_validate(CONTRACT | {"operation": name} | changes),
     )
 
 

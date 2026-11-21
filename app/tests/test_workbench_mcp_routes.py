@@ -322,10 +322,17 @@ class FakeDataMcp:
 
         claims = jwt.decode(token, ISSUER.key).claims
         self.function_call = (claims, body)
+        output = {"facts": []}
+        if name == "read_facts":
+            assert body["arguments"]["refs"] == [self.FACT]
+            output = {
+                "facts": [{"ref": self.FACT, "value": "1500.000000"}],
+                "not_found": [],
+            }
         return {
             "call_id": body["call_id"],
             "digest": body["digest"],
-            "output": {"facts": []},
+            "output": output,
         }
 
     async def data_mcp(self, token, message):
@@ -359,11 +366,7 @@ class FakeDataMcp:
             }
         name = message["params"]["name"]
         structured = {"ok": True}
-        if name == "read_facts":
-            structured = {
-                "facts": [{"ref": self.FACT, "value": "1500.000000"}],
-                "not_found": [],
-            }
+        assert name != "read_facts"
         return {
             "jsonrpc": "2.0",
             "id": message["id"],
@@ -406,6 +409,21 @@ async def test_the_data_tools_are_relayed_to_knowbase(
     )
     async with db() as session:
         await register_revision(session, fact)
+        await register_revision(
+            session,
+            revision(
+                name="read_facts",
+                scenes=["step"],
+                input_schema={
+                    "type": "object",
+                    "properties": {
+                        "scope": {"type": "string"},
+                        "refs": {"type": "array"},
+                        "run": {"type": "string"},
+                    },
+                },
+            ),
+        )
     fake_kb = FakeDataMcp()
     monkeypatch.setattr(mcp, "knowbase_v2", lambda: fake_kb)
     relay_module._tools_cache.clear()
@@ -559,7 +577,16 @@ async def test_the_data_tools_are_relayed_to_knowbase(
             result = computed.json()["result"]
             assert result["isError"] is False, result
             assert result["structuredContent"]["value"] == "3000"
-            assert fake_kb.seen[-1][1]["params"]["name"] == "read_facts"
+            claims, body = fake_kb.function_call
+            assert body["arguments"] == {
+                "scope": "run",
+                "run": "knowbench:run:relay-1",
+                "refs": [FakeDataMcp.FACT],
+            }
+            assert (
+                claims["aud"] == "knowbase-function"
+                and claims["call_id"] == body["call_id"]
+            )
 
             # Regression: real reconciliation calls used A/L/E; keep symbols as written.
             upper = await http.post(
@@ -581,7 +608,44 @@ async def test_the_data_tools_are_relayed_to_knowbase(
             assert upper_result["isError"] is False, upper_result
             assert upper_result["structuredContent"]["value"] == "-1500"
             assert upper_result["structuredContent"]["formula"] == "A - (L + E)"
-            assert fake_kb.seen[-1][1]["params"]["name"] == "read_facts"
+            async with db() as session:
+                reads = await WorkbenchRepository(session).list_task_calls(
+                    OWNER, ids["task"]
+                )
+                [read] = [
+                    row
+                    for row in reads
+                    if row["id"] == fake_kb.function_call[1]["call_id"]
+                ]
+                assert read["parent_call_id"] == upper_result["_meta"]["call_id"]
+                assert read["status"] == "succeeded"
+                assert (
+                    read["detail"]["operation"]["registered_source"]["name"]
+                    == "read_facts"
+                )
+                assert read["detail"]["function_receipt"]["call_id"] == read["id"]
+                await session.execute(
+                    text(
+                        "DELETE FROM workbench_registry_service_functions WHERE name='read_facts'"
+                    )
+                )
+                await session.commit()
+            last_read = fake_kb.function_call
+            refused = await http.post(
+                URL,
+                json=tool(
+                    "compute",
+                    task=ids["task"],
+                    name="sum",
+                    expression="A",
+                    inputs={"A": FakeDataMcp.FACT},
+                ),
+                headers=bearer(),
+            )
+            assert (
+                refused.json()["result"]["isError"]
+                and fake_kb.function_call == last_read
+            )
 
             async with db() as s, s.begin():  # 回到没有清单的委托
                 await s.execute(text("delete from workbench_task_resolution"))

@@ -99,7 +99,12 @@ async def exercise_function(
     slot = proc["inputs"]["to"]
     proc.update(
         implementation=pin(rev) | {"requirement_ids": [ACCESS["requirement_id"]]},
-        inputs={name: slot for name in arguments},
+        inputs={
+            name: slot | {"schema": rev.contract.input_schema["properties"][name]}
+            if name == "refs"
+            else slot
+            for name in arguments
+        },
         outputs={
             name: slot | {"schema": schema}
             for name, schema in rev.contract.output_schema["properties"].items()

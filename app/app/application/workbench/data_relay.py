@@ -1,19 +1,9 @@
-"""工作台 MCP 挂出 knowbase 数据 MCP 的读工具（SDD 0048，工具层中继）。
+"""工作台替调用者绑定 KnowBase 资料范围。
 
-沙箱里的 Codex 只连工作台 MCP（沙箱配置由平台的 provisioner 落，只认工作台这一个地址，
-不发 knowbase 的令牌——「用户的沙箱到不了平台的数」）。数据工具照 knowbase 数据 MCP 的
-定义列出来，只把 `run` / `session` 换成工作台的 `task` / `conversation`：
-
-- 带 `task`：先核这件委托是这个用户的、专家正在做（同读项目记录），换成 knowbase 认的
-  运行授权 ref（请专家时服务端生成、记在清单那一行的 `grant_ref`）；
-- 带 `conversation`：核这段对话是他的、在 knowbase 登记过会话、眼下不是专家在做（对话的
-  方向盘在用户手里），换成会话编号。委托步骤只认 `task`：工作台 MCP 的令牌只绑用户与沙箱，
-  分不出调用的是对话还是委托步骤，所以按对话这一头认——专家正在做的那段对话拒收
-  `conversation`，免得委托绕开这件委托的授权去读会话范围（独立审 10-30 第二轮）；
-- `scope=market`、`lookup`、`describe_items` 不要运行授权（全市场公开原件由开关管）。
-
-每次调用当场签一张几分钟有效的 `knowbase-data` 令牌（只许这一个工具），原样转给
-knowbase；能读什么由 knowbase 每次按授权核，工作台拿不到用户没授权过的数据。
+聊天和工作以 conversation 解析当前账号的资料会话，专家以 task 解析本次委托的
+运行授权。scope=market 由 KnowBase 核市场资格。run 和 session 只由宿主填写。
+已登记的事实函数使用绑定调用 ID、版本和参数的签名票据直接派发；其余中继读工具
+仍按操作签发数据 MCP 令牌。两条路径均在 KnowBase 执行时核对资料授权。
 """
 
 from __future__ import annotations
@@ -41,7 +31,7 @@ _tools_cache: OrderedDict[tuple, tuple[float, list[dict[str, Any]]]] = OrderedDi
 log = logging.getLogger(__name__)
 
 
-class KnowbaseDataMcp(Protocol):
+class KnowbaseDataClient(Protocol):
     async def invoke_fact_query(self, name: str, token: str, body: dict) -> dict: ...
 
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]: ...
@@ -62,7 +52,7 @@ class DataRelay:
     def __init__(
         self,
         records: ProjectRecords,
-        knowbase: KnowbaseDataMcp,
+        knowbase: KnowbaseDataClient,
         issuer: TokenIssuer,
         *,
         sandbox: str,
@@ -72,10 +62,11 @@ class DataRelay:
         self.knowbase = knowbase
         self.issuer = issuer
         self.sandbox = sandbox
-        # compute 取事实编号用（同一个 knowbase、同一个签发器）
+
+    def reader_for_call(self, parent_call_id):
         from app.application.workbench.run_reader import RunReader
 
-        self.reader = RunReader(knowbase, issuer)
+        return RunReader(self.knowbase, self.issuer, parent_call_id=parent_call_id)
 
     @property
     def available(self):

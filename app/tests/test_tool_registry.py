@@ -89,7 +89,7 @@ def test_accounts_share_definition_but_frozen_call_cannot_change_schema_or_tool(
 async def test_native_mcp_lists_the_same_registered_definitions_without_losing_hints():
     response = await handle(
         SimpleNamespace(
-            repo=SimpleNamespace(native_function_revisions=AsyncMock(return_value=[]))
+            repo=SimpleNamespace(scene_function_revisions=AsyncMock(return_value=[]))
         ),
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         owner="synthetic",
@@ -111,7 +111,7 @@ async def test_native_mcp_does_not_publish_colliding_data_definitions():
     )
     response = await handle(
         SimpleNamespace(
-            repo=SimpleNamespace(native_function_revisions=AsyncMock(return_value=[]))
+            repo=SimpleNamespace(scene_function_revisions=AsyncMock(return_value=[]))
         ),
         {"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         owner="synthetic",

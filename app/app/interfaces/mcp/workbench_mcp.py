@@ -357,7 +357,14 @@ async def dispatch(
                 )
         else:
             result = jsonable_encoder(
-                await call(records, name, args, relay.reader if relay else None)
+                await call(
+                    records,
+                    name,
+                    args,
+                    relay.reader_for_call(receipt["id"])
+                    if relay and receipt and name == "compute"
+                    else None,
+                )
             )
         rendered = json.dumps(result, ensure_ascii=False, allow_nan=False)
     except WorkbenchError as exc:

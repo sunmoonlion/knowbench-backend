@@ -88,7 +88,7 @@ async def registered_functions(repo, *, data_available, name=None):
     bindings = {n: pin for n, pin in BINDINGS.items() if name is None or name == n}
     if not data_available:
         bindings = {n: pin for n, pin in bindings.items() if pin[0] != "knowbase"}
-    rows = await repo.native_function_revisions(bindings)
+    rows = await repo.scene_function_revisions(bindings, scene="native")
     result = {}
     for revision in rows:
         result[revision.name] = (revision, native_registration(revision))

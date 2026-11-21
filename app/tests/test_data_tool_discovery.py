@@ -51,7 +51,7 @@ def relay_for(kb, *, subject="alice", sandbox="sandbox-a", issuer=ISSUER):
         owner=subject,
         repo=SimpleNamespace(
             subject_of_actor=AsyncMock(return_value=subject),
-            native_function_revisions=AsyncMock(return_value=[]),
+            scene_function_revisions=AsyncMock(return_value=[]),
         ),
     )
     return DataRelay(records, kb, issuer, sandbox=sandbox)
