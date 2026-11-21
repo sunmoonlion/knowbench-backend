@@ -34,6 +34,17 @@ class FormalExecution:
                 (task.get("pack_snapshot") or {}).get("draft", {}).get("definition", {})
             )
             procedure = definition.get("procedure", {})
+        if task.get("pack_source") == "registry-source":
+            from app.application.workbench.source_tasks import drive_script
+
+            if task["pack_snapshot"]["source"]["kind"] == "instruction":
+                if self.instructions is not None:
+                    await self.instructions.drive(task_id)
+            elif self.capabilities is not None:
+                async with self.stores() as repo:
+                    await drive_script(self.capabilities(repo), task_id)
+            async with self.stores() as repo:
+                return (await repo.get_task(task_id))["state"]
         if procedure.get("kind") == "orchestration":
             from app.application.workbench.formal_orchestration_execution import (
                 FormalOrchestrationExecution,

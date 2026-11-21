@@ -101,7 +101,14 @@ class InstructionRunner:
         async with self.stores() as repo:
             async with repo.transaction():
                 svc = await self.service(repo, owner)
-            attempt = await svc.open(owner, task_id, caller="knowlab", managed=True)
+            attempt = await svc.open(
+                owner,
+                task_id,
+                caller="registry-source"
+                if task.get("pack_source") == "registry-source"
+                else "knowlab",
+                managed=True,
+            )
             return owner, str(attempt)
 
     async def gateway(self, owner, task_id, attempt_id):
@@ -249,21 +256,38 @@ class InstructionRunner:
                         raise CapabilityError(
                             "Instruction output lacks its authorized usage receipt"
                         )
-                    snapshot = snapshot_for_task(task)
-                    if snapshot.dependencies:
-                        from app.application.workbench.formal_orchestration_execution import (
-                            step_context,
+                    if task.get("pack_source") == "registry-source":
+                        from app.application.workbench.source_tasks import active_source
+                        from app.domain.workbench.formal_method_execution_generated import (
+                            bounded_json,
                         )
 
-                        _, _, frozen, _ = await step_context(repo, task, attempt)
-                        step = frozen.draft.definition.procedure
+                        await active_source(repo, str(task["owner_actor_id"]), task)
+                        bounded_json(outputs)
+                        if (
+                            not isinstance(outputs, dict)
+                            or set(outputs) != {"result"}
+                            or not isinstance(outputs["result"], str)
+                        ):
+                            raise CapabilityError(
+                                "Unexpected registered instruction output"
+                            )
                     else:
-                        step = snapshot.draft.definition.procedure
-                    if step.kind != "direct":
-                        raise CapabilityError(
-                            "Instruction output requires a direct method"
-                        )
-                    outputs = validate_values(step.outputs, outputs)
+                        snapshot = snapshot_for_task(task)
+                        if snapshot.dependencies:
+                            from app.application.workbench.formal_orchestration_execution import (
+                                step_context,
+                            )
+
+                            _, _, frozen, _ = await step_context(repo, task, attempt)
+                            step = frozen.draft.definition.procedure
+                        else:
+                            step = snapshot.draft.definition.procedure
+                        if step.kind != "direct":
+                            raise CapabilityError(
+                                "Instruction output requires a direct method"
+                            )
+                        outputs = validate_values(step.outputs, outputs)
                     bill = refs.get("instruction_usage")
                     if bill is None:
                         # The gateway may still be delivering its durable receipt.
@@ -383,7 +407,13 @@ class InstructionRunner:
                     )
                     if str(task.get("active_attempt_id")) != attempt_id:
                         return
-                    quote, job = await svc.authority(owner, task, "knowlab")
+                    quote, job = await svc.authority(
+                        owner,
+                        task,
+                        "registry-source"
+                        if task.get("pack_source") == "registry-source"
+                        else "knowlab",
+                    )
                 if quote != refs["instruction_quote"]:
                     raise CapabilityError("Instruction route changed")
             request = self.units.for_attempt(attempt)

@@ -2100,6 +2100,11 @@ class Capabilities:
         async with self.repo.transaction():
             await self._locked_call_session(owner, call)
             current = await self.repo.capability_call(owner, call["id"], lock=True)
+            if current["detail"].get("execution_kind") == "registry_script":
+                from app.application.workbench.source_tasks import check_script_call
+
+                await check_script_call(self, owner, current)
+                return
             selected = await self.repo.capability_selection(
                 owner, call["session_id"], lock=True
             )
@@ -2313,7 +2318,7 @@ class Capabilities:
 
     async def cancel_script(self, owner, call_id):
         call = await self.repo.capability_call(owner, call_id)
-        if call["detail"].get("execution_kind") == "formal_script":
+        if call["detail"].get("execution_kind") in ("formal_script", "registry_script"):
             from app.application.workbench.formal_script_execution import request_stop
 
             await request_stop(self, owner, call)

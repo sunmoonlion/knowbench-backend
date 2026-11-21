@@ -409,7 +409,7 @@ class CapabilityRepositoryMixin:
         result = await self.session.execute(
             text("""SELECT c.* FROM workbench_calls c
             JOIN workbench_budget_ledger h ON h.script_call_id=c.id AND h.entry='reserve'
-            WHERE c.detail->>'execution_kind'='formal_script' AND (
+            WHERE c.detail->>'execution_kind' in ('formal_script','registry_script') AND (
               c.detail ? 'script_cleanup_pending' OR NOT EXISTS (
                 SELECT 1 FROM workbench_budget_ledger d WHERE d.script_call_id=c.id AND d.entry='consume'))
             ORDER BY c.updated_at,c.id""")

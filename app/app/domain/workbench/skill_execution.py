@@ -105,6 +105,22 @@ def public_call(call: dict) -> dict:
     copy["detail"]["result"] = public_result(
         copy["detail"].get("result"), str(copy["id"])
     )
+    if copy["detail"].get("execution_kind") == "registry_script":
+        detail = copy["detail"]
+        source = detail["source"]
+        detail.update(
+            revision=source["version"],
+            connection_name=source["name"],
+            account_label="",
+            purpose="registry-source",
+            arguments={"approval_digest": detail["approval_digest"]},
+            tool={
+                "name": source["name"],
+                "description": "",
+                "inputSchema": {"type": "object"},
+            },
+            approval_token="",  # Confirmation was bound to the task, not a pending tool interaction.
+        )
     return copy
 
 

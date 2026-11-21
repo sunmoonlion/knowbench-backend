@@ -29,6 +29,17 @@ class FormalMethodRepositoryMixin:
             {"owner": owner, **reference.model_dump(), "asset": asset_id},
         )
 
+    async def active_source_tasks(self, sandbox_ids):
+        rows = await self.session.scalars(
+            text("""SELECT t.id FROM workbench_tasks t JOIN workbench_sessions s
+            ON s.id=t.session_id AND s.active_task_id=t.id
+            WHERE t.pack_source='registry-source' AND s.sandbox_id=ANY(CAST(:sandboxes AS uuid[]))
+            AND t.state IN ('RECEIVED','VALIDATING','QUEUED','RUNNING')
+            AND NOT ((t.original_input->'client_context') ? 'queued_behind')"""),
+            {"sandboxes": list(sandbox_ids)},
+        )
+        return [str(task_id) for task_id in rows]
+
     async def direct_registrations(self, owner):
         rows = await self.session.execute(
             text("""
@@ -183,19 +194,26 @@ class FormalMethodRepositoryMixin:
                            WHEN c.origin='platform' THEN 'platform' ELSE 'runtime' END AS path,
                       c.source_asset_id AS asset_id, coalesce(c.detail#>'{formal_method,reference}',
                         c.detail#>'{formal_host,reference}', c.detail#>'{frozen,reference}') AS reference,
-                      coalesce(c.detail#>>'{tool,name}', c.kind) AS action, c.status, c.created_at AS at
+                      coalesce(c.detail#>>'{tool,name}', c.kind) AS action, c.status, c.created_at AS at, NULL::jsonb AS source
                FROM workbench_calls c JOIN workbench_sessions s ON s.id=c.session_id
                WHERE s.owner_actor_id=:owner AND c.owner_actor_id=:owner AND coalesce(s.origin,'') <> 'knowlab-test'
+                 AND c.detail->>'execution_kind' IS DISTINCT FROM 'registry_script'
                ORDER BY c.created_at DESC,c.id DESC LIMIT 40)
               UNION ALL
+              (SELECT 'task',t.session_id,t.id::text,'registered_source',NULL::uuid,NULL::jsonb,
+                t.pack_snapshot#>>'{source,name}',t.state,t.updated_at,t.pack_snapshot->'source'
+               FROM workbench_tasks t JOIN workbench_sessions s ON s.id=t.session_id
+               WHERE t.pack_source='registry-source' AND t.owner_actor_id=:owner AND s.owner_actor_id=:owner
+               ORDER BY t.updated_at DESC,t.id DESC LIMIT 40)
+              UNION ALL
               (SELECT 'observation', e.session_id, e.id::text, 'native', NULL::uuid, NULL::jsonb, cast(:native_items AS jsonb) ->> (e.payload#>>'{item,type}'),
-                      coalesce(e.payload#>>'{item,status}', e.event_type), e.created_at
+                      coalesce(e.payload#>>'{item,status}', e.event_type), e.created_at, NULL::jsonb
                FROM workbench_session_events e JOIN workbench_sessions s ON s.id=e.session_id
                WHERE s.owner_actor_id=:owner AND coalesce(s.origin,'') <> 'knowlab-test'
                  AND e.event_type IN ('item/started','item/completed') AND cast(:native_items AS jsonb) ? (e.payload#>>'{item,type}')
                ORDER BY e.created_at DESC,e.id DESC LIMIT 40)
               UNION ALL
-              (SELECT 'approval', a.session_id, a.id::text, 'native', NULL::uuid, NULL::jsonb, a.method, a.decision, a.created_at
+              (SELECT 'approval', a.session_id, a.id::text, 'native', NULL::uuid, NULL::jsonb, a.method, a.decision, a.created_at, NULL::jsonb
                FROM workbench_approval_log a JOIN workbench_sessions s ON s.id=a.session_id
                WHERE s.owner_actor_id=:owner AND coalesce(s.origin,'') <> 'knowlab-test'
                ORDER BY a.created_at DESC,a.id DESC LIMIT 40)

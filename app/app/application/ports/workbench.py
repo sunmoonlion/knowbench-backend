@@ -131,6 +131,7 @@ class AppServerConnector(Protocol):
 
 
 class WorkbenchStore(Protocol):
+    async def active_source_tasks(self, sandbox_ids: set[str]) -> list[str]: ...
     async def method_authorization(
         self, owner: str, call_id: str, *, lock: bool = False
     ) -> dict[str, Any] | None: ...

@@ -83,6 +83,12 @@ def pack_for_task(task: dict[str, Any]) -> ExpertPack | None:
 
 def expert_name(row: dict[str, Any]) -> str:
     """给用户看的专家名字。row 可以是整条委托，也可以是带 pack_source、pack_name 的列表行。"""
+    if row.get("pack_source") == "registry-source":
+        return str(
+            (row.get("pack_snapshot") or {}).get("source", {}).get("name")
+            or row.get("pack_name")
+            or "登记来源"
+        )
     if is_formal(row):
         snapshot = row.get("pack_snapshot") or {}
         title = (

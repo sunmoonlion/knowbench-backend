@@ -84,6 +84,7 @@ from app.domain.workbench.skill_installation import (
     SkillSourceRequest,
 )
 from app.domain.workbench.skill_package import SkillPackageCreate, SkillRead
+from app.domain.workbench.source_tasks import SourceTaskConfirmation, SourceTaskInput
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     _actor,
@@ -161,6 +162,43 @@ async def read_direct_source(
     response.headers["Cache-Control"] = "private, no-store"
     try:
         return await svc.repo.direct_revision(_actor(user), source_id, version, digest)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/workbench/sessions/{session_id}/registry-source-tasks/preview")
+async def preview_source_task(
+    session_id: UUID,
+    body: SourceTaskInput,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    from app.application.workbench.source_tasks import preview
+
+    try:
+        snap = await preview(svc, _actor(user), session_id, body)
+        return {
+            "source": snap.source,
+            "arguments": snap.arguments,
+            "quote": {k: v for k, v in snap.quote.items() if k != "credential_id"},
+            "budget_limit": snap.budget_limit,
+            "approval_digest": snap.task_columns()["pack_digest"],
+        }
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/workbench/sessions/{session_id}/registry-source-tasks")
+async def execute_source_task(
+    session_id: UUID,
+    body: SourceTaskConfirmation,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    from app.application.workbench.source_tasks import submit
+
+    try:
+        return await submit(svc, _actor(user), session_id, body)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 
@@ -785,9 +823,13 @@ async def script_artifact(
         call = await svc.repo.capability_call(_actor(user), str(call_id))
         result = call["detail"].get("result") or {}
         artifacts = result.get("artifacts", [])
-        if call["detail"].get(
-            "execution_kind"
-        ) != "skill_script" or not 0 <= index < len(artifacts):
+        kind = call["detail"].get("execution_kind")
+        if (
+            kind not in ("skill_script", "registry_script")
+            or kind == "registry_script"
+            and call["status"] != "succeeded"
+            or not 0 <= index < len(artifacts)
+        ):
             return Response(status_code=404)
         artifact = artifacts[index]
         return Response(

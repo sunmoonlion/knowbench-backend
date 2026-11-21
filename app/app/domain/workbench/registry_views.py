@@ -9,6 +9,7 @@ from pydantic import computed_field
 from app.domain.workbench.formal_adapter import DIRECT_HOST_ADAPTERS
 from app.domain.workbench.formal_method_admission_generated import Caller
 from app.domain.workbench.formal_method_generated import MethodRef, Strict
+from app.domain.workbench.registry_sources import RegisteredSource
 
 
 class InstallationEntry(Strict):
@@ -87,10 +88,13 @@ class RegistryInventory(Strict):
 
 
 class RegistryEvent(Strict):
-    kind: Literal["call", "observation", "approval"]
+    kind: Literal["call", "approval", "observation", "task"]
     session_id: UUID
     record_id: str
-    path: Literal["installed", "formal", "native", "platform", "runtime"]
+    path: Literal[
+        "installed", "formal", "native", "platform", "runtime", "registered_source"
+    ]
+    source: RegisteredSource | None = None
     asset_id: UUID | None
     reference: MethodRef | None
     action: str

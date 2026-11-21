@@ -2584,13 +2584,13 @@ class Runner:
         已取消）。确认停了才放行下一位；确认不了先占着项目，最多 TURN_HOLD_SECONDS（0034 §三.1、§三.2）。"""
         task_id = task["id"]
         from app.domain.workbench.formal_execution import (
-            is_formal_host,
             is_formal_model,
+            uses_host_driver,
         )
 
         async with self.stores() as repo:
             current = await repo.get_task(task_id)
-        if is_formal_host(current):
+        if uses_host_driver(current):
             await self._drive_formal(task_id)
             return
         leftover, stopped = None, False
@@ -2698,7 +2698,17 @@ class Runner:
                     await self._take_over(repo, sandbox_id)
                 lost = self.leased - held
                 self.leased = held
+                source_tasks = (
+                    await repo.active_source_tasks(held)
+                    if self.capabilities and held
+                    else []
+                )
                 commands = await repo.claim_commands(claimed_by=self.runner_id)
+        for task_id in source_tasks:
+            if not self._busy(task_id):
+                self.driving[task_id] = asyncio.create_task(
+                    self._drive_formal(task_id), name=f"drive:{task_id}"
+                )
         for sandbox_id in lost:
             await self._drop_link(sandbox_id, "lease lost to another runner")
         if (
@@ -2752,14 +2762,14 @@ class Runner:
                 "task.reconnect",
                 "turn.interrupt",
             ) and payload.get("task_id"):
-                from app.domain.workbench.formal_execution import is_formal_host
+                from app.domain.workbench.formal_execution import uses_host_driver
 
                 task = await repo.get_task(
                     payload["task_id"], owner_actor_id=str(session["owner_actor_id"])
                 )
                 if str(task["session_id"]) != str(session_id):
                     raise RuntimeError("Task command belongs to another session")
-                if is_formal_host(task):
+                if uses_host_driver(task):
                     task_id = str(task["id"])
                     if kind == "task.drive" and not self._busy(task_id):
                         self.driving[task_id] = asyncio.create_task(

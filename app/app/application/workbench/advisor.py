@@ -129,7 +129,10 @@ class Advisor:
 
         async with self.stores() as repo:
             formal_task = await repo.get_task(task_id)
-            formal = is_formal(formal_task)
+            formal = (
+                is_formal(formal_task)
+                or formal_task.get("pack_source") == "registry-source"
+            )
         if is_formal_model(formal_task):
             from app.application.workbench.formal_model_execution import (
                 FormalModelExecution,

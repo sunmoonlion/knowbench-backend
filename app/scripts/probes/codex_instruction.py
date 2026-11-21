@@ -171,8 +171,9 @@ stream_max_retries = 0
                 client.notices.clear()
                 client.denied.clear()
                 server.first_request = start + 1
+                result_field = job["output_schema"]["required"][0]
                 server.output = {
-                    "summary": "ready" if scenario != "invalid_output" else 7
+                    result_field: "ready" if scenario != "invalid_output" else 7
                 }
                 server.ask = scenario.startswith("question")
                 server.limit_one = not metered and scenario != "question"

@@ -64,8 +64,8 @@ class Units:
         return {}
 
 
-async def stack(db, **kwargs):
-    host, task, cred, wire = await setup(db, **kwargs)
+async def stack(db, *, setup_case=setup, result=None, **kwargs):
+    host, task, cred, wire = await setup_case(db, **kwargs)
     async with host() as svc:
         catalog = svc.formal.source_licenses
         taskrow = await svc.repo.get_task(task)
@@ -126,7 +126,9 @@ async def stack(db, **kwargs):
                         OWNER,
                         units.task,
                         binding["attempt"],
-                        caller="knowlab",
+                        caller="registry-source"
+                        if taskrow.get("pack_source") == "registry-source"
+                        else "knowlab",
                         credential_id=cred["id"],
                         turn_id=turn,
                         body=wire,
@@ -151,7 +153,12 @@ async def stack(db, **kwargs):
                     {
                         "threadId": "thread-a",
                         "turnId": turn,
-                        "item": {"type": "agentMessage", "text": '{"summary":"ready"}'},
+                        "item": {
+                            "type": "agentMessage",
+                            "text": json.dumps(
+                                result if result is not None else {"summary": "ready"}
+                            ),
+                        },
                     },
                 )
                 await self.notice(

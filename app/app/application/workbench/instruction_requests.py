@@ -84,6 +84,26 @@ class InstructionRequests:
         raise CapabilityError("No authorized instruction model route")
 
     async def authority(self, owner, task, caller):
+        if task.get("pack_source") == "registry-source":
+            from app.application.workbench.source_tasks import active_source
+            from app.domain.workbench.source_tasks import instruction_input
+
+            snap, content = await active_source(self.repo, owner, task)
+            quote = await self.route_quote(owner, task, caller)
+            if (
+                caller != "registry-source"
+                or snap.source.kind != "instruction"
+                or {
+                    k: v
+                    for k, v in quote.items()
+                    if k not in ("caller", "snapshot_digest")
+                }
+                != snap.quote
+            ):
+                raise CapabilityError(
+                    "Registered instruction approval or route changed"
+                )
+            return quote, instruction_input(content, snap.arguments)
         snapshot = snapshot_for_task(task)
         if snapshot.dependencies:
             from app.application.workbench.instruction_leaf import approved_leaf
@@ -145,7 +165,10 @@ class InstructionRequests:
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
             )
-            if snapshot_for_task(task).dependencies:
+            if (
+                task.get("pack_source") != "registry-source"
+                and snapshot_for_task(task).dependencies
+            ):
                 raise CapabilityError(
                     "Only the fixed-plan host may open an instruction leaf"
                 )
@@ -235,7 +258,7 @@ class InstructionRequests:
             leaf = refs.get("kind") == "formal_orchestration_step"
             outgoing = (
                 leaf_responses_body(job, self.route.model, limit)
-                if leaf
+                if leaf or task.get("pack_source") == "registry-source"
                 else {**body, "max_output_tokens": limit}
             )
             await self.repo.update_attempt(

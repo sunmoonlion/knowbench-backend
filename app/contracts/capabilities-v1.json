@@ -3490,6 +3490,136 @@
         "title": "ModelProbeCallDetail",
         "type": "object"
       },
+      "RegisteredSource": {
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "script",
+              "instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "version",
+          "kind",
+          "name",
+          "digest"
+        ],
+        "title": "RegisteredSource",
+        "type": "object"
+      },
+      "RegistryScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "registry_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          },
+          "source": {
+            "$ref": "#/$defs/RegisteredSource"
+          },
+          "approval_digest": {
+            "title": "Approval Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote",
+          "source",
+          "approval_digest"
+        ],
+        "title": "RegistryScriptDetail",
+        "type": "object"
+      },
       "Tool": {
         "additionalProperties": false,
         "properties": {
@@ -3604,6 +3734,9 @@
           },
           {
             "$ref": "#/$defs/HostCallDetail"
+          },
+          {
+            "$ref": "#/$defs/RegistryScriptDetail"
           },
           {
             "$ref": "#/$defs/FormalScriptDetail"
@@ -3775,6 +3908,9 @@
               },
               {
                 "$ref": "#/$defs/HostCallDetail"
+              },
+              {
+                "$ref": "#/$defs/RegistryScriptDetail"
               },
               {
                 "$ref": "#/$defs/FormalScriptDetail"
@@ -4388,6 +4524,136 @@
           "runtime"
         ],
         "title": "ModelProbeCallDetail",
+        "type": "object"
+      },
+      "RegisteredSource": {
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "script",
+              "instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "version",
+          "kind",
+          "name",
+          "digest"
+        ],
+        "title": "RegisteredSource",
+        "type": "object"
+      },
+      "RegistryScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "registry_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          },
+          "source": {
+            "$ref": "#/$defs/RegisteredSource"
+          },
+          "approval_digest": {
+            "title": "Approval Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote",
+          "source",
+          "approval_digest"
+        ],
+        "title": "RegistryScriptDetail",
         "type": "object"
       },
       "Tool": {
@@ -5040,6 +5306,9 @@
                 "$ref": "#/$defs/HostCallDetail"
               },
               {
+                "$ref": "#/$defs/RegistryScriptDetail"
+              },
+              {
                 "$ref": "#/$defs/FormalScriptDetail"
               },
               {
@@ -5654,6 +5923,136 @@
         "title": "ModelProbeCallDetail",
         "type": "object"
       },
+      "RegisteredSource": {
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "script",
+              "instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "version",
+          "kind",
+          "name",
+          "digest"
+        ],
+        "title": "RegisteredSource",
+        "type": "object"
+      },
+      "RegistryScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "registry_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          },
+          "source": {
+            "$ref": "#/$defs/RegisteredSource"
+          },
+          "approval_digest": {
+            "title": "Approval Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote",
+          "source",
+          "approval_digest"
+        ],
+        "title": "RegistryScriptDetail",
+        "type": "object"
+      },
       "Tool": {
         "additionalProperties": false,
         "properties": {
@@ -5892,6 +6291,9 @@
               },
               {
                 "$ref": "#/$defs/HostCallDetail"
+              },
+              {
+                "$ref": "#/$defs/RegistryScriptDetail"
               },
               {
                 "$ref": "#/$defs/FormalScriptDetail"
@@ -6577,6 +6979,136 @@
           "runtime"
         ],
         "title": "ModelProbeCallDetail",
+        "type": "object"
+      },
+      "RegisteredSource": {
+        "additionalProperties": false,
+        "properties": {
+          "source_id": {
+            "format": "uuid",
+            "title": "Source Id",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "kind": {
+            "enum": [
+              "script",
+              "instruction"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "version",
+          "kind",
+          "name",
+          "digest"
+        ],
+        "title": "RegisteredSource",
+        "type": "object"
+      },
+      "RegistryScriptDetail": {
+        "additionalProperties": false,
+        "properties": {
+          "approval": {
+            "anyOf": [
+              {
+                "$ref": "#/$defs/ConnectorApproval"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "connection_id": {
+            "title": "Connection Id",
+            "type": "null"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "connection_name": {
+            "title": "Connection Name",
+            "type": "string"
+          },
+          "account_label": {
+            "title": "Account Label",
+            "type": "string"
+          },
+          "purpose": {
+            "title": "Purpose",
+            "type": "string"
+          },
+          "tool": {
+            "$ref": "#/$defs/Tool"
+          },
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "approval_token": {
+            "title": "Approval Token",
+            "type": "string"
+          },
+          "result": {
+            "default": null,
+            "title": "Result"
+          },
+          "execution_kind": {
+            "const": "registry_script",
+            "title": "Execution Kind",
+            "type": "string"
+          },
+          "source_asset_id": {
+            "title": "Source Asset Id",
+            "type": "null"
+          },
+          "script_quote": {
+            "additionalProperties": true,
+            "title": "Script Quote",
+            "type": "object"
+          },
+          "source": {
+            "$ref": "#/$defs/RegisteredSource"
+          },
+          "approval_digest": {
+            "title": "Approval Digest",
+            "type": "string"
+          }
+        },
+        "required": [
+          "connection_id",
+          "revision",
+          "connection_name",
+          "account_label",
+          "purpose",
+          "tool",
+          "arguments",
+          "approval_token",
+          "execution_kind",
+          "source_asset_id",
+          "script_quote",
+          "source",
+          "approval_digest"
+        ],
+        "title": "RegistryScriptDetail",
         "type": "object"
       },
       "Tool": {

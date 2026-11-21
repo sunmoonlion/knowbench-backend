@@ -36,7 +36,7 @@ if TYPE_CHECKING:
 
 
 def is_dynamic(task: dict[str, Any]) -> bool:
-    if is_formal(task):
+    if is_formal(task) or task.get("pack_source") == "registry-source":
         return False
     snapshot = task.get("pack_snapshot")
     # Unknown future runtimes must also fail closed rather than fall back to a

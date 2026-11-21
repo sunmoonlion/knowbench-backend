@@ -13,6 +13,7 @@ from app.domain.workbench.method_capabilities import (
     McpRequirement,
     MethodCapabilities,
 )
+from app.domain.workbench.registry_sources import RegisteredSource
 from app.domain.workbench.resource_delegation import (
     DelegationOption,
     ResourceAuthorityRef,
@@ -202,6 +203,15 @@ class FormalScriptDetail(CommonCallDetail):
     script_quote: dict[str, Any]
 
 
+class RegistryScriptDetail(CommonCallDetail):
+    execution_kind: Literal["registry_script"]
+    source_asset_id: None
+    connection_id: None
+    script_quote: dict[str, Any]
+    source: RegisteredSource
+    approval_digest: str
+
+
 class ModelProbeCallDetail(CommonCallDetail):
     execution_kind: Literal["formal_probe"]
     source_asset_id: UUID
@@ -242,6 +252,7 @@ class Call(Strict):
     detail: (
         CallDetail
         | HostCallDetail
+        | RegistryScriptDetail
         | FormalScriptDetail
         | ModelProbeCallDetail
         | FormalModelCallDetail

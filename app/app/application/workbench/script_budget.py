@@ -42,7 +42,8 @@ async def reserve(repo, owner, call_id, quote):
             return
         if (
             call["status"] != "dispatching"
-            or call["detail"].get("execution_kind") != "formal_script"
+            or call["detail"].get("execution_kind")
+            not in ("formal_script", "registry_script")
             or call["detail"].get("script_quote") != quote
         ):
             raise IdempotencyConflict(

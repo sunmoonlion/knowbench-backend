@@ -143,6 +143,10 @@ def is_formal_host(task: dict) -> bool:
     return is_formal(task) and not is_formal_model(task)
 
 
+def uses_host_driver(task: dict) -> bool:
+    return task.get("pack_source") == "registry-source" or is_formal_host(task)
+
+
 def recursive_plan(snapshot: FormalTaskSnapshot) -> bool:
     return any(
         isinstance(f.draft.definition.procedure, Orchestration)

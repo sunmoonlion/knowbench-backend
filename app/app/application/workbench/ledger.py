@@ -36,6 +36,7 @@ from app.domain.workbench.formal_execution import (
     is_formal,
     is_formal_host,
     is_formal_model,
+    uses_host_driver,
 )
 from app.domain.workbench.knowbots import is_knowbot
 from app.domain.workbench.method_catalog import CapabilityMethodCatalog
@@ -43,6 +44,7 @@ from app.domain.workbench.method_plan import AnyMethodPlan
 from app.domain.workbench.models import Budget, HandoverRequest, InteractionPrompt
 from app.domain.workbench.packs import current_pack_version
 from app.domain.workbench.scheduling import ProjectLane, lane_of
+from app.domain.workbench.source_tasks import PACK_SOURCE, SourceTask
 from app.domain.workbench.states import (
     ATTEMPT_TERMINAL,
     PLATFORM_FAILURE,
@@ -90,7 +92,7 @@ def _revoked_usage(attempt: dict[str, Any]) -> dict[str, Any]:
 
 def writes_files(task: dict[str, Any]) -> bool:
     """这件委托的专家会不会往项目里写成稿文件（0015 §3.3）。认不出专家包时按会写算，照旧指向底稿。"""
-    if is_formal(task):
+    if is_formal(task) or task.get("pack_source") == PACK_SOURCE:
         return False
     try:
         pack = pack_for_task(task)
@@ -163,7 +165,11 @@ class Ledger:
         tenant: str = "default",
         profile_version: str | None = None,
         expert_pack_version: str | None = None,
-        snapshot: PinnedPack | PinnedTestCatalog | PinnedFormalMethod | None = None,
+        snapshot: PinnedPack
+        | PinnedTestCatalog
+        | PinnedFormalMethod
+        | SourceTask
+        | None = None,
         pins: list[dict[str, Any]] | None = None,
         resolution: dict[str, Any] | None = None,
         task_requirements: TaskRequirements | None = None,
@@ -185,7 +191,7 @@ class Ledger:
                 idempotency_key=req.idempotency_key,
             )
             if prior is not None:
-                if isinstance(snapshot, PinnedFormalMethod) and (
+                if isinstance(snapshot, (PinnedFormalMethod, SourceTask)) and (
                     prior.get("pack_digest") != snapshot.task_columns()["pack_digest"]
                     or prior.get("pack_source")
                     != snapshot.task_columns()["pack_source"]
@@ -319,7 +325,7 @@ class Ledger:
                     "request_digest": digest,
                     "profile_id": req.profile_id,
                     "profile_version": pinned.version
-                    if isinstance(pinned, PinnedFormalMethod)
+                    if isinstance(pinned, (PinnedFormalMethod, SourceTask))
                     else pinned.pack.version
                     if pinned
                     else (
@@ -448,7 +454,7 @@ class Ledger:
             # All task/attempt writers lock the task first. A cancellation or
             # new dispatch cannot change the active attempt between these reads.
             task = await self.repo.get_task(task_id, for_update=True)
-            if is_formal_host(task):
+            if uses_host_driver(task):
                 # Formal actions recover from their durable common-call receipt,
                 # never a model watchdog's stopped/unknown-turn inference.
                 return None
@@ -775,7 +781,7 @@ class Ledger:
                 and not probe.get("not_started")
                 and not probe.get("stop_confirmed")
             )
-            live = not is_formal_host(task) and (
+            live = not uses_host_driver(task) and (
                 state is TaskState.RUNNING
                 or model_live
                 or await self._waits_on_codex(task)
@@ -831,7 +837,7 @@ class Ledger:
             return {
                 **done,
                 "cancel_requested": True,
-                "interrupt": not is_formal_host(task)
+                "interrupt": not uses_host_driver(task)
                 and (live or state is TaskState.WAITING),
             }
 
