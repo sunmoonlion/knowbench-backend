@@ -50,6 +50,15 @@ class MethodCompilation:
     definition_digest: str
     dependencies: tuple[MethodRef, ...]
     interfaces: dict
+    required_depth: int
+    required_expansions: int
+    required_steps: int
+
+
+class CandidateLimits(ValueError):
+    def __init__(self, depth: int, expansions: int, steps: int):
+        self.depth, self.expansions, self.steps = depth, expansions, steps
+        super().__init__("A candidate exceeds the declared subtree limits")
 
 
 def compile_method(
@@ -64,15 +73,17 @@ def compile_method(
 
     def visit(
         mid: UUID, current: FormalMethodDefinition, path: tuple[UUID, ...]
-    ) -> Kind:
+    ) -> tuple[Kind, int, int, int]:
         nonlocal count
         count += 1
         if mid in path or len(path) >= max_depth or count > max_expansions:
             raise ValueError("Method dependency cycle or expansion limit")
         if isinstance(current.procedure, ToolProcedure):
-            return "tool"
+            return "tool", 1, 1, 0
+        depth, expansions, steps = 1, 1, len(current.procedure.steps)
         dependency_kinds = []
         for step in current.procedure.steps:
+            branch_depth = branch_expansions = branch_steps = 0
             for ref in step.candidates:
                 child = resolved.get((ref.method_id, ref.version))
                 if (
@@ -81,13 +92,38 @@ def compile_method(
                     or child.definition.digest() != ref.digest
                 ):
                     raise ValueError("Missing or changed frozen method dependency")
-                child_kind = visit(ref.method_id, child.definition, (*path, mid))
+                child_kind, child_depth, child_expansions, child_steps = visit(
+                    ref.method_id, child.definition, (*path, mid)
+                )
+                branch_depth = max(branch_depth, child_depth)
+                branch_expansions = max(branch_expansions, child_expansions)
+                branch_steps = max(branch_steps, child_steps)
                 dependency_kinds.append((ref.method_id, child_kind))
                 _step_interface(step, child.definition.interfaces())
                 _permission_ceiling(current, child.definition)
-        return classify_dependencies("orchestration", tuple(dependency_kinds))
+            depth = max(depth, branch_depth + 1)
+            expansions += branch_expansions
+            steps += branch_steps
+        graph = current.procedure
+        if graph.has_candidate_choice and (
+            depth > graph.max_depth
+            or expansions > graph.max_expansions
+            or steps > graph.max_steps
+        ):
+            raise CandidateLimits(depth, expansions, steps)
+        return (
+            # Alternatives describe one expert method regardless of candidate count.
+            "expert"
+            if graph.has_candidate_choice
+            else classify_dependencies("orchestration", tuple(dependency_kinds)),
+            depth,
+            expansions,
+            steps,
+        )
 
-    kind = visit(method_id, definition, ())
+    kind, required_depth, required_expansions, required_steps = visit(
+        method_id, definition, ()
+    )
     refs = {}
     if isinstance(definition.procedure, Orchestration):
         for step in definition.procedure.steps:
@@ -102,6 +138,9 @@ def compile_method(
         definition_digest=definition.digest(),
         dependencies=tuple(refs.values()),
         interfaces=definition.interfaces(),
+        required_depth=required_depth,
+        required_expansions=required_expansions,
+        required_steps=required_steps,
     )
 
 

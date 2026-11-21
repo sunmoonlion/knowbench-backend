@@ -145,6 +145,52 @@
       "title": "CallerValue",
       "type": "object"
     },
+    "CandidateCase": {
+      "additionalProperties": false,
+      "properties": {
+        "equals": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "Equals",
+          "type": "string"
+        },
+        "candidate": {
+          "$ref": "#/$defs/MethodRef"
+        }
+      },
+      "required": [
+        "equals",
+        "candidate"
+      ],
+      "title": "CandidateCase",
+      "type": "object"
+    },
+    "CandidateChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "input": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Input",
+          "type": "string"
+        },
+        "cases": {
+          "items": {
+            "$ref": "#/$defs/CandidateCase"
+          },
+          "maxItems": 8,
+          "minItems": 2,
+          "title": "Cases",
+          "type": "array"
+        }
+      },
+      "required": [
+        "input",
+        "cases"
+      ],
+      "title": "CandidateChoice",
+      "type": "object"
+    },
     "CapabilityDeclaration": {
       "additionalProperties": false,
       "properties": {
@@ -843,6 +889,17 @@
     "MethodStep": {
       "additionalProperties": false,
       "properties": {
+        "candidate_choice": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CandidateChoice"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "id": {
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
           "title": "Id",

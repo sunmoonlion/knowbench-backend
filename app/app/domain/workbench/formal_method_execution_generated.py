@@ -375,7 +375,11 @@ class FormalMethodExecutionRequest(Strict):
         else:
             # Transport the pinned draft to the runner for a capability decision.
             # Only a supported fixed graph can enter the static plan executor.
-            plan = p.steps if p.object_batch else unique_plan(self.draft.definition)
+            plan = (
+                p.steps
+                if p.object_batch or p.has_candidate_choice
+                else unique_plan(self.draft.definition)
+            )
             if self.draft.allowed_callers != ("host",):
                 raise ValueError("Unique plan execution supports only the host caller")
             references = {

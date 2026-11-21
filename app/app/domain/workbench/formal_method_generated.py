@@ -205,7 +205,25 @@ class StepInput(Strict):
     binding: InputSource
 
 
+class CandidateCase(Strict):
+    equals: Annotated[str, Field(min_length=1, max_length=128, pattern=r"\S")]
+    candidate: MethodRef
+
+
+class CandidateChoice(Strict):
+    input: Name
+    cases: tuple[CandidateCase, ...] = Field(min_length=2, max_length=8)
+
+    def match(self, value: Any) -> MethodRef | None:
+        return next(
+            (case.candidate for case in self.cases if case.equals == value), None
+        )
+
+
 class MethodStep(Strict):
+    candidate_choice: CandidateChoice | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     id: Name
     candidates: tuple[MethodRef, ...] = Field(min_length=1, max_length=100)
     select_when: Text
@@ -221,6 +239,31 @@ class MethodStep(Strict):
         refs = [(r.method_id, r.version) for r in self.candidates]
         if len(refs) != len(set(refs)):
             raise ValueError("Duplicate method candidate version")
+        choice = self.candidate_choice
+        if choice is not None:
+            port = self.inputs.get(choice.input)
+            if (
+                not self.always_required
+                or port is None
+                or not port.slot.required
+                or not isinstance(port.binding, CallerValue)
+                or port.slot.schema_.get("type") != "string"
+            ):
+                raise ValueError(
+                    "Candidate selection needs a mandatory caller string input"
+                )
+            values = {case.equals for case in choice.cases}
+            if len(values) != len(choice.cases) or not all(
+                port.slot.accepts(v) for v in values
+            ):
+                raise ValueError(
+                    "Case values must be distinct and accepted by the input"
+                )
+            mapped = tuple(case.candidate for case in choice.cases)
+            if len(mapped) != len(self.candidates) or any(
+                ref not in mapped for ref in self.candidates
+            ):
+                raise ValueError("Every case must bind a distinct pinned candidate")
         if len(self.depends_on) != len(set(self.depends_on)):
             raise ValueError("Duplicate step dependency")
         return self
@@ -291,6 +334,10 @@ class Orchestration(Strict):
     max_expansions: int = Field(strict=True, ge=1, le=1000)
     max_steps: int = Field(strict=True, ge=1, le=1000)
     max_replans: int = Field(strict=True, ge=0, le=10)
+
+    @property
+    def has_candidate_choice(self) -> bool:
+        return any(step.candidate_choice is not None for step in self.steps)
 
     def validate_object_batch(self):
         items = [
@@ -484,6 +531,19 @@ class Orchestration(Strict):
                 raise ValueError(
                     "Every legal plan must produce an unconditional export"
                 )
+        if self.has_candidate_choice and (
+            self.object_batch
+            or self.max_replans
+            or self.max_depth < 2
+            or self.max_steps < len(self.steps)
+            or self.max_expansions <= len(self.steps)
+            or any(
+                not s.always_required
+                or (not s.candidate_choice and len(s.candidates) != 1)
+                for s in self.steps
+            )
+        ):
+            raise ValueError("Candidate choices require bounded mandatory steps")
         self.validate_object_batch()
         if self.collaboration:
             self.validate_collaboration(self.collaboration)
