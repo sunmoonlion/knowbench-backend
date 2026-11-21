@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import pytest
 from httpx import AsyncClient
 from test_capabilities_db import OTHER, OWNER, approval, prepared, service
 from test_workbench_ledger_db import db as db
@@ -131,6 +132,14 @@ async def test_http_contract_authentication_approval_and_mcp_scope(db):
         assert (
             json.loads(result["result"]["content"][0]["text"])["status"] == "succeeded"
         )
+        async with db() as session:
+            reads = await WorkbenchRepository(session).list_events(session_id=sid)
+            [evidence] = [
+                e["payload"] for e in reads if e["type"] == "capability/resource_read"
+            ]
+            assert evidence["resource"] == {"call_id": call_id}
+            assert evidence["registered_source"]["name"] == "action_result"
+            assert evidence["invocation"]["call_id"]
         app.dependency_overrides[get_web_current_user] = lambda: principal(OTHER)
         assert (
             await http.get(f"/api/workbench/sessions/{sid}/capabilities")
@@ -172,3 +181,57 @@ MODELS = (
 def test_provider_schema_export_is_current():
     artifact = json.loads((ROOT / "contracts/capabilities-v1.json").read_text())
     assert artifact == {m.__name__: m.model_json_schema() for m in MODELS}
+
+
+@pytest.mark.parametrize("name", ["skill_files", "skill_read", "action_result"])
+async def test_withdrawn_helper_disappears_from_active_gateway_and_cannot_read(
+    db, name
+):
+    from sqlalchemy import text
+    from test_skill_package_db import package, token
+    from test_workbench_ledger_db import seed
+
+    if name == "action_result":
+        sid, _, _, gateway_token, remote = await prepared(db)
+        args = {"call_id": sid}
+    else:
+        remote = None
+        _, _, sid = await seed(db)
+        async with db() as session:
+            svc = service(WorkbenchRepository(session), remote)
+            skill = await svc.create_skill(OWNER, package(), package=True)
+            scope = await svc.prepare(OWNER, sid)
+        gateway_token = token(scope)
+        args = {"skill_id": skill["id"]}
+        if name == "skill_read":
+            args["path"] = "SKILL.md"
+    url = f"/api/mcp/capabilities/{sid}"
+    headers = {"Authorization": "Bearer " + gateway_token}
+    async with AsyncClient(
+        transport=ObservedCapabilityTransport(application(db, remote), db),
+        base_url="http://testserver",
+    ) as http:
+        listing = {"id": 1, "method": "tools/list"}
+        before = (await http.post(url, headers=headers, json=listing)).json()
+        assert name in {t["name"] for t in before["result"]["tools"]}
+        async with db() as session, session.begin():
+            await session.execute(
+                text(
+                    "DELETE FROM workbench_registry_service_functions WHERE provider='knowbench' AND name=:name AND version=1"
+                ),
+                {"name": name},
+            )
+        after = (await http.post(url, headers=headers, json=listing)).json()
+        assert name not in {t["name"] for t in after["result"]["tools"]}
+        response = (
+            await http.post(
+                url,
+                headers=headers,
+                json={
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {"name": name, "arguments": args},
+                },
+            )
+        ).json()
+        assert "registration changed" in str(response)

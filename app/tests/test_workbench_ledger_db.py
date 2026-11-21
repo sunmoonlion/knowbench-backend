@@ -66,6 +66,14 @@ async def db():
     )
     factory = make_session_factory(engine)
     try:
+        # A normal deployed gateway has published its three control/read operations.
+        # Registration tests can delete individual versions to exercise withdrawal.
+        from app.application.workbench.gateway_helpers import helper_revisions
+        from app.infrastructure.workbench.service_functions import register_revision
+
+        async with factory() as session:
+            for revision in helper_revisions().values():
+                await register_revision(session, revision)
         yield factory
     finally:
         await engine.dispose()

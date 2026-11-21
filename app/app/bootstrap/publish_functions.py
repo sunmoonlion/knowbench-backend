@@ -3,6 +3,7 @@
 import asyncio
 
 from app.application.errors.exceptions import ServiceUnavailableError
+from app.application.workbench.gateway_helpers import helper_revisions
 from app.domain.workbench.native_functions import LOCAL_REVISIONS
 from app.infrastructure.external.downstream_service import DownstreamServiceClient
 from core.config import get_settings
@@ -32,6 +33,8 @@ async def publish_workbench_functions(client):
     published = {}
     for name, build in LOCAL_REVISIONS.items():
         published[name] = await publish_revision(client, build())
+    for name, revision in helper_revisions().items():
+        published[name] = await publish_revision(client, revision)
     return published
 
 

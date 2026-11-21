@@ -12,6 +12,7 @@ from typing import Any, Protocol
 
 from app.application.workbench.call_policy import authorize_operation, send_mcp
 from app.application.workbench.calls import call_context
+from app.application.workbench.gateway_helpers import check_output, registered_helpers
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_access import check_access, declared_access
 from app.application.workbench.method_authorizations import (
@@ -81,6 +82,7 @@ from app.domain.workbench.tool_registry import (
     check_session_entry,
     connection_source,
 )
+from app.domain.workbench.tool_schema import schema_validator
 
 
 class McpPort(Protocol):
@@ -1191,6 +1193,17 @@ class Capabilities:
                     if spec["tool"]["name"] in tools:
                         raise CapabilityError("Formal method tool identity collided")
                     tools[spec["tool"]["name"]] = spec
+            helper_names = (["action_result"] if tools else []) + (
+                ["skill_files", "skill_read"] if packages else []
+            )
+            helpers = await registered_helpers(self.repo, helper_names)
+            if set(helpers) != set(helper_names):
+                raise CapabilityError(
+                    "A required session tool is not registered; prepare again after registration"
+                )
+            helper_digests = {
+                name: revision.digest for name, revision in helpers.items()
+            }
             if len(packages) > 100:
                 raise CapabilityError(
                     "More than 100 enabled Skills; limit this conversation's Skill scope"
@@ -1242,7 +1255,7 @@ class Capabilities:
                 [
                     self.runtime_url,
                     bool(method_binding),
-                    bool(packages),
+                    helper_digests,
                     {
                         key: [spec["tool"], spec.get("execution_kind")]
                         for key, spec in tools.items()
@@ -1267,6 +1280,7 @@ class Capabilities:
                 "token_hash": secrets.token_hex(32),
                 "gateway_hash": digest(token),
                 "inventory": inventory,
+                "helper_digests": helper_digests,
                 "expires_at": (datetime.now(UTC) + timedelta(hours=24)).isoformat(),
                 "selection_revision": selected["revision"],
                 "tools": tools,
@@ -1311,9 +1325,7 @@ class Capabilities:
                     "enabled": True,
                     "url": self.runtime_url.rstrip("/") + "/" + session_id,
                     "http_headers": {"Authorization": "Bearer " + token},
-                    "enabled_tools": sorted(tools)
-                    + (["action_result"] if tools else [])
-                    + (["skill_files", "skill_read"] if packages else []),
+                    "enabled_tools": sorted(tools) + helper_names,
                     "required": True,
                     "startup_timeout_sec": 15,
                     "tool_timeout_sec": 960
@@ -1387,18 +1399,45 @@ class Capabilities:
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True
             )
-            await self.verify_invocation(
+            invocation = await self.verify_invocation(
                 session_id, token, name, arguments, meta, observe_seconds=0
             )
-            yield selected
+            revision = (await registered_helpers(self.repo, [name])).get(name)
+            if (
+                not revision
+                or selected["runtime"].get("helper_digests", {}).get(name)
+                != revision.digest
+            ):
+                raise Forbidden("Session tool registration changed; prepare a new turn")
+            if not schema_validator(revision.contract.input_schema).is_valid(arguments):
+                raise Forbidden("Invalid session tool arguments")
+            yield selected, revision
+            await self.repo.append_event(
+                session_id=session_id,
+                kind="tool",
+                event_type="capability/resource_read",
+                payload={
+                    "registered_source": revision.model_dump(exclude={"contract"}),
+                    "invocation": invocation.snapshot(),
+                    "arguments_digest": digest(arguments),
+                    "resource": {"call_id": arguments["call_id"]}
+                    if name == "action_result"
+                    else {
+                        "skill_id": arguments["skill_id"],
+                        **selected["runtime"]["packages"][arguments["skill_id"]],
+                    },
+                    "scope_id": selected["runtime"]["scope_id"],
+                },
+            )
 
     async def skill_resource(
         self, session_id, token, arguments, *, meta=None, listing=False
     ):
         name = "skill_files" if listing else "skill_read"
-        async with self.verified_read(
-            session_id, token, name, arguments, meta
-        ) as selected:
+        async with self.verified_read(session_id, token, name, arguments, meta) as (
+            selected,
+            revision,
+        ):
             if listing and set(arguments) - {"skill_id", "offset"}:
                 raise Forbidden("Invalid skill_files arguments")
             request = SkillRead.model_validate(
@@ -1419,12 +1458,14 @@ class Capabilities:
             if listing:
                 files = asset["detail"]["files"]
                 end = min(request.offset + 50, len(files))
-                return {
+                result = {
                     "skill_id": asset["id"],
                     "version": asset["detail"]["version"],
                     "files": files[request.offset : end],
                     "next_offset": end if end < len(files) else None,
                 }
+                check_output(revision, result)
+                return result
             file = resource_metadata(asset["detail"]["files"], request)
             data = await self.repo.skill_file(owner, asset["id"], file["path"])
             result = resource_result(asset["detail"]["version"], file, data, request)
@@ -1462,6 +1503,7 @@ class Capabilities:
                     "offset": request.offset,
                 },
             )
+            check_output(revision, result)
             return result
 
     async def verify_invocation(

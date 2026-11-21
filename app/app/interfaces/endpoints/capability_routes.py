@@ -30,6 +30,11 @@ from app.application.workbench.artifact_read_authority import (
 from app.application.workbench.artifact_read_authority import (
     manage as manage_artifact_read,
 )
+from app.application.workbench.gateway_helpers import (
+    available_helpers,
+    check_output,
+    descriptor,
+)
 from app.application.workbench.tool_registry import (
     formal_registration,
     installed_registration,
@@ -84,7 +89,7 @@ from app.domain.workbench.skill_installation import (
     SkillSourcePreview,
     SkillSourceRequest,
 )
-from app.domain.workbench.skill_package import SkillPackageCreate, SkillRead
+from app.domain.workbench.skill_package import SkillPackageCreate
 from app.domain.workbench.source_tasks import SourceTaskConfirmation, SourceTaskInput
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
@@ -946,58 +951,10 @@ async def capability_rpc(
                     for key, spec in tools.items()
                 ]
             }
-            result["tools"].append(
-                {
-                    "name": "action_result",
-                    "description": "Read the outcome of a previously requested external action in this conversation.",
-                    "inputSchema": {
-                        "type": "object",
-                        "properties": {"call_id": {"type": "string"}},
-                        "required": ["call_id"],
-                        "additionalProperties": False,
-                    },
-                    "annotations": {"readOnlyHint": True},
-                }
+            helpers = await available_helpers(svc.repo, selected["runtime"], tools)
+            result["tools"].extend(
+                descriptor(revision) for revision in helpers.values()
             )
-            if selected["runtime"].get("formal_probe"):
-                result["tools"] = [
-                    t for t in result["tools"] if t["name"] != "action_result"
-                ]
-            if not tools:
-                result["tools"] = []
-            if selected["runtime"].get("packages"):
-                result["tools"].extend(
-                    [
-                        {
-                            "name": "skill_files",
-                            "description": "List files in a selected Skill package. Returns 50 paths per page; offset is a file index.",
-                            "inputSchema": {
-                                "type": "object",
-                                "properties": {
-                                    "skill_id": {"type": "string"},
-                                    "offset": {"type": "integer", "minimum": 0},
-                                },
-                                "required": ["skill_id"],
-                                "additionalProperties": False,
-                            },
-                            "annotations": {
-                                "readOnlyHint": True,
-                                "destructiveHint": False,
-                                "openWorldHint": False,
-                            },
-                        },
-                        {
-                            "name": "skill_read",
-                            "description": "Read a selected Skill package resource, without executing it. Use paths from skill_files. To follow a relative link set relative_to to its source document path. Text pagination offsets count characters; PNG/JPEG resources return an image.",
-                            "inputSchema": SkillRead.model_json_schema(),
-                            "annotations": {
-                                "readOnlyHint": True,
-                                "destructiveHint": False,
-                                "openWorldHint": False,
-                            },
-                        },
-                    ]
-                )
         elif method == "tools/call":
             params = msg.get("params") or {}
             if not isinstance(params, dict):
@@ -1016,7 +973,7 @@ async def capability_rpc(
             elif params.get("name") == "action_result":
                 async with svc.verified_read(
                     str(session_id), token, "action_result", args, params.get("_meta")
-                ) as selected:
+                ) as (selected, revision):
                     if not selected["runtime"].get("tools") or selected["runtime"].get(
                         "formal_probe"
                     ):
@@ -1047,6 +1004,7 @@ async def capability_rpc(
                                 call["detail"].get("result"), call["id"]
                             ),
                         }
+                    check_output(revision, value)
             else:
                 value = await svc.request_call(
                     str(session_id),
