@@ -26,6 +26,7 @@ from app.domain.workbench.formal_method_generated import (
     Digest,
     MethodRef,
     Name,
+    ReviewComparison,
     Strict,
     ToolProcedure,
 )
@@ -495,6 +496,9 @@ class ReceiveBranch(Strict):
 
 
 class ReviewCriteria(Strict):
+    comparison: ReviewComparison | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     outputs: tuple[Name, ...] = Field(min_length=1, max_length=100)
     assertions: tuple[Assertion, ...] = Field(min_length=1, max_length=64)
     reviewer: Literal["isolated_reviewer", "different_model_family"]
@@ -502,6 +506,10 @@ class ReviewCriteria(Strict):
     @model_validator(mode="after")
     def scoped_checks(self):
         bounded_json(self.model_dump(mode="json"))
+        if self.comparison and self.comparison.assessment_output in self.outputs:
+            raise ValueError(
+                "Withhold the assessment output from the independent round"
+            )
         checked = {a.pointer.split("/")[1] for a in self.assertions if a.pointer}
         if (
             len(set(self.outputs)) != len(self.outputs)
@@ -518,7 +526,18 @@ class PrepareBranchReview(ReceiveBranch):
     previous: Digest | None
 
 
+class DeferredComparison(Strict):
+    # An author preview. A running reviewer must obtain its own authorized projection.
+    assessment_output: Name
+    assessment_digest: Digest
+    opens_after: Literal["independent_findings_sealed"]
+    unresolved_to: Literal["task_owner"]
+
+
 class BranchReview(Strict):
+    deferred: DeferredComparison | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     criteria: ReviewCriteria
     checks: tuple[FormalAssertionResult, ...]
     status: Literal["v0_failed", "awaiting_isolation"]
@@ -553,6 +572,9 @@ class BranchDelivery(ReceiveBranch):
     def prepare_review(self, criteria: ReviewCriteria) -> BranchReview:
         if not set(criteria.outputs).issubset(self.outputs):
             raise ValueError("Selected output is absent from the accepted artifact")
+        comparison = criteria.comparison
+        if comparison and comparison.assessment_output not in self.outputs:
+            raise ValueError("Assessment output is absent from the accepted artifact")
         selected = {name: self.outputs[name] for name in criteria.outputs}
         checks = check_output_assertions(criteria.assertions, selected)
         passed = all(check.passed for check in checks)
@@ -563,14 +585,25 @@ class BranchDelivery(ReceiveBranch):
         )
         status = "awaiting_isolation" if passed else "v0_failed"
         basis = self.model_dump(mode="json", exclude={"review", "outputs"})
+        basis_parts = [basis, criteria.model_dump(mode="json"), status, handoff]
+        deferred = None
+        if comparison and passed:
+            deferred = DeferredComparison(
+                assessment_output=comparison.assessment_output,
+                assessment_digest=fingerprint(
+                    self.outputs[comparison.assessment_output]
+                ),
+                opens_after="independent_findings_sealed",
+                unresolved_to="task_owner",
+            )
+            basis_parts.append(deferred.model_dump(mode="json"))
         return BranchReview(
+            deferred=deferred,
             criteria=criteria,
             checks=checks,
             status=status,
             handoff=handoff,
-            digest=fingerprint(
-                [basis, criteria.model_dump(mode="json"), status, handoff]
-            ),
+            digest=fingerprint(basis_parts),
         )
 
 

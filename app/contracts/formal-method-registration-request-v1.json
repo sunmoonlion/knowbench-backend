@@ -223,6 +223,17 @@
     "CollaborationStep": {
       "additionalProperties": false,
       "properties": {
+        "comparison": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewComparison"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "review_requirements": {
           "maxProperties": 100,
           "patternProperties": {
@@ -1095,6 +1106,29 @@
         "role"
       ],
       "title": "ResourceValue",
+      "type": "object"
+    },
+    "ReviewComparison": {
+      "additionalProperties": false,
+      "description": "Compare this output with sealed independent findings in a second round.",
+      "properties": {
+        "assessment_output": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Assessment Output",
+          "type": "string"
+        },
+        "max_reworks": {
+          "maximum": 2,
+          "minimum": 0,
+          "title": "Max Reworks",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "assessment_output",
+        "max_reworks"
+      ],
+      "title": "ReviewComparison",
       "type": "object"
     },
     "SkillDeliveryTerms": {

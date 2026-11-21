@@ -219,7 +219,18 @@ class Export(Strict):
 COLLABORATION_ID = r"^[A-Za-z][A-Za-z0-9_-]{0,47}$"
 
 
+class ReviewComparison(Strict):
+    """Compare this output with sealed independent findings in a second round."""
+
+    assessment_output: Name
+    max_reworks: int = Field(strict=True, ge=0, le=2)
+
+
 class CollaborationStep(Strict):
+    comparison: ReviewComparison | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     # Each key is the producer whose accepted output this step reviews.
     review_requirements: dict[
         Annotated[str, Field(pattern=COLLABORATION_ID)],
@@ -268,6 +279,29 @@ class Orchestration(Strict):
                 steps[name].depends_on
             ):
                 raise ValueError("Handoffs must reference an explicit predecessor")
+            if role.comparison:
+                if len(role.review_requirements) != 1:
+                    raise ValueError(
+                        "A directed comparison requires one reviewed producer"
+                    )
+                producer = next(iter(role.review_requirements))
+                bindings = [field.binding for field in steps[name].inputs.values()]
+                outputs = {
+                    b.output
+                    for b in bindings
+                    if b.source == "step" and b.step == producer
+                }
+                if (
+                    set(steps[name].depends_on) != {producer}
+                    or any(b.source != "step" or b.step != producer for b in bindings)
+                    or producer not in steps
+                    or not outputs <= steps[producer].outputs.keys()
+                    or role.comparison.assessment_output not in outputs
+                    or len(outputs) < 2
+                ):
+                    raise ValueError(
+                        "Bind distinct review and assessment outputs from one producer"
+                    )
             for producer in role.review_requirements:
                 if (
                     producer == name
