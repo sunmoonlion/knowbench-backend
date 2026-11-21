@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from app.application.workbench.registry_catalog import SceneRegistry
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden, NotFound, RuntimeCapabilityGap
 from app.domain.workbench.formal_execution import validate_values
@@ -52,6 +53,7 @@ class FormalMethods:
         now: Callable[[], datetime] | None = None,
     ):
         self.repo = repo
+        self.registry = SceneRegistry(self, repo)
         self.market = market
         self.operations = OperationCatalog(
             tuple(operations), script_tariff=script_tariff
@@ -182,23 +184,18 @@ class FormalMethods:
         return result
 
     async def sources(self, subject: str) -> dict:
-        async with self.repo.transaction():
-            owner = await self._owner(subject)
-            assets = await self.repo.capability_assets(owner)
-            now = self.now()
-            return {
-                "items": [
-                    s.model_dump(mode="json")
-                    for a in assets
-                    for s in self._sources(a, subject, now=now)
-                ]
-            }
+        return await self.registry.sources(subject)
 
     async def _source(
         self, owner: str, subject: str, source: FormalMethodSource | None
     ) -> bool:
         if source is None:
             return True
+        if source.kind in ("registered_script", "registered_instruction"):
+            await self.registry.check_direct_source(owner, source)
+            raise RuntimeCapabilityGap(
+                "Direct source is registered; its trial executor is not bound"
+            )
         if source.asset_id is None:
             # Platform implementations need their own reviewed source records;
             # being built in does not exempt them from incubation.
@@ -266,36 +263,7 @@ class FormalMethods:
             return req, await self._instruction_text(owner, asset)
 
     async def dependency(self, owner, reference, *, shared=True):
-        row = await self.repo.formal_method(
-            owner, str(reference.method_id), reference.version
-        )
-        grant = None
-        if row is None and shared and self.market is not None:
-            subject = await self.repo.subject_of_actor(owner)
-            page = await self.market.incubation_tools(subject, reference=reference)
-            if len(page.items) == 1:
-                grant = page.items[0]
-                publisher = await self.repo.actor_for_subject(grant.owner_subject)
-                if publisher:
-                    row = await self.repo.formal_method(
-                        publisher, str(reference.method_id), reference.version
-                    )
-        if not row or row["caller"] != "knowlab":
-            raise CapabilityError("Dependency has no accessible registration")
-        frozen = FrozenFormalMethod.model_validate(row["document"])
-        if frozen.reference != reference or (
-            grant
-            and (
-                frozen.owner_subject != grant.owner_subject
-                or frozen.visibility != "public"
-                or frozen.draft.source is None
-                or frozen.draft.source.kind not in ("mcp", "skill_script")
-                or "host" not in frozen.draft.allowed_callers
-            )
-        ):
-            raise CapabilityError("Dependency identity or host qualification changed")
-        self.require_supported_graph(frozen.draft)
-        return frozen, grant
+        return await self.registry.dependency(owner, reference, shared=shared)
 
     async def binding_options(self, owner, frozen):
         from app.domain.workbench.formal_execution import same_implementation
@@ -357,49 +325,9 @@ class FormalMethods:
         }
 
     async def shared_tools(self, subject, *, reference=None, after=None, limit=30):
-        from app.application.workbench.formal_method_catalog import FormalMethodCatalog
-        from app.domain.workbench.errors import WorkbenchError
-
-        owner = await self.repo.actor_for_subject(subject)
-        if owner is None:
-            return {"items": [], "next": None}
-        if self.market is None:
-            raise CapabilityError("KnowMart incubation permissions are unavailable")
-        page = await self.market.incubation_tools(
+        return await self.registry.shared_tools(
             subject, reference=reference, after=after, limit=limit
         )
-        items = []
-        catalog = FormalMethodCatalog(self.repo, self, self.operations)
-        for grant in page.items:
-            async with self.repo.transaction():
-                try:
-                    frozen = await catalog.shared_tool(grant)
-                    options, selected = await self.binding_options(owner, frozen)
-                except (WorkbenchError, ValueError):
-                    continue
-                if not options:
-                    continue
-                item = {
-                    "reference": frozen.reference.model_dump(mode="json"),
-                    "scope": grant.scope,
-                    "title": frozen.draft.definition.capability_declaration.title,
-                }
-                if reference:
-                    item["definition"] = frozen.draft.definition.model_dump(
-                        mode="json", by_alias=True
-                    )
-                    item["installations"] = [
-                        {
-                            "asset_id": str(key),
-                            "revision": value.asset_revision,
-                            "name": name,
-                            "account": account,
-                        }
-                        for key, (value, name, account) in options.items()
-                    ]
-                    item["selected"] = str(selected) if selected else None
-                items.append(item)
-        return {"items": items, "next": str(page.next) if page.next else None}
 
     async def _compile(self, owner: str, method_id, definition, *, documents=None):
         resolved: dict = {}

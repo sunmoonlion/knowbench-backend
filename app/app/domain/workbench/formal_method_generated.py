@@ -101,7 +101,14 @@ class ValueSlot(Strict):
 class ImplementationRef(Strict):
     """A portable source, never an author's credential or private connection ID."""
 
-    kind: Literal["platform", "mcp", "skill_instruction", "skill_script"]
+    kind: Literal[
+        "platform",
+        "mcp",
+        "skill_instruction",
+        "skill_script",
+        "registered_script",
+        "registered_instruction",
+    ]
     source: Text
     version: Text
     digest: Digest
@@ -120,9 +127,9 @@ class ToolProcedure(Strict):
 
     @model_validator(mode="after")
     def bounded_inference(self):
-        if (self.implementation.kind == "skill_instruction") != (
-            self.max_model_turns > 0
-        ):
+        if (
+            self.implementation.kind in ("skill_instruction", "registered_instruction")
+        ) != (self.max_model_turns > 0):
             raise ValueError(
                 "Only instruction implementations may allocate bounded model turns"
             )

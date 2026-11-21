@@ -517,7 +517,9 @@
             "platform",
             "mcp",
             "skill_instruction",
-            "skill_script"
+            "skill_script",
+            "registered_script",
+            "registered_instruction"
           ],
           "title": "Kind",
           "type": "string"
@@ -715,7 +717,9 @@
             "platform",
             "mcp",
             "skill_instruction",
-            "skill_script"
+            "skill_script",
+            "registered_script",
+            "registered_instruction"
           ],
           "title": "Kind",
           "type": "string"

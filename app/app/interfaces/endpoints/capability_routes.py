@@ -165,6 +165,23 @@ async def read_direct_source(
         raise _http(exc) from exc
 
 
+@router.get("/workbench/registry/planning-methods")
+async def registry_planning_methods(
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.formal_sources.registry.planning_versions(
+            _actor(user), limit, offset
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/workbench/registry/activity", response_model=list[RegistryEvent])
 async def registry_activity(
     response: Response,

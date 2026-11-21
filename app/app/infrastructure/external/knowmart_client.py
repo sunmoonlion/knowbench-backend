@@ -36,6 +36,12 @@ class KnowmartSummonClient:
     async def eligible_formal_refs(
         self, subject: str, references: list[dict]
     ) -> set[MethodRef]:
+        return await self._use_refs(subject, references, include_acquired=False)
+
+    async def planning_formal_refs(self, subject, references):
+        return await self._use_refs(subject, references, include_acquired=True)
+
+    async def _use_refs(self, subject, references, *, include_acquired):
         allowed = set()
         for offset in range(0, len(references), 100):
             batch = references[offset : offset + 100]
@@ -43,7 +49,11 @@ class KnowmartSummonClient:
                 _, body = await self._connect().request(
                     "POST",
                     "/formal-methods/eligible",
-                    json={"owner_subject": subject, "references": batch},
+                    json={
+                        "owner_subject": subject,
+                        "references": batch,
+                        **({"include_acquired": True} if include_acquired else {}),
+                    },
                 )
             except (BadGatewayError, ServiceUnavailableError) as exc:
                 raise KnowbotUnavailable(

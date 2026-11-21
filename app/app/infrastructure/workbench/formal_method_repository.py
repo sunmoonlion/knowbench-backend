@@ -115,6 +115,32 @@ class FormalMethodRepositoryMixin:
             .one()
         )
 
+    async def registry_method_candidates(
+        self, owner, limit, offset, *, latest=False, public=False
+    ):
+        # All metadata is projected from the admitted document. Public rows are
+        # internal candidates until the market has confirmed the consumer's rights.
+        selection = "DISTINCT ON (method_id)" if latest else ""
+        rows = await self.session.execute(
+            text(f"""
+          SELECT * FROM (SELECT {selection} method_id, version AS latest_version, digest, created_at,
+            CASE document#>>'{{draft,definition,procedure,kind}}'
+              WHEN 'direct' THEN 'tool' WHEN 'orchestration' THEN 'expert' END AS method_kind,
+            document#>>'{{draft,definition,capability_declaration,title}}' AS title,
+            left(document#>>'{{draft,definition,capability_declaration,purpose}}',500) AS summary
+          FROM workbench_formal_methods WHERE caller='knowlab'
+            AND document#>>'{{reference,digest}}' = digest
+            AND document#>>'{{reference,method_id}}' = method_id::text
+            AND document#>>'{{reference,version}}' = version::text
+            AND (owner_actor_id=:owner OR (:public AND document->>'visibility'='public'))
+            AND (NOT :public OR document#>'{{draft,allowed_callers}}' ? 'host')
+          ORDER BY method_id,version DESC) candidates
+          ORDER BY created_at DESC,method_id,latest_version DESC LIMIT :limit OFFSET :offset
+        """),
+            {"owner": owner, "limit": limit, "offset": offset, "public": public},
+        )
+        return [dict(r) for r in rows.mappings()]
+
     async def registry_inventory(self, owner):
         """Project only user-facing metadata. No credentials, file bodies or test evidence."""
         params = {"owner": owner}

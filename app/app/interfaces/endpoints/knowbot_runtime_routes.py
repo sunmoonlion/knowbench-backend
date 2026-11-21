@@ -300,6 +300,29 @@ async def decide_formal_execution(
         raise _http(exc) from exc
 
 
+@router.get("/users/{subject}/registry/incubation-methods")
+async def registry_incubation_methods(
+    _: FormalCaller,
+    subject: str,
+    svc: FormalService,
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    all_versions: bool = False,
+):
+    try:
+        return _out(
+            {
+                "items": jsonable_encoder(
+                    await svc.registry.author_versions(
+                        subject, limit, offset, all_versions=all_versions
+                    )
+                )
+            }
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/users/{subject}/formal-method-sources")
 async def formal_sources(_: FormalCaller, subject: str, svc: FormalService):
     try:

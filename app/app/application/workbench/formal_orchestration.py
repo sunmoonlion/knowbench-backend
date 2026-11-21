@@ -56,7 +56,7 @@ async def resolve_owned_plan(
                     continue
                 if len(resolved) >= 1000:
                     raise CapabilityError("Formal dependency closure limit")
-                frozen, grant = await formal_sources.dependency(owner, ref)
+                frozen, grant = await formal_sources.registry.dependency(owner, ref)
                 if (
                     frozen.reference != ref
                     or "host" not in frozen.draft.allowed_callers

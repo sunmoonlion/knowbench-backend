@@ -57,7 +57,14 @@ class SkillDeliveryTerms(Strict):
 class FormalMethodSource(Strict):
     asset_id: UUID | None
     asset_revision: int | None = Field(ge=1, strict=True)
-    kind: Literal["platform", "mcp", "skill_instruction", "skill_script"]
+    kind: Literal[
+        "platform",
+        "mcp",
+        "skill_instruction",
+        "skill_script",
+        "registered_script",
+        "registered_instruction",
+    ]
     source: Text
     version: Text
     digest: Digest
@@ -74,9 +81,20 @@ class FormalMethodSource(Strict):
             or self.license_basis == "pending"
         ):
             raise ValueError("Only a reviewed Skill can carry delivery terms")
-        if self.kind == "platform":
+        if self.kind in ("registered_script", "registered_instruction"):
+            if (
+                str(UUID(self.source)) != self.source
+                or not self.version.isascii()
+                or not self.version.isdigit()
+                or not 1 <= int(self.version) <= 2147483647
+                or str(int(self.version)) != self.version
+            ):
+                raise ValueError(
+                    "A registered source requires an exact source ID and version"
+                )
+        if self.kind in ("platform", "registered_script", "registered_instruction"):
             if self.asset_id is not None or self.asset_revision is not None:
-                raise ValueError("Platform implementations do not name user assets")
+                raise ValueError("This implementation does not name an installed asset")
         elif self.asset_id is None or self.asset_revision is None:
             raise ValueError("Installed sources require the exact asset revision")
         return self

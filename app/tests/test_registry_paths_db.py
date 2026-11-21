@@ -331,3 +331,74 @@ async def test_link_writes_report_and_work_session_delivers_approved_content(
             for row in activity
         )
         assert not await repo.registry_activity(OTHER)
+
+
+async def test_registry_scenes_share_versions_but_not_grants(db):
+    from uuid import uuid4
+
+    from app.application.workbench.formal_methods import FormalMethods
+    from app.domain.workbench.capabilities import CapabilityError
+    from app.domain.workbench.formal_method_generated import MethodRef
+    from app.domain.workbench.registry_sources import SourceDraft
+
+    ctx = await setup_plan(db)
+    ref = ctx.leaf.reference
+
+    class Market:
+        permitted = set()
+
+        async def planning_formal_refs(self, subject, references):
+            assert subject == "author"
+            return self.permitted.intersection(
+                MethodRef.model_validate(r) for r in references
+            )
+
+    market = Market()
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        methods = FormalMethods(repo, market=market)
+        async with repo.transaction():
+            direct = await repo.register_direct_revision(
+                OWNER,
+                uuid4(),
+                1,
+                SourceDraft(kind="script", name="reconcile.py", content="print(1)"),
+            )
+        sources = await methods.sources("author")
+        item = next(x for x in sources["items"] if x["kind"] == "registered_script")
+        assert (item["source"], item["digest"]) == (
+            str(direct["source_id"]),
+            direct["digest"],
+        )
+        assert item["asset_id"] is None
+
+        def refs(rows):
+            return [methods.registry.reference(r) for r in rows]
+
+        registered = await methods.registry.author_versions("author", 30, 0)
+        assert ref.model_dump(mode="json") in refs(registered)
+        assert not (await methods.registry.planning_versions(OWNER, 30, 0))["items"]
+        market.permitted = {ref}
+        assert refs(
+            (await methods.registry.planning_versions(OWNER, 30, 0))["items"]
+        ) == [ref.model_dump(mode="json")]
+        assert not await methods.registry.author_versions("other", 30, 0)
+        market.permitted.clear()
+        assert not (await methods.registry.planning_versions(OWNER, 30, 0))["items"]
+        # A stale snapshot and even a positive market answer cannot substitute
+        # for the exact live registration.
+        market.permitted = {ref}
+        async with repo.transaction():
+            await session.execute(
+                text(
+                    "UPDATE workbench_formal_methods SET digest=:d WHERE method_id=:id"
+                ),
+                {"id": str(ref.method_id), "d": "sha256:" + "0" * 64},
+            )
+        assert not (await methods.registry.planning_versions(OWNER, 30, 0))["items"]
+        with pytest.raises(CapabilityError):
+            await methods.registry.dependency(OWNER, ref)
+    before = len(ctx.remote.calls)
+    result = await advance(db, ctx)
+    assert len(ctx.remote.calls) == before
+    assert result["status"] == "failed" or not result["actions"]

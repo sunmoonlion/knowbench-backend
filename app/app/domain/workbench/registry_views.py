@@ -48,7 +48,17 @@ class FormalRegistration(Strict):
     # Direct methods pin an installation at incubation. Composite methods pin children.
     source_asset_id: UUID | None
     source_revision: int | None
-    source_kind: Literal["platform", "mcp", "skill_instruction", "skill_script"] | None
+    source_kind: (
+        Literal[
+            "platform",
+            "mcp",
+            "skill_instruction",
+            "skill_script",
+            "registered_script",
+            "registered_instruction",
+        ]
+        | None
+    )
     source_digest: str | None
     source_entry: str | None
     dependencies: tuple[MethodRef, ...]
