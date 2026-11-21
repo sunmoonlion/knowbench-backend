@@ -12,7 +12,10 @@ from typing import Any, cast
 from app.application.workbench.formal_evidence import collect_case_evidence
 from app.application.workbench.formal_execution import FormalExecution
 from app.application.workbench.formal_orchestration import resolve_plan
-from app.application.workbench.formal_partial_delivery import partial_case_delivery
+from app.application.workbench.formal_partial_delivery import (
+    partial_case_delivery,
+    verified_case_delivery,
+)
 from app.application.workbench.interactions import cancel_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
@@ -49,6 +52,8 @@ from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
     FormalMethodExecutionResult,
     PartialReport,
+    PrepareBranchReview,
+    ReceiveBranch,
     evaluate_assertions,
     fingerprint,
 )
@@ -299,7 +304,10 @@ class FormalExecutions:
                                     )
                                 )
             if row.get("branch_report"):
-                result = {**result, "partial": row["branch_report"]}
+                field = (
+                    "verified_steps" if result["outcome"] == "succeeded" else "partial"
+                )
+                result = {**result, field: row["branch_report"]}
             cases.append(result)
         state = {"accepted": "pending", "error": "failed", "timeout": "failed"}.get(
             run["status"], run["status"]
@@ -327,7 +335,7 @@ class FormalExecutions:
 
     async def receive_branch(self, subject, run_id, command, *, caller):
         async with self.repo.transaction():
-            _, run, request = await self.load(subject, run_id, caller, lock=True)
+            owner, run, request = await self.load(subject, run_id, caller, lock=True)
             if command.request_id != request.request_id or run["status"] in ACTIVE:
                 raise Forbidden("Branch delivery requires the original finished trial")
             key = case_key(command.case_id, command.repetition)
@@ -357,9 +365,22 @@ class FormalExecutions:
                 or step.state != "accepted"
                 or not step.artifact
                 or not step.artifact.output_names
-                or saved["outputs"] is None
             ):
                 raise Forbidden("Only verified branch outputs may be received")
+            outputs = saved["outputs"]
+            if outputs is None and saved["outcome"] == "succeeded":
+                outputs = await self.repo.sealed_step_outputs(
+                    owner, run_id, command.case_id, command.repetition, command.step
+                )
+            if outputs is None:
+                raise Forbidden("Verified artifact content is unavailable")
+            preparing = isinstance(command, PrepareBranchReview)
+            if preparing and not saved["received_at"]:
+                raise Forbidden(
+                    "Receive the verified branch before preparing its review"
+                )
+            if preparing and command.artifact != step.artifact:
+                raise IdempotencyConflict("The selected artifact version changed")
             stamp = (
                 datetime.fromisoformat(saved["received_at"])
                 if saved["received_at"]
@@ -367,17 +388,33 @@ class FormalExecutions:
             )
             try:
                 delivery = BranchDelivery(
-                    **command.model_dump(),
+                    **command.model_dump(include=set(ReceiveBranch.model_fields)),
+                    review=saved["review"],
                     run_id=request.run_id,
                     method_id=request.method_id,
                     artifact=step.artifact,
                     received_at=stamp,
-                    outputs=saved["outputs"],
+                    outputs=outputs,
                 )
             except ValueError as exc:
                 raise IdempotencyConflict(
                     "The retained artifact no longer matches its receipt"
                 ) from exc
+            if isinstance(command, PrepareBranchReview):
+                try:
+                    review = delivery.prepare_review(command.criteria)
+                except ValueError as exc:
+                    raise CapabilityError("Invalid review output selection") from exc
+                if delivery.review != review:
+                    previous = delivery.review.digest if delivery.review else None
+                    if command.previous != previous:
+                        raise IdempotencyConflict(
+                            "Review draft changed. Reopen the branch"
+                        )
+                    await self.repo.save_branch_review(
+                        run_id, key, command.step, review.model_dump(mode="json")
+                    )
+                    delivery = delivery.model_copy(update={"review": review})
             if not saved["received_at"]:
                 await self.repo.receive_test_branch(
                     run_id, key, command.step, stamp.isoformat()
@@ -831,6 +868,16 @@ class FormalExecutions:
                 )[:2000],
             ),
         )
+        if passed:
+            for observed in evidence_cases:
+                delivery = verified_case_delivery(request, observed)
+                if delivery is not None:
+                    case_result = observed["result"]
+                    await self.repo.update_test_case(
+                        run_id,
+                        case_key(case_result["case_id"], case_result["repetition"]),
+                        partial_delivery=delivery,
+                    )
         await self.repo.seal_formal_execution(
             owner, run_id, admission.model_dump(mode="json"), evidence
         )

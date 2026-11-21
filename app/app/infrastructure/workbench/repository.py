@@ -2091,13 +2091,46 @@ class WorkbenchRepository(
 
     async def test_branch_delivery(self, run_id: str, case_id: str, step: str):
         result = await self.session.execute(
-            text("""SELECT result->>'task_id' AS task_id, partial_delivery->'report' AS report,
+            text("""SELECT result->>'task_id' AS task_id, result->>'outcome' AS outcome,
+                           partial_delivery->'report' AS report,
                            partial_delivery->'outputs'->cast(:step AS text) AS outputs,
-                           partial_delivery->'receipts'->>cast(:step AS text) AS received_at
+                           partial_delivery->'receipts'->>cast(:step AS text) AS received_at,
+                           partial_delivery->'reviews'->cast(:step AS text) AS review
                     FROM workbench_test_cases WHERE run_id=:run AND case_id=:case"""),
             {"run": run_id, "case": case_id, "step": step},
         )
         return result.mappings().first()
+
+    async def sealed_step_outputs(self, owner, run_id, case_id, repetition, step):
+        # Project only the accepted slot's output from the immutable execution evidence.
+        result = await self.session.execute(
+            text("""SELECT item->'outputs'
+                    FROM workbench_formal_validations v
+                    CROSS JOIN LATERAL jsonb_array_elements(v.execution_evidence->'cases') c
+                    CROSS JOIN LATERAL jsonb_array_elements(c->'steps') item
+                    WHERE v.owner_actor_id=:owner AND v.run_id=:run
+                    AND c->>'validated'='true' AND c#>>'{result,case_id}'=:case
+                    AND c#>>'{result,repetition}'=:rep AND item->>'slot'=:step"""),
+            {
+                "owner": owner,
+                "run": run_id,
+                "case": case_id,
+                "rep": str(repetition),
+                "step": step,
+            },
+        )
+        return result.scalar_one_or_none()
+
+    async def save_branch_review(self, run_id, case_id, step, review):
+        # The caller holds the run lock and has compared the previous draft digest.
+        await self.session.execute(
+            text("""UPDATE workbench_test_cases SET partial_delivery = jsonb_set(
+                         partial_delivery, '{reviews}',
+                         coalesce(partial_delivery->'reviews', '{}'::jsonb)
+                         || jsonb_build_object(cast(:step AS text), cast(:review AS jsonb)))
+                    WHERE run_id=:run AND case_id=:case"""),
+            {"run": run_id, "case": case_id, "step": step, "review": _j(review)},
+        )
 
     async def receive_test_branch(
         self, run_id: str, case_id: str, step: str, timestamp: str

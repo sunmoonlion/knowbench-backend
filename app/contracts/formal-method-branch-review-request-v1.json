@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/branch-review-request.schema.json",
+  "$defs": {
+    "ApproxAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "approx",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        },
+        "absolute_tolerance": {
+          "minimum": 0,
+          "title": "Absolute Tolerance",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer",
+        "value",
+        "absolute_tolerance"
+      ],
+      "title": "ApproxAssertion",
+      "type": "object"
+    },
+    "BranchArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "content_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "output_names": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Output Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "content_digest",
+        "output_names"
+      ],
+      "title": "BranchArtifact",
+      "type": "object"
+    },
+    "ContainsAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "contains",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer",
+        "value"
+      ],
+      "title": "ContainsAssertion",
+      "type": "object"
+    },
+    "EqualsAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "equals",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer",
+        "value"
+      ],
+      "title": "EqualsAssertion",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ReviewCriteria": {
+      "additionalProperties": false,
+      "properties": {
+        "outputs": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Outputs",
+          "type": "array"
+        },
+        "assertions": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "approx": "#/$defs/ApproxAssertion",
+                "contains": "#/$defs/ContainsAssertion",
+                "equals": "#/$defs/EqualsAssertion"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/EqualsAssertion"
+              },
+              {
+                "$ref": "#/$defs/ApproxAssertion"
+              },
+              {
+                "$ref": "#/$defs/ContainsAssertion"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Assertions",
+          "type": "array"
+        },
+        "reviewer": {
+          "enum": [
+            "isolated_reviewer",
+            "different_model_family"
+          ],
+          "title": "Reviewer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outputs",
+        "assertions",
+        "reviewer"
+      ],
+      "title": "ReviewCriteria",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "case_id": {
+      "pattern": "^[A-Za-z0-9_-]{1,48}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "repetition": {
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Repetition",
+      "type": "integer"
+    },
+    "step": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+      "title": "Step",
+      "type": "string"
+    },
+    "scope_digest": {
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "title": "Scope Digest",
+      "type": "string"
+    },
+    "artifact": {
+      "$ref": "#/$defs/BranchArtifact"
+    },
+    "criteria": {
+      "$ref": "#/$defs/ReviewCriteria"
+    },
+    "previous": {
+      "anyOf": [
+        {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Previous"
+    }
+  },
+  "required": [
+    "request_id",
+    "case_id",
+    "repetition",
+    "step",
+    "scope_digest",
+    "artifact",
+    "criteria",
+    "previous"
+  ],
+  "title": "Prepare a directed review of an accepted branch",
+  "type": "object"
+}

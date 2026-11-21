@@ -494,7 +494,42 @@ class ReceiveBranch(Strict):
     scope_digest: Digest
 
 
+class ReviewCriteria(Strict):
+    outputs: tuple[Name, ...] = Field(min_length=1, max_length=100)
+    assertions: tuple[Assertion, ...] = Field(min_length=1, max_length=64)
+    reviewer: Literal["isolated_reviewer", "different_model_family"]
+
+    @model_validator(mode="after")
+    def scoped_checks(self):
+        bounded_json(self.model_dump(mode="json"))
+        checked = {a.pointer.split("/")[1] for a in self.assertions if a.pointer}
+        if (
+            len(set(self.outputs)) != len(self.outputs)
+            or any(not a.pointer for a in self.assertions)
+            or checked != set(self.outputs)
+        ):
+            raise ValueError("Checks must address exactly the selected outputs")
+        return self
+
+
+class PrepareBranchReview(ReceiveBranch):
+    artifact: BranchArtifact
+    criteria: ReviewCriteria
+    previous: Digest | None
+
+
+class BranchReview(Strict):
+    criteria: ReviewCriteria
+    checks: tuple[FormalAssertionResult, ...]
+    status: Literal["v0_failed", "awaiting_isolation"]
+    handoff: dict[Name, Digest]
+    digest: Digest
+
+
 class BranchDelivery(ReceiveBranch):
+    review: BranchReview | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     method_id: UUID
     run_id: UUID
     artifact: BranchArtifact
@@ -511,10 +546,38 @@ class BranchDelivery(ReceiveBranch):
             raise ValueError(
                 "Partial delivery content differs from the reviewed artifact"
             )
+        if self.review and self.review != self.prepare_review(self.review.criteria):
+            raise ValueError("Stored review differs from the checked artifact")
         return self
+
+    def prepare_review(self, criteria: ReviewCriteria) -> BranchReview:
+        if not set(criteria.outputs).issubset(self.outputs):
+            raise ValueError("Selected output is absent from the accepted artifact")
+        selected = {name: self.outputs[name] for name in criteria.outputs}
+        checks = check_output_assertions(criteria.assertions, selected)
+        passed = all(check.passed for check in checks)
+        handoff = (
+            {name: fingerprint(value) for name, value in selected.items()}
+            if passed
+            else {}
+        )
+        status = "awaiting_isolation" if passed else "v0_failed"
+        basis = self.model_dump(mode="json", exclude={"review", "outputs"})
+        return BranchReview(
+            criteria=criteria,
+            checks=checks,
+            status=status,
+            handoff=handoff,
+            digest=fingerprint(
+                [basis, criteria.model_dump(mode="json"), status, handoff]
+            ),
+        )
 
 
 class FormalExecutionCaseResult(Strict):
+    verified_steps: PartialReport | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     partial: PartialReport | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
@@ -635,8 +698,14 @@ def evaluate_assertions(
     case: FormalExecutionCase, outputs: dict
 ) -> tuple[FormalAssertionResult, ...]:
     """Only called by the evaluator after the runtime validates output schemas."""
+    return check_output_assertions(case.expected.assertions, outputs)
+
+
+def check_output_assertions(
+    assertions: tuple[Assertion, ...], outputs: dict
+) -> tuple[FormalAssertionResult, ...]:
     results = []
-    for index, assertion in enumerate(case.expected.assertions):
+    for index, assertion in enumerate(assertions):
         try:
             actual = _pointer(outputs, assertion.pointer)
             if isinstance(assertion, EqualsAssertion):

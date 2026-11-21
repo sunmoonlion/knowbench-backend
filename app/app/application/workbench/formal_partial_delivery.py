@@ -1,4 +1,4 @@
-"""Author trial handoff of verified branch outputs from an incomplete fixed join."""
+"""Author trial handoff of verified outputs from completed or interrupted fixed plans."""
 
 from decimal import InvalidOperation
 
@@ -8,6 +8,7 @@ from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_execution import orchestration_plan, recursive_plan
 from app.domain.workbench.formal_method_execution_generated import fingerprint
 from app.domain.workbench.formal_method_generated import Orchestration
+from app.domain.workbench.formal_recursive import TREE_ADAPTER
 from app.domain.workbench.states import AttemptState, TaskState
 
 
@@ -167,3 +168,45 @@ async def partial_case_delivery(
         "outputs": accepted,
         "receipts": {},
     }
+
+
+def verified_case_delivery(request, evidence):
+    """Index completed flat-plan artifacts. Their content stays in sealed evidence."""
+    graph = request.draft.definition.procedure
+    case = evidence["result"]
+    if (
+        not isinstance(graph, Orchestration)
+        or not evidence["validated"]
+        or case["status"] != "passed"
+        or case["outcome"] != "succeeded"
+        or evidence.get("adapter") == TREE_ADAPTER
+    ):
+        return None
+    steps = {s.id: s for s in graph.steps}
+    progress = []
+    for item in evidence["steps"]:
+        step = steps[item["slot"]]
+        progress.append(
+            dict(
+                step=step.id,
+                depends_on=list(step.depends_on),
+                state="accepted",
+                detail="",
+                artifact={
+                    **{k: item["artifact"][k] for k in ("id", "version", "digest")},
+                    "content_digest": fingerprint(item["outputs"]),
+                    "output_names": sorted(item["outputs"]),
+                },
+            )
+        )
+    report = {"steps": progress, "missing_promises": {}}
+    scope = fingerprint(
+        [
+            request.fingerprint(),
+            case["task_id"],
+            case["case_id"],
+            case["repetition"],
+            report,
+        ]
+    )
+    return {"report": {**report, "scope_digest": scope, "received": []}, "receipts": {}}

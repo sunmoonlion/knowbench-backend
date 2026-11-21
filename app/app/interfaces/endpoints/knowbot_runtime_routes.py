@@ -37,6 +37,7 @@ from app.domain.workbench.formal_method_admission_generated import (
 from app.domain.workbench.formal_method_execution_generated import (
     FormalExecutionDecision,
     FormalMethodExecutionRequest,
+    PrepareBranchReview,
     ReceiveBranch,
 )
 from app.domain.workbench.formal_method_generated import MethodRef, Strict
@@ -281,12 +282,30 @@ async def cancel_formal_execution(
         raise _http(exc) from exc
 
 
-@router.post("/formal-method-executions/{run_id}/partial-deliveries")
+@router.post("/formal-method-executions/{run_id}/step-deliveries")
 async def receive_trial_branch(
     caller: FormalCaller,
     run_id: UUID,
     owner_subject: str,
     body: ReceiveBranch,
+    svc: FormalExecutionService,
+):
+    try:
+        return _out(
+            await svc.receive_branch(
+                owner_subject, str(run_id), body, caller=caller.caller
+            )
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-executions/{run_id}/branch-review")
+async def prepare_trial_review(
+    caller: FormalCaller,
+    run_id: UUID,
+    owner_subject: str,
+    body: PrepareBranchReview,
     svc: FormalExecutionService,
 ):
     try:

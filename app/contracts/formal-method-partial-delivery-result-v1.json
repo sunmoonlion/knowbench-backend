@@ -2,6 +2,39 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/partial-delivery-result.schema.json",
   "$defs": {
+    "ApproxAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "approx",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value": {
+          "title": "Value",
+          "type": "number"
+        },
+        "absolute_tolerance": {
+          "minimum": 0,
+          "title": "Absolute Tolerance",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer",
+        "value",
+        "absolute_tolerance"
+      ],
+      "title": "ApproxAssertion",
+      "type": "object"
+    },
     "BranchArtifact": {
       "additionalProperties": false,
       "properties": {
@@ -45,7 +78,193 @@
       "title": "BranchArtifact",
       "type": "object"
     },
-    "JsonValue": {}
+    "BranchReview": {
+      "additionalProperties": false,
+      "properties": {
+        "criteria": {
+          "$ref": "#/$defs/ReviewCriteria"
+        },
+        "checks": {
+          "items": {
+            "$ref": "#/$defs/FormalAssertionResult"
+          },
+          "title": "Checks",
+          "type": "array"
+        },
+        "status": {
+          "enum": [
+            "v0_failed",
+            "awaiting_isolation"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "handoff": {
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "pattern": "^sha256:[a-f0-9]{64}$",
+              "type": "string"
+            }
+          },
+          "title": "Handoff",
+          "type": "object"
+        },
+        "digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        }
+      },
+      "required": [
+        "criteria",
+        "checks",
+        "status",
+        "handoff",
+        "digest"
+      ],
+      "title": "BranchReview",
+      "type": "object"
+    },
+    "ContainsAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "contains",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "title": "Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer",
+        "value"
+      ],
+      "title": "ContainsAssertion",
+      "type": "object"
+    },
+    "EqualsAssertion": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "equals",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "value": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer",
+        "value"
+      ],
+      "title": "EqualsAssertion",
+      "type": "object"
+    },
+    "FormalAssertionResult": {
+      "additionalProperties": false,
+      "properties": {
+        "index": {
+          "maximum": 63,
+          "minimum": 0,
+          "title": "Index",
+          "type": "integer"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "detail": {
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "index",
+        "passed",
+        "detail"
+      ],
+      "title": "FormalAssertionResult",
+      "type": "object"
+    },
+    "JsonValue": {},
+    "ReviewCriteria": {
+      "additionalProperties": false,
+      "properties": {
+        "outputs": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Outputs",
+          "type": "array"
+        },
+        "assertions": {
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "approx": "#/$defs/ApproxAssertion",
+                "contains": "#/$defs/ContainsAssertion",
+                "equals": "#/$defs/EqualsAssertion"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/EqualsAssertion"
+              },
+              {
+                "$ref": "#/$defs/ApproxAssertion"
+              },
+              {
+                "$ref": "#/$defs/ContainsAssertion"
+              }
+            ]
+          },
+          "maxItems": 64,
+          "minItems": 1,
+          "title": "Assertions",
+          "type": "array"
+        },
+        "reviewer": {
+          "enum": [
+            "isolated_reviewer",
+            "different_model_family"
+          ],
+          "title": "Reviewer",
+          "type": "string"
+        }
+      },
+      "required": [
+        "outputs",
+        "assertions",
+        "reviewer"
+      ],
+      "title": "ReviewCriteria",
+      "type": "object"
+    }
   },
   "additionalProperties": false,
   "properties": {
@@ -74,6 +293,17 @@
       "pattern": "^sha256:[a-f0-9]{64}$",
       "title": "Scope Digest",
       "type": "string"
+    },
+    "review": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/BranchReview"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     },
     "method_id": {
       "format": "uuid",

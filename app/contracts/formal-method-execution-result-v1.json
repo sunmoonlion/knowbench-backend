@@ -203,6 +203,17 @@
     "FormalExecutionCaseResult": {
       "additionalProperties": false,
       "properties": {
+        "verified_steps": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PartialReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "partial": {
           "anyOf": [
             {
