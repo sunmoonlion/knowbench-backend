@@ -193,3 +193,27 @@ async def approved_leaf(svc, owner, task, caller):
         raise CapabilityError("Missing instruction input transfer authority")
     check(state, call, binding, interaction["expires_at"])
     return quote, job
+
+
+async def cancel_leaf_call(repo, owner, attempt):
+    """Task and Attempt are locked in the same order as the gateway claim."""
+    refs = attempt["refs"]
+    if not refs.get("capability_call_id"):
+        return
+    call = await repo.capability_call(owner, refs["capability_call_id"], lock=True)
+    if (
+        call["detail"].get("execution_kind") != "formal_instruction"
+        or str(call["attempt_id"]) != str(attempt["id"])
+        or call["status"] not in ("awaiting_approval", "dispatching")
+    ):
+        return
+    claimed = bool(refs.get("instruction_request"))
+    status = "unknown" if claimed else "failed"
+    if call["status"] == "awaiting_approval":
+        status = "expired"
+    reason = (
+        "cancelled_after_model_request" if claimed else "cancelled_before_model_request"
+    )
+    await repo.update_call(
+        owner, call["id"], status, {**call["detail"], "result": {"error": reason}}
+    )

@@ -28,6 +28,7 @@ class Units:
         self.deleted = self.reclaimed = False
         self.ready = False
         self.deliver = None
+        self.after_claim = None
 
     async def request(
         self, owner, task, method, path, *, body=None, params=None, absent=False
@@ -131,6 +132,8 @@ async def stack(db, **kwargs):
                         body=wire,
                     )
                     provider_requests.append(outgoing)
+                    if units.after_claim:
+                        await units.after_claim()
                     await svc.receipt(
                         OWNER,
                         units.task,

@@ -249,7 +249,16 @@ async def test_private_instruction_remains_qualified_only_after_safe_cleanup(db)
         )
 
 
-@pytest.mark.parametrize("decision", ["complete", "decline_second", "revoke_parent"])
+@pytest.mark.parametrize(
+    "decision",
+    [
+        "complete",
+        "decline_second",
+        "revoke_parent",
+        "cancel_approved",
+        "cancel_claimed",
+    ],
+)
 async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
     db, decision
 ):
@@ -331,6 +340,21 @@ async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
                 )
             return
         await approve(db, request, factory, result)
+        if index and decision == "cancel_approved":
+            async with s.host() as svc:
+                await FormalExecutions(svc.repo, factory(svc.repo)).cancel(
+                    "author", str(request.run_id), caller="knowlab"
+                )
+                call = await svc.repo.capability_call(OWNER, action["call_id"])
+                assert call["status"] == "failed" and call["detail"]["result"] == {
+                    "error": "cancelled_before_model_request"
+                }
+                assert (await svc.repo.get_task(task))["state"] == "CANCELLED"
+                assert (
+                    Decimal((await svc.repo.get_task(task))["budget"]["reserved"]) == 0
+                )
+                assert len(s.turns) == 2
+            return
         if index and decision == "revoke_parent":
             async with s.host() as svc, svc.repo.transaction():
                 parent = subject["artifact_read"]["path"][0]["call_id"]
@@ -348,6 +372,15 @@ async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
             return
         async with s.host() as svc, svc.repo.transaction():
             await svc.authority(OWNER, await svc.repo.get_task(task), "knowlab")
+        if index and decision == "cancel_claimed":
+
+            async def cancel_sent_request():
+                async with s.host() as svc:
+                    await FormalExecutions(svc.repo, factory(svc.repo)).cancel(
+                        "author", str(request.run_id), caller="knowlab"
+                    )
+
+            s.units.after_claim = cancel_sent_request
         message = s.wire["input"][0]["content"][0]
         job = json.loads(message["text"])
         job["arguments"] = subject["arguments"]
@@ -357,6 +390,34 @@ async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
         await graph.drive(task)
         async with s.host() as svc:
             attempt = (await svc.repo.list_attempts(task))[index]
+            if index and decision == "cancel_claimed":
+                call = await svc.repo.capability_call(OWNER, action["call_id"])
+                assert (
+                    call["status"] == "unknown"
+                    and call["detail"]["result"]["error"]
+                    == "cancelled_after_model_request"
+                )
+                root = await svc.repo.get_task(task)
+                assert root["state"] == "CANCELLED" and not Decimal(
+                    root["budget"]["reserved"]
+                )
+                charges = [
+                    row
+                    for row in await svc.repo.ledger_list(task)
+                    if row["entry"] == "consume"
+                ]
+                assert (
+                    len(charges)
+                    == len({str(row["attempt_id"]) for row in charges})
+                    == 2
+                )
+                assert sum(row["amount"] for row in charges) == Decimal(
+                    root["budget"]["used"]
+                )
+                assert (
+                    attempt["status"] == "CANCELLED" and not attempt["output_artifacts"]
+                )
+                return
             assert attempt["status"] == "COMPLETED", (
                 attempt["refs"],
                 (await svc.repo.get_task(task))["state"],
@@ -377,10 +438,11 @@ async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
         outgoing = s.provider_requests[-1]
         assert "private-session-marker" not in json.dumps(outgoing)
         assert (
-            json.loads(outgoing["input"][0]["content"][0]["text"])["arguments"]
+            json.loads(outgoing["input"][-1]["content"][0]["text"])["arguments"]
             == subject["arguments"]
         )
-        assert len(outgoing["input"]) == 1 and outgoing["store"] is False
+        assert [m["role"] for m in outgoing["input"]] == ["developer", "user"]
+        assert outgoing["store"] is False
         result = await status(db, request, factory)
     async with s.host() as svc:
         root = await svc.repo.get_task(task)

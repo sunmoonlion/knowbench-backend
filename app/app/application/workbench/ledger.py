@@ -785,6 +785,15 @@ class Ledger:
                 and str(attempt["id"]) == str(task.get("active_attempt_id"))
                 and attempt["status"] not in ATTEMPT_TERMINAL
             ):
+                refs = attempt.get("refs") or {}
+                if refs.get("kind") == "formal_orchestration_step" and refs.get(
+                    "instruction_quote"
+                ):
+                    from app.application.workbench.instruction_leaf import (
+                        cancel_leaf_call,
+                    )
+
+                    await cancel_leaf_call(self.repo, owner_actor_id, attempt)
                 await self.attempt_transition(
                     str(attempt["id"]),
                     AttemptState.CANCELLED,

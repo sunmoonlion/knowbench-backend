@@ -6,6 +6,7 @@ import json
 from app.application.ports.workbench import AppServerConnection
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.formal_model import PROBE_PASSIVE_ITEMS
+from app.domain.workbench.instruction_requests import INSTRUCTION_GUIDANCE
 
 
 async def run_instruction_turn(
@@ -74,7 +75,7 @@ async def run_instruction_turn(
                 "model": model,
                 "modelProvider": "instruction",
                 "allowProviderModelFallback": False,
-                "baseInstructions": "Apply the supplied skill to the arguments and return the requested structured result.",
+                "baseInstructions": INSTRUCTION_GUIDANCE,
             },
         )
         thread_id = opened["thread"]["id"]

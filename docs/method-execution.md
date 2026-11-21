@@ -334,4 +334,4 @@ KnowBench 可复核作者本人私有登记的精确指令版本。核对项包�
 
 运行结果和用量回执齐备后，宿主把通过契约校验的输出写为 `formal-step:<步骤 ID>` 产物。下游通过生产步骤、产物 ID、版本、摘要和字段取值。同名产物有新版本时仍读取原版本。每步用量核销本次 Attempt 的预留，根账累计各步实际费用。作者冻结前逐案核对全部步骤的审批、输入绑定、产物和扣费。已登记版本的证据可在测试 Task 清理后复核。当前执行范围为一层固定图和本人私有指令，含纯指令的深层递归图在受理时报告缺口。
 
-在后端 `app/` 指定独立 PostgreSQL 测试库，运行 `.venv/bin/pytest -q tests/test_formal_instruction_trial_db.py -k fixed`。样例先试跑并私有登记一个纯指令工具，再在专家的两个步骤中分别调用该版本。正常路径验收到专家私有登记，另两例覆盖用户拒绝第二步与同意后父授权撤销。该组使用合成模型和执行单元。平台仓的 `scripts/local-integration/instruction_author.py` 还会从两个真实服务的 HTTP 路由提交作者用例、逐步批准外发并登记私有专家。
+在后端 `app/` 指定独立 PostgreSQL 测试库，运行 `.venv/bin/pytest -q tests/test_formal_instruction_trial_db.py -k fixed`。样例先试跑并私有登记一个纯指令工具，再在专家的两个步骤中分别调用该版本。正常路径验收到专家私有登记，另验用户拒绝、父授权撤销及取消与外发的先后顺序。批准后、领取供应商请求前取消会释放预留；请求已领取时保留未知结果和待核销费用，迟到回执只结算原 Attempt。该组使用合成模型和执行单元。平台仓的 `scripts/local-integration/instruction_author.py` 还会从两个真实服务的 HTTP 路由提交作者用例、逐步批准外发并登记私有专家。

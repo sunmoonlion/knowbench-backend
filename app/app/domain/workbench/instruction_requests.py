@@ -10,6 +10,8 @@ from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.pricing import Price, PriceList, Usage, cost_of
 from app.domain.workbench.provider_url import validate_provider_base_url
 
+INSTRUCTION_GUIDANCE = "Apply the supplied skill to the arguments and return the requested structured result."
+
 
 @dataclass(frozen=True)
 class InstructionRoute:
@@ -159,6 +161,11 @@ def leaf_responses_body(job, model, limit):
         "max_output_tokens": limit,
         "input": [
             {
+                "role": "developer",
+                "type": "message",
+                "content": [{"type": "input_text", "text": INSTRUCTION_GUIDANCE}],
+            },
+            {
                 "role": "user",
                 "type": "message",
                 "content": [
@@ -172,7 +179,7 @@ def leaf_responses_body(job, model, limit):
                         ),
                     }
                 ],
-            }
+            },
         ],
         "text": {
             "format": {
