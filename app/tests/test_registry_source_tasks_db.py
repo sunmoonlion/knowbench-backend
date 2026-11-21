@@ -224,7 +224,7 @@ async def test_web_approval_and_changed_authority_between_prepare_and_input(db):
 
     sid, req, service, executor = await setup(db, "script")
     app = application(db, service)
-    path = f"/api/workbench/sessions/{sid}/registry-source-tasks"
+    path = f"/api/workbench/sessions/{sid}/method-skill-center/source-tasks"
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://testserver"
     ) as web:
@@ -263,7 +263,7 @@ async def test_web_approval_and_changed_authority_between_prepare_and_input(db):
             assert (
                 Call.model_validate(calls[0]).detail.execution_kind == "registry_script"
             )
-        events = await web.get("/api/workbench/registry/activity")
+        events = await web.get("/api/workbench/method-skill-center/activity")
         assert events.status_code == 200, events.text
         event = next(e for e in events.json() if e["record_id"] == tid)
         assert (

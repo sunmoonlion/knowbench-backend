@@ -28,7 +28,7 @@ async def test_author_registers_without_skill_or_incubation(
     monkeypatch.setattr(
         auth, "web_auth_service", FakeAuthService({"author": browser, "other": other})
     )
-    base = "/api/workbench/registry/sources"
+    base = "/api/workbench/method-skill-center/sources"
     sid = str(uuid4())
     path = f"{base}/{sid}/1"
     draft = {"name": "reconcile", "kind": kind, "content": content}
@@ -44,7 +44,10 @@ async def test_author_registers_without_skill_or_incubation(
         }
         assert (await client.put(path, json=draft)).status_code == 403
         r1, r2 = await asyncio.gather(
-            *(client.put(path, json=draft, headers=headers) for _ in range(2))
+            client.put(path, json=draft, headers=headers),
+            client.put(
+                f"/api/workbench/registry/sources/{sid}/1", json=draft, headers=headers
+            ),
         )
         assert r1.status_code == r2.status_code == 200, (r1.text, r2.text)
         assert (
@@ -59,8 +62,12 @@ async def test_author_registers_without_skill_or_incubation(
             }
         )
         assert (await client.get(base)).json() == [r1.json()]
-        assert (await client.get("/api/workbench/registry")).json()["formal"] == []
-        assert (await client.get("/api/workbench/registry")).json()["installed"] == []
+        assert (await client.get("/api/workbench/method-skill-center")).json()[
+            "formal"
+        ] == []
+        assert (await client.get("/api/workbench/method-skill-center")).json()[
+            "installed"
+        ] == []
         edit = {**draft, "content": "updated\n"}
         assert (await client.put(path, json=edit, headers=headers)).status_code == 409
         assert (

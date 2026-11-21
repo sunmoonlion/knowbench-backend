@@ -117,7 +117,14 @@ def formal_service(svc=Depends(service)):
     return FormalMethodCalls(svc)
 
 
-@router.get("/workbench/registry/sources", response_model=list[RegisteredSource])
+@router.get(
+    "/workbench/registry/sources",
+    response_model=list[RegisteredSource],
+    include_in_schema=False,
+)
+@router.get(
+    "/workbench/method-skill-center/sources", response_model=list[RegisteredSource]
+)
 async def list_direct_sources(
     response: Response,
     user: Principal = Depends(get_web_current_user),
@@ -128,7 +135,13 @@ async def list_direct_sources(
 
 
 @router.put(
-    "/workbench/registry/sources/{source_id}/{version}", response_model=RegisteredSource
+    "/workbench/registry/sources/{source_id}/{version}",
+    response_model=RegisteredSource,
+    include_in_schema=False,
+)
+@router.put(
+    "/workbench/method-skill-center/sources/{source_id}/{version}",
+    response_model=RegisteredSource,
 )
 async def register_direct_source(
     source_id: UUID,
@@ -149,7 +162,13 @@ async def register_direct_source(
 
 
 @router.get(
-    "/workbench/registry/sources/{source_id}/{version}", response_model=SourceRevision
+    "/workbench/registry/sources/{source_id}/{version}",
+    response_model=SourceRevision,
+    include_in_schema=False,
+)
+@router.get(
+    "/workbench/method-skill-center/sources/{source_id}/{version}",
+    response_model=SourceRevision,
 )
 async def read_direct_source(
     source_id: UUID,
@@ -166,7 +185,13 @@ async def read_direct_source(
         raise _http(exc) from exc
 
 
-@router.post("/workbench/sessions/{session_id}/registry-source-tasks/preview")
+@router.post(
+    "/workbench/sessions/{session_id}/registry-source-tasks/preview",
+    include_in_schema=False,
+)
+@router.post(
+    "/workbench/sessions/{session_id}/method-skill-center/source-tasks/preview"
+)
 async def preview_source_task(
     session_id: UUID,
     body: SourceTaskInput,
@@ -188,7 +213,10 @@ async def preview_source_task(
         raise _http(exc) from exc
 
 
-@router.post("/workbench/sessions/{session_id}/registry-source-tasks")
+@router.post(
+    "/workbench/sessions/{session_id}/registry-source-tasks", include_in_schema=False
+)
+@router.post("/workbench/sessions/{session_id}/method-skill-center/source-tasks")
 async def execute_source_task(
     session_id: UUID,
     body: SourceTaskConfirmation,
@@ -203,8 +231,9 @@ async def execute_source_task(
         raise _http(exc) from exc
 
 
-@router.get("/workbench/registry/planning-methods")
-async def registry_planning_methods(
+@router.get("/workbench/registry/planning-methods", include_in_schema=False)
+@router.get("/workbench/method-skill-center/planning-methods")
+async def method_skill_center_planning_methods(
     response: Response,
     user: Principal = Depends(get_web_current_user),
     svc=Depends(service),
@@ -220,8 +249,15 @@ async def registry_planning_methods(
         raise _http(exc) from exc
 
 
-@router.get("/workbench/registry/activity", response_model=list[RegistryEvent])
-async def registry_activity(
+@router.get(
+    "/workbench/registry/activity",
+    response_model=list[RegistryEvent],
+    include_in_schema=False,
+)
+@router.get(
+    "/workbench/method-skill-center/activity", response_model=list[RegistryEvent]
+)
+async def method_skill_center_activity(
     response: Response,
     user: Principal = Depends(get_web_current_user),
     svc=Depends(service),
@@ -230,8 +266,11 @@ async def registry_activity(
     return await svc.repo.registry_activity(_actor(user))
 
 
-@router.get("/workbench/registry", response_model=RegistryInventory)
-async def registry_inventory(
+@router.get(
+    "/workbench/registry", response_model=RegistryInventory, include_in_schema=False
+)
+@router.get("/workbench/method-skill-center", response_model=RegistryInventory)
+async def method_skill_center_inventory(
     response: Response,
     user: Principal = Depends(get_web_current_user),
     svc=Depends(service),
@@ -242,7 +281,13 @@ async def registry_inventory(
 
 
 @router.get(
-    "/workbench/registry/installed/{asset_id}", response_model=InstalledRegistration
+    "/workbench/registry/installed/{asset_id}",
+    response_model=InstalledRegistration,
+    include_in_schema=False,
+)
+@router.get(
+    "/workbench/method-skill-center/installed/{asset_id}",
+    response_model=InstalledRegistration,
 )
 async def inspect_installation(
     asset_id: UUID,
@@ -259,6 +304,11 @@ async def inspect_installation(
 
 @router.get(
     "/workbench/registry/formal/{method_id}/{version}",
+    response_model=FormalRegistration,
+    include_in_schema=False,
+)
+@router.get(
+    "/workbench/method-skill-center/formal/{method_id}/{version}",
     response_model=FormalRegistration,
 )
 async def inspect_registered_method(

@@ -29,12 +29,12 @@ async def test_installed_send_and_expert_leaf_share_source_and_require_separate_
     ref = ctx.leaf.reference
     app = application(db, ctx.factory)
     _, sandbox, sid = await seed(db, root="/home/u/research/registry")
-    installed = f"/api/workbench/registry/installed/{ctx.asset['id']}"
-    formal = f"/api/workbench/registry/formal/{ref.method_id}/{ref.version}"
+    installed = f"/api/workbench/method-skill-center/installed/{ctx.asset['id']}"
+    formal = f"/api/workbench/method-skill-center/formal/{ref.method_id}/{ref.version}"
     async with AsyncClient(
         transport=ASGITransport(app), base_url="http://testserver"
     ) as http:
-        inventory = await http.get("/api/workbench/registry")
+        inventory = await http.get("/api/workbench/method-skill-center")
         assert inventory.status_code == 200, inventory.text
         listing = inventory.json()
         assert any(
@@ -42,7 +42,9 @@ async def test_installed_send_and_expert_leaf_share_source_and_require_separate_
         )
         assert any(row["asset_id"] == ctx.asset["id"] for row in listing["installed"])
         assert any(row["name"] == "permissions" for row in listing["native"])
-        assert (await http.get("/api/workbench/registry/activity")).json() == []
+        assert (
+            await http.get("/api/workbench/method-skill-center/activity")
+        ).json() == []
         asset = (await http.get(installed)).json()
         method = (await http.get(formal, params={"digest": ref.digest})).json()
         assert asset["path"] == "installed" and method["path"] == "formal"
@@ -55,8 +57,12 @@ async def test_installed_send_and_expert_leaf_share_source_and_require_separate_
             await http.get(formal, params={"digest": "sha256:" + "0" * 64})
         ).status_code == 404
         app.dependency_overrides[get_web_current_user] = lambda: principal(OTHER)
-        assert (await http.get("/api/workbench/registry")).json()["formal"] == []
-        assert (await http.get("/api/workbench/registry")).json()["installed"] == []
+        assert (await http.get("/api/workbench/method-skill-center")).json()[
+            "formal"
+        ] == []
+        assert (await http.get("/api/workbench/method-skill-center")).json()[
+            "installed"
+        ] == []
         assert (await http.get(installed)).status_code == 404
         assert (
             await http.get(formal, params={"digest": ref.digest})
