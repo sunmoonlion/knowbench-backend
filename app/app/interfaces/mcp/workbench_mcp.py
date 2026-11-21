@@ -236,6 +236,7 @@ async def _execute_local(records, name, args, relay, receipt):
 
 
 async def dispatch(records, mid, name, args, relay, *, function, receipt):
+    failure_status = "failed"
     try:
         current = (
             await registered_functions(
@@ -258,6 +259,15 @@ async def dispatch(records, mid, name, args, relay, *, function, receipt):
                 mid, "Registered function changed before dispatch"
             ), "failed"
         if function.provider == "knowbench":
+            # These operations can create an artifact or request external work.
+            if name not in (
+                PROJECT_LIST,
+                PROJECT_READ,
+                "discover_source_tools",
+                "find_subject",
+                "find_expert",
+            ):
+                failure_status = "unknown"
             output = await _execute_local(records, name, args, relay, receipt)
             result = jsonable_encoder(output)
             if not schema_validator(function.contract.output_schema).is_valid(result):
@@ -274,17 +284,23 @@ async def dispatch(records, mid, name, args, relay, *, function, receipt):
     except WorkbenchError as exc:
         log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)
         # An exception alone cannot prove no nested service operation took place.
-        return _tool_error(mid, exc.message), "unknown"
+        return _tool_error(mid, exc.message), failure_status
     except Exception:
         log.exception("workbench_mcp_tool_failed tool=%s", name)
-        return _tool_error(mid, "the service is temporarily unavailable"), "unknown"
+        return _tool_error(
+            mid, "the service is temporarily unavailable"
+        ), failure_status
     size = len(rendered.encode("utf-8"))
     if size > TOOL_RESULT_MAX_BYTES:
+        if failure_status == "unknown":
+            return _tool_error(
+                mid, "Operation completed. Its output is too large to display."
+            ), "succeeded"
         return _tool_error(
             mid,
             f"This result is too large to show in one go ({size} bytes); "
             "ask for a smaller part (another page, fewer items).",
-        ), "unknown"
+        ), failure_status
     return _ok(
         mid,
         {

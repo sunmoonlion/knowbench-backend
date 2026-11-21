@@ -6,11 +6,16 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from app.domain.workbench.formal_method_generated import CapabilityDeclaration, Strict
+from app.domain.workbench.formal_method_generated import (
+    CapabilityDeclaration,
+    MethodRef,
+    Strict,
+)
 
 
 class IncubationQuery(Strict):
     declaration: CapabilityDeclaration | None = None
+    references: list[MethodRef] | None = Field(default=None, max_length=100)
 
 
 class PlanningQuery(Strict):

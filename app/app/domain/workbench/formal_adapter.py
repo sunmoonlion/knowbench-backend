@@ -100,3 +100,19 @@ def live_registration(draft, asset):
                 raise CapabilityError("MCP interface differs from its frozen source")
             return registration
     raise CapabilityError("The registered formal implementation is unavailable")
+
+
+def call_matches_source(call, source):
+    asset = call.get("source_asset_id")
+    connection = call.get("connection_id")
+    if source.kind in (
+        "registered_script",
+        "registered_instruction",
+        "service_function",
+    ):
+        return source.asset_id is None and asset is None and connection is None
+    if source.asset_id is None or str(asset) != str(source.asset_id):
+        return False
+    if source.kind in ("skill_script", "skill_instruction"):
+        return connection is None
+    return source.kind == "mcp" and str(connection) == str(source.asset_id)

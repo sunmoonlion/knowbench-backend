@@ -309,12 +309,21 @@ async def test_budget_shortfall_precedes_any_provisioning(db):
 
 
 @pytest.mark.parametrize("cancelled", [False, True])
-async def test_lost_prepare_reply_recovers_without_second_allocation(db, cancelled):
+@pytest.mark.parametrize("partial", [False, True])
+async def test_lost_prepare_reply_recovers_without_second_allocation(
+    db, cancelled, partial
+):
     s = await stack(db)
     request = s.units.request
 
+    proof_uid = str(uuid4())
+
     async def lose_reply(owner, task, method, path, **kwargs):
         result = await request(owner, task, method, path, **kwargs)
+        if partial and path == "reservation":
+            return {"state": "pvc_only", "proof_uid": proof_uid}
+        if path == "prepare" and kwargs.get("params") == {"proof_uid": proof_uid}:
+            return result
         if path == "prepare":
             raise httpx.ReadTimeout("lost after POST")
         return result
@@ -332,7 +341,7 @@ async def test_lost_prepare_reply_recovers_without_second_allocation(db, cancell
         await drive(s)
         assert s.units.bindings
     assert (
-        s.units.ops.count(("POST", "prepare")) == 1
+        s.units.ops.count(("POST", "prepare")) == (2 if partial else 1)
         and ("GET", "reservation") in s.units.ops
     )
 

@@ -329,4 +329,6 @@ async def drive_script(svc, task_id):
                     },
                 )
         else:
-            await svc.script_executor.stop_metered(owner, cid)
+            from app.application.workbench.formal_script_execution import request_stop
+
+            await request_stop(svc, owner, call)

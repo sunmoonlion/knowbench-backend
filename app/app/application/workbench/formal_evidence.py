@@ -8,7 +8,11 @@ from decimal import InvalidOperation
 
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
-from app.domain.workbench.formal_adapter import host_kind, retained_registration
+from app.domain.workbench.formal_adapter import (
+    call_matches_source,
+    host_kind,
+    retained_registration,
+)
 from app.domain.workbench.formal_execution import (
     case_key,
     direct_procedure,
@@ -295,12 +299,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             "call_input_mismatch",
         )
         require(
-            str(call.get("source_asset_id")) == str(source.asset_id)
-            and (
-                call.get("connection_id") is None
-                if source.kind in ("skill_script", "registered_script")
-                else str(call.get("connection_id")) == str(source.asset_id)
-            )
+            call_matches_source(call, source)
             and intent.get("revision") == source.authorization_revision,
             "call_source_mismatch",
         )

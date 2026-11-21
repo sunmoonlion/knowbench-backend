@@ -283,7 +283,7 @@
         "review_requirements": {
           "maxProperties": 100,
           "patternProperties": {
-            "^[A-Za-z][A-Za-z0-9_-]{0,47}$": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
               "enum": [
                 "isolated_reviewer",
                 "different_model_family"
@@ -297,7 +297,7 @@
         "isolation_group": {
           "anyOf": [
             {
-              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
               "type": "string"
             },
             {
@@ -310,7 +310,7 @@
         "handoff_from": {
           "default": [],
           "items": {
-            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,47}$",
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
             "type": "string"
           },
           "maxItems": 100,
@@ -1078,7 +1078,7 @@
               "maxProperties": 100,
               "minProperties": 1,
               "patternProperties": {
-                "^[A-Za-z][A-Za-z0-9_-]{0,47}$": {
+                "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
                   "$ref": "#/$defs/CollaborationStep"
                 }
               },

@@ -349,3 +349,67 @@ async def test_uncertain_script_is_never_resent_and_late_usage_settles_once(db):
         assert (await repo.get_task(tid))["budget"]["used"] == "0.040000"
         assert (await repo.get_task(tid))["state"] == "FAILED"
     assert executor.calls == [cid]
+
+
+async def test_stop_outage_after_prepare_preserves_request_until_metered(db):
+    from datetime import UTC, datetime, timedelta
+
+    from app.domain.workbench.script_contract_generated import ScriptContainerMeter
+
+    sid, req, service, executor = await setup(db, "script")
+    stops, releases = [], []
+
+    async def prepare(owner, run, body):
+        executor.receipts[run] = {"state": "running"}
+        async with db() as other:
+            await Ledger(WorkbenchRepository(other)).request_cancel(
+                tid, owner_actor_id=owner
+            )
+
+    async def stop(owner, run):
+        stops.append(run)
+        if len(stops) == 1:
+            raise RuntimeError("stop temporarily unavailable")
+        executor.receipts[run] = {"state": "failed", "error": "stopped"}
+        start = datetime.now(UTC)
+        executor.meters[run] = ScriptContainerMeter(
+            run_id=run,
+            job_uid=uuid4(),
+            pod_uid=uuid4(),
+            container_id="test/container",
+            started_at=start,
+            finished_at=start + timedelta(seconds=2),
+        )
+
+    async def release(owner, run):
+        releases.append(run)
+
+    executor.prepare, executor.stop_metered, executor.cancel = prepare, stop, release
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = service(repo)
+        tid = await confirm(svc, sid, req)
+        await drive_script(svc, tid)
+        (cid,) = stops
+        assert (await repo.capability_call(OWNER, cid))["detail"]["result"][
+            "stop_requested"
+        ]
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = service(repo)
+        for _ in range(3):
+            await svc.reconcile_scripts()
+        assert executor.calls == [] and stops == [cid, cid] and releases == [cid]
+        assert (await repo.capability_call(OWNER, cid))["status"] == "failed"
+        assert (await repo.get_task(tid))["budget"]["used"] == "0.020000"
+
+
+def test_direct_service_evidence_requires_null_asset_and_connection():
+    from types import SimpleNamespace
+
+    from app.domain.workbench.formal_adapter import call_matches_source
+
+    source = SimpleNamespace(kind="service_function", asset_id=None)
+    assert call_matches_source({"source_asset_id": None, "connection_id": None}, source)
+    for field in ("source_asset_id", "connection_id"):
+        assert not call_matches_source({field: "None"}, source)

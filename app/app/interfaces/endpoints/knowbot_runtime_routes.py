@@ -360,6 +360,7 @@ async def method_skill_center_incubation_methods(
                         offset,
                         all_versions=all_versions,
                         declaration=body.declaration,
+                        references=body.references,
                     )
                 )
             }

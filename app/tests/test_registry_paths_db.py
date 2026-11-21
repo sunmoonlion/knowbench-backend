@@ -594,3 +594,53 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
             url + "/declaration", json=expert.reference.model_dump(mode="json")
         )
         assert changed.status_code == 409 and "declaration" not in changed.json()
+
+
+async def test_sparse_planning_window_advances_without_scanning_the_entire_market():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import UUID
+
+    from app.application.workbench.registry_catalog import SceneRegistry
+    from app.domain.workbench.formal_method_generated import MethodRef
+    from app.domain.workbench.method_search import PlanningQuery
+
+    rows = [
+        {"method_id": UUID(int=n), "latest_version": 1, "digest": "sha256:" + "a" * 64}
+        for n in range(1, 233)
+    ]
+
+    async def candidates(owner, limit, offset, *, eligible=None, **filters):
+        if eligible is None:
+            return rows[offset : offset + limit]
+        ids = {pin["method_id"] for pin in eligible}
+        return [row for row in rows if str(row["method_id"]) in ids][
+            offset : offset + limit
+        ]
+
+    market = SimpleNamespace(
+        planning_formal_refs=AsyncMock(
+            side_effect=lambda owner, refs: {
+                MethodRef.model_validate(pin)
+                for pin in refs
+                if int(UUID(pin["method_id"])) > 100
+            }
+        )
+    )
+    repo = SimpleNamespace(
+        subject_of_actor=AsyncMock(return_value="author"),
+        registry_method_candidates=candidates,
+    )
+    registry = SceneRegistry(SimpleNamespace(market=market), repo)
+    query = PlanningQuery(stage="expert", question="Review")
+    page = await registry.planning_versions(OWNER, 30, 0, query=query)
+    assert page == {"items": [], "next": 90}
+    ids = []
+    while page["next"] is not None:
+        page = await registry.planning_versions(OWNER, 30, page["next"], query=query)
+        ids.extend(int(row["method_id"]) for row in page["items"])
+    assert ids == list(range(101, 233))
+    assert market.planning_formal_refs.await_count == 6
+    assert all(
+        len(call.args[1]) <= 100 for call in market.planning_formal_refs.await_args_list
+    )

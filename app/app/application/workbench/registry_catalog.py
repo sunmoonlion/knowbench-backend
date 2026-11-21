@@ -132,7 +132,14 @@ class SceneRegistry:
             return {"items": [src.model_dump(mode="json") for src in candidates]}
 
     async def author_versions(
-        self, subject, limit, offset, *, all_versions=False, declaration=None
+        self,
+        subject,
+        limit,
+        offset,
+        *,
+        all_versions=False,
+        declaration=None,
+        references=None,
     ):
         owner = await self.repo.actor_for_subject(subject)
         if owner is None:
@@ -142,6 +149,9 @@ class SceneRegistry:
             limit,
             offset,
             latest=not all_versions,
+            eligible=[r.model_dump(mode="json") for r in references]
+            if references is not None
+            else None,
             terms=search_terms(*positive_fields(declaration)) if declaration else [],
         )
 
@@ -151,42 +161,43 @@ class SceneRegistry:
             raise CapabilityError("Formal method use qualification is unavailable")
         terms = search_terms(query.question) if query and query.question else []
         experts_only = bool(query and query.stage == "expert")
-        eligible = []
-        scanned = 0
-        while True:
-            # KnowMart sees only pins in catalog order, independent of the user's wording.
-            rows = await self.repo.registry_method_candidates(
-                owner,
-                100,
-                scanned,
-                public=True,
-                experts_only=experts_only,
-                identities_only=True,
-            )
-            if rows:
-                refs = [self.reference(row) for row in rows]
-                allowed = await self.market.planning_formal_refs(subject, refs)
-                eligible.extend(
-                    ref for ref in refs if MethodRef.model_validate(ref) in allowed
-                )
-            if len(rows) < 100 or (not terms and len(eligible) > offset + limit):
-                break
-            scanned += len(rows)
-        if not eligible:
-            return {"items": [], "next": None}
-        visible = await self.repo.registry_method_candidates(
+        # Bound both the authorization request and the in-memory ranking window.
+        # The market receives a stable catalog slice independent of the question.
+        window = (100 // limit) * limit
+        start, within = divmod(offset, window)
+        start *= window
+        rows = await self.repo.registry_method_candidates(
             owner,
-            limit + 1,
-            offset,
+            window + 1,
+            start,
             public=True,
             experts_only=experts_only,
-            terms=terms,
-            eligible=eligible,
+            identities_only=True,
         )
-        return {
-            "items": visible[:limit],
-            "next": offset + limit if len(visible) > limit else None,
-        }
+        refs = [self.reference(row) for row in rows[:window]]
+        allowed = (
+            await self.market.planning_formal_refs(subject, refs) if refs else set()
+        )
+        eligible = [ref for ref in refs if MethodRef.model_validate(ref) in allowed]
+        visible = (
+            await self.repo.registry_method_candidates(
+                owner,
+                limit + 1,
+                within,
+                public=True,
+                experts_only=experts_only,
+                terms=terms,
+                eligible=eligible,
+            )
+            if eligible
+            else []
+        )
+        next_page = None
+        if len(visible) > limit:
+            next_page = offset + limit
+        elif len(rows) > window:
+            next_page = start + window
+        return {"items": visible[:limit], "next": next_page}
 
     async def planning_declaration(self, owner, reference, *, experts_only=False):
         from app.domain.workbench.errors import NotFound

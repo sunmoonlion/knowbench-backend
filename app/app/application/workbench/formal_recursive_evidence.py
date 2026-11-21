@@ -17,7 +17,7 @@ from app.application.workbench.formal_orchestration_evidence import (
 from app.application.workbench.script_budget import task_script_cost
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
-from app.domain.workbench.formal_adapter import host_kind
+from app.domain.workbench.formal_adapter import call_matches_source, host_kind
 from app.domain.workbench.formal_execution import (
     case_key,
     fixed_step_outputs,
@@ -567,18 +567,7 @@ class _Tree:
             and intent.get("formal_host") == expected_host
             and fingerprint(intent.get("arguments")) == fingerprint(inputs)
             and call["digest"] == host_intent_digest(intent)
-            and (
-                call.get("connection_id") is None
-                if source.kind
-                in (
-                    "skill_script",
-                    "registered_script",
-                    "skill_instruction",
-                    "registered_instruction",
-                )
-                else str(call.get("connection_id")) == str(source.asset_id)
-            )
-            and str(call["source_asset_id"]) == str(source.asset_id)
+            and call_matches_source(call, source)
             and intent["revision"] == source.authorization_revision
             and intent["tool"]["name"] == registration.name
             and call["registration_id"] == registration.tool_id

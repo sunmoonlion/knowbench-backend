@@ -143,10 +143,15 @@ class InstructionRunner:
                 raise
         else:
             # A timeout/cancelled HTTP request can still be in flight. Observation
-            # after takeover must never allocate another Pod or recreate its proof.
+            # after takeover may finish the original reservation only on its exact PVC.
             pod = await request(owner, task_id, "GET", "reservation", absent=True)
             if not pod:
                 return None
+            if pod.get("state") == "pvc_only":
+                proof_uid = str(UUID(pod["proof_uid"]))
+                pod = await request(
+                    owner, task_id, "POST", "prepare", params={"proof_uid": proof_uid}
+                )
         uid = str(UUID(pod["uid"]))
         async with self.stores() as repo, repo.transaction():
             task = await repo.get_task(task_id, owner_actor_id=owner, for_update=True)

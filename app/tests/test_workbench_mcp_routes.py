@@ -311,6 +311,7 @@ async def test_a_result_too_large_for_the_model_is_refused_in_words(
             )
         result = got.json()["result"]
         assert result["isError"] is True
+        assert result["_meta"]["call_status"] == "failed"
         assert "too large to show in one go" in result["content"][0]["text"]
     finally:
         await close(runner)

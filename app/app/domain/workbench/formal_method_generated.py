@@ -24,7 +24,8 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-Name = Annotated[str, Field(pattern=r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")]
+NAME_PATTERN = r"^[A-Za-z][A-Za-z0-9_-]{0,63}$"
+Name = Annotated[str, Field(pattern=NAME_PATTERN)]
 Text = Annotated[str, Field(min_length=1, max_length=20000, pattern=r"\S")]
 Digest = Annotated[str, Field(pattern=r"^sha256:[a-f0-9]{64}$")]
 
@@ -275,9 +276,6 @@ class Export(Strict):
     always_present: bool = Field(strict=True)
 
 
-COLLABORATION_ID = r"^[A-Za-z][A-Za-z0-9_-]{0,47}$"
-
-
 class ReviewComparison(Strict):
     """Compare this output with sealed independent findings in a second round."""
 
@@ -292,12 +290,12 @@ class CollaborationStep(Strict):
 
     # Each key is the producer whose accepted output this step reviews.
     review_requirements: dict[
-        Annotated[str, Field(pattern=COLLABORATION_ID)],
+        Annotated[str, Field(pattern=NAME_PATTERN)],
         Literal["isolated_reviewer", "different_model_family"],
     ] = Field(default_factory=dict, max_length=100, exclude_if=lambda value: not value)
 
-    isolation_group: Annotated[str, Field(pattern=COLLABORATION_ID)] | None = None
-    handoff_from: tuple[Annotated[str, Field(pattern=COLLABORATION_ID)], ...] = Field(
+    isolation_group: Annotated[str, Field(pattern=NAME_PATTERN)] | None = None
+    handoff_from: tuple[Annotated[str, Field(pattern=NAME_PATTERN)], ...] = Field(
         default=(), max_length=100
     )
 
@@ -318,7 +316,7 @@ class Orchestration(Strict):
     )
 
     collaboration: (
-        dict[Annotated[str, Field(pattern=COLLABORATION_ID)], CollaborationStep] | None
+        dict[Annotated[str, Field(pattern=NAME_PATTERN)], CollaborationStep] | None
     ) = Field(
         default=None,
         min_length=1,
