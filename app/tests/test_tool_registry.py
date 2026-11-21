@@ -127,3 +127,79 @@ async def test_connection_registration_refuses_duplicate_tools_before_saving():
     with pytest.raises(CapabilityError, match="Duplicate"):
         await svc.create_connection("owner", body)
     repo.capability_insert.assert_not_called()
+
+
+def test_session_and_formal_resolution_reject_the_same_ambiguous_connector():
+    from app.domain.workbench.formal_adapter import live_registration
+
+    tool = ToolRegistration.discover("mcp", URL, TOOL)
+    draft = SimpleNamespace(
+        source=SimpleNamespace(
+            kind="mcp",
+            source=URL,
+            entry=tool.name,
+            digest="sha256:" + tool.descriptor_digest,
+        )
+    )
+    asset = {"kind": "connection", "detail": {"url": URL, "tools": [TOOL]}}
+    assert live_registration(draft, asset) == registered_call(asset, {"tool": TOOL})
+    asset["detail"]["tools"].append({**TOOL, "description": "other definition"})
+    with pytest.raises(CapabilityError, match="Duplicate"):
+        live_registration(draft, asset)
+    with pytest.raises(CapabilityError, match="Duplicate"):
+        registered_call(asset, {"tool": TOOL})
+    asset["detail"].update(tools=[TOOL], oauth={"protocol": "a2a"})
+    assert registered_call(asset, {"tool": TOOL}).source == "a2a"
+    with pytest.raises(CapabilityError):
+        live_registration(draft, asset)
+
+
+def test_native_action_evidence_only_annotates_registered_observations():
+    from app.domain.workbench.native_registry import (
+        NATIVE_REQUESTS,
+        native_event_payload,
+    )
+
+    assert NATIVE_REQUESTS["item/fileChange/requestApproval"].name == "file_change"
+    assert NATIVE_REQUESTS["item/tool/requestUserInput"].interaction == "question"
+    assert "item/webSearch/requestApproval" not in NATIVE_REQUESTS
+    assert "item/permissions/requestApproval" not in NATIVE_REQUESTS
+    command = {"item": {"type": "commandExecution", "id": "one", "status": "failed"}}
+    assert native_event_payload("item/completed", command) == {
+        **command,
+        "registry_action": "command",
+    }
+    foreign = {"item": {"type": "mcpToolCall"}, "registry_action": "file_change"}
+    assert "registry_action" not in native_event_payload("item/completed", foreign)
+
+
+def test_formal_versions_and_installed_bindings_cannot_swap_namespaces():
+    from uuid import uuid4
+
+    from app.domain.workbench.capabilities import tool_key
+    from app.domain.workbench.formal_method_generated import MethodRef
+    from app.domain.workbench.tool_registry import check_session_entry, formal_tool_key
+
+    asset = str(uuid4())
+    ref = MethodRef(method_id=uuid4(), version=3, digest="sha256:" + "a" * 64)
+    alias = formal_tool_key(ref)
+    native = tool_key(asset, TOOL["name"])
+    installed = {"source_asset_id": asset, "tool": TOOL}
+    converted = {
+        "execution_kind": "formal_method_model",
+        "tool": {"name": alias},
+        "formal_method": {"reference": ref.model_dump(mode="json")},
+        "implementation_tool": TOOL,
+        "source_asset_id": asset,
+    }
+    check_session_entry(native, installed, probe=False)
+    check_session_entry(alias, converted, probe=False)
+    for wrong_key, entry in [
+        (alias, installed),
+        (native, converted),
+        (formal_tool_key(ref.model_copy(update={"version": 4})), converted),
+        (tool_key(str(uuid4()), TOOL["name"]), installed),
+        (native, {**converted, "execution_kind": None, "tool": TOOL}),
+    ]:
+        with pytest.raises(CapabilityError):
+            check_session_entry(wrong_key, entry, probe=False)

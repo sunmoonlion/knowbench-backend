@@ -134,16 +134,7 @@ class FormalMethodCalls:
         )
         if not decision.requires_approval:
             raise CapabilityError("Formal external operations require exact approval")
-        tool = next(
-            (
-                t
-                for t in asset["detail"].get("tools", [])
-                if t["name"] == registration.name
-            ),
-            None,
-        )
-        if tool is None:
-            raise CapabilityError("The registered source operation is unavailable")
+        tool = registration.descriptor()
         intent = {
             "execution_kind": "formal_method",
             "formal_method": {

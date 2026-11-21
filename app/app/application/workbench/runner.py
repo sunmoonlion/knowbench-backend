@@ -56,6 +56,7 @@ from app.domain.workbench.expert_lookup import LOOKUP_SECONDS, LookupGuard
 from app.domain.workbench.memory import memory_note
 from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.native_registry import NATIVE_REQUESTS, native_event_payload
 from app.domain.workbench.pricing import (
     DEFAULT_PRICES,
     PriceList,
@@ -751,7 +752,7 @@ class SandboxLink:
                     session_id=session_id,
                     kind=event_kind(method),
                     event_type=method,
-                    payload=params,
+                    payload=native_event_payload(method, params),
                 )
             await self.runner.publisher.publish(
                 self.runner.publisher.session_channel(session_id), event
@@ -1486,10 +1487,11 @@ class SandboxLink:
         if method == "mcpServer/elicitation/request":
             await self._on_elicitation(rid, params)
             return
-        if method == "item/tool/requestUserInput":
+        action = NATIVE_REQUESTS.get(method)
+        if action and action.interaction == "question":
             await self._on_user_input(rid, params)
             return
-        if not method.endswith("requestApproval"):
+        if not action or action.interaction != "approval":
             await client.respond_error(
                 rid, -32601, f"workbench does not handle {method}"
             )
@@ -1498,6 +1500,9 @@ class SandboxLink:
         category, tokens = classify(method, params)
         summary = {
             "method": method,
+            "registry_action": action.name,
+            "threadId": thread_id,
+            "turnId": turn_id,
             "category": category,
             "command": params.get("command"),
             "tokens": list(tokens),

@@ -29,7 +29,6 @@ from app.application.workbench.method_capabilities import (
 from app.application.workbench.task_output_reader import TOOL as TASK_OUTPUT_TOOL
 from app.application.workbench.tool_invocation import verify_tool_invocation
 from app.application.workbench.tool_registry import (
-    connection_source,
     mcp_catalog,
     registered_call,
 )
@@ -77,7 +76,11 @@ from app.domain.workbench.states import (
     Wheel,
 )
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
-from app.domain.workbench.tool_registry import ToolRegistration
+from app.domain.workbench.tool_registry import (
+    ToolRegistration,
+    check_session_entry,
+    connection_source,
+)
 
 
 class McpPort(Protocol):
@@ -163,6 +166,10 @@ class Capabilities:
         """Do not rediscover revoked policies through an already-prepared scope."""
         available = {}
         for key, spec in runtime.get("tools", {}).items():
+            try:
+                check_session_entry(key, spec, probe=bool(runtime.get("formal_probe")))
+            except CapabilityError:
+                continue
             if spec.get("execution_kind") != "skill_script":
                 try:
                     policy = self.operations.require(
@@ -1533,10 +1540,12 @@ class Capabilities:
 
     async def request_call(self, session_id, token, key, arguments, *, meta=None):
         selected = await self.runtime(session_id, token)
-        if (
-            selected["runtime"].get("tools", {}).get(key, {}).get("execution_kind")
-            == "formal_method_model"
-        ):
+        runtime = selected["runtime"]
+        spec = runtime.get("tools", {}).get(key)
+        if spec is None:
+            raise Forbidden("Tool is outside the selected scope")
+        check_session_entry(key, spec, probe=bool(runtime.get("formal_probe")))
+        if spec.get("execution_kind") == "formal_method_model":
             from app.application.workbench.formal_method_calls import FormalMethodCalls
 
             return await FormalMethodCalls(self).request_model(

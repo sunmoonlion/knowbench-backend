@@ -194,6 +194,7 @@ class ConnectionOAuth:
                 if t["name"] in p.tool_scopes
                 and set(p.tool_scopes[t["name"]]) <= set(scopes)
             ],
+            protocol=p.protocol,
         ).descriptors()
 
     async def finish(self, owner, provider_id, state, issuer, code, denied):

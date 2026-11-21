@@ -1,7 +1,11 @@
 """Resolve the identity of a frozen direct implementation and its reviewed policy."""
 
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.tool_registry import ToolRegistration
+from app.domain.workbench.tool_registry import (
+    ToolRegistration,
+    connection_registration,
+    connection_source,
+)
 
 
 def host_kind(source, *, instruction_leaf=False):
@@ -64,7 +68,9 @@ def live_registration(draft, asset):
         and asset["kind"] == "connection"
         and asset["detail"]["url"] == source.source
     ):
-        for tool in asset["detail"].get("tools", []):
-            if tool["name"] == source.entry:
-                return retained_registration(draft, tool)
+        if connection_source(asset) == "mcp":
+            registration = connection_registration(asset, source.entry)
+            if source.digest != "sha256:" + registration.descriptor_digest:
+                raise CapabilityError("MCP interface differs from its frozen source")
+            return registration
     raise CapabilityError("The registered formal implementation is unavailable")

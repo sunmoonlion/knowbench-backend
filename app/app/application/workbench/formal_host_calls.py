@@ -331,14 +331,9 @@ class FormalHostCalls:
         asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
         registration = live_registration(draft, asset)
         policy = self.capabilities.operations.formal_policy(registration)
-        if source.kind == "skill_script":
-            if self.capabilities.script_executor is None:
-                raise CapabilityError("Isolated script execution is unavailable")
-            tool = registration.descriptor()
-        else:
-            tool = next(
-                t for t in asset["detail"]["tools"] if t["name"] == source.entry
-            )
+        if source.kind == "skill_script" and self.capabilities.script_executor is None:
+            raise CapabilityError("Isolated script execution is unavailable")
+        tool = registration.descriptor()
         access = {
             "requirement": draft.definition.access_requirements[0].model_dump(
                 mode="json"

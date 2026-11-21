@@ -7,9 +7,11 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from pydantic import ValidationError
 from referencing.exceptions import Unresolvable
 
-from app.domain.workbench.capabilities import CapabilityError, digest
+from app.domain.workbench.capabilities import CapabilityError, digest, tool_key
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.tool_schema import schema_validator
 
 ToolSource = Literal[
@@ -94,6 +96,24 @@ class ToolRegistry:
                 raise CapabilityError("Duplicate tool registration")
             self._tools[tool.tool_id] = tool
 
+    @classmethod
+    def snapshot(cls, source: ToolSource, service: str, descriptors: Iterable[dict]):
+        return cls(
+            ToolRegistration.discover(source, service, tool) for tool in descriptors
+        )
+
+    @classmethod
+    def resolve(
+        cls, source: ToolSource, service: str, descriptors: Iterable[dict], name: str
+    ):
+        """Look up one entry in the selected binding, rejecting ambiguous old snapshots."""
+        selected = (tool for tool in descriptors if tool.get("name") == name)
+        catalog = cls.snapshot(source, service, selected)
+        return catalog.get(digest([source, service, name]))
+
+    def registrations(self) -> tuple[ToolRegistration, ...]:
+        return tuple(self._tools.values())
+
     def get(self, tool_id: str) -> ToolRegistration:
         try:
             return self._tools[tool_id]
@@ -106,3 +126,59 @@ class ToolRegistry:
         if len(names) != len(set(names)):
             raise CapabilityError("Tool names collide in this MCP namespace")
         return [tool.descriptor() for tool in self._tools.values()]
+
+
+def connection_source(asset: dict) -> Literal["mcp", "a2a"]:
+    protocol = (asset["detail"].get("oauth") or {}).get("protocol", "mcp")
+    if protocol not in ("mcp", "a2a"):
+        raise CapabilityError("Unsupported registered connection protocol")
+    return protocol
+
+
+def connection_registration(asset: dict, name: str) -> ToolRegistration:
+    if asset["kind"] != "connection":
+        raise CapabilityError("Tool requires a connection")
+    detail = asset["detail"]
+    return ToolRegistry.resolve(
+        connection_source(asset), detail["url"], detail.get("tools", []), name
+    )
+
+
+def formal_tool_key(reference: MethodRef) -> str:
+    """Stable formal entry namespace. The backing installation can serve many methods."""
+    return "formal_method_" + digest(reference.model_dump(mode="json"))[:32]
+
+
+def check_session_entry(key: str, spec: dict, *, probe: bool) -> None:
+    """Only server-prepared entry references select a route. No fallback by tool name."""
+    from app.domain.workbench.formal_model import PROBE_TOOL
+
+    kind = spec.get("execution_kind")
+    if probe:
+        if kind == "formal_probe" and key == PROBE_TOOL == spec.get("tool", {}).get(
+            "name"
+        ):
+            return
+    elif kind == "formal_method_model":
+        try:
+            reference = MethodRef.model_validate(
+                (spec.get("formal_method") or {}).get("reference")
+            )
+        except ValidationError as exc:
+            raise CapabilityError("Missing frozen formal method reference") from exc
+        if key == formal_tool_key(reference) == spec.get("tool", {}).get("name"):
+            return
+    elif (
+        kind in (None, "skill_script")
+        and "formal_method" not in spec
+        and "implementation_tool" not in spec
+    ):
+        asset = spec.get("source_asset_id")
+        name = spec.get("tool", {}).get("name")
+        if (
+            isinstance(asset, str)
+            and isinstance(name, str)
+            and key == tool_key(asset, name)
+        ):
+            return
+    raise CapabilityError("Tool entry does not match its registered invocation path")

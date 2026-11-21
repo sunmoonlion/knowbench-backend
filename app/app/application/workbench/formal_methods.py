@@ -36,7 +36,7 @@ from app.domain.workbench.skill_package import (
 )
 from app.domain.workbench.source_licenses import SourceIdentity, SourceLicenseCatalog
 from app.domain.workbench.tool_operations import OperationCatalog
-from app.domain.workbench.tool_registry import ToolRegistration
+from app.domain.workbench.tool_registry import ToolRegistry, connection_source
 
 
 class FormalMethods:
@@ -110,11 +110,13 @@ class FormalMethods:
             "license_basis": "pending",
         }
         if asset["kind"] == "connection":
-            if (detail.get("oauth") or {}).get("protocol") == "a2a":
+            if connection_source(asset) != "mcp":
                 return []
             result = []
-            for tool in detail.get("tools", []):
-                registered = ToolRegistration.discover("mcp", detail["url"], tool)
+            catalog = ToolRegistry.snapshot(
+                "mcp", detail["url"], detail.get("tools", [])
+            )
+            for registered in catalog.registrations():
                 try:
                     policy = self.operations.require(registered)
                 except CapabilityError:
@@ -126,7 +128,7 @@ class FormalMethods:
                         source=detail["url"],
                         version=policy.version,
                         digest="sha256:" + registered.descriptor_digest,
-                        entry=tool["name"],
+                        entry=registered.name,
                     )
                 )
             return self._licensed_sources(result, subject, now=now)

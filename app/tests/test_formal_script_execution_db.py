@@ -270,6 +270,24 @@ async def test_formal_script_charges_root_and_freezes_after_a_real_approval(
         repo = WorkbenchRepository(session)
         svc = factory(repo)
         await svc.formal_sources.register(frozen, caller="knowlab")
+        from app.application.workbench.tool_registry import (
+            formal_registration,
+            installed_registration,
+        )
+
+        implementation = await formal_registration(repo, OWNER, frozen.reference)
+        installation = await installed_registration(
+            repo, OWNER, str(implementation.source_asset_id)
+        )
+        assert (
+            implementation.source_kind == "skill_script"
+            and implementation.source_entry == req.draft.source.entry
+        )
+        assert installation.revision == implementation.source_revision
+        assert [(entry.kind, entry.entry) for entry in installation.entries] == [
+            ("skill_instruction", "SKILL.md"),
+            ("skill_script", "skill_run"),
+        ]
         got = await FormalMethodCatalog(
             repo, svc.formal_sources, svc.operations
         ).resolve_owned(OWNER, frozen.reference)

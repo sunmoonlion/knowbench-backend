@@ -43,7 +43,7 @@ from app.bootstrap.workbench import (
 )
 from app.domain.workbench.errors import ComputeRefused, WorkbenchError
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
-from app.domain.workbench.tool_registry import ToolRegistration
+from app.domain.workbench.tool_registry import ToolRegistry
 from app.infrastructure.storage.postgres import get_db_session
 from app.interfaces.endpoints.workbench_routes import (
     require_workbench_enabled,
@@ -214,16 +214,9 @@ async def handle(
             invocation, task_id = await guard.check(name, args, params.get("_meta"))
             if relayed:
                 assert relay is not None
-                registration = next(
-                    (
-                        ToolRegistration.discover("knowbase", "knowbase-data", tool)
-                        for tool in await relay.tools()
-                        if tool["name"] == name
-                    ),
-                    None,
+                registration = ToolRegistry.resolve(
+                    "knowbase", "knowbase-data", await relay.tools(), name
                 )
-                if registration is None:
-                    return _tool_error(mid, "tool is not registered")
             else:
                 registration = PLATFORM_TOOLS[name]
             receipt, fresh = await ledger.begin(

@@ -7,14 +7,11 @@ this frozen spec again before requesting and consuming each owner's approval.
 from copy import deepcopy
 
 from app.application.workbench.formal_method_catalog import FormalMethodCatalog
-from app.domain.workbench.capabilities import CapabilityError, digest
+from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_execution import direct_procedure
 from app.domain.workbench.formal_method_generated import MethodRef
-
-
-def formal_tool_key(reference: MethodRef) -> str:
-    return "formal_method_" + digest(reference.model_dump(mode="json"))[:32]
+from app.domain.workbench.tool_registry import formal_tool_key as formal_tool_key
 
 
 def method_input_schema(procedure):
@@ -99,16 +96,9 @@ class FormalSessionTools:
         source = frozen.draft.source
         if source is None:
             raise CapabilityError("Formal method has no pinned source")
-        implementation_tool = next(
-            (
-                tool
-                for tool in asset["detail"].get("tools", [])
-                if tool["name"] == source.entry
-            ),
-            None,
-        )
-        if implementation_tool is None:
+        if resolved.registration.source != "mcp":
             raise CapabilityError("Formal method source tool is unavailable")
+        implementation_tool = resolved.registration.descriptor()
         declaration = frozen.draft.definition.capability_declaration
         return {
             "execution_kind": "formal_method_model",

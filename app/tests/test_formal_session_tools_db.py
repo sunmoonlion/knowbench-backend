@@ -120,3 +120,39 @@ async def test_host_only_qualification_cannot_be_selected_for_a_model(db):
                 ),
             )
         assert (await svc.selection(OWNER, sid))["formal_methods"] == []
+
+
+async def test_two_entries_from_one_installation_survive_reload_and_revoke_independently(
+    db,
+):
+    from app.domain.workbench.capabilities import tool_key
+
+    frozen, _, factory, _ = await model_admitted(db)
+    _, _, sid = await seed(db, root="/home/u/research/both-paths")
+    formal = formal_tool_key(frozen.reference)
+    raw = tool_key(str(frozen.draft.source.asset_id), frozen.draft.source.entry)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = factory(repo)
+        current = await svc.selection(OWNER, sid)
+        await svc.save_selection(
+            OWNER,
+            sid,
+            SelectionPut(
+                revision=current["revision"],
+                tools=[raw],
+                formal_methods=(frozen.reference,),
+                purpose="Send a synthetic notice",
+            ),
+        )
+        await svc.prepare(OWNER, sid)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = factory(repo)
+        runtime = (await repo.capability_selection(OWNER, sid))["runtime"]
+        entries = await FormalSessionTools(svc).available(OWNER, runtime)
+        assert set(entries) == {raw, formal}
+        assert entries[raw]["tool"] == entries[formal]["implementation_tool"]
+        assert entries[raw]["source_asset_id"] == entries[formal]["source_asset_id"]
+        svc.formal_market.versions.clear()
+        assert set(await FormalSessionTools(svc).available(OWNER, runtime)) == {raw}

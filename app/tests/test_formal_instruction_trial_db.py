@@ -145,6 +145,24 @@ class AuthorTrial:
             assert await self.factory(repo).formal_sources.register(
                 version, caller="knowlab"
             )
+            from app.application.workbench.tool_registry import (
+                formal_registration,
+                installed_registration,
+            )
+
+            method = await formal_registration(repo, OWNER, version.reference)
+            asset = await installed_registration(
+                repo, OWNER, str(method.source_asset_id)
+            )
+            assert method.path == "formal" and method.source_kind == "skill_instruction"
+            assert (
+                asset.path == "installed" and asset.revision == method.source_revision
+            )
+            assert method.source_entry == "SKILL.md"
+            assert any(
+                e.entry == method.source_entry and e.tool_key is None
+                for e in asset.entries
+            )
             formal = self.factory(repo).formal_sources
             catalog = FormalMethodCatalog(repo, formal, formal.operations)
             assert (

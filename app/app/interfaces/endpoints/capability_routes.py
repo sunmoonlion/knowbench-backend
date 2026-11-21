@@ -12,7 +12,7 @@ from typing import Literal
 from urllib.parse import quote
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Path, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import (
     JSONResponse,
@@ -29,6 +29,10 @@ from app.application.workbench.artifact_read_authority import (
 )
 from app.application.workbench.artifact_read_authority import (
     manage as manage_artifact_read,
+)
+from app.application.workbench.tool_registry import (
+    formal_registration,
+    installed_registration,
 )
 from app.bootstrap.workbench import (
     capability_service,
@@ -59,6 +63,11 @@ from app.domain.workbench.formal_method_calls import (
     FormalMethodCatalogResponse,
     FormalMethodInvocation,
     FormalMethodInvocations,
+)
+from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.registry_views import (
+    FormalRegistration,
+    InstalledRegistration,
 )
 from app.domain.workbench.skill_execution import public_result
 from app.domain.workbench.skill_installation import (
@@ -97,6 +106,42 @@ def formal_service(svc=Depends(service)):
     from app.application.workbench.formal_method_calls import FormalMethodCalls
 
     return FormalMethodCalls(svc)
+
+
+@router.get(
+    "/workbench/registry/installed/{asset_id}", response_model=InstalledRegistration
+)
+async def inspect_installation(
+    asset_id: UUID,
+    response: Response,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await installed_registration(svc.repo, _actor(user), str(asset_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get(
+    "/workbench/registry/formal/{method_id}/{version}",
+    response_model=FormalRegistration,
+)
+async def inspect_registered_method(
+    method_id: UUID,
+    response: Response,
+    version: int = Path(ge=1),
+    digest: str = Query(pattern=r"^sha256:[a-f0-9]{64}$"),
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        ref = MethodRef(method_id=method_id, version=version, digest=digest)
+        return await formal_registration(svc.repo, _actor(user), ref)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get(
