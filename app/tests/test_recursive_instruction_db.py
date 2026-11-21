@@ -196,6 +196,22 @@ async def test_nested_instruction_graph(db, scenario):
             ).resolve_owned_admission(OWNER, version.reference, resolved=deps)
             == version
         )
+        for target, reason in [
+            ("tree", "tree definition"),
+            ("node", "invocation binding"),
+        ]:
+            historical = deepcopy(evidence)
+            sample = historical["cases"][0]
+            if target == "tree":
+                sample["tree"]["method_kind"] = "expert_team"
+            else:
+                next(n for n in sample["nodes"] if n["kind"] == "expert")["kind"] = (
+                    "expert_team"
+                )
+            with pytest.raises(CapabilityError, match=reason):
+                verify_sealed_plan(
+                    OWNER, version, req, historical, deps, operations=caps.operations
+                )
         bad = deepcopy(evidence)
         case = bad["cases"][0]
         for record in (

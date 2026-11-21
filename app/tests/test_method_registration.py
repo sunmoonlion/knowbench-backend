@@ -51,7 +51,7 @@ def admission(*, dependencies=(), ref=None):
     )
 
 
-def test_distinct_experts_not_calls_versions_roles_or_protocols_determine_category():
+def test_direct_and_orchestrated_admissions_have_two_categories():
     identity = uuid4()
     one = dependency("expert", ref=reference(method_id=identity))
     upgraded = dependency("expert", ref=reference(method_id=identity, version=2))
@@ -71,14 +71,10 @@ def test_distinct_experts_not_calls_versions_roles_or_protocols_determine_catego
         classify_method(
             implementation="orchestration", dependencies=(one, dependency("expert"))
         )
-        == "expert_team"
+        == "expert"
     )
-    assert (
-        classify_method(
-            implementation="orchestration", dependencies=(dependency("expert_team"),)
-        )
-        == "expert_team"
-    )
+    with pytest.raises(ValueError, match="method_kind"):
+        dependency("expert_team")
     with pytest.raises(ValueError):
         classify_method(implementation="direct", dependencies=(tool,))
     with pytest.raises(ValueError):

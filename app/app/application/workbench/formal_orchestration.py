@@ -87,7 +87,7 @@ async def resolve_owned_plan(
             compiled = compile_method(method_id, draft.definition, definitions)
         except ValueError as exc:
             raise CapabilityError(str(exc)) from exc
-        if compiled.method_kind not in ("expert", "expert_team"):
+        if compiled.method_kind != "expert":
             raise CapabilityError("This runtime requires an orchestrated method")
         # Acquire all mutable asset locks in one global order, including those
         # buried below already-qualified experts. Never recurse while acquiring

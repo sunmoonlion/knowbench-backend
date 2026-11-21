@@ -10,11 +10,11 @@ from uuid import UUID
 from pydantic import Field, model_validator
 
 from app.domain.workbench.capabilities import digest
-from app.domain.workbench.formal_method_compiler_generated import classify_dependencies
+from app.domain.workbench.formal_method_compiler_generated import Kind as MethodKind
+from app.domain.workbench.formal_method_compiler_generated import implementation_kind
 from app.domain.workbench.formal_method_generated import MethodRef as MethodReference
 from app.domain.workbench.method_capabilities import Requirement
 
-MethodKind = Literal["tool", "expert", "expert_team"]
 Nonblank = Annotated[str, Field(min_length=1, max_length=2000)]
 Fingerprint = Annotated[str, Field(pattern=r"^sha256:[a-f0-9]{64}$")]
 
@@ -29,11 +29,11 @@ def classify_method(
     implementation: Literal["direct", "orchestration"],
     dependencies: tuple[AdmittedDependency, ...],
 ) -> MethodKind:
-    """Count distinct expert identities over ALL permitted candidates, not a run."""
-    return classify_dependencies(
-        implementation,
-        tuple((d.reference.method_id, d.method_kind) for d in dependencies),
-    )
+    if implementation == "direct" and dependencies:
+        raise ValueError("A tool method cannot call another method")
+    if implementation == "orchestration" and not dependencies:
+        raise ValueError("An orchestrated method must call at least one method")
+    return implementation_kind(implementation)
 
 
 class ValidationEvidence(Requirement):

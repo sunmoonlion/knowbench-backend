@@ -23,17 +23,9 @@ from app.domain.workbench.formal_method_execution_generated import (
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-@pytest.mark.parametrize(
-    "variant,kind",
-    [
-        ("expert", "expert"),
-        ("versions", "expert"),
-        ("team", "expert_team"),
-        ("team_parent", "expert_team"),
-    ],
-)
+@pytest.mark.parametrize("variant", ["expert", "versions", "team", "team_parent"])
 async def test_nested_qualified_methods_preserve_each_call_and_private_registration(
-    db, variant, kind
+    db, variant
 ):
     ctx = await setup_recursive(db, variant=variant)
     old = None
@@ -60,7 +52,7 @@ async def test_nested_qualified_methods_preserve_each_call_and_private_registrat
         task = await repo.get_task(tid)
         snapshot = snapshot_for_task(task)
         plan = expanded_plan(snapshot)
-        assert plan.method_kind == kind
+        assert plan.method_kind == "expert"
         assert len(plan.leaf_nodes) == 4
         attempts = await repo.list_attempts(tid)
         assert len(attempts) == 4 and all(a["turn_ids"] == [] for a in attempts)
@@ -81,6 +73,12 @@ async def test_nested_qualified_methods_preserve_each_call_and_private_registrat
             assert not auth["grants"][0]["delegable"]
             assert auth["grants"][0]["recipient_call_id"] == leaf["id"]
         await ctx.factory(repo).formal_sources.register(frozen, caller="knowlab")
+        candidates = await repo.registry_method_candidates(
+            ctx.owner, 2, 0, experts_only=True, reference=frozen.reference
+        )
+        assert [(row["digest"], row["method_kind"]) for row in candidates] == [
+            (frozen.reference.digest, "expert")
+        ]
         # Private execution of the nested tree grants no redistribution of its MCP leaves.
         with pytest.raises(Forbidden, match="delivery right"):
             await ctx.factory(repo).formal_sources.delivery(
