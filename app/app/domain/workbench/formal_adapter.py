@@ -4,11 +4,13 @@ from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.tool_registry import ToolRegistration
 
 
-def host_kind(source):
+def host_kind(source, *, instruction_leaf=False):
     if source.kind == "mcp":
         return "formal_mcp"
     if source.kind == "skill_script":
         return "formal_script"
+    if instruction_leaf and source.kind == "skill_instruction":
+        return "formal_instruction"
     raise CapabilityError("No formal host adapter for this implementation")
 
 

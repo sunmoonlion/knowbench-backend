@@ -121,7 +121,8 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
         or call.get("kind") != "tool"
         or call.get("origin") != "managed"
         or source is None
-        or call["detail"].get("execution_kind") != host_kind(source)
+        or call["detail"].get("execution_kind")
+        != host_kind(source, instruction_leaf=bool(snapshot.dependencies))
         or str(call.get("owner_actor_id")) != str(task["owner_actor_id"])
         or str(call.get("session_id")) != str(task["session_id"])
         or str(call.get("task_id")) != str(task["id"])

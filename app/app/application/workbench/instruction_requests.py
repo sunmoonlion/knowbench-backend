@@ -16,6 +16,7 @@ from app.domain.workbench.instruction_requests import (
     InstructionRoute,
     instruction_job,
     instruction_usage_cost,
+    leaf_responses_body,
     verify_instruction_body,
 )
 from app.domain.workbench.pricing import PriceList, Usage
@@ -84,6 +85,10 @@ class InstructionRequests:
 
     async def authority(self, owner, task, caller):
         snapshot = snapshot_for_task(task)
+        if snapshot.dependencies:
+            from app.application.workbench.instruction_leaf import approved_leaf
+
+            return await approved_leaf(self, owner, task, caller)
         subject = await self.repo.subject_of_actor(owner)
         request, entry = await self.formal.prepare_instruction_trial(
             subject, snapshot.run_id, snapshot.arguments, caller=caller
@@ -94,6 +99,11 @@ class InstructionRequests:
             or snapshot.caller != "host"
         ):
             raise CapabilityError("Instruction task differs from its validated draft")
+        return await self.route_quote(owner, task, caller), instruction_job(
+            request, entry, snapshot.arguments
+        )
+
+    async def route_quote(self, owner, task, caller):
         session = await self.repo.get_session(
             str(task["session_id"]), owner_actor_id=owner
         )
@@ -126,7 +136,7 @@ class InstructionRequests:
             "credential_id": str(credential["id"]),
             "caller": caller,
             "snapshot_digest": task["pack_digest"],
-        }, instruction_job(request, entry, snapshot.arguments)
+        }
 
     async def open(
         self, owner, task_id, *, caller, gateway_uid: UUID | None = None, managed=False
@@ -135,6 +145,10 @@ class InstructionRequests:
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
             )
+            if snapshot_for_task(task).dependencies:
+                raise CapabilityError(
+                    "Only the fixed-plan host may open an instruction leaf"
+                )
             quote, _ = await self.authority(owner, task, caller)
             if (
                 task["state"] != TaskState.QUEUED
@@ -167,6 +181,7 @@ class InstructionRequests:
                         else {}
                     ),
                     "instruction_quote": quote,
+                    "instruction_output_version": 1,
                     "model": self.route.model,
                     "model_provider": self.route.provider,
                 },
@@ -217,7 +232,12 @@ class InstructionRequests:
             limit = body.get("max_output_tokens", self.route.output_tokens)
             if type(limit) is not int or not 0 < limit <= self.route.output_tokens:
                 raise CapabilityError("Instruction output exceeds its reserved limit")
-            outgoing = {**body, "max_output_tokens": limit}
+            leaf = refs.get("kind") == "formal_orchestration_step"
+            outgoing = (
+                leaf_responses_body(job, self.route.model, limit)
+                if leaf
+                else {**body, "max_output_tokens": limit}
+            )
             await self.repo.update_attempt(
                 attempt_id,
                 refs={
@@ -227,6 +247,7 @@ class InstructionRequests:
                         "turn_id": turn_id,
                         "digest": digest(outgoing),
                         "output_tokens": limit,
+                        **({"job_digest": digest(job)} if leaf else {}),
                     },
                 },
             )

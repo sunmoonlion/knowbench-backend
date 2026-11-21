@@ -40,7 +40,7 @@ class FormalExecution:
             )
 
             return await FormalOrchestrationExecution(
-                self.stores, self.capabilities
+                self.stores, self.capabilities, instructions=self.instructions
             ).drive(task_id)
         if (procedure.get("implementation") or {}).get("kind") == "skill_instruction":
             # The conductor observes the Task. Only the runner owns the dedicated execution connection.

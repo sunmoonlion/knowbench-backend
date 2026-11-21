@@ -2,6 +2,8 @@
 
 from decimal import Decimal
 
+from app.application.workbench.formal_orchestration_execution import read_step_output
+from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.formal_execution import validate_values
 
 
@@ -33,7 +35,7 @@ def instruction_charge(task, attempt, entries):
     return charge
 
 
-async def instruction_evidence(repo, task, attempt, request, outputs):
+async def instruction_evidence(repo, task, attempt, request, outputs, *, leaf=False):
     refs = attempt["refs"]
     quote = refs.get("instruction_quote") or {}
     claim = refs.get("instruction_request") or {}
@@ -71,11 +73,30 @@ async def instruction_evidence(repo, task, attempt, request, outputs):
     # A standalone author trial must account for the entire case itself.
     if (
         charge is None
-        or sum(row["entry"] == "consume" for row in entries) != 1
+        or (not leaf and sum(row["entry"] == "consume" for row in entries) != 1)
         or Decimal(task["budget"]["reserved"]) != 0
     ):
         return None
-    validate_values(request.draft.definition.procedure.outputs, outputs)
+    versions = attempt.get("output_artifacts") or []
+    # Completed pre-artifact standalone trials still have their authenticated
+    # Attempt result. Every new attempt and every graph handoff needs its artifact.
+    content = outputs
+    if leaf or versions or refs.get("instruction_output_version"):
+        try:
+            content = await read_step_output(
+                repo,
+                str(task["id"]),
+                str(attempt["id"]),
+                "formal-step:" + attempt["step_id"],
+                versions,
+                refs["formal_result"],
+            )
+        except CapabilityError:
+            return None
+        if content != outputs:
+            return None
+    if not leaf:
+        validate_values(request.draft.definition.procedure.outputs, content)
     return {
         "source_digest": request.draft.source.fingerprint(),
         "gateway": gateway,
@@ -84,4 +105,5 @@ async def instruction_evidence(repo, task, attempt, request, outputs):
         "usage": usage,
         "quote": quote,
         "ledger_id": str(charge["id"]),
+        **({"output_artifact": versions[0]} if versions else {}),
     }

@@ -26,6 +26,12 @@ class PermissionGrant(Requirement):
     script_revision: int | None = Field(
         default=None, strict=True, ge=1, exclude_if=lambda v: v is None
     )
+    instruction_asset_id: UUID | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    instruction_revision: int | None = Field(
+        default=None, strict=True, ge=1, exclude_if=lambda v: v is None
+    )
     operation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     requirement: AccessRequirement
     delegable: bool = Field(strict=True)
@@ -43,20 +49,24 @@ class PermissionGrant(Requirement):
 
     @model_validator(mode="after")
     def valid(self):
+        revisions = (
+            (self.connection_id, self.connection_revision),
+            (self.script_asset_id, self.script_revision),
+            (self.instruction_asset_id, self.instruction_revision),
+        )
         if (
-            (self.connection_id is None) != (self.connection_revision is None)
-            or (self.script_asset_id is None) != (self.script_revision is None)
-            or (self.connection_id is None) == (self.script_asset_id is None)
+            any((a is None) != (r is None) for a, r in revisions)
+            or sum(a is not None for a, _ in revisions) != 1
         ):
-            raise ValueError(
-                "Specify one exact connection or installed script revision"
-            )
-        if self.script_asset_id is not None and (
+            raise ValueError("Specify one exact connection or installed Skill revision")
+        if (self.script_asset_id or self.instruction_asset_id) and (
             self.resource_authority is not None
             or self.delegable
             or self.recipient_call_id is None
         ):
-            raise ValueError("A script permission must name a direct recipient")
+            raise ValueError(
+                "An installed Skill permission must name a direct recipient"
+            )
         if self.expires_at.tzinfo is None:
             raise ValueError("Permission expiry must include a timezone")
         if len(set(self.method_ids)) != len(self.method_ids):
@@ -70,6 +80,12 @@ class PermissionGrant(Requirement):
         return self
 
     def matches_asset(self, kind, asset_id, revision):
+        if kind == "skill_instruction":
+            return (
+                self.instruction_asset_id is not None
+                and str(self.instruction_asset_id) == str(asset_id)
+                and self.instruction_revision == revision
+            )
         if kind == "skill_script":
             return (
                 self.script_asset_id is not None
@@ -122,6 +138,8 @@ def covers(
         or parent.connection_revision != child.connection_revision
         or parent.script_asset_id != child.script_asset_id
         or parent.script_revision != child.script_revision
+        or parent.instruction_asset_id != child.instruction_asset_id
+        or parent.instruction_revision != child.instruction_revision
         or parent.operation_digest != child.operation_digest
         or (parent.delegable and parent.resource_authority is None)
         or parent.resource_authority != child.resource_authority

@@ -97,6 +97,25 @@ async def _approval(
     ]
     _require(len(matches) == 1, "authorization_confirmation_event_missing")
     payload = matches[0]["payload"]
+    source = snapshot_for_task(task).execution_source(leaf)
+    assert source is not None
+    inference = source.kind == "skill_instruction"
+    if inference:
+        from app.application.workbench.instruction_leaf import leaf_operation
+
+        quote = attempt["refs"]["instruction_quote"]
+        _, declared, expected_operation = leaf_operation(
+            leaf, inputs, quote, attempt["refs"]["instruction_request"]["job_digest"]
+        )
+        _require(
+            intent["operation"] == expected_operation
+            and subject.get("instruction_quote") == quote
+            and intent["instruction_quote"] == quote
+            and subject.get("data_transfer") == declared["data_transfer"],
+            "instruction_transfer_mismatch",
+        )
+    else:
+        declared = leaf.draft.definition.access_requirements[0].model_dump(mode="json")
     resource = None
     if (
         "artifact_read_digest" in intent
@@ -108,9 +127,7 @@ async def _approval(
             verify_approval,
         )
 
-        transfer = leaf.draft.definition.access_requirements[
-            0
-        ].data_transfer.model_dump(mode="json")
+        transfer = declared["data_transfer"]
         snapshot = snapshot_for_task(task)
         if "return_to" in (subject.get("artifact_read") or {}):
             from app.application.workbench.task_output_reader import read_binding
@@ -127,7 +144,14 @@ async def _approval(
             )
         else:
             binding = await planned_read(
-                repo, task, snapshot, child, attempt, inputs, transfer
+                repo,
+                task,
+                snapshot,
+                child,
+                attempt,
+                inputs,
+                transfer,
+                include_empty=inference,
             )
         resource = await verify_approval(
             repo,
@@ -187,7 +211,6 @@ async def _approval(
         grant in parent.grants and grant in current_parent.grants,
         "parent_direct_grant_missing",
     )
-    declared = leaf.draft.definition.access_requirements[0].model_dump(mode="json")
     access, operation = intent["access"], intent["operation"]
     exact = {
         **declared,
@@ -202,17 +225,22 @@ async def _approval(
     assert source is not None
     _require(
         access["requirement"] == declared
-        and operation["policy_digest"] == access["operation_digest"]
+        and (digest(operation) if inference else operation["policy_digest"])
+        == access["operation_digest"]
         and operation["capability_ref"] == declared["capability_ref"]
         and operation["version"] == declared["version"]
         and operation["operation"] in declared["operations"]
         and operation["data_transfer"]
-        == {
-            "destination": declared["data_transfer"]["destination"]
-            if source.kind == "skill_script"
-            else source.source,
-            "arguments_digest": digest(inputs),
-        }
+        == (
+            declared["data_transfer"]
+            if inference
+            else {
+                "destination": declared["data_transfer"]["destination"]
+                if source.kind == "skill_script"
+                else source.source,
+                "arguments_digest": digest(inputs),
+            }
+        )
         and grant.grant_id == digest([str(call["id"]), call["digest"]])
         and not grant.delegable
         and grant.resource_authority is None
@@ -230,7 +258,7 @@ async def _approval(
         from app.application.workbench.script_budget import cost_proof
 
         metering["script_cost"] = await cost_proof(repo, call, subject)
-    else:
+    elif not inference:
         FormalExecutionCost.model_validate(operation["formal_execution_cost"])
     return {
         **metering,
@@ -281,7 +309,9 @@ async def _step_evidence(
     _require(source is not None, "leaf_source_missing")
     assert source is not None
     _require(
-        len(leaf.draft.definition.access_requirements) == 1, "leaf_access_mismatch"
+        len(leaf.draft.definition.access_requirements)
+        == (0 if source.kind == "skill_instruction" else 1),
+        "leaf_access_mismatch",
     )
     row = await repo.formal_method(
         await repo.actor_for_subject(leaf.owner_subject),
@@ -312,11 +342,18 @@ async def _step_evidence(
         and attempt["step_id"] == step.id
         and attempt["step_version"] == digest(identity)
         and attempt["status"] == AttemptState.COMPLETED
-        and attempt.get("turn_ids") == []
+        and (source.kind == "skill_instruction" or attempt.get("turn_ids") == [])
         and not refs.get("usage_pending")
         and not refs.get("pending_usage")
-        and _zero((attempt.get("budget_consumed") or {}).get("amount", "0"))
-        and not any((attempt.get("budget_consumed") or {}).get("tokens", {}).values())
+        and (
+            source.kind == "skill_instruction"
+            or (
+                _zero((attempt.get("budget_consumed") or {}).get("amount", "0"))
+                and not any(
+                    (attempt.get("budget_consumed") or {}).get("tokens", {}).values()
+                )
+            )
+        )
         and refs.get("kind") == "formal_orchestration_step"
         and all(
             refs.get(key) == identity[key]
@@ -367,7 +404,21 @@ async def _step_evidence(
         "method_call_id": str(child["id"]),
         "inputs_digest": digest(inputs),
     }
-    registration = retained_registration(leaf.draft, intent["tool"])
+    if source.kind == "skill_instruction":
+        from app.application.workbench.instruction_leaf import leaf_operation
+
+        registration, _, _ = leaf_operation(
+            leaf,
+            inputs,
+            refs["instruction_quote"],
+            refs["instruction_request"]["job_digest"],
+        )
+        _require(
+            intent["tool"] == registration.descriptor(),
+            "instruction_descriptor_mismatch",
+        )
+    else:
+        registration = retained_registration(leaf.draft, intent["tool"])
     _require(
         str(call["id"]) == refs["capability_call_id"]
         and call["kind"] == "tool"
@@ -379,13 +430,13 @@ async def _step_evidence(
         and str(call["attempt_id"]) == str(attempt["id"])
         and str(call["parent_call_id"]) == str(child["id"])
         and call["call_key"] == "formal-host:" + str(task["id"]) + ":" + step.id
-        and intent.get("execution_kind") == host_kind(source)
+        and intent.get("execution_kind") == host_kind(source, instruction_leaf=True)
         and intent.get("formal_host") == expected_host
         and fingerprint(intent.get("arguments")) == fingerprint(inputs)
         and call["digest"] == host_intent_digest(intent)
         and (
             call.get("connection_id") is None
-            if source.kind == "skill_script"
+            if source.kind in ("skill_script", "skill_instruction")
             else str(call.get("connection_id")) == str(source.asset_id)
         )
         and str(call["source_asset_id"]) == str(source.asset_id)
@@ -399,7 +450,12 @@ async def _step_evidence(
         repo, owner, task, attempt, child, call, leaf, inputs, root, events
     )
     outputs = validate_step_outputs(
-        step, structured_outputs(leaf.draft, intent["result"])
+        step,
+        (
+            intent["result"]["structuredContent"]
+            if source.kind == "skill_instruction"
+            else structured_outputs(leaf.draft, intent["result"])
+        ),
     )
     bounded_json(outputs)
     _require(
@@ -427,6 +483,34 @@ async def _step_evidence(
         and fingerprint(artifact["content"]) == fingerprint(outputs),
         "step_artifact_mismatch",
     )
+    if source.kind == "skill_instruction":
+        from app.application.workbench.formal_method_catalog import (
+            instruction_receipt_cost,
+        )
+        from app.application.workbench.instruction_evidence import instruction_evidence
+        from app.domain.workbench.formal_execution import validate_values
+
+        procedure = leaf.draft.definition.procedure
+        if procedure.kind != "direct":
+            raise ValueError("instruction_procedure_mismatch")
+        validate_values(
+            procedure.outputs,
+            intent["result"]["structuredContent"],
+        )
+        proof = await instruction_evidence(
+            repo, task, attempt, leaf, outputs, leaf=True
+        )
+        _require(proof is not None, "instruction_receipt_missing")
+        instruction_receipt_cost(
+            proof,
+            source,
+            task["pack_digest"],
+            attempt["turn_ids"],
+            task["budget"]["currency"],
+            set(),
+        )
+        item["governance"]["instruction"] = proof
+        item["model_turn_ids"] = attempt["turn_ids"]
     accepted[step.id] = outputs
     versions.append({"step_id": step.id, **version})
     item.update(
@@ -570,6 +654,11 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
         _require(
             Decimal(str(task["budget"].get("used", "0")))
             == await task_script_cost(repo, task["id"])
+            + sum(
+                Decimal(a["refs"]["instruction_usage"]["amount"])
+                for a in attempts
+                if "instruction_quote" in a["refs"]
+            )
             and _zero(task["budget"].get("reserved", "0")),
             "unexpected_plan_cost",
         )
@@ -617,7 +706,9 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             outputs=exported,
             outputs_digest=digest(exported),
             root_call_id=str(root["id"]),
-            model_turn_ids=[],
+            model_turn_ids=[
+                t for s in evidence["steps"] for t in s.get("model_turn_ids", [])
+            ],
         )
     except ValueError as exc:
         # All messages generated here are field/stage identifiers, not data.

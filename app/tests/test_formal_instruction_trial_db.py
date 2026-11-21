@@ -247,3 +247,189 @@ async def test_private_instruction_remains_qualified_only_after_safe_cleanup(db)
             await catalog.resolve_owned_admission(OWNER, version.reference, resolved={})
             == version
         )
+
+
+@pytest.mark.parametrize("decision", ["complete", "decline_second", "revoke_parent"])
+async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
+    db, decision
+):
+    import json
+    from decimal import Decimal
+
+    from formal_plan_support import plan_request
+    from test_capabilities_db import Remote
+    from test_formal_execution_db import approve
+
+    from app.application.workbench.capabilities import Capabilities
+    from app.application.workbench.formal_execution import FormalExecution
+
+    trial = AuthorTrial()
+    s = await stack(db, author_trial=trial.start)
+    s.units.ready = True
+    await drive(s)
+    leaf = await trial.finish(db)
+    route = partial(
+        InstructionRequests.for_account,
+        routes=(ROUTE,),
+        model=ROUTE.model,
+        prices=PRICES,
+        default_url=ROUTE.base_url,
+    )
+
+    def factory(repo):
+        caps = Capabilities(repo, Remote(), instruction_service=route)
+        caps.formal_sources = trial.factory(repo).formal_sources
+        return caps
+
+    conductor = KnowbotTestConductor(workbench_stores(db), formal_capabilities=factory)
+    graph = FormalExecution(workbench_stores(db), factory, instructions=s.driver)
+    case = trial.request.execution.suite.cases[0].model_dump(mode="json")
+    case["input"]["values"] = {"status": "awaiting review"}
+    request = plan_request(
+        trial.request,
+        leaf,
+        case,
+        input_name="status",
+        output_name="summary",
+    )
+    async with s.host() as svc:
+        await FormalExecutions(svc.repo, factory(svc.repo)).accept(
+            request, caller="knowlab"
+        )
+    await conductor.advance(str(request.run_id))
+    result = await status(db, request, factory)
+    task = result["cases"][0]["task_id"]
+    s.units.task = task
+    s.wire["client_metadata"] = {"session_note": "private-session-marker"}
+    artifacts = []
+    for index in range(2):
+        (action,) = result["actions"]
+        subject = action["subject"]
+        assert subject["arguments"] == {
+            "status": "ready" if index else "awaiting review"
+        }
+        assert subject["data_transfer"]["destination"] == ROUTE.base_url + "/responses"
+        if index:
+            first = artifacts[0]
+            assert subject["artifact_read"]["fields"]["status"] == {
+                "producer_path": ["first"],
+                "artifact_id": first["id"],
+                "name": first["name"],
+                "version": first["version"],
+                "digest": first["digest"],
+                "output": "summary",
+            }
+        assert await graph.drive(task) == "WAITING"
+        assert len(s.turns) == index + 1
+        if index and decision == "decline_second":
+            await approve(db, request, factory, result, decision="decline")
+            assert await graph.drive(task) == "FAILED"
+            assert len(s.turns) == 2
+            async with s.host() as svc:
+                assert (
+                    Decimal((await svc.repo.get_task(task))["budget"]["reserved"]) == 0
+                )
+            return
+        await approve(db, request, factory, result)
+        if index and decision == "revoke_parent":
+            async with s.host() as svc, svc.repo.transaction():
+                parent = subject["artifact_read"]["path"][0]["call_id"]
+                auth = await svc.repo.method_authorization(OWNER, parent, lock=True)
+                version = auth["revision"]
+                await svc.repo.save_method_authorization(
+                    OWNER,
+                    str((await svc.repo.get_task(task))["session_id"]),
+                    {**auth, "revoked": True, "revision": version + 1},
+                    previous=version,
+                )
+            await graph.drive(task)
+            assert await graph.drive(task) == "FAILED"
+            assert len(s.turns) == 2
+            return
+        async with s.host() as svc, svc.repo.transaction():
+            await svc.authority(OWNER, await svc.repo.get_task(task), "knowlab")
+        message = s.wire["input"][0]["content"][0]
+        job = json.loads(message["text"])
+        job["arguments"] = subject["arguments"]
+        message["text"] = json.dumps(job)
+        s.units.uid, s.units.worker = str(uuid4()), str(uuid4())
+        await graph.drive(task)
+        await graph.drive(task)
+        async with s.host() as svc:
+            attempt = (await svc.repo.list_attempts(task))[index]
+            assert attempt["status"] == "COMPLETED", (
+                attempt["refs"],
+                (await svc.repo.get_task(task))["state"],
+            )
+            (artifact,) = attempt["output_artifacts"]
+            artifacts.append(artifact)
+            if index == 0:
+                async with svc.repo.transaction():
+                    newer = await svc.repo.put_artifact(
+                        task_id=task,
+                        attempt_id=None,
+                        name=artifact["name"],
+                        kind="step",
+                        content={"summary": "unaccepted revision"},
+                    )
+                assert newer["version"] > artifact["version"]
+            assert artifact["name"] == "formal-step:" + ("second" if index else "first")
+        outgoing = s.provider_requests[-1]
+        assert "private-session-marker" not in json.dumps(outgoing)
+        assert (
+            json.loads(outgoing["input"][0]["content"][0]["text"])["arguments"]
+            == subject["arguments"]
+        )
+        assert len(outgoing["input"]) == 1 and outgoing["store"] is False
+        result = await status(db, request, factory)
+    async with s.host() as svc:
+        root = await svc.repo.get_task(task)
+        assert root["state"] == "SUCCEEDED" and not Decimal(root["budget"]["reserved"])
+        charges = [
+            r for r in await svc.repo.ledger_list(task) if r["entry"] == "consume"
+        ]
+        assert len({str(r["attempt_id"]) for r in charges}) == 2
+        assert sum(r["amount"] for r in charges) == Decimal(root["budget"]["used"])
+
+    await settle(conductor, request)
+    result = await status(db, request, factory)
+    async with s.host() as svc:
+        row = await svc.repo.formal_validation(OWNER, str(request.run_id))
+        assert result["status"] == "passed", row["execution_evidence"]["cases"][0][
+            "errors"
+        ]
+        from formal_plan_support import freeze
+
+        version = freeze(request, result)
+        caps = factory(svc.repo)
+        await caps.formal_sources.register(version, caller="knowlab")
+        catalog = FormalMethodCatalog(svc.repo, caps.formal_sources, caps.operations)
+        assert (
+            await catalog.resolve_owned_admission(
+                OWNER,
+                version.reference,
+                resolved={(leaf.reference.method_id, leaf.reference.version): leaf},
+            )
+            == version
+        )
+
+        from copy import deepcopy
+
+        from app.application.workbench.formal_orchestration_admission import (
+            verify_sealed_plan,
+        )
+
+        altered = deepcopy(row["execution_evidence"])
+        observed = altered["cases"][0]["steps"][1]["governance"]["artifact_read"][
+            "binding"
+        ]["fields"]["status"]
+        observed["version"] += 1
+        with pytest.raises(CapabilityError, match="input versions"):
+            verify_sealed_plan(
+                OWNER,
+                version,
+                request,
+                altered,
+                {(leaf.reference.method_id, leaf.reference.version): leaf},
+                operations=caps.operations,
+            )

@@ -148,3 +148,37 @@ def verify_instruction_body(body, job):
         raise CapabilityError(
             "Outbound instruction differs from the bounded trial input or output contract"
         ) from exc
+
+
+def leaf_responses_body(job, model, limit):
+    """Build the entire external payload from authorized inputs, with no session metadata."""
+    return {
+        "model": model,
+        "store": False,
+        "stream": True,
+        "max_output_tokens": limit,
+        "input": [
+            {
+                "role": "user",
+                "type": "message",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": json.dumps(
+                            job["input"],
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                    }
+                ],
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "method_output",
+                "schema": job["output_schema"],
+            }
+        },
+    }

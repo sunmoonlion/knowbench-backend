@@ -80,13 +80,13 @@ def expand_unique_plan(
         if mid in ancestors or len(ancestors) >= 16 or total > 1000:
             raise ValueError("Recursive plan cycle or global execution limit")
         if isinstance(current.procedure, ToolProcedure):
-            if (
-                current.procedure.implementation.kind not in ("mcp", "skill_script")
-                or current.procedure.max_model_turns != 0
+            implementation = current.procedure.implementation.kind
+            turns = current.procedure.max_model_turns
+            if not (
+                (implementation in ("mcp", "skill_script") and turns == 0)
+                or (implementation == "skill_instruction" and turns == 1)
             ):
-                raise ValueError(
-                    "Plans require direct MCP or isolated script leaves without turns"
-                )
+                raise ValueError("Unsupported execution contract for a fixed plan leaf")
             leaves += 1
             if leaves > 100:
                 raise ValueError("Recursive plan exceeds 100 actual tool leaf calls")

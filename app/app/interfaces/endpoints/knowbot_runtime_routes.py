@@ -8,7 +8,6 @@
 
 from __future__ import annotations
 
-from functools import partial
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -22,7 +21,6 @@ from app.application.errors.exceptions import AppException
 from app.application.workbench.formal_methods import FormalMethods
 from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.incubations import IncubationService
-from app.application.workbench.instruction_requests import InstructionRequests
 from app.application.workbench.test_execution import execution_view
 from app.application.workbench.test_runs import KnowbotTestService
 from app.bootstrap.workbench import (
@@ -126,23 +124,9 @@ def formal_executions(
     session: Annotated[AsyncSession, Depends(get_db_session)],
 ) -> FormalExecutions:
     repo = WorkbenchRepository(session)
-    settings = get_settings()
-    instruction_service = None
-    if (
-        settings.workbench_instruction_routes
-        and settings.workbench_provisioner_url
-        and settings.workbench_provisioner_token
-        and settings.workbench_token_signing_key
-    ):
-        instruction_service = partial(
-            InstructionRequests.for_account,
-            routes=settings.workbench_instruction_routes,
-            model=settings.workbench_sandbox_model,
-            prices=settings.workbench_model_prices(),
-            default_url=settings.workbench_sandbox_provider_base_url,
-        )
+    capabilities = capability_service(repo)
     return FormalExecutions(
-        repo, capability_service(repo), instruction_service=instruction_service
+        repo, capabilities, instruction_service=capabilities.instruction_service
     )
 
 

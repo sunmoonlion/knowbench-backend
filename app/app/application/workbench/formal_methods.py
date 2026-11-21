@@ -764,6 +764,13 @@ class FormalMethods:
                     frozen.reference.method_id,
                 )
                 if frozen.visibility == "public" and any(
+                    dep.draft.source and dep.draft.source.kind == "skill_instruction"
+                    for dep in dependencies
+                ):
+                    raise Forbidden(
+                        "An expert using a private instruction requires private registration"
+                    )
+                if frozen.visibility == "public" and any(
                     dep.owner_subject != frozen.owner_subject for dep in dependencies
                 ):
                     raise Forbidden(

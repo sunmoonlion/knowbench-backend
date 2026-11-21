@@ -1,6 +1,7 @@
 """Deterministic formal steps on the existing Task/Attempt/Artifact ledger."""
 
 import uuid
+from decimal import Decimal
 
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_calls import root_call
@@ -52,6 +53,42 @@ def step_identity(task, step, index):
     }
 
 
+async def save_step_output(repo, task_id, attempt_id, name, outputs):
+    artifact = await repo.put_artifact(
+        task_id=task_id, attempt_id=attempt_id, name=name, kind="step", content=outputs
+    )
+    return {key: artifact[key] for key in ("id", "name", "version", "digest")}
+
+
+async def read_step_output(repo, task_id, attempt_id, name, versions, result):
+    """Read the accepted version even when a newer artifact shares its name."""
+    if len(versions) != 1:
+        raise CapabilityError("Formal dependency has no exact step artifact version")
+    version = versions[0]
+    if (
+        not isinstance(version, dict)
+        or type(version.get("version")) is not int
+        or version["version"] < 1
+        or version.get("name") != name
+    ):
+        raise CapabilityError("Formal dependency has no exact step artifact version")
+    artifact = await repo.get_artifact(
+        task_id=task_id, name=name, version=version["version"]
+    )
+    if (
+        artifact is None
+        or artifact["kind"] != "step"
+        or str(artifact["task_id"]) != str(task_id)
+        or str(artifact["attempt_id"]) != str(attempt_id)
+        or str(artifact["id"]) != version.get("id")
+        or any(artifact[k] != version.get(k) for k in ("name", "version", "digest"))
+        or digest(artifact["content"]) != result.get("outputs_digest")
+        or artifact["content"] != result.get("outputs")
+    ):
+        raise CapabilityError("Formal accepted artifact changed")
+    return artifact["content"]
+
+
 async def accepted_outputs(repo, task, snapshot, before):
     """Read exact accepted artifact versions, never a newer artifact with the same name."""
     steps = orchestration_plan(snapshot)
@@ -78,34 +115,16 @@ async def accepted_outputs(repo, task, snapshot, before):
             or len(versions) != 1
         ):
             raise CapabilityError("Formal dependency is not an accepted step result")
-        version = versions[0]
-        if (
-            not isinstance(version, dict)
-            or type(version.get("version")) is not int
-            or version["version"] < 1
-            or version.get("name") != "formal-step:" + step.id
-        ):
-            raise CapabilityError(
-                "Formal dependency has no exact step artifact version"
-            )
-        artifact = await repo.get_artifact(
-            task_id=str(task["id"]),
-            name="formal-step:" + step.id,
-            version=version["version"],
+        content = await read_step_output(
+            repo,
+            str(task["id"]),
+            str(attempt["id"]),
+            "formal-step:" + step.id,
+            versions,
+            result,
         )
-        if (
-            artifact is None
-            or artifact["kind"] != "step"
-            or artifact["version"] != version["version"]
-            or str(artifact["id"]) != version["id"]
-            or str(artifact["attempt_id"]) != str(attempt["id"])
-            or artifact["name"] != version["name"]
-            or artifact["digest"] != version["digest"]
-            or digest(artifact["content"]) != result.get("outputs_digest")
-            or artifact["content"] != result.get("outputs")
-        ):
-            raise CapabilityError("Formal accepted artifact changed")
-        value = validate_step_outputs(step, artifact["content"])
+        version = versions[0]
+        value = validate_step_outputs(step, content)
         bounded_json(value)
         outputs[step.id] = value
         artifacts.append({"step_id": step.id, **version})
@@ -154,7 +173,8 @@ async def step_context(repo, task, attempt):
 
 
 class FormalOrchestrationExecution:
-    def __init__(self, stores, capabilities):
+    def __init__(self, stores, capabilities, *, instructions=None):
+        self.instructions = instructions
         self.stores, self.capabilities = stores, capabilities
 
     async def drive(self, task_id):
@@ -297,9 +317,67 @@ class FormalOrchestrationExecution:
                             raise CapabilityError(
                                 "Formal child method identity changed"
                             )
+                    instruction_meta = {}
+                    reserve = Decimal(0)
+                    frozen = dependency_for_step(snapshot, step)
+                    if (
+                        frozen.draft.source
+                        and frozen.draft.source.kind == "skill_instruction"
+                    ):
+                        from app.domain.workbench.models import Budget
+
+                        try:
+                            caps = (
+                                self.capabilities(repo) if self.capabilities else None
+                            )
+                            if not caps or not caps.instruction_service:
+                                raise CapabilityError(
+                                    "Isolated instruction execution is unavailable"
+                                )
+                            owner = str(task["owner_actor_id"])
+                            svc = await caps.instruction_service(
+                                caps.formal_sources, owner
+                            )
+                            quote = await svc.route_quote(owner, task, "knowlab")
+                            reserve = Decimal(quote["maximum"])
+                            if (
+                                reserve
+                                > Budget.model_validate(task["budget"]).available
+                            ):
+                                raise CapabilityError(
+                                    "Insufficient remaining case budget for this instruction"
+                                )
+                            instruction_meta = {
+                                "instruction_unit": {
+                                    "pending": True,
+                                    "scope": "attempt",
+                                },
+                                "instruction_quote": quote,
+                                "model": quote["model"],
+                                "model_provider": quote["provider"],
+                            }
+                        except (CapabilityError, ValueError) as exc:
+                            await repo.update_call(
+                                str(task["owner_actor_id"]),
+                                child["id"],
+                                "failed",
+                                {**child["detail"], "error": str(exc)},
+                            )
+                            return (
+                                await led.transition(
+                                    task_id,
+                                    TaskState.FAILED,
+                                    reason={
+                                        "code": "instruction_unavailable",
+                                        "message": str(exc),
+                                    },
+                                )
+                            )["state"]
                     opened = await led.open_attempt(
                         task_id,
                         step_id=slot,
+                        reserve=reserve,
+                        input_artifact_versions=bindings,
                         step_version=digest(identity),
                         meta={
                             "kind": "formal_orchestration_step",
@@ -311,6 +389,7 @@ class FormalOrchestrationExecution:
                             "arguments_digest": digest(arguments),
                             "input_bindings": bindings,
                             **extra,
+                            **instruction_meta,
                         },
                     )
                     active = opened["attempt_id"]
@@ -362,15 +441,27 @@ class FormalOrchestrationExecution:
                             observed=denial[0],
                         )
                     return task["state"]
-                if status == "dispatching" or task["state"] in TASK_TERMINAL:
+                instruction_ready = (
+                    status == "dispatching"
+                    and call["detail"].get("execution_kind") == "formal_instruction"
+                    and self.instructions is not None
+                )
+                if task["state"] in TASK_TERMINAL or (
+                    status == "dispatching" and not instruction_ready
+                ):
                     return task["state"]
                 if status == "succeeded":
                     _, step, frozen, _ = await step_context(repo, task, attempt)
                     try:
                         outputs = validate_step_outputs(
                             step,
-                            structured_outputs(
-                                frozen.draft, call["detail"].get("result") or {}
+                            (
+                                call["detail"]["result"]["structuredContent"]
+                                if call["detail"]["execution_kind"]
+                                == "formal_instruction"
+                                else structured_outputs(
+                                    frozen.draft, call["detail"].get("result") or {}
+                                )
                             ),
                         )
                         bounded_json(outputs)
@@ -384,6 +475,15 @@ class FormalOrchestrationExecution:
                         )
                 else:
                     outputs = None
+            if instruction_ready:
+                # The model round trip must not occupy the polling repository connection.
+                assert self.instructions is not None
+                await self.instructions.drive(task_id, leaf_attempt_id=str(active))
+                async with self.stores() as repo:
+                    after = await repo.capability_call(owner, call_id)
+                    if after["status"] == "dispatching":
+                        return (await repo.get_task(task_id))["state"]
+                continue
             outcome = (
                 "succeeded"
                 if status == "succeeded"
@@ -492,17 +592,13 @@ class FormalOrchestrationExecution:
             }
             versions = []
             if outcome == "succeeded":
-                artifact = await repo.put_artifact(
-                    task_id=task_id,
-                    attempt_id=attempt_id,
-                    name=("formal-step:" + step.id)
+                name = (
+                    "formal-step:" + step.id
                     if not recursive_plan(snapshot)
-                    else node_artifact(refs["path"]),
-                    kind="step",
-                    content=outputs,
+                    else node_artifact(refs["path"])
                 )
                 versions = [
-                    {key: artifact[key] for key in ("id", "name", "version", "digest")}
+                    await save_step_output(repo, task_id, attempt_id, name, outputs)
                 ]
             await repo.update_attempt(
                 attempt_id, refs={**refs, "formal_result": result}

@@ -609,6 +609,7 @@ async def decide_call(
                 "formal_mcp",
                 "formal_probe",
                 "formal_script",
+                "formal_instruction",
             ):
                 raise
             return await trial_svc.decide(owner, str(call_id), body)

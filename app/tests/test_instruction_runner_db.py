@@ -76,8 +76,10 @@ async def stack(db, **kwargs):
         return svc
 
     units = Units()
+    units.task = task
     issuer = TokenIssuer(generate_private_key_pem())
     turns = []
+    provider_requests = []
 
     class Client:
         def __init__(self, ip, token, *, on_notification, on_server_request):
@@ -119,21 +121,26 @@ async def stack(db, **kwargs):
                     and str(identity.attempt) == binding["attempt"]
                 )
                 async with host() as svc:
-                    await svc.claim(
+                    _, outgoing = await svc.claim(
                         OWNER,
-                        task,
+                        units.task,
                         binding["attempt"],
                         caller="knowlab",
                         credential_id=cred["id"],
                         turn_id=turn,
                         body=wire,
                     )
+                    provider_requests.append(outgoing)
                     await svc.receipt(
                         OWNER,
-                        task,
+                        units.task,
                         binding["attempt"],
                         turn_id=turn,
-                        response_id="receipt-a",
+                        response_id=(
+                            "receipt-a"
+                            if units.task == task
+                            else "receipt-" + binding["attempt"]
+                        ),
                         usage=BILL,
                     )
                 await self.notice(
@@ -159,7 +166,7 @@ async def stack(db, **kwargs):
 
     async def provision(req):
         assert req.headers["Authorization"] == "Bearer service-only"
-        root = f"/v1/instruction-executions/{OWNER}/{task}/"
+        root = f"/v1/instruction-executions/{OWNER}/{units.task}/"
         assert req.url.path.startswith(root)
         path = req.url.path[len(root) :]
         scope = None
@@ -205,6 +212,7 @@ async def stack(db, **kwargs):
         driver=driver,
         units=units,
         turns=turns,
+        provider_requests=provider_requests,
         wire=wire,
         cred=cred,
     )

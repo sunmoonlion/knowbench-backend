@@ -104,6 +104,7 @@ class Capabilities:
         skill_source: Any = None,
         script_executor: Any = None,
         script_material_source=None,
+        instruction_service=None,
         operations: tuple[McpOperation, ...] = (),
         script_tariff=None,
         source_licenses=(),
@@ -133,6 +134,7 @@ class Capabilities:
             raise ValueError("An OAuth provider cannot claim an internal service URL")
         self.knowbase_reader = knowbase_reader
         self.skill_source = skill_source
+        self.instruction_service = instruction_service
         self.script_executor = script_executor
         self.script_material_source = script_material_source
         self.operations = OperationCatalog(operations, script_tariff=script_tariff)
@@ -1938,6 +1940,7 @@ class Capabilities:
         if peek["detail"].get("execution_kind") in (
             "formal_mcp",
             "formal_script",
+            "formal_instruction",
             "formal_probe",
         ):
             from app.application.workbench.formal_host_calls import FormalHostCalls

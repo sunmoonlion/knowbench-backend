@@ -165,9 +165,18 @@ class FormalExecutions:
                         "Execution requires a licensed source and a pending admission"
                     )
                 if isinstance(request.draft.definition.procedure, Orchestration):
-                    await resolve_plan(
+                    dependencies = await resolve_plan(
                         self.capabilities, owner, request.draft, request.method_id
                     )
+                    if any(
+                        d.draft.source and d.draft.source.kind == "skill_instruction"
+                        for d in dependencies
+                    ):
+                        if not self.capabilities.instruction_service:
+                            raise CapabilityError(
+                                "Isolated instruction execution is disabled"
+                            )
+                        await self.capabilities.instruction_service(self.formal, owner)
                 elif (
                     request.draft.source
                     and request.draft.source.kind == "skill_instruction"
@@ -506,8 +515,14 @@ class FormalExecutions:
                     bindings=bindings,
                 )
                 policies = {}
+                inference_refs = set()
                 for leaf in leaves:
                     if leaf.draft.source is None:
+                        continue
+                    if leaf.draft.source.kind == "skill_instruction":
+                        inference_refs.add(
+                            fingerprint(leaf.reference.model_dump(mode="json"))
+                        )
                         continue
                     policy = await self.reviewed_policy(
                         owner,
@@ -527,8 +542,13 @@ class FormalExecutions:
                 licensed = licensed and all(
                     isinstance(step.get("governance"), dict)
                     and isinstance(step["governance"].get("operation"), dict)
-                    and step["governance"]["operation"].get("policy_digest")
-                    == policies.get(fingerprint(step.get("reference")))
+                    and (
+                        bool(step["governance"].get("instruction"))
+                        if fingerprint(step.get("reference")) in inference_refs
+                        else fingerprint(step.get("reference")) in policies
+                        and step["governance"]["operation"].get("policy_digest")
+                        == policies[fingerprint(step.get("reference"))]
+                    )
                     for evidence_case in evidence_cases
                     for step in evidence_case.get("steps", [])
                 )
@@ -542,6 +562,38 @@ class FormalExecutions:
                 )
         except WorkbenchError:
             licensed = False
+        if any(
+            leaf.draft.source and leaf.draft.source.kind == "skill_instruction"
+            for leaf in leaves
+        ):
+            from app.application.workbench.formal_method_catalog import (
+                instruction_receipt_cost,
+            )
+
+            by_ref = {
+                fingerprint(leaf.reference.model_dump(mode="json")): leaf
+                for leaf in leaves
+            }
+            metered_ids = set()
+            try:
+                for evidence_case in evidence_cases:
+                    for step in evidence_case.get("steps", []):
+                        dep = by_ref.get(fingerprint(step.get("reference")))
+                        if (
+                            dep
+                            and dep.draft.source
+                            and dep.draft.source.kind == "skill_instruction"
+                        ):
+                            instruction_receipt_cost(
+                                step["governance"]["instruction"],
+                                dep.draft.source,
+                                evidence_case["snapshot_digest"],
+                                step["model_turn_ids"],
+                                request.execution.budget.currency,
+                                metered_ids,
+                            )
+            except (WorkbenchError, ValueError, KeyError, TypeError):
+                governed = False
         passed = (
             not forced
             and thresholds
@@ -603,6 +655,10 @@ class FormalExecutions:
             external_provider_billing=(
                 "metered_model_request"
                 if instruction
+                or any(
+                    leaf.draft.source and leaf.draft.source.kind == "skill_instruction"
+                    for leaf in leaves
+                )
                 else "metered_scripts"
                 if script_cases
                 else "reviewed_no_incremental_fee"

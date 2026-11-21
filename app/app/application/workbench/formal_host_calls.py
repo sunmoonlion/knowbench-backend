@@ -228,6 +228,81 @@ class FormalHostCalls:
             or digest(case.input.values) != digest(snapshot.arguments)
         ):
             raise CapabilityError("Formal Task is not its persisted case repetition")
+        source = snapshot.execution_source(frozen) if frozen else draft.source
+        if source is None:
+            raise CapabilityError("Formal action has no licensed source")
+        host = {
+            "task_id": task_id,
+            "attempt_id": attempt_id,
+            "snapshot_digest": task["pack_digest"],
+            "slot": slot,
+            "method_id": str(frozen.reference.method_id)
+            if frozen
+            else str(snapshot.method_id),
+            "run_id": str(snapshot.run_id),
+            "case_id": snapshot.case_id,
+            "repetition": snapshot.repetition,
+            "source_digest": source.fingerprint(),
+        }
+        if frozen is not None and child is not None:
+            host.update(
+                parent_method_id=str(snapshot.method_id),
+                reference=frozen.reference.model_dump(mode="json"),
+                method_call_id=child["id"],
+                inputs_digest=digest(arguments),
+            )
+        if (
+            step is not None
+            and frozen is not None
+            and child is not None
+            and source.kind == "skill_instruction"
+        ):
+            if not self.capabilities.instruction_service:
+                raise CapabilityError("Isolated instruction execution is unavailable")
+            from app.application.workbench.instruction_leaf import leaf_input
+
+            svc = await self.capabilities.instruction_service(
+                self.capabilities.formal_sources, owner
+            )
+            (
+                _,
+                asset,
+                quote,
+                registration,
+                requirement,
+                operation,
+                binding,
+            ) = await leaf_input(
+                svc, owner, task, attempt, snapshot, frozen, child, arguments
+            )
+            access = {"requirement": requirement, "operation_digest": digest(operation)}
+            intent = {
+                "formal_host": host,
+                "execution_kind": "formal_instruction",
+                "source_asset_id": asset["id"],
+                "revision": asset["revision"],
+                "connection_id": None,
+                "connection_name": asset["name"],
+                "account_label": quote["provider"],
+                "purpose": requirement["data_transfer"]["purpose"],
+                "tool": registration.descriptor(),
+                "arguments": arguments,
+                "access": access,
+                "operation": operation,
+                "instruction_quote": quote,
+                "artifact_read_digest": digest(binding),
+            }
+            return HostContext(
+                task,
+                attempt,
+                asset,
+                registration,
+                access,
+                operation,
+                intent,
+                child,
+                artifact_read=binding,
+            )
         if step is not None:
             validate_values(direct_procedure(draft).inputs, arguments)
             if len(draft.definition.access_requirements) != 1:
@@ -249,8 +324,7 @@ class FormalHostCalls:
                 raise CapabilityError(
                     "Model probe limits or permissions differ from its test"
                 )
-        source = snapshot.execution_source(frozen) if frozen else draft.source
-        if source is None or not await self.capabilities.formal_sources._source(
+        if not await self.capabilities.formal_sources._source(
             owner, request.owner_subject, source
         ):
             raise CapabilityError("Source execution rights have not been verified")
@@ -281,26 +355,6 @@ class FormalHostCalls:
         )
         if not decision.requires_approval:
             raise CapabilityError("Formal external operations require exact approval")
-        host = {
-            "task_id": task_id,
-            "attempt_id": attempt_id,
-            "snapshot_digest": task["pack_digest"],
-            "slot": slot,
-            "method_id": str(frozen.reference.method_id)
-            if frozen
-            else str(snapshot.method_id),
-            "run_id": str(snapshot.run_id),
-            "case_id": snapshot.case_id,
-            "repetition": snapshot.repetition,
-            "source_digest": source.fingerprint(),
-        }
-        if frozen is not None and child is not None:
-            host.update(
-                parent_method_id=str(snapshot.method_id),
-                reference=frozen.reference.model_dump(mode="json"),
-                method_call_id=child["id"],
-                inputs_digest=digest(arguments),
-            )
         if scopes is not None:
             from app.domain.workbench.formal_recursive import TREE_ADAPTER
 
@@ -474,7 +528,7 @@ class FormalHostCalls:
                     not in (
                         ("formal_probe",)
                         if model is not None
-                        else ("formal_mcp", "formal_script")
+                        else ("formal_mcp", "formal_script", "formal_instruction")
                     )
                     or (
                         model is not None
@@ -528,6 +582,7 @@ class FormalHostCalls:
             call_id = str(uuid.uuid4())
             operation = context.operation
             quote = context.intent.get("script_quote")
+            model_quote = context.intent.get("instruction_quote")
             opened = await Ledger(self.repo).open_interaction(
                 task_id,
                 attempt_id=attempt_id,
@@ -536,9 +591,15 @@ class FormalHostCalls:
                 subject_digest=context.identity,
                 ttl=timedelta(minutes=15),
                 prompt=InteractionPrompt(
-                    title="批准隔离脚本及费用" if quote else "确认正式方法的外部操作",
+                    title="确认本步骤的模型外发与费用"
+                    if model_quote
+                    else "批准隔离脚本及费用"
+                    if quote
+                    else "确认正式方法的外部操作",
                     question=(
-                        f"在 {quote['environment']} 执行本次脚本。容器每运行一秒收取 {quote['per_container_second']} {quote['currency']}，本次根预算最多预留 {quote['maximum']} {quote['currency']}。启动前免费，失败或取消按已运行时间结算。"
+                        f"将所示输入和本方法指令发至 {operation['data_transfer']['destination']}，由 {model_quote['provider']} 的 {model_quote['model']} 处理一次，费用上限 {model_quote['maximum']} {model_quote['currency']}。"
+                        if model_quote
+                        else f"在 {quote['environment']} 执行本次脚本。容器每运行一秒收取 {quote['per_container_second']} {quote['currency']}，本次根预算最多预留 {quote['maximum']} {quote['currency']}。启动前免费，失败或取消按已运行时间结算。"
                         if quote
                         else "请核对产物版本、输出字段、用途和接收方法链。批准即允许沿所示调用链仅传递这些字段，并执行这一次操作。"
                         if context.artifact_read
@@ -563,6 +624,14 @@ class FormalHostCalls:
                             else {}
                         ),
                         "arguments": context.intent["arguments"],
+                        **(
+                            {
+                                "instruction_quote": model_quote,
+                                "data_transfer": operation["data_transfer"],
+                            }
+                            if model_quote
+                            else {}
+                        ),
                         **(
                             {"script_quote": context.intent["script_quote"]}
                             if "script_quote" in context.intent
@@ -635,7 +704,7 @@ class FormalHostCalls:
         host = intent.get("formal_probe" if is_model else "formal_host") or {}
         if (
             intent.get("execution_kind")
-            not in ("formal_mcp", "formal_script", "formal_probe")
+            not in ("formal_mcp", "formal_script", "formal_instruction", "formal_probe")
             or str(task["id"]) != host.get("task_id")
             or str(call["task_id"]) != host.get("task_id")
             or str(call["attempt_id"]) != host.get("attempt_id")
@@ -742,7 +811,29 @@ class FormalHostCalls:
                 from app.application.workbench.script_budget import reserve
 
                 await reserve(self.repo, owner, call["id"], intent["script_quote"])
-        if context:
+            if context and intent.get("execution_kind") == "formal_instruction":
+                attempt = await self.repo.get_attempt(
+                    host["attempt_id"], for_update=True
+                )
+                refs = attempt["refs"]
+                await self.repo.update_attempt(
+                    host["attempt_id"],
+                    refs={
+                        **refs,
+                        "instruction_unit": {
+                            **refs["instruction_unit"],
+                            "approved_at": datetime.now(UTC).isoformat(),
+                        },
+                    },
+                )
+                session = await self.repo.get_session(str(task["session_id"]))
+                await self.repo.enqueue_command(
+                    session_id=str(task["session_id"]),
+                    sandbox_id=str(session["sandbox_id"]),
+                    kind="task.drive",
+                    payload={"task_id": host["task_id"]},
+                )
+        if context and intent.get("execution_kind") != "formal_instruction":
             return await self.capabilities._dispatch_call(
                 owner, call, context.asset, intent, context.knowbase_read
             )
@@ -794,6 +885,11 @@ class FormalHostCalls:
                     "script_revision": context.asset["revision"],
                 }
                 if context.intent["execution_kind"] == "formal_script"
+                else {
+                    "instruction_asset_id": context.asset["id"],
+                    "instruction_revision": context.asset["revision"],
+                }
+                if context.intent["execution_kind"] == "formal_instruction"
                 else {
                     "connection_id": context.asset["id"],
                     "connection_revision": context.asset["revision"],

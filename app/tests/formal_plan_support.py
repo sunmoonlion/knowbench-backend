@@ -105,15 +105,19 @@ async def advance(db, ctx):
     raise AssertionError("Expert did not reach approval or terminal state")
 
 
-def plan_request(leaf_request, leaf, case):
+def plan_request(leaf_request, leaf, case, *, input_name="to", output_name="receipt"):
     document = leaf_request.model_dump(mode="json", by_alias=True)
     definition = deepcopy(document["draft"]["definition"])
-    slot = definition["procedure"]["inputs"]["to"]
-    output = definition["procedure"]["outputs"]["receipt"]
+    slot = definition["procedure"]["inputs"][input_name]
+    output = definition["procedure"]["outputs"][output_name]
     steps = []
     for name, binding, depends in (
-        ("first", {"source": "caller", "name": "to"}, []),
-        ("second", {"source": "step", "step": "first", "output": "receipt"}, ["first"]),
+        ("first", {"source": "caller", "name": input_name}, []),
+        (
+            "second",
+            {"source": "step", "step": "first", "output": output_name},
+            ["first"],
+        ),
     ):
         steps.append(
             {
@@ -123,8 +127,8 @@ def plan_request(leaf_request, leaf, case):
                 "required_when": "Always",
                 "always_required": True,
                 "depends_on": depends,
-                "inputs": {"to": {"slot": slot, "binding": binding}},
-                "outputs": {"receipt": output},
+                "inputs": {input_name: {"slot": slot, "binding": binding}},
+                "outputs": {output_name: output},
                 "on_failure": "fail",
             }
         )
@@ -135,7 +139,7 @@ def plan_request(leaf_request, leaf, case):
         "exports": {
             "final_receipt": {
                 "step": "second",
-                "output": "receipt",
+                "output": output_name,
                 "always_present": True,
             }
         },

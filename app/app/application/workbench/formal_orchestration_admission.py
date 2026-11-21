@@ -92,11 +92,31 @@ def verify_leaf_authority(
     """Strict historical one-level leaf proof; approval is checked at consumption."""
     source = snapshot.execution_source(leaf)
     require(
-        source is not None and source.kind in ("mcp", "skill_script"),
+        source is not None
+        and source.kind in ("mcp", "skill_script", "skill_instruction"),
         "Sealed leaf implementation is unsupported",
     )
     assert source is not None
-    if source.kind == "skill_script":
+    if source.kind == "skill_instruction":
+        from app.application.workbench.instruction_leaf import leaf_operation
+
+        proof = item["governance"]["instruction"]
+        claim = proof["request"]
+        require(
+            proof["output_artifact"] == item["artifact"]
+            and isinstance(claim["job_digest"], str)
+            and len(claim["job_digest"]) == 64,
+            "Instruction result or approved job changed",
+        )
+        registration, declared, operation = leaf_operation(
+            leaf, inputs, proof["quote"], claim["job_digest"]
+        )
+        registration_id, descriptor_digest = (
+            registration.tool_id,
+            registration.descriptor_digest,
+        )
+        policy_digest = digest(operation)
+    elif source.kind == "skill_script":
         registration = script_registration(leaf.draft)
         policy = operations.formal_policy(registration)
         registration_id, descriptor_digest = (
@@ -114,7 +134,10 @@ def verify_leaf_authority(
             digest(["mcp", source.source, source.entry]),
             source.digest.removeprefix("sha256:"),
         )
-    operation = policy.resolve(inputs)
+    if source.kind != "skill_instruction":
+        operation = policy.resolve(inputs)
+        policy_digest = policy.policy_digest
+        declared = leaf.draft.definition.access_requirements[0].model_dump(mode="json")
     governance, observed = item["governance"], item["observed_call"]
     child_id, call_id = exact_id(item["method_call_id"]), exact_id(item["call_id"])
     expected_host = {
@@ -181,7 +204,6 @@ def verify_leaf_authority(
         and approved_at < auth.expires_at == grant_expiry <= parent.expires_at,
         "Sealed child approval or authorization is invalid",
     )
-    declared = leaf.draft.definition.access_requirements[0].model_dump(mode="json")
     exact = {
         **declared,
         "operations": [operation["operation"]],
@@ -200,7 +222,7 @@ def verify_leaf_authority(
         and grant.recipient_call_id == auth.call_id
         and grant.confirmation_context == digest(snapshot.document())
         and grant.matches_asset(source.kind, source.asset_id, source.asset_revision)
-        and grant.operation_digest == policy.policy_digest
+        and grant.operation_digest == policy_digest
         and grant.method_ids == (str(leaf.reference.method_id),)
         and grant.requirement.model_dump(mode="json") == exact
         and grant.expires_at == auth.expires_at,
@@ -290,6 +312,54 @@ def _old_case(
             operations,
             frozen.validation.completed_at,
         )
+        if leaf.draft.source and leaf.draft.source.kind == "skill_instruction":
+            read = recorded["governance"]["artifact_read"]
+            expected_fields = {}
+            for name in inputs:
+                binding = step.inputs[name].binding
+                if binding.source == "step":
+                    ref = next(v for v in bindings if v["step_id"] == binding.step)
+                    expected_fields[name] = {
+                        "producer_path": [binding.step],
+                        "artifact_id": ref["id"],
+                        "name": ref["name"],
+                        "version": ref["version"],
+                        "digest": ref["digest"],
+                        "output": binding.output,
+                    }
+            transfer = auth.grants[0].requirement.data_transfer
+            expected_binding = {
+                "task_id": str(result.task_id),
+                "owner_actor_id": str(owner),
+                "path": [
+                    {
+                        "call_id": root,
+                        "method_id": str(snapshot.method_id),
+                        "definition_digest": snapshot.definition_digest,
+                        "version": None,
+                    },
+                    {
+                        "call_id": recorded["method_call_id"],
+                        "method_id": str(leaf.reference.method_id),
+                        "version": leaf.reference.version,
+                        "definition_digest": leaf.reference.digest,
+                    },
+                ],
+                "fields": expected_fields,
+                "purpose": transfer.purpose,
+                "destination": transfer.destination,
+            }
+            require(
+                read["binding"] == expected_binding
+                and read["scope_digest"] == digest(expected_binding),
+                "Sealed instruction input versions or destination changed",
+            )
+        else:
+            require(
+                "instruction" not in recorded["governance"]
+                and not recorded.get("model_turn_ids"),
+                "Unexpected model receipt on a non-inference step",
+            )
         grants.append(auth.grants[0])
         require(
             parent.revision == index + 1 and parent.grants == tuple(grants),
@@ -374,10 +444,32 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
         or any(n.kind != "tool" for n in expanded.nodes),
         "Tree proof requires a recursive plan",
     )
+    from app.application.workbench.formal_method_catalog import instruction_receipt_cost
+
+    charges = Decimal(0)
+    metering_ids = set()
+    for case_evidence in evidence["cases"]:
+        for step_proof in case_evidence.get("steps", []):
+            governance = step_proof.get("governance") or {}
+            if "instruction" in governance:
+                ref = step_proof["reference"]
+                dep = resolved[(UUID(ref["method_id"]), ref["version"])]
+                require(
+                    dep.draft.source and dep.draft.source.kind == "skill_instruction",
+                    "Unexpected instruction charge",
+                )
+                charges += instruction_receipt_cost(
+                    governance["instruction"],
+                    dep.draft.source,
+                    case_evidence["snapshot_digest"],
+                    step_proof["model_turn_ids"],
+                    request.execution.budget.currency,
+                    metering_ids,
+                )
     cost = Decimal(evidence["model_cost"])
     require(
         cost.is_finite()
-        and cost == 0
+        and cost == charges
         and sum((case_script_cost(c) for c in evidence["cases"]), Decimal(0))
         == Decimal(evidence.get("script_cost", "0"))
         and cost + Decimal(evidence.get("script_cost", "0"))
@@ -403,7 +495,8 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
             and item["validated"] is True
             and item["errors"] == []
             and item["governance"] is None
-            and item["model_turn_ids"] == []
+            and item["model_turn_ids"]
+            == [t for s in item.get("steps", []) for t in s.get("model_turn_ids", [])]
             and not item.get("model_provenance")
             and result.caller == cases[key].caller == "host"
             and result.outcome == "succeeded"

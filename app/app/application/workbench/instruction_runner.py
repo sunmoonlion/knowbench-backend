@@ -249,7 +249,16 @@ class InstructionRunner:
                         raise CapabilityError(
                             "Instruction output lacks its authorized usage receipt"
                         )
-                    step = snapshot_for_task(task).draft.definition.procedure
+                    snapshot = snapshot_for_task(task)
+                    if snapshot.dependencies:
+                        from app.application.workbench.formal_orchestration_execution import (
+                            step_context,
+                        )
+
+                        _, _, frozen, _ = await step_context(repo, task, attempt)
+                        step = frozen.draft.definition.procedure
+                    else:
+                        step = snapshot.draft.definition.procedure
                     if step.kind != "direct":
                         raise CapabilityError(
                             "Instruction output requires a direct method"
@@ -264,6 +273,45 @@ class InstructionRunner:
                         raise CapabilityError(
                             "Usage belongs to another instruction turn"
                         )
+                if refs.get("kind") == "formal_orchestration_step":
+                    from app.domain.workbench.formal_host import validate_host_call
+
+                    owner = str(task["owner_actor_id"])
+                    call = await repo.capability_call(
+                        owner, refs["capability_call_id"], lock=True
+                    )
+                    validate_host_call(task, attempt, call)
+                    if (
+                        call["status"] == "dispatching"
+                        and call["detail"]["execution_kind"] == "formal_instruction"
+                    ):
+                        await repo.update_call(
+                            owner,
+                            call["id"],
+                            "failed" if code else "succeeded",
+                            {
+                                **call["detail"],
+                                "result": {"error": code}
+                                if code
+                                else {"structuredContent": outputs},
+                            },
+                        )
+                    return
+                versions = []
+                if outputs is not None and code is None:
+                    from app.application.workbench.formal_orchestration_execution import (
+                        save_step_output,
+                    )
+
+                    versions.append(
+                        await save_step_output(
+                            repo,
+                            task_id,
+                            attempt_id,
+                            "formal-step:" + attempt["step_id"],
+                            outputs,
+                        )
+                    )
                 result = {
                     "outcome": "failed" if code else "succeeded",
                     "outputs": outputs or {},
@@ -279,6 +327,7 @@ class InstructionRunner:
                     AttemptState.FAILED if code else AttemptState.COMPLETED,
                     failure_code=code,
                     retryable=False,
+                    output_artifacts=versions,
                 )
             await led.transition(
                 task_id,
@@ -286,10 +335,20 @@ class InstructionRunner:
                 reason={"code": code or "instruction_completed"},
             )
 
-    async def drive(self, task_id):
+    async def drive(self, task_id, *, leaf_attempt_id=None):
         attempt_id = thread = None
         try:
-            opened = await self.start(task_id)
+            if leaf_attempt_id is None:
+                opened = await self.start(task_id)
+            else:
+                async with self.stores() as repo:
+                    task = await repo.get_task(task_id)
+                    if (
+                        str(task.get("active_attempt_id")) != leaf_attempt_id
+                        or task["state"] != TaskState.RUNNING
+                    ):
+                        return
+                    opened = str(task["owner_actor_id"]), leaf_attempt_id
             if not opened:
                 return
             owner, attempt_id = opened
@@ -298,7 +357,13 @@ class InstructionRunner:
                 refs = attempt["refs"]
                 if "instruction_unit" not in refs:
                     return
-                if datetime.now(UTC) - attempt["started_at"] >= timedelta(minutes=10):
+                started = attempt["started_at"]
+                if leaf_attempt_id is not None:
+                    approved = refs["instruction_unit"].get("approved_at")
+                    if not approved:
+                        return
+                    started = datetime.fromisoformat(approved)
+                if datetime.now(UTC) - started >= timedelta(minutes=10):
                     await self.finish(
                         task_id, attempt_id, code="instruction_deadline", expired=True
                     )
@@ -313,8 +378,12 @@ class InstructionRunner:
                     )
                 async with repo.transaction():
                     svc = await self.service(repo, owner)
-                task = await repo.get_task(task_id, owner_actor_id=owner)
-                quote, job = await svc.authority(owner, task, "knowlab")
+                    task = await repo.get_task(
+                        task_id, owner_actor_id=owner, for_update=True
+                    )
+                    if str(task.get("active_attempt_id")) != attempt_id:
+                        return
+                    quote, job = await svc.authority(owner, task, "knowlab")
                 if quote != refs["instruction_quote"]:
                     raise CapabilityError("Instruction route changed")
             request = self.units.for_attempt(attempt)

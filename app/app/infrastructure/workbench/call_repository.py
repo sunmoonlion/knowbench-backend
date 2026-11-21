@@ -177,7 +177,9 @@ class CallRepositoryMixin:
                     updated_at=now()
                 WHERE c.kind='tool' AND c.owner_actor_id=:o AND c.session_id=:s AND
                   ((c.status='dispatching' AND c.updated_at < now()-interval '2 minutes'
-                    AND (c.origin <> 'managed' OR coalesce(c.detail->>'execution_kind','') NOT IN ('skill_script','formal_script'))) OR
+                    AND (c.origin <> 'managed' OR coalesce(c.detail->>'execution_kind','') NOT IN ('skill_script','formal_script'))
+                    AND (c.detail->>'execution_kind' IS DISTINCT FROM 'formal_instruction' OR EXISTS
+                      (SELECT 1 FROM workbench_tasks t WHERE t.id=c.task_id AND t.active_attempt_id IS DISTINCT FROM c.attempt_id))) OR
                    (c.status='awaiting_approval' AND EXISTS
                      (SELECT 1 FROM workbench_interactions i WHERE i.id=c.interaction_id
                        AND (i.expires_at <= now() OR i.status IN ('cancelled','expired')))))"""),

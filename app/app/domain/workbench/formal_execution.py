@@ -182,7 +182,17 @@ def orchestration_plan(snapshot: FormalTaskSnapshot):
         if "host" not in frozen.draft.allowed_callers:
             raise ValueError("Formal dependency must allow the host caller")
         if isinstance(frozen.draft.definition.procedure, ToolProcedure):
-            direct_procedure(frozen.draft, caller="host")
+            if frozen.draft.source and frozen.draft.source.kind == "skill_instruction":
+                if (
+                    recursive_plan(snapshot)
+                    or frozen.visibility != "private"
+                    or frozen.draft.allowed_callers != ("host",)
+                ):
+                    raise ValueError(
+                        "Instruction leaves require an owned one-level host plan"
+                    )
+            else:
+                direct_procedure(frozen.draft, caller="host")
         elif frozen.draft.allowed_callers != ("host",):
             raise ValueError("Formal orchestration dependencies must be host-only")
     plan = expanded_plan(snapshot)

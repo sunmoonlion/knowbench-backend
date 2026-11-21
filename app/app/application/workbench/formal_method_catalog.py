@@ -157,19 +157,36 @@ def _hash(value):
 
 def _instruction_case_cost(request, item, result, identities):
     proof = item["governance"]
+    _require(
+        result.caller == "host"
+        and result.outcome == "succeeded"
+        and result.call_id is None
+        and _hash(item["outputs_digest"]),
+        "Invalid instruction result",
+    )
+    return instruction_receipt_cost(
+        proof,
+        request.draft.source,
+        item["snapshot_digest"],
+        item["model_turn_ids"],
+        request.execution.budget.currency,
+        identities,
+    )
+
+
+def instruction_receipt_cost(
+    proof, source, snapshot_digest, turns, currency, identities
+):
     quote, claim, usage = proof["quote"], proof["request"], proof["usage"]
     turn = claim["turn_id"]
     tokens = _token_totals(usage["tokens"])
     amount = _money(usage["amount"])
     observed = Usage(**{key: value for key, value in tokens.items() if key != "total"})
     _require(
-        result.caller == "host"
-        and result.outcome == "succeeded"
-        and result.call_id is None
-        and proof["source_digest"] == request.draft.source.fingerprint()
-        and quote["snapshot_digest"] == item["snapshot_digest"]
+        proof["source_digest"] == source.fingerprint()
+        and quote["snapshot_digest"] == snapshot_digest
         and quote["caller"] == "knowlab"
-        and quote["currency"] == request.execution.budget.currency
+        and quote["currency"] == currency
         and quote["provider"]
         and quote["model"]
         and quote["base_url"]
@@ -177,16 +194,28 @@ def _instruction_case_cost(request, item, result, identities):
         and turn
         and usage["response_id"]
         and proof["thread"]["thread"]
-        and item["model_turn_ids"] == [turn]
+        and turns == [turn]
         and usage["turn_id"] == turn
         and _hash(claim["digest"])
-        and _hash(item["outputs_digest"])
         and 0 < claim["output_tokens"] <= quote["output_tokens"]
         and instruction_usage_cost(quote, claim, observed)
         == amount
         <= _money(quote["maximum"]),
         "Sealed instruction receipt differs from its case, request or tariff",
     )
+    if "job_digest" in claim:
+        response = (
+            "response",
+            quote["provider"],
+            quote["base_url"],
+            quote["credential_id"],
+            usage["response_id"],
+        )
+        _require(
+            response not in identities,
+            "Duplicate provider receipt across instruction steps",
+        )
+        identities.add(response)
     for kind, value in (
         ("gateway", proof["gateway"]["uid"]),
         ("worker", proof["thread"]["worker"]),
@@ -637,6 +666,14 @@ class FormalMethodCatalog:
             == (
                 "metered_model_request"
                 if instruction
+                or (
+                    orchestration
+                    and any(
+                        s.get("governance", {}).get("instruction")
+                        for c in evidence["cases"]
+                        for s in c["steps"]
+                    )
+                )
                 else "metered_scripts"
                 if "script_cost" in evidence
                 else "reviewed_no_incremental_fee"

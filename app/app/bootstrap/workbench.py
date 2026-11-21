@@ -520,6 +520,24 @@ def capability_service(repo):
                 issuer=settings.workbench_token_issuer,
             ),
         )
+    from functools import partial
+
+    from app.application.workbench.instruction_requests import InstructionRequests
+
+    instruction_service = None
+    if (
+        settings.workbench_instruction_routes
+        and settings.workbench_provisioner_url
+        and settings.workbench_provisioner_token
+        and settings.workbench_token_signing_key
+    ):
+        instruction_service = partial(
+            InstructionRequests.for_account,
+            routes=settings.workbench_instruction_routes,
+            model=settings.workbench_sandbox_model,
+            prices=settings.workbench_model_prices(),
+            default_url=settings.workbench_sandbox_provider_base_url,
+        )
     return Capabilities(
         repo,
         RemoteMcp(
@@ -560,6 +578,7 @@ def capability_service(repo):
         resource_delegations=settings.workbench_resource_delegations,
         skill_source=GitHubSkills(),
         script_material_source=script_source,
+        instruction_service=instruction_service,
         script_executor=SkillExecutor(
             settings.workbench_provisioner_url, settings.workbench_provisioner_token
         )
