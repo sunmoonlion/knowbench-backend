@@ -9,26 +9,50 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_mcp_routes import URL, bearer, client, tool
 from test_workbench_mcp_routes import served as served
+from test_workbench_records_db import talk
 from test_workbench_review_db import unbalanced
 from tool_invocation_support import ObservedPlatformTransport
 from tool_invocation_support import running_platform_world as world
 
+from app.domain.workbench.native_functions import (
+    PROJECT_LIST,
+    PROJECT_READ,
+    PROJECT_REVISIONS,
+)
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
 
 
+@pytest.mark.parametrize("operation", [PROJECT_LIST, PROJECT_READ])
 async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receipt(
-    served, db, monkeypatch
+    served, db, monkeypatch, operation
 ):
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
-        message = tool("list_project_conversations", task=ids["task"])
+        args = {"task": ids["task"]}
+        if operation == PROJECT_READ:
+            async with db() as s:
+                conversation = await talk(
+                    WorkbenchRepository(s),
+                    ids["project"],
+                    "chat",
+                    [(f"question {n}", f"answer {n}") for n in range(21)],
+                )
+            args.update(conversation=conversation, page=2)
+        message = tool(operation, **args)
         async with AsyncClient(
             transport=ObservedPlatformTransport(served, db, ids),
             base_url="http://testserver",
         ) as http:
             first = (await http.post(URL, json=message, headers=bearer())).json()
+        if operation == PROJECT_READ:
+            page = first["result"]["structuredContent"]
+            assert (page["page"], page["pages"]) == (2, 2)
+            assert [entry["said"] for entry in page["entries"]] == [
+                "question 20",
+                "answer 20",
+            ]
         call_id = first["result"]["_meta"]["call_id"]
         async with db() as s:
             repo = WorkbenchRepository(s)
@@ -56,6 +80,22 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
                 )
                 == 1
             )
+            revision = PROJECT_REVISIONS[operation]()
+            assert row["detail"]["operation"][
+                "registered_source"
+            ] == revision.model_dump(exclude={"contract"})
+            if operation == PROJECT_READ:
+                [event] = [
+                    e["payload"]
+                    for e in await repo.list_events(session_id=ids["current"])
+                    if e["type"] == "records/read"
+                ]
+                assert event == {
+                    "tool": operation,
+                    "conversation": args["conversation"],
+                    "page": 2,
+                    "call_id": call_id,
+                }
             identity = row["detail"]["invocation"]
             assert not await repo.capability_calls(OWNER, str(row["session_id"]))
         message["params"]["_meta"] = {
@@ -87,8 +127,9 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
         await fake.close()
 
 
+@pytest.mark.parametrize("operation", [PROJECT_LIST, PROJECT_READ])
 async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
-    served, db, monkeypatch
+    served, db, monkeypatch, operation
 ):
     from test_workbench_mcp_routes import rpc
 
@@ -96,13 +137,17 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
 
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     original = workbench_mcp.dispatch
+    args = {"task": ids["task"]}
+    if operation == PROJECT_READ:
+        args["conversation"] = ids["chat"]
 
     async def withdraw(*args, **kwargs):
         async with db() as session, session.begin():
             await session.execute(
                 text(
-                    "DELETE FROM workbench_registry_service_functions WHERE provider='knowbench' AND name='list_project_conversations' AND version=1"
-                )
+                    "DELETE FROM workbench_registry_service_functions WHERE provider='knowbench' AND name=:name AND version=1"
+                ),
+                {"name": operation},
             )
         return await original(*args, **kwargs)
 
@@ -115,7 +160,7 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
             response = (
                 await http.post(
                     URL,
-                    json=tool("list_project_conversations", task=ids["task"]),
+                    json=tool(operation, **args),
                     headers=bearer(),
                 )
             ).json()["result"]
@@ -124,11 +169,11 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
             tools = (
                 await http.post(URL, json=rpc("tools/list"), headers=bearer())
             ).json()["result"]["tools"]
-            assert all(t["name"] != "list_project_conversations" for t in tools)
+            assert all(t["name"] != operation for t in tools)
             again = (
                 await http.post(
                     URL,
-                    json=tool("list_project_conversations", task=ids["task"]),
+                    json=tool(operation, **args),
                     headers=bearer(),
                 )
             ).json()

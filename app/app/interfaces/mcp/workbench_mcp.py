@@ -44,6 +44,7 @@ from app.domain.workbench.errors import ComputeRefused, WorkbenchError
 from app.domain.workbench.native_functions import (
     BINDINGS,
     PROJECT_LIST,
+    PROJECT_READ,
 )
 from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 from app.domain.workbench.tool_schema import schema_validator
@@ -138,10 +139,6 @@ async def call(
             args.get("expression"),
             args.get("inputs"),
             args.get("round"),
-        )
-    if name == "read_project_conversation":
-        return await records.read_conversation(
-            args.get("task"), args.get("conversation"), args.get("page", 1)
         )
     raise ValueError(f"unknown tool {name}")
 
@@ -287,12 +284,19 @@ async def dispatch(records, mid, name, args, relay, *, function=None, receipt=No
                 return _tool_error(
                     mid, "Registered function changed before dispatch"
                 ), "failed"
-            if name == PROJECT_LIST:
-                result = jsonable_encoder(
-                    await records.list_conversations(
+            if name in (PROJECT_LIST, PROJECT_READ):
+                if name == PROJECT_LIST:
+                    page = await records.list_conversations(
                         args["task"], call_id=receipt["id"]
                     )
-                )
+                else:
+                    page = await records.read_conversation(
+                        args["task"],
+                        args["conversation"],
+                        args.get("page", 1),
+                        call_id=receipt["id"],
+                    )
+                result = jsonable_encoder(page)
                 if not schema_validator(function.contract.output_schema).is_valid(
                     result
                 ):

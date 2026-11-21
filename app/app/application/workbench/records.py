@@ -92,7 +92,7 @@ class ProjectRecords:
         }
 
     async def read_conversation(
-        self, task: Any, conversation: Any, page: Any = 1
+        self, task: Any, conversation: Any, page: Any = 1, *, call_id: str | None = None
     ) -> dict[str, Any]:
         working = await self._working(task)
         session = await self.repo.get_session(
@@ -114,6 +114,7 @@ class ProjectRecords:
             "read_project_conversation",
             conversation=str(session["id"]),
             page=shown["page"],
+            call_id=call_id,
         )
         return {
             "conversation": str(session["id"]),

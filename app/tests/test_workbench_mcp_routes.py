@@ -14,7 +14,7 @@ from test_service_function_management_db import (
     revision,
 )
 from test_workbench_advisor_db import close
-from test_workbench_ledger_db import OWNER
+from test_workbench_ledger_db import OWNER, seed
 from test_workbench_ledger_db import db as db
 from test_workbench_review_db import unbalanced
 from tool_invocation_support import ObservedPlatformTransport
@@ -22,7 +22,7 @@ from tool_invocation_support import running_platform_world as world
 
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.bootstrap.api import create_app
-from app.domain.workbench.native_functions import project_list_revision
+from app.domain.workbench.native_functions import PROJECT_REVISIONS
 from app.infrastructure.storage.postgres import get_db_session
 from app.infrastructure.workbench.service_functions import register_revision
 from app.interfaces.endpoints.workbench_routes import (
@@ -55,7 +55,8 @@ def tool(tool_name, **arguments):
 @pytest.fixture
 async def served(db, monkeypatch):  # noqa: F811
     async with db() as session:
-        await register_revision(session, project_list_revision())
+        for build in PROJECT_REVISIONS.values():
+            await register_revision(session, build())
     monkeypatch.setenv("WORKBENCH_ENABLED", "true")
     app = create_app(Settings())
 
@@ -168,6 +169,7 @@ async def test_empty_compute_args_explain_missing_parameters_not_missing_task(se
 async def test_calling_the_tools(served, db):  # noqa: F811
     fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
     try:
+        _, _, other_session = await seed(db, owner=str(uuid.uuid4()))
         async with AsyncClient(
             transport=ObservedPlatformTransport(served, db, ids),
             base_url="http://testserver",
@@ -206,6 +208,16 @@ async def test_calling_the_tools(served, db):  # noqa: F811
                     task=ids["task"],
                     conversation=ids["elsewhere"],
                 ),
+                tool(
+                    "read_project_conversation",
+                    task=ids["task"],
+                    conversation=other_session,
+                ),
+                tool(
+                    "read_project_conversation",
+                    task=ids["task"],
+                    conversation=ids["current"],
+                ),
                 tool("list_project_conversations", task=str(uuid.uuid4())),
                 tool("list_project_conversations"),
             ):
@@ -215,6 +227,7 @@ async def test_calling_the_tools(served, db):  # noqa: F811
                     message in refused["result"]["content"][0]["text"]
                     for message in (
                         "not found",
+                        "the current conversation",
                         "does not belong",
                         "registered schema",
                         "give the active task id",

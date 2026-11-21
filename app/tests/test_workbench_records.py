@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+from app.domain.workbench.native_functions import project_read_revision
 from app.domain.workbench.records import (
     PAGE_ENTRIES,
     TEXT_CHARS,
@@ -11,6 +12,7 @@ from app.domain.workbench.records import (
     page_of,
     record_of,
 )
+from app.domain.workbench.tool_schema import schema_validator
 
 METHOD = "# Advisor step: 勾稽\nYou are executing one step ... ## Method for this step"
 
@@ -156,3 +158,28 @@ def test_long_words_are_cut_and_pages_have_a_limit():
     assert page_of(entries, 0)["page"] == 1
     assert page_of(entries, "x")["page"] == 1
     assert page_of([], None) == {"page": 1, "pages": 1, "entries": []}
+
+
+def test_registered_page_covers_record_variants_and_rejects_internal_fields():
+    entries = record_of(
+        [
+            event("task/received", {}),
+            event("step/accepted", {}),
+            event("task/state", {"to": "CANCELLED"}),
+            event("interaction/opened", {"prompt": {"title": "confirm"}}),
+            event("turn/requested", {"text": "hello"}),
+            item(type="agentMessage", text="reply"),
+            item(type="fileChange"),
+            item(type="commandExecution"),
+            item(type="mcpToolCall"),
+        ]
+    )
+    page = {
+        "conversation": "s1",
+        "kind": "expert",
+        "title": None,
+        **page_of(entries, 1),
+    }
+    check = schema_validator(project_read_revision().contract.output_schema)
+    check.validate(page)
+    assert not check.is_valid(page | {"entries": [entries[0] | {"token": "internal"}]})

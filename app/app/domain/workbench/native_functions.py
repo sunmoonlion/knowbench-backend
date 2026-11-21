@@ -6,14 +6,12 @@ from typing import Any
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.data_function import DATA_QUERIES, QUERY_PERMISSIONS
 from app.domain.workbench.platform_tools import TOOLS
+from app.domain.workbench.records import PAGE_ENTRIES
 from app.domain.workbench.service_functions import FunctionRevision, ServiceFunction
 from app.domain.workbench.tool_registry import ToolRegistration
 
 PROJECT_LIST = "list_project_conversations"
-BINDINGS = {
-    PROJECT_LIST: ("knowbench", 1),
-    **{name: ("knowbase", 1) for name in DATA_QUERIES if name != "read_method_input"},
-}
+PROJECT_READ = "read_project_conversation"
 
 
 def project_list_revision():
@@ -48,6 +46,84 @@ def project_list_revision():
         },
     )
     return FunctionRevision.build("knowbench", PROJECT_LIST, 1, contract)
+
+
+def project_read_revision():
+    text = {"type": "string"}
+    nullable = {"type": ["string", "null"]}
+
+    def entry(who, **fields):
+        props = {"at": nullable, "who": {"enum": who}, **fields}
+        return {
+            "type": "object",
+            "properties": props,
+            "required": list(props),
+            "additionalProperties": False,
+        }
+
+    entries = [
+        entry(["user", "assistant"], said=text),
+        entry(["user"], did={"const": "asked_the_expert"}, expert=nullable),
+        entry(
+            ["expert"],
+            did={"const": "step"},
+            step=nullable,
+            outcome={"enum": ["accepted", "rejected"]},
+            failures={"type": "array", "items": text},
+        ),
+        entry(["expert"], did={"const": "ended"}, state=text),
+        entry(["expert"], did={"const": "asked_the_user"}, about=text),
+        entry(
+            ["assistant"],
+            did={"enum": ["command", "file_change"]},
+            brief=text,
+            ok={"type": "boolean"},
+        ),
+        entry(
+            ["assistant"],
+            did={"const": "tool"},
+            name=text,
+            brief=text,
+            ok={"type": "boolean"},
+        ),
+    ]
+    fields = {
+        "conversation": text,
+        "kind": text,
+        "title": nullable,
+        "page": {"type": "integer", "minimum": 1},
+        "pages": {"type": "integer", "minimum": 1},
+        "entries": {
+            "type": "array",
+            "maxItems": PAGE_ENTRIES,
+            "items": {"oneOf": entries},
+        },
+    }
+    definition = TOOLS[PROJECT_READ]
+    contract = ServiceFunction(
+        description=definition["description"],
+        operation=PROJECT_READ,
+        scenes=["native", "step"],
+        required_permissions=["project.conversations.content.read"],
+        input_schema=definition["inputSchema"],
+        output_schema={
+            "type": "object",
+            "properties": fields,
+            "required": list(fields),
+            "additionalProperties": False,
+        },
+    )
+    return FunctionRevision.build("knowbench", PROJECT_READ, 1, contract)
+
+
+PROJECT_REVISIONS = {
+    PROJECT_LIST: project_list_revision,
+    PROJECT_READ: project_read_revision,
+}
+BINDINGS = {
+    **{name: ("knowbench", 1) for name in PROJECT_REVISIONS},
+    **{name: ("knowbase", 1) for name in DATA_QUERIES if name != "read_method_input"},
+}
 
 
 _TASK = {
@@ -97,7 +173,10 @@ def native_registration(revision):
         or "native" not in revision.contract.scenes
     ):
         raise CapabilityError("Missing native function binding")
-    if revision.name == PROJECT_LIST and revision != project_list_revision():
+    if (
+        revision.provider == "knowbench"
+        and revision != PROJECT_REVISIONS[revision.name]()
+    ):
         raise CapabilityError("Local function differs from its registered contract")
     if revision.name in DATA_QUERIES and revision.contract.required_permissions != [
         QUERY_PERMISSIONS[revision.name]
