@@ -2228,6 +2228,17 @@ class WorkbenchRepository(
             )
             for attempt in attempts.mappings():
                 refs = attempt["refs"] or {}
+                if refs.get("instruction_quote") and (
+                    (refs.get("instruction_unit") or {}).get("pending")
+                    or refs.get("usage_pending")
+                    or (
+                        refs.get("instruction_request")
+                        and not refs.get("instruction_usage")
+                    )
+                ):
+                    raise TestCleanupPending(
+                        "Instruction usage and unit cleanup must be confirmed before purge"
+                    )
                 probe = refs.get("formal_model_probe")
                 context = (attempt["original_input"] or {}).get("client_context") or {}
                 if probe and (

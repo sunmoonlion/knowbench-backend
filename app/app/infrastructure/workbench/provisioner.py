@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import httpx
@@ -79,9 +80,29 @@ class InstructionUnits:
     def __init__(self, url, token, transport=None):
         self.url, self.token, self.transport = url, token, transport
 
+    def for_attempt(self, attempt):
+        scope = attempt["refs"]["instruction_unit"].get("scope", "task")
+        if scope not in ("task", "attempt"):
+            raise ProvisionerFailed("Unknown instruction unit scope")
+        return partial(
+            self.request, attempt=str(attempt["id"]) if scope == "attempt" else None
+        )
+
     async def request(
-        self, owner, task, method, path, *, body=None, params=None, absent=False
+        self,
+        owner,
+        task,
+        method,
+        path,
+        *,
+        attempt=None,
+        body=None,
+        params=None,
+        absent=False,
     ):
+        root = f"/v1/instruction-executions/{owner}/{task}"
+        if attempt is not None:
+            root += f"/attempts/{attempt}"
         async with httpx.AsyncClient(
             base_url=self.url,
             transport=self.transport,
@@ -92,7 +113,7 @@ class InstructionUnits:
             try:
                 result = await client.request(
                     method,
-                    f"/v1/instruction-executions/{owner}/{task}/{path}",
+                    f"{root}/{path}",
                     json=body,
                     params=params,
                 )
@@ -104,6 +125,17 @@ class InstructionUnits:
                 raise ProvisionerFailed("Instruction provisioner unavailable") from exc
             except httpx.HTTPError as exc:
                 raise ProvisionerFailed("Instruction provisioner unavailable") from exc
+        if path == "prepare" and attempt and result.status_code == 404:
+            # The older provisioner has no attempt-scoped POST route.
+            # Only the router's explicit miss proves the Pod was never reserved.
+            try:
+                missing_route = result.json() == {"detail": "Not Found"}
+            except ValueError:
+                missing_route = False
+            if missing_route:
+                raise ProvisioningUnavailable(
+                    "Instruction provisioner lacks per-attempt units"
+                )
         if path == "prepare" and result.status_code == 503:
             # Only these explicit pre-creation refusals prove no reservation exists.
             try:

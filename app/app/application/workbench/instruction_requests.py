@@ -15,9 +15,10 @@ from app.domain.workbench.formal_execution import snapshot_for_task
 from app.domain.workbench.instruction_requests import (
     InstructionRoute,
     instruction_job,
+    instruction_usage_cost,
     verify_instruction_body,
 )
-from app.domain.workbench.pricing import Price, PriceList, Usage, cost_of
+from app.domain.workbench.pricing import PriceList, Usage
 from app.domain.workbench.provider_url import validate_provider_base_url
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState
 
@@ -160,7 +161,11 @@ class InstructionRequests:
                 reserve=Decimal(quote["maximum"]),
                 meta={
                     **gateway,
-                    **({"instruction_unit": {"pending": True}} if managed else {}),
+                    **(
+                        {"instruction_unit": {"pending": True, "scope": "attempt"}}
+                        if managed
+                        else {}
+                    ),
                     "instruction_quote": quote,
                     "model": self.route.model,
                     "model_provider": self.route.provider,
@@ -260,20 +265,7 @@ async def record_instruction_receipt(
             raise IdempotencyConflict("Usage does not identify the claimed instruction")
         quote = refs["instruction_quote"]
         tokens = usage.as_json()
-        if (
-            any(type(n) is not int or n < 0 for n in tokens.values())
-            or usage.output > claim["output_tokens"]
-            or usage.total - usage.output > quote["context_tokens"]
-        ):
-            raise CapabilityError("Provider usage differs from the instruction limits")
-        rates = quote["rates"]
-        price = Price(
-            input=Decimal(rates["input"]),
-            cached_input=Decimal(rates["cached_input"]),
-            cache_write=Decimal(rates["cache_write"]),
-            output=Decimal(rates["output"]),
-        )
-        amount = cost_of(usage, price)
+        amount = instruction_usage_cost(quote, claim, usage)
         bill = {
             "response_id": response_id,
             "turn_id": turn_id,

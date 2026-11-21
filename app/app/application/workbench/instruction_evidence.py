@@ -5,6 +5,34 @@ from decimal import Decimal
 from app.domain.workbench.formal_execution import validate_values
 
 
+def instruction_charge(task, attempt, entries):
+    """Reconcile one provider receipt to its own debit and the shared root total."""
+    if str(attempt["task_id"]) != str(task["id"]):
+        return None
+    charges = [row for row in entries if row["entry"] == "consume"]
+    if any(str(row["task_id"]) != str(task["id"]) for row in charges):
+        return None
+    if sum(row["amount"] for row in charges) != Decimal(task["budget"]["used"]):
+        return None
+    own = [row for row in charges if str(row["attempt_id"]) == str(attempt["id"])]
+    if len(own) != 1:
+        return None
+    charge = own[0]
+    usage = attempt["refs"].get("instruction_usage")
+    spent = attempt["budget_consumed"]
+    if (
+        not usage
+        or charge.get("script_call_id") is not None
+        or charge["amount"] != Decimal(usage["amount"])
+        or charge["tokens"] != usage["tokens"]
+        or spent.get("tokens") != usage["tokens"]
+        or spent.get("amount") is None
+        or Decimal(spent["amount"]) != charge["amount"]
+    ):
+        return None
+    return charge
+
+
 async def instruction_evidence(repo, task, attempt, request, outputs):
     refs = attempt["refs"]
     quote = refs.get("instruction_quote") or {}
@@ -38,23 +66,12 @@ async def instruction_evidence(repo, task, attempt, request, outputs):
         or quote.get("provider") != attempt.get("model_provider")
     ):
         return None
-    charges = [
-        row
-        for row in await repo.ledger_list(str(task["id"]))
-        if row["entry"] == "consume"
-    ]
-    if len(charges) != 1:
-        return None
-    charge = charges[0]
-    spent = attempt["budget_consumed"]
-    amount = Decimal(usage["amount"])
+    entries = await repo.ledger_list(str(task["id"]))
+    charge = instruction_charge(task, attempt, entries)
+    # A standalone author trial must account for the entire case itself.
     if (
-        str(charge["attempt_id"]) != str(attempt["id"])
-        or charge["amount"] != amount
-        or charge["tokens"] != usage["tokens"]
-        or spent["tokens"] != usage["tokens"]
-        or Decimal(spent["amount"]) != amount
-        or Decimal(task["budget"]["used"]) != amount
+        charge is None
+        or sum(row["entry"] == "consume" for row in entries) != 1
         or Decimal(task["budget"]["reserved"]) != 0
     ):
         return None

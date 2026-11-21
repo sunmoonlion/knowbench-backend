@@ -13,12 +13,14 @@ from test_instruction_runner_db import drive, stack
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
+from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 from app.application.workbench.formal_methods import FormalMethods
 from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.instruction_requests import InstructionRequests
 from app.application.workbench.test_runs import KnowbotTestConductor
 from app.bootstrap.workbench import workbench_stores
 from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.errors import TestCleanupPending as CleanupPending
 from app.domain.workbench.formal_execution import FORMAL_RUNTIME
 from app.domain.workbench.formal_method_admission_generated import FrozenFormalMethod
 from app.domain.workbench.formal_method_execution_generated import (
@@ -143,6 +145,29 @@ class AuthorTrial:
             assert await self.factory(repo).formal_sources.register(
                 version, caller="knowlab"
             )
+            formal = self.factory(repo).formal_sources
+            catalog = FormalMethodCatalog(repo, formal, formal.operations)
+            assert (
+                await catalog.resolve_owned_admission(
+                    OWNER, version.reference, resolved={}
+                )
+                == version
+            )
+            # The author qualification confers no tool-dispatch or third-party entitlement.
+            with pytest.raises((ValueError, CapabilityError)):
+                await catalog.resolve_owned(OWNER, version.reference, caller="host")
+            wrong = version.reference.model_copy(
+                update={"digest": "sha256:" + "0" * 64}
+            )
+            with pytest.raises(CapabilityError):
+                await catalog.resolve_owned_admission(OWNER, wrong, resolved={})
+            formal.source_licenses = ()
+            with pytest.raises(CapabilityError):
+                await catalog.resolve_owned_admission(
+                    OWNER, version.reference, resolved={}
+                )
+
+        return version
 
 
 @pytest.mark.parametrize("expected", ["ready", "different"])
@@ -198,3 +223,27 @@ async def test_output_without_matching_settlement_cannot_freeze(db):
     result = await status(db, trial.request, trial.factory)
     assert result["cases"][0]["assertions"][0]["passed"]
     assert result["status"] == "failed" and result["admission"]["receipt"] is None
+
+
+async def test_private_instruction_remains_qualified_only_after_safe_cleanup(db):
+    trial = AuthorTrial()
+    s = await stack(db, author_trial=trial.start)
+    s.units.ready = True
+    await drive(s)
+    version = await trial.finish(db)
+    run_id = str(trial.request.run_id)
+    async with s.host() as svc:
+        (attempt,) = await svc.repo.list_attempts(s.task)
+        with pytest.raises(CleanupPending, match="Instruction usage"):
+            async with svc.repo.transaction():
+                await svc.repo.purge_test_run(run_id)
+    for _ in range(2):
+        await s.driver.cleanup(OWNER, s.task, str(attempt["id"]))
+    async with s.host() as svc:
+        async with svc.repo.transaction():
+            await svc.repo.purge_test_run(run_id)
+        catalog = FormalMethodCatalog(svc.repo, svc.formal, svc.formal.operations)
+        assert (
+            await catalog.resolve_owned_admission(OWNER, version.reference, resolved={})
+            == version
+        )

@@ -12,6 +12,7 @@ from test_workbench_ledger_db import OWNER, handover, seed
 from test_workbench_ledger_db import db as db
 
 from app.application.workbench.formal_methods import FormalMethods
+from app.application.workbench.instruction_evidence import instruction_charge
 from app.application.workbench.instruction_requests import InstructionRequests
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.capabilities import CapabilityError, digest
@@ -327,3 +328,64 @@ async def test_default_provider_credential_can_only_use_its_deployment_endpoint(
     async with host(default_url=ROUTE.base_url) as svc:
         attempt = await svc.open(OWNER, task, caller="knowlab")
         assert (await svc.repo.get_attempt(attempt))["model"] == ROUTE.model
+
+
+async def test_late_instruction_debit_matches_its_attempt_among_sibling_charges(db):
+    host, task_id, credential, wire = await setup(db)
+    async with host() as svc:
+        ledger = Ledger(svc.repo)
+        instruction = await svc.open(OWNER, task_id, caller="knowlab")
+        await svc.claim(
+            OWNER,
+            task_id,
+            instruction,
+            caller="knowlab",
+            credential_id=credential["id"],
+            turn_id="leaf-turn",
+            body=wire,
+        )
+        await ledger.attempt_transition(instruction, AttemptState.FAILED)
+        sibling = (
+            await ledger.open_attempt(
+                task_id, step_id="other", step_version="v1", reserve=Decimal("0.01")
+            )
+        )["attempt_id"]
+        await ledger.attempt_transition(sibling, AttemptState.RUNNING)
+        await ledger.attempt_transition(
+            sibling,
+            AttemptState.COMPLETED,
+            consumed=Decimal("0.000006"),
+            tokens={"input": 1, "output": 1},
+            turn_id="other-turn",
+        )
+        for _ in range(2):
+            await svc.receipt(
+                OWNER,
+                task_id,
+                instruction,
+                turn_id="leaf-turn",
+                response_id="observed",
+                usage=BILL,
+            )
+        task = await svc.repo.get_task(task_id)
+        attempt = await svc.repo.get_attempt(instruction)
+        entries = await svc.repo.ledger_list(task_id)
+        assert Decimal(task["budget"]["used"]) == Decimal("0.000012")
+        assert Decimal(task["budget"]["reserved"]) == 0
+        assert (
+            str(instruction_charge(task, attempt, entries)["attempt_id"]) == instruction
+        )
+        # Even an equal-amount sibling debit cannot stand in for this receipt.
+        assert (
+            instruction_charge(
+                task,
+                attempt,
+                [
+                    {**r, "attempt_id": sibling}
+                    if r["entry"] == "consume" and str(r["attempt_id"]) == instruction
+                    else r
+                    for r in entries
+                ],
+            )
+            is None
+        )

@@ -2,6 +2,7 @@
 
 import json
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 
 from pydantic import ConfigDict, StrictInt
 
@@ -49,6 +50,23 @@ class InstructionRoute:
             "rates": {k: str(v) for k, v in asdict(price).items()},
             "maximum": str(maximum),
         }
+
+
+def instruction_usage_cost(quote, claim, usage: Usage):
+    if (
+        any(type(n) is not int or n < 0 for n in usage.as_json().values())
+        or usage.output > claim["output_tokens"]
+        or usage.total - usage.output > quote["context_tokens"]
+    ):
+        raise CapabilityError("Provider usage differs from the instruction limits")
+    rates = quote["rates"]
+    price = Price(
+        input=Decimal(rates["input"]),
+        cached_input=Decimal(rates["cached_input"]),
+        cache_write=Decimal(rates["cache_write"]),
+        output=Decimal(rates["output"]),
+    )
+    return cost_of(usage, price)
 
 
 def instruction_job(request, entry, arguments):

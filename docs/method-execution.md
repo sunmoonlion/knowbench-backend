@@ -321,3 +321,9 @@ RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_runner_
 成功回执关联冻结的测试集、来源和定义、每次任务与尝试、线程和轮次、供应商响应编号、用量及根账本核销。断言按各用例的通过次数判定；证据必须逐次齐全。作者可据此冻结并登记私有版本。专家步骤执行这种叶子，以及运营路由在目标集群开放，仍待验收。
 
 在后端 `app/` 用独立 PostgreSQL 运行 `tests/test_formal_instruction_trial_db.py`。同一测试库设置 `RUN_CODEX_INSTRUCTION_PROBE=1` 后，`tests/test_instruction_runner_codex.py` 使用真实 Codex 和本地供应商验证重启及迟到回执。跨服务联调入口是平台仓的 `scripts/local-integration/instruction_author.py`，需要同时提供 `DELIVERY_TEST_DATABASE_URL` 和 `AGENT_TEST_DATABASE_URL`，各指向一次性测试库。
+
+### 专家引用纯指令的准入与计费基础
+
+KnowBench 可复核作者本人私有登记的精确指令版本。核对项包括来源执行许可、定义与测试集摘要、每次执行的轮次和断言、供应商回执、报价及实际用量。试跑任务清理后从已封存的证据复核；当前安装或执行许可失效时拒绝引用。组合执行的父级外发授权和步骤产物交接仍待接入。
+
+新 Attempt 在创建时记录执行资源按 Attempt 分配。网关、工作容器和回执卷归该次执行，额度和实际费用归根 Task。核对费用时，先按 Attempt 找唯一的模型扣款，再对照根账所有扣款的合计。取消后的迟到回执归原 Attempt。试跑清理须等已派发用量核销、执行资源回收。升级前的 Attempt 继续用原任务路径恢复和清理。新版 runner 需要供给器已提供按 Attempt 分配的接口。

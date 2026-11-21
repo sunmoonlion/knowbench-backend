@@ -37,7 +37,9 @@ from app.domain.workbench.formal_model import (
     PROBE_TOOL,
     verified_probe_profile,
 )
+from app.domain.workbench.instruction_requests import instruction_usage_cost
 from app.domain.workbench.method_authorization import MethodAuthorization
+from app.domain.workbench.pricing import Usage
 from app.domain.workbench.script_pricing import ScriptOperation
 from app.domain.workbench.tool_operations import McpOperation, OperationCatalog
 from app.domain.workbench.tool_registry import ToolRegistration
@@ -151,6 +153,52 @@ def _hash(value):
         and len(value) == 64
         and all(c in "0123456789abcdef" for c in value)
     )
+
+
+def _instruction_case_cost(request, item, result, identities):
+    proof = item["governance"]
+    quote, claim, usage = proof["quote"], proof["request"], proof["usage"]
+    turn = claim["turn_id"]
+    tokens = _token_totals(usage["tokens"])
+    amount = _money(usage["amount"])
+    observed = Usage(**{key: value for key, value in tokens.items() if key != "total"})
+    _require(
+        result.caller == "host"
+        and result.outcome == "succeeded"
+        and result.call_id is None
+        and proof["source_digest"] == request.draft.source.fingerprint()
+        and quote["snapshot_digest"] == item["snapshot_digest"]
+        and quote["caller"] == "knowlab"
+        and quote["currency"] == request.execution.budget.currency
+        and quote["provider"]
+        and quote["model"]
+        and quote["base_url"]
+        and quote["credential_id"]
+        and turn
+        and usage["response_id"]
+        and proof["thread"]["thread"]
+        and item["model_turn_ids"] == [turn]
+        and usage["turn_id"] == turn
+        and _hash(claim["digest"])
+        and _hash(item["outputs_digest"])
+        and 0 < claim["output_tokens"] <= quote["output_tokens"]
+        and instruction_usage_cost(quote, claim, observed)
+        == amount
+        <= _money(quote["maximum"]),
+        "Sealed instruction receipt differs from its case, request or tariff",
+    )
+    for kind, value in (
+        ("gateway", proof["gateway"]["uid"]),
+        ("worker", proof["thread"]["worker"]),
+        ("ledger", proof["ledger_id"]),
+    ):
+        identity = (kind, str(value))
+        _require(
+            bool(value) and identity not in identities,
+            "Instruction execution identity is missing or reused",
+        )
+        identities.add(identity)
+    return amount
 
 
 def _verify_model_case(request, snapshot, item, result, identities):
@@ -422,6 +470,21 @@ class FormalMethodCatalog:
             try:
                 frozen = FrozenFormalMethod.model_validate(row["document"])
                 if not isinstance(frozen.draft.definition.procedure, Orchestration):
+                    if (
+                        frozen.draft.source
+                        and frozen.draft.source.kind == "skill_instruction"
+                    ):
+                        frozen, request, evidence = await self._admission(
+                            owner, reference, row
+                        )
+                        _require(
+                            await self.formal_sources._source(
+                                owner, frozen.owner_subject, frozen.draft.source
+                            ),
+                            "Instruction source execution rights are unavailable",
+                        )
+                        self._verify_cases(owner, frozen, request, evidence, None, None)
+                        return frozen
                     if frozen.visibility == "public":
                         return (
                             await self._resolve(
@@ -542,6 +605,9 @@ class FormalMethodCatalog:
             and fingerprint(evidence) == execution_ref.evidence_digest,
             "Formal execution evidence is missing or changed",
         )
+        instruction = bool(
+            frozen.draft.source and frozen.draft.source.kind == "skill_instruction"
+        )
         _require(
             evidence["contract"] == FORMAL_RUNTIME
             and (
@@ -553,7 +619,9 @@ class FormalMethodCatalog:
                 if orchestration
                 else evidence["adapter"]
                 == (
-                    "knowbench/formal-mcp-caller-probe/v1"
+                    "knowbench/formal-instruction-host/v1"
+                    if instruction
+                    else "knowbench/formal-mcp-caller-probe/v1"
                     if "model" in frozen.draft.allowed_callers
                     else "knowbench/formal-script-host/v1"
                     if frozen.draft.source
@@ -567,7 +635,9 @@ class FormalMethodCatalog:
             == request.execution.suite.reference().model_dump(mode="json")
             and evidence["external_provider_billing"]
             == (
-                "metered_scripts"
+                "metered_model_request"
+                if instruction
+                else "metered_scripts"
                 if "script_cost" in evidence
                 else "reviewed_no_incremental_fee"
             ),
@@ -734,6 +804,9 @@ class FormalMethodCatalog:
                         identity not in identities, "Case execution identity was reused"
                     )
                     identities.add(identity)
+            if source.kind == "skill_instruction":
+                model_cost += _instruction_case_cost(request, item, result, identities)
+                continue
             if case.caller == "model":
                 model_cost += _verify_model_case(
                     request, snapshot, item, result, identities
@@ -885,7 +958,7 @@ class FormalMethodCatalog:
             and (
                 model_cost > 0
                 if "model" in request.draft.allowed_callers
-                else model_cost == 0
+                else source.kind == "skill_instruction" or model_cost == 0
             )
             and sum((case_script_cost(case) for case in retained), Decimal(0))
             == Decimal(evidence.get("script_cost", "0"))

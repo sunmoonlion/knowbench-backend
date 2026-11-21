@@ -111,6 +111,7 @@ class InstructionRunner:
             refs = attempt["refs"]
             if bound := refs.get("instruction_gateway"):
                 return bound["uid"]
+            request = self.units.for_attempt(attempt)
             unit = refs["instruction_unit"]
             prepare = (
                 not unit.get("prepare_requested")
@@ -129,16 +130,14 @@ class InstructionRunner:
                 return None
         if prepare:
             try:
-                pod = await self.units.request(owner, task_id, "POST", "prepare")
+                pod = await request(owner, task_id, "POST", "prepare")
             except (InstructionPrepareNotSent, ProvisioningUnavailable):
                 await self.update_unit(task_id, attempt_id, prepare_requested=False)
                 raise
         else:
             # A timeout/cancelled HTTP request can still be in flight. Observation
             # after takeover must never allocate another Pod or recreate its proof.
-            pod = await self.units.request(
-                owner, task_id, "GET", "reservation", absent=True
-            )
+            pod = await request(owner, task_id, "GET", "reservation", absent=True)
             if not pod:
                 return None
         uid = str(UUID(pod["uid"]))
@@ -170,9 +169,11 @@ class InstructionRunner:
                 UUID(attempt_id),
                 gateway_uid=UUID(uid),
             )
-            refs = (await repo.get_attempt(attempt_id))["refs"]
+            attempt = await repo.get_attempt(attempt_id)
+            request = self.units.for_attempt(attempt)
+            refs = attempt["refs"]
             model = refs["instruction_quote"]["model"]
-        await self.units.request(
+        await request(
             owner,
             task_id,
             "PUT",
@@ -316,6 +317,7 @@ class InstructionRunner:
                 quote, job = await svc.authority(owner, task, "knowlab")
                 if quote != refs["instruction_quote"]:
                     raise CapabilityError("Instruction route changed")
+            request = self.units.for_attempt(attempt)
             uid = await self.gateway(owner, task_id, attempt_id)
             if uid is None:
                 return
@@ -325,9 +327,7 @@ class InstructionRunner:
                 if not turn:
                     return
                 await self.renew(owner, task_id, attempt_id, uid, turn)
-                worker = await self.units.request(
-                    owner, task_id, "PUT", uid + "/worker"
-                )
+                worker = await request(owner, task_id, "PUT", uid + "/worker")
                 if worker["uid"] != dispatch["worker"] or not worker["ready"]:
                     return
                 try:
@@ -355,12 +355,12 @@ class InstructionRunner:
                     )
                 return
             await self.renew(owner, task_id, attempt_id, uid, None)
-            gateway = await self.units.request(owner, task_id, "GET", uid)
+            gateway = await request(owner, task_id, "GET", uid)
             if gateway["phase"] in ("Failed", "Succeeded"):
                 raise CapabilityError("Instruction gateway stopped")
             if not gateway["ready"]:
                 return
-            worker = await self.units.request(owner, task_id, "PUT", uid + "/worker")
+            worker = await request(owner, task_id, "PUT", uid + "/worker")
             if worker["phase"] in ("Failed", "Succeeded"):
                 raise CapabilityError("Instruction worker stopped")
             if not worker["ready"]:
@@ -474,10 +474,11 @@ class InstructionRunner:
             if not refs["instruction_unit"].get("prepare_requested"):
                 await self.update_unit(task_id, attempt_id, pending=False)
             return
+        request = self.units.for_attempt(attempt)
         settled = {"settled_attempt": attempt_id}
-        pod = await self.units.request(owner, task_id, "GET", uid, absent=True)
+        pod = await request(owner, task_id, "GET", uid, absent=True)
         if pod is not None:
-            await self.units.request(owner, task_id, "POST", uid + "/stop", absent=True)
+            await request(owner, task_id, "POST", uid + "/stop", absent=True)
         if refs.get("usage_pending") or (
             refs.get("instruction_request") and not refs.get("instruction_usage")
         ):
@@ -487,13 +488,9 @@ class InstructionRunner:
                 )
             return
         if pod is not None:
-            await self.units.request(
-                owner, task_id, "DELETE", uid, params=settled, absent=True
-            )
+            await request(owner, task_id, "DELETE", uid, params=settled, absent=True)
             return
-        await self.units.request(
-            owner, task_id, "DELETE", uid + "/proof", params=settled
-        )
+        await request(owner, task_id, "DELETE", uid + "/proof", params=settled)
         await self.update_unit(task_id, attempt_id, pending=False)
 
     async def reconcile(self, sandbox_ids):

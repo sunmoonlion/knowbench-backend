@@ -24,6 +24,7 @@ class Units:
     def __init__(self):
         self.uid, self.worker = str(uuid4()), str(uuid4())
         self.bindings, self.ops = [], []
+        self.scopes = []
         self.deleted = self.reclaimed = False
         self.ready = False
         self.deliver = None
@@ -160,11 +161,16 @@ async def stack(db, **kwargs):
         assert req.headers["Authorization"] == "Bearer service-only"
         root = f"/v1/instruction-executions/{OWNER}/{task}/"
         assert req.url.path.startswith(root)
+        path = req.url.path[len(root) :]
+        scope = None
+        if path.startswith("attempts/"):
+            _, scope, path = path.split("/", 2)
+        units.scopes.append(scope)
         result = await units.request(
             OWNER,
             task,
             req.method,
-            req.url.path[len(root) :],
+            path,
             body=json.loads(req.content) if req.content else None,
             params=dict(req.url.params),
         )
@@ -225,6 +231,7 @@ async def test_runner_resumes_prepared_worker_and_reclaims_settled_attempt(db):
             "worker": s.units.worker,
             "thread": "thread-a",
         }
+        assert set(s.units.scopes) == {str(attempt["id"])}
         assert s.turns == [1] and attempt["budget_consumed"]["tokens"]["output"] == 1
     await s.driver.reconcile([s.sandbox])
     assert s.units.deleted and not s.units.reclaimed
@@ -350,14 +357,21 @@ async def test_unacknowledged_turn_start_cannot_be_replayed_or_claimed(db):
     assert not s.turns
 
 
-async def test_explicitly_disabled_provisioner_settles_without_allocating(db):
+@pytest.mark.parametrize(
+    ("status", "detail"),
+    [
+        (503, {"code": "instruction_prepare_disabled"}),
+        (404, "Not Found"),
+    ],
+)
+async def test_unavailable_provisioner_settles_without_allocating(db, status, detail):
     s = await stack(db)
 
     async def disabled(request):
-        assert request.url.path.endswith("/prepare")
-        return httpx.Response(
-            503, json={"detail": {"code": "instruction_prepare_disabled"}}
+        assert "/attempts/" in request.url.path and request.url.path.endswith(
+            "/prepare"
         )
+        return httpx.Response(status, json={"detail": detail})
 
     s.driver.units.transport = httpx.MockTransport(disabled)
     await drive(s)
@@ -385,3 +399,19 @@ async def test_missing_runner_credentials_reject_new_trial_without_reserving(db)
         assert not await svc.repo.list_attempts(s.task)
         assert float(task["budget"]["reserved"]) == 0
     assert not s.units.ops
+
+
+async def test_pre_upgrade_attempt_resumes_and_reclaims_its_task_scoped_unit(db):
+    s = await stack(db)
+    _, attempt_id = await s.driver.start(s.task)
+    async with s.host() as svc, svc.repo.transaction():
+        attempt = await svc.repo.get_attempt(attempt_id, for_update=True)
+        refs = dict(attempt["refs"])
+        refs["instruction_unit"] = {"pending": True}
+        await svc.repo.update_attempt(attempt_id, refs=refs)
+    s.units.ready = True
+    await drive(s)
+    await s.driver.cleanup(OWNER, s.task, attempt_id)
+    await s.driver.cleanup(OWNER, s.task, attempt_id)
+    assert set(s.units.scopes) == {None}
+    assert s.units.reclaimed and s.turns == [1]
