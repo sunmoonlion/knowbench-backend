@@ -42,6 +42,8 @@ class FormalMethodRepositoryMixin:
         methods = await self.session.execute(
             text("""
             SELECT document->'reference' AS reference,
+                   document#>>'{draft,definition,procedure,kind}' AS procedure_kind,
+                   document#>'{draft,allowed_callers}' AS allowed_callers,
                    document#>>'{draft,definition,capability_declaration,title}' AS title,
                    document#>>'{draft,source,asset_id}' AS source_asset_id,
                    (document#>>'{draft,source,asset_revision}')::int AS source_revision,

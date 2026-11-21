@@ -65,6 +65,8 @@ async def formal_registration(
     return FormalRegistration(
         reference=reference,
         title=frozen.draft.definition.capability_declaration.title,
+        procedure_kind=frozen.draft.definition.procedure.kind,
+        allowed_callers=frozen.draft.allowed_callers,
         source_asset_id=source.asset_id if source else None,
         source_revision=source.asset_revision if source else None,
         source_entry=source.entry if source else None,

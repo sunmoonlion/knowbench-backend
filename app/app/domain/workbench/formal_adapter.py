@@ -7,15 +7,20 @@ from app.domain.workbench.tool_registry import (
     connection_source,
 )
 
+# These are the runner's direct formal-method adapters. Platform definitions
+# require a reviewed host adapter before they can be dispatched as a method.
+DIRECT_HOST_ADAPTERS = {
+    "mcp": "formal_mcp",
+    "skill_script": "formal_script",
+    "skill_instruction": "formal_instruction",
+}
+
 
 def host_kind(source, *, instruction_leaf=False):
-    if source.kind == "mcp":
-        return "formal_mcp"
-    if source.kind == "skill_script":
-        return "formal_script"
-    if instruction_leaf and source.kind == "skill_instruction":
-        return "formal_instruction"
-    raise CapabilityError("No formal host adapter for this implementation")
+    adapter = DIRECT_HOST_ADAPTERS.get(source.kind)
+    if adapter is None or (adapter == "formal_instruction" and not instruction_leaf):
+        raise CapabilityError("No formal host adapter for this implementation")
+    return adapter
 
 
 def script_registration(draft):

@@ -151,6 +151,11 @@ class AuthorTrial:
             )
 
             method = await formal_registration(repo, OWNER, version.reference)
+            assert (method.method_kind, method.runner_route) == (
+                "tool",
+                "formal_instruction",
+            )
+            assert "host" in method.allowed_callers
             asset = await installed_registration(
                 repo, OWNER, str(method.source_asset_id)
             )

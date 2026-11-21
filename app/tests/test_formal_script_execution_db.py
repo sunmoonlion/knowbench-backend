@@ -276,6 +276,10 @@ async def test_formal_script_charges_root_and_freezes_after_a_real_approval(
         )
 
         implementation = await formal_registration(repo, OWNER, frozen.reference)
+        assert (implementation.method_kind, implementation.runner_route) == (
+            "tool",
+            "formal_script",
+        )
         installation = await installed_registration(
             repo, OWNER, str(implementation.source_asset_id)
         )
@@ -594,6 +598,20 @@ async def mixed_expert(db, behavior, executor=None, *, shared_connector=None):
             repo = WorkbenchRepository(session)
             svc = factory(repo)
             await svc.formal_sources.register(frozen, caller="knowlab")
+            from app.application.workbench.tool_registry import formal_registration
+            from app.domain.workbench.registry_views import FormalRegistration
+
+            detail = await formal_registration(repo, OWNER, frozen.reference)
+            listing = await repo.registry_inventory(OWNER)
+            registered = [
+                FormalRegistration.model_validate(row) for row in listing["formal"]
+            ]
+            assert detail in registered
+            assert (detail.method_kind, detail.runner_route) == (
+                "expert",
+                "orchestration",
+            )
+            assert detail.source_asset_id is None and detail.dependencies
             await FormalMethodCatalog(
                 repo, svc.formal_sources, svc.operations
             ).resolve_owned_admission(

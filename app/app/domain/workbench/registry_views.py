@@ -4,6 +4,10 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
+from pydantic import computed_field
+
+from app.domain.workbench.formal_adapter import DIRECT_HOST_ADAPTERS
+from app.domain.workbench.formal_method_admission_generated import Caller
 from app.domain.workbench.formal_method_generated import MethodRef, Strict
 
 
@@ -26,6 +30,21 @@ class FormalRegistration(Strict):
     path: Literal["formal"] = "formal"
     reference: MethodRef
     title: str
+    procedure_kind: Literal["direct", "orchestration"]
+    allowed_callers: tuple[Caller, ...]
+
+    @computed_field
+    @property
+    def method_kind(self) -> Literal["tool", "expert"]:
+        return "expert" if self.procedure_kind == "orchestration" else "tool"
+
+    @computed_field
+    @property
+    def runner_route(self) -> str:
+        if self.procedure_kind == "orchestration":
+            return "orchestration"
+        return DIRECT_HOST_ADAPTERS.get(self.source_kind or "", "unavailable")
+
     # Direct methods pin an installation at incubation. Composite methods pin children.
     source_asset_id: UUID | None
     source_revision: int | None

@@ -48,6 +48,9 @@ async def test_installed_send_and_expert_leaf_share_source_and_require_separate_
         assert asset["path"] == "installed" and method["path"] == "formal"
         assert asset["asset_id"] == method["source_asset_id"]
         assert method["reference"] == ref.model_dump(mode="json")
+        assert method in listing["formal"]
+        assert (method["method_kind"], method["runner_route"]) == ("tool", "formal_mcp")
+        assert method["allowed_callers"]
         assert (
             await http.get(formal, params={"digest": "sha256:" + "0" * 64})
         ).status_code == 404
