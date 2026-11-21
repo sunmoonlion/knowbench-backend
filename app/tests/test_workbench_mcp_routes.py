@@ -375,7 +375,10 @@ class FakeDataMcp:
         }
 
 
-async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch):  # noqa: F811
+@pytest.mark.parametrize("fact_selected", [False, True])
+async def test_the_data_tools_are_relayed_to_knowbase(
+    served, db, monkeypatch, fact_selected
+):  # noqa: F811
     """0048：数据工具照 knowbase 的定义挂出来（run 换成 task），带 task 换成运行授权
     ref，令牌当场签、只许这一个工具；全市场不要授权；没登记会话的对话读不了。"""
     from sqlalchemy import text
@@ -406,7 +409,11 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
     fake_kb = FakeDataMcp()
     monkeypatch.setattr(mcp, "knowbase_v2", lambda: fake_kb)
     relay_module._tools_cache.clear()
-    fake, runner, ids = await world(db, [SCOPE, PROFILE, unbalanced()])
+    fake, runner, ids = await world(
+        db,
+        [SCOPE, PROFILE, unbalanced()],
+        extra_tools=("query_facts",) if fact_selected else (),
+    )
     try:
         async with db() as s:
             await s.execute(
@@ -485,8 +492,19 @@ async def test_the_data_tools_are_relayed_to_knowbase(served, db, monkeypatch): 
             task_query = await http.post(
                 URL, json=tool("query_facts", task=ids["task"]), headers=bearer()
             )
-            assert "not selected" in task_query.json()["result"]["content"][0]["text"]
-            assert fake_kb.function_call[1]["call_id"] == body["call_id"]
+            if fact_selected:
+                result = task_query.json()["result"]
+                assert result["structuredContent"] == {"facts": []}
+                assert fake_kb.function_call[1]["arguments"] == {
+                    "scope": "run",
+                    "run": "knowbench:run:relay-1",
+                }
+                assert fake_kb.function_call[1]["call_id"] == result["_meta"]["call_id"]
+            else:
+                assert (
+                    "not selected" in task_query.json()["result"]["content"][0]["text"]
+                )
+                assert fake_kb.function_call[1]["call_id"] == body["call_id"]
 
             chat = await http.post(
                 URL,

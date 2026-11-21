@@ -408,3 +408,165 @@ async def test_registry_scenes_share_versions_but_not_grants(db):
     result = await advance(db, ctx)
     assert len(ctx.remote.calls) == before
     assert result["status"] == "failed" or not result["actions"]
+
+
+async def test_question_and_declaration_search_use_qualified_versions_and_pinned_steps(
+    db,
+):
+    from uuid import uuid4
+
+    from formal_plan_support import freeze
+    from test_formal_execution_db import settle, status
+
+    from app.application.workbench.formal_test_runs import FormalExecutions
+    from app.domain.workbench.errors import NotFound
+    from app.domain.workbench.formal_method_execution_generated import (
+        FormalMethodExecutionRequest,
+    )
+    from app.domain.workbench.formal_method_generated import MethodRef
+    from app.domain.workbench.method_search import PlanningQuery
+
+    ctx = await setup_plan(db, expert_purpose="核对本期报表并汇总差异")
+    v1 = ctx.leaf.reference
+    updated = ctx.leaf_request.model_dump(mode="json", by_alias=True)
+    updated["revision"] += 1
+    updated["run_id"] = str(uuid4())
+    updated["draft"]["definition"]["capability_declaration"]["title"] = (
+        "Updated synthetic notice"
+    )
+    trial = FormalMethodExecutionRequest.model_validate(updated)
+
+    async with db() as sql:
+        repo = WorkbenchRepository(sql)
+        admitted = await FormalExecutions(repo, ctx.factory(repo)).accept(
+            trial, caller="knowlab"
+        )
+        assert admitted["status"] == "pending"
+    await ctx.conductor.advance(str(trial.run_id))
+    await approve(db, trial, ctx.factory, await status(db, trial, ctx.factory))
+    await settle(ctx.conductor, trial)
+    newer = freeze(trial, await status(db, trial, ctx.factory), version=2)
+    v2 = newer.reference
+    assert v2.digest != v1.digest
+
+    class Market:
+        allowed = {v2}
+        checks = []
+
+        async def planning_formal_refs(self, subject, refs):
+            assert subject == "author"
+            self.checks.append(refs)
+            return self.allowed.intersection(MethodRef.model_validate(r) for r in refs)
+
+    market = Market()
+    async with db() as session:
+        methods = ctx.factory(WorkbenchRepository(session)).formal_sources
+        await methods.register(newer, caller="knowlab")
+        methods.market = market
+        registry = methods.registry
+        draft = ctx.request.draft.definition.capability_declaration
+        owned = await registry.author_versions("author", 30, 0, declaration=draft)
+        assert [registry.reference(r) for r in owned] == [v2.model_dump(mode="json")]
+        question = PlanningQuery(stage="expert", question="核对本月报表")
+        assert (await registry.planning_versions(OWNER, 30, 0, query=question))[
+            "items"
+        ] == []
+        compose = question.model_copy(update={"stage": "composition"})
+        results = await registry.planning_versions(OWNER, 30, 0, query=compose)
+        assert [registry.reference(r) for r in results["items"]] == [
+            v2.model_dump(mode="json")
+        ]
+        assert (await registry.planning_declaration(OWNER, v2))[
+            "declaration"
+        ] == newer.draft.definition.capability_declaration.model_dump(mode="json")
+        with pytest.raises(NotFound):
+            await registry.planning_declaration(OWNER, v1)
+        market.allowed.clear()
+        with pytest.raises(NotFound):
+            await registry.planning_declaration(OWNER, v2)
+    # The expert admitted before v2 continues to execute the v1 references.
+    for _ in range(2):
+        await approve(db, ctx.request, ctx.factory, await advance(db, ctx))
+    expert = freeze(ctx.request, await advance(db, ctx))
+    assert set(expert.validation.dependencies) == {v1}
+    async with db() as session:
+        methods = ctx.factory(WorkbenchRepository(session)).formal_sources
+        await methods.register(expert, caller="knowlab")
+        methods.market = market
+        market.allowed.update({expert.reference, v2})
+        results = await methods.registry.planning_versions(OWNER, 30, 0, query=question)
+        assert [methods.registry.reference(r) for r in results["items"]] == [
+            expert.reference.model_dump(mode="json")
+        ]
+
+        author_basis = draft.model_copy(
+            update={
+                "title": "核对报表",
+                "purpose": "逐期汇总差异",
+                "applies_when": ("有报表",),
+                "promises": {"sent": "当期差异"},
+            }
+        )
+        ranked = await methods.registry.author_versions(
+            "author", 1, 0, declaration=author_basis
+        )
+        assert methods.registry.reference(ranked[0]) == expert.reference.model_dump(
+            mode="json"
+        )
+
+    def factory(repo):
+        svc = ctx.factory(repo)
+        svc.formal_sources.market = market
+        return svc
+
+    url = "/api/workbench/method-skill-center/planning-methods"
+    async with AsyncClient(
+        transport=ASGITransport(application(db, factory)), base_url="http://testserver"
+    ) as http:
+        for offset, ref in enumerate([v2, expert.reference]):
+            page = await http.post(
+                url,
+                params={"limit": 1, "offset": offset},
+                json={"stage": "composition", "question": "return one receipt"},
+            )
+            assert (
+                page.status_code == 200 and "no-store" in page.headers["cache-control"]
+            )
+            assert [methods.registry.reference(r) for r in page.json()["items"]] == [
+                ref.model_dump(mode="json")
+            ]
+            assert page.json()["next"] == (1 if offset == 0 else None)
+        english_check = market.checks[-1]
+        chinese = await http.post(
+            url,
+            params={"limit": 1},
+            json={"stage": "composition", "question": "核对报表"},
+        )
+        assert chinese.json()["items"][0]["method_id"] == str(
+            expert.reference.method_id
+        )
+        assert market.checks[-1] == english_check
+        assert all(
+            set(ref) == {"method_id", "version", "digest"} for ref in english_check
+        )
+        assert (await http.post(url, json={"stage": "expert"})).status_code == 422
+        market.allowed.remove(v2)
+        assert (
+            await http.post(url + "/declaration", json=v2.model_dump(mode="json"))
+        ).status_code == 404
+        async with db() as sql, sql.begin():
+            await sql.execute(
+                text("""
+                UPDATE workbench_formal_methods SET document=jsonb_set(document,
+                    '{draft,definition,capability_declaration,title}', '"changed"'::jsonb)
+                WHERE method_id=:mid AND version=:version
+            """),
+                {
+                    "mid": expert.reference.method_id,
+                    "version": expert.reference.version,
+                },
+            )
+        changed = await http.post(
+            url + "/declaration", json=expert.reference.model_dump(mode="json")
+        )
+        assert changed.status_code == 409 and "declaration" not in changed.json()

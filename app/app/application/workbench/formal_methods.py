@@ -359,9 +359,15 @@ class FormalMethods:
             "revision": revision,
         }
 
-    async def shared_tools(self, subject, *, reference=None, after=None, limit=30):
+    async def shared_tools(
+        self, subject, *, reference=None, after=None, limit=30, declaration=None
+    ):
         return await self.registry.shared_tools(
-            subject, reference=reference, after=after, limit=limit
+            subject,
+            reference=reference,
+            after=after,
+            limit=limit,
+            declaration=declaration,
         )
 
     async def _compile(self, owner: str, method_id, definition, *, documents=None):

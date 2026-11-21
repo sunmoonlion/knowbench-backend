@@ -8,7 +8,7 @@ from app.domain.workbench.capabilities import digest
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-async def running_platform_world(db, replies):
+async def running_platform_world(db, replies, *, extra_tools=()):
     """Explicit test execution with a fixed allowlist, not a paused review turn.
 
     Preserve the project's real grants, records and ownership from world(). The
@@ -37,6 +37,7 @@ async def running_platform_world(db, replies):
                     "list_inputs",
                     "compute",
                     "request_data",
+                    *extra_tools,
                 )
             }
         )

@@ -65,6 +65,7 @@ from app.domain.workbench.formal_method_calls import (
     FormalMethodInvocations,
 )
 from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.method_search import PlanningQuery
 from app.domain.workbench.native_registry import NATIVE_ACTIONS
 from app.domain.workbench.registry_sources import (
     RegisteredSource,
@@ -209,9 +210,10 @@ async def execute_source_task(
         raise _http(exc) from exc
 
 
-@router.get("/workbench/method-skill-center/planning-methods")
+@router.post("/workbench/method-skill-center/planning-methods")
 async def method_skill_center_planning_methods(
     response: Response,
+    body: PlanningQuery,
     user: Principal = Depends(get_web_current_user),
     svc=Depends(service),
     limit: int = Query(30, ge=1, le=100),
@@ -220,7 +222,23 @@ async def method_skill_center_planning_methods(
     response.headers["Cache-Control"] = "private, no-store"
     try:
         return await svc.formal_sources.registry.planning_versions(
-            _actor(user), limit, offset
+            _actor(user), limit, offset, query=body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/workbench/method-skill-center/planning-methods/declaration")
+async def planning_declaration(
+    response: Response,
+    body: MethodRef,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await svc.formal_sources.registry.planning_declaration(
+            _actor(user), body
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc

@@ -171,28 +171,85 @@ class FormalMethodRepositoryMixin:
         )
 
     async def registry_method_candidates(
-        self, owner, limit, offset, *, latest=False, public=False
+        self,
+        owner,
+        limit,
+        offset,
+        *,
+        latest=False,
+        public=False,
+        terms=(),
+        experts_only=False,
+        reference=None,
+        identities_only=False,
+        eligible=None,
     ):
         # All metadata is projected from the admitted document. Public rows are
         # internal candidates until the market has confirmed the consumer's rights.
         selection = "DISTINCT ON (method_id)" if latest else ""
+        pin = (
+            "AND method_id=:id AND version=:version AND digest=:digest"
+            if reference
+            else ""
+        )
+        columns = "method_id,latest_version,digest"
+        if not identities_only:
+            columns += ",created_at,method_kind,title,summary"
+        if reference:
+            columns += ",definition"
+        grant_filter = (
+            """AND (method_id,version,digest) IN (
+            SELECT g.method_id,g.version,g.digest FROM jsonb_to_recordset(CAST(:eligible AS jsonb))
+            AS g(method_id uuid, version int, digest text))"""
+            if eligible is not None
+            else ""
+        )
+        rank = (
+            """(SELECT count(*) FROM unnest(CAST(:terms AS text[])) AS words(term)
+                   WHERE strpos(lower(positive_text), term) > 0) DESC,"""
+            if terms
+            else ""
+        )
         rows = await self.session.execute(
             text(f"""
-          SELECT * FROM (SELECT {selection} method_id, version AS latest_version, digest, created_at,
+          SELECT {columns} FROM (SELECT {selection} method_id, version AS latest_version, digest, created_at,
             CASE document#>>'{{draft,definition,procedure,kind}}'
               WHEN 'direct' THEN 'tool' WHEN 'orchestration' THEN 'expert' END AS method_kind,
             document#>>'{{draft,definition,capability_declaration,title}}' AS title,
-            left(document#>>'{{draft,definition,capability_declaration,purpose}}',500) AS summary
-          FROM workbench_formal_methods WHERE caller='knowlab'
+            left(document#>>'{{draft,definition,capability_declaration,purpose}}',500) AS summary,
+            document#>'{{draft,definition}}' AS definition,
+            concat_ws(' ', document#>>'{{draft,definition,capability_declaration,title}}',
+              document#>>'{{draft,definition,capability_declaration,purpose}}',
+              document#>>'{{draft,definition,capability_declaration,applies_when}}',
+              document#>>'{{draft,definition,capability_declaration,promises}}') AS positive_text
+          FROM workbench_formal_methods WHERE caller='knowlab' {pin} {grant_filter}
             AND document#>>'{{reference,digest}}' = digest
             AND document#>>'{{reference,method_id}}' = method_id::text
             AND document#>>'{{reference,version}}' = version::text
             AND (owner_actor_id=:owner OR (:public AND document->>'visibility'='public'))
             AND (NOT :public OR document#>'{{draft,allowed_callers}}' ? 'host')
           ORDER BY method_id,version DESC) candidates
-          ORDER BY created_at DESC,method_id,latest_version DESC LIMIT :limit OFFSET :offset
+          WHERE NOT :experts_only OR method_kind='expert'
+          ORDER BY {rank} created_at DESC,method_id,latest_version DESC LIMIT :limit OFFSET :offset
         """),
-            {"owner": owner, "limit": limit, "offset": offset, "public": public},
+            {
+                "owner": owner,
+                "limit": limit,
+                "offset": offset,
+                "public": public,
+                "terms": list(terms),
+                "eligible": json.dumps(eligible),
+                "experts_only": experts_only,
+                **(
+                    {
+                        "id": reference.method_id,
+                        "version": reference.version,
+                        "digest": reference.digest,
+                    }
+                    if reference
+                    else {}
+                ),
+            },
         )
         return [dict(r) for r in rows.mappings()]
 

@@ -5,7 +5,11 @@ from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodSource,
     FrozenFormalMethod,
 )
-from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.formal_method_generated import (
+    FormalMethodDefinition,
+    MethodRef,
+)
+from app.domain.workbench.method_search import positive_fields, search_terms
 
 
 class SceneRegistry:
@@ -127,38 +131,89 @@ class SceneRegistry:
                     )
             return {"items": [src.model_dump(mode="json") for src in candidates]}
 
-    async def author_versions(self, subject, limit, offset, *, all_versions=False):
+    async def author_versions(
+        self, subject, limit, offset, *, all_versions=False, declaration=None
+    ):
         owner = await self.repo.actor_for_subject(subject)
         if owner is None:
             return []
         return await self.repo.registry_method_candidates(
-            owner, limit, offset, latest=not all_versions
+            owner,
+            limit,
+            offset,
+            latest=not all_versions,
+            terms=search_terms(*positive_fields(declaration)) if declaration else [],
         )
 
-    async def planning_versions(self, owner, limit, offset):
+    async def planning_versions(self, owner, limit, offset, *, query=None):
         subject = await self.repo.subject_of_actor(owner)
         if not subject or self.market is None:
             raise CapabilityError("Formal method use qualification is unavailable")
-        visible = []
+        terms = search_terms(query.question) if query and query.question else []
+        experts_only = bool(query and query.stage == "expert")
+        eligible = []
         scanned = 0
-        while len(visible) <= offset + limit:
+        while True:
+            # KnowMart sees only pins in catalog order, independent of the user's wording.
             rows = await self.repo.registry_method_candidates(
-                owner, 100, scanned, public=True
+                owner,
+                100,
+                scanned,
+                public=True,
+                experts_only=experts_only,
+                identities_only=True,
             )
             if rows:
-                refs = [self.reference(r) for r in rows]
+                refs = [self.reference(row) for row in rows]
                 allowed = await self.market.planning_formal_refs(subject, refs)
-                visible.extend(
-                    row
-                    for row, ref in zip(rows, refs, strict=True)
-                    if MethodRef.model_validate(ref) in allowed
+                eligible.extend(
+                    ref for ref in refs if MethodRef.model_validate(ref) in allowed
                 )
-            if len(rows) < 100:
+            if len(rows) < 100 or (not terms and len(eligible) > offset + limit):
                 break
             scanned += len(rows)
+        if not eligible:
+            return {"items": [], "next": None}
+        visible = await self.repo.registry_method_candidates(
+            owner,
+            limit + 1,
+            offset,
+            public=True,
+            experts_only=experts_only,
+            terms=terms,
+            eligible=eligible,
+        )
         return {
-            "items": visible[offset : offset + limit],
-            "next": offset + limit if len(visible) > offset + limit else None,
+            "items": visible[:limit],
+            "next": offset + limit if len(visible) > limit else None,
+        }
+
+    async def planning_declaration(self, owner, reference):
+        from app.domain.workbench.errors import NotFound
+
+        subject = await self.repo.subject_of_actor(owner)
+        if not subject or self.market is None:
+            raise CapabilityError("Formal method use qualification is unavailable")
+        if reference not in await self.market.planning_formal_refs(
+            subject, [reference.model_dump(mode="json")]
+        ):
+            raise NotFound("No available method with this reference")
+        rows = await self.repo.registry_method_candidates(
+            owner, 1, 0, public=True, reference=reference
+        )
+        if not rows:
+            raise NotFound("No available method with this reference")
+        try:
+            definition = FormalMethodDefinition.model_validate(rows[0]["definition"])
+        except ValueError as exc:
+            raise CapabilityError("Invalid registered method definition") from exc
+        if definition.digest() != reference.digest:
+            raise CapabilityError(
+                "Registered declaration differs from the requested version"
+            )
+        return {
+            "reference": self.reference(rows[0]),
+            "declaration": definition.capability_declaration.model_dump(mode="json"),
         }
 
     @staticmethod
@@ -201,7 +256,9 @@ class SceneRegistry:
         self.methods.require_supported_graph(frozen.draft)
         return frozen, grant
 
-    async def shared_tools(self, subject, *, reference=None, after=None, limit=30):
+    async def shared_tools(
+        self, subject, *, reference=None, after=None, limit=30, declaration=None
+    ):
         from app.application.workbench.formal_method_catalog import FormalMethodCatalog
         from app.domain.workbench.errors import WorkbenchError
 
@@ -213,7 +270,8 @@ class SceneRegistry:
         page = await self.market.incubation_tools(
             subject, reference=reference, after=after, limit=limit
         )
-        items = []
+        ranked = []
+        terms = search_terms(*positive_fields(declaration)) if declaration else []
         catalog = FormalMethodCatalog(self.repo, self.methods, self.methods.operations)
         for grant in page.items:
             async with self.repo.transaction():
@@ -245,5 +303,16 @@ class SceneRegistry:
                         for key, (value, name, account) in options.items()
                     ]
                     item["selected"] = str(selected) if selected else None
-                items.append(item)
-        return {"items": items, "next": str(page.next) if page.next else None}
+                score = 0
+                if terms:
+                    description = " ".join(
+                        positive_fields(frozen.draft.definition.capability_declaration)
+                    ).lower()
+                    score = sum(term in description for term in terms)
+                ranked.append((score, item))
+        # KnowMart owns the cursor. Rank only the qualified items on this page.
+        ranked.sort(key=lambda entry: entry[0], reverse=True)
+        return {
+            "items": [item for _, item in ranked],
+            "next": str(page.next) if page.next else None,
+        }

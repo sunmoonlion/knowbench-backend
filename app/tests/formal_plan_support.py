@@ -28,14 +28,14 @@ class EchoRemote(Remote):
         }
 
 
-def freeze(request, result):
+def freeze(request, result, *, version=1):
     return FrozenFormalMethod.model_validate(
         {
             "contract": "knowlab/frozen-formal-method/v1",
             "owner_subject": request.owner_subject,
             "reference": {
                 "method_id": request.method_id,
-                "version": 1,
+                "version": version,
                 "digest": request.draft.definition.digest(),
             },
             "draft": request.draft,
@@ -45,7 +45,7 @@ def freeze(request, result):
     )
 
 
-async def setup_plan(db, *, accept=True, public_leaf=False):
+async def setup_plan(db, *, accept=True, public_leaf=False, expert_purpose=None):
     case = {
         "case_id": "echo",
         "input": {"values": {"to": "test@example.test"}},
@@ -76,7 +76,7 @@ async def setup_plan(db, *, accept=True, public_leaf=False):
         await factory(repo).formal_sources.register(leaf, caller="knowlab")
         async with repo.transaction():
             await repo.purge_test_run(str(leaf_request.run_id))
-    request = plan_request(leaf_request, leaf, case)
+    request = plan_request(leaf_request, leaf, case, expert_purpose=expert_purpose)
     remote.calls.clear()
     if accept:
         async with db() as session:
@@ -87,6 +87,7 @@ async def setup_plan(db, *, accept=True, public_leaf=False):
             assert result["status"] == "pending", result
     return SimpleNamespace(
         request=request,
+        leaf_request=leaf_request,
         leaf=leaf,
         asset=asset,
         remote=remote,
@@ -113,9 +114,12 @@ def plan_request(
     input_name="to",
     output_name="receipt",
     repeat_input=False,
+    expert_purpose=None,
 ):
     document = leaf_request.model_dump(mode="json", by_alias=True)
     definition = deepcopy(document["draft"]["definition"])
+    if expert_purpose:
+        definition["capability_declaration"]["purpose"] = expert_purpose
     slot = definition["procedure"]["inputs"][input_name]
     output = definition["procedure"]["outputs"][output_name]
     steps = []
