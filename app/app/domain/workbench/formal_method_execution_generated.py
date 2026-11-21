@@ -456,7 +456,69 @@ class FormalModelTrace(Strict):
     method_call_id: UUID
 
 
+class BranchArtifact(Strict):
+    id: UUID
+    version: int = Field(strict=True, ge=1)
+    digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_digest: Digest
+    output_names: tuple[Name, ...] = Field(max_length=100)
+
+
+class BranchProgress(Strict):
+    step: Name
+    depends_on: tuple[Name, ...]
+    state: Literal[
+        "accepted", "failed", "cancelled", "unknown", "not_run", "unverified"
+    ]
+    artifact: BranchArtifact | None = None
+    detail: str = Field(default="", max_length=2000)
+
+
+class MissingPromise(Strict):
+    description: str
+    missing_outputs: tuple[Name, ...]
+
+
+class PartialReport(Strict):
+    scope_digest: Digest
+    steps: tuple[BranchProgress, ...] = Field(min_length=1, max_length=100)
+    missing_promises: dict[Name, MissingPromise]
+    received: tuple[Name, ...] = ()
+
+
+class ReceiveBranch(Strict):
+    request_id: UUID
+    case_id: CaseId
+    repetition: int = Field(strict=True, ge=1, le=10)
+    step: Name
+    scope_digest: Digest
+
+
+class BranchDelivery(ReceiveBranch):
+    method_id: UUID
+    run_id: UUID
+    artifact: BranchArtifact
+    received_at: datetime
+    outputs: dict[Name, JsonValue]
+
+    @model_validator(mode="after")
+    def exact_content(self):
+        bounded_json(self.outputs)
+        if (
+            tuple(sorted(self.outputs)) != self.artifact.output_names
+            or fingerprint(self.outputs) != self.artifact.content_digest
+        ):
+            raise ValueError(
+                "Partial delivery content differs from the reviewed artifact"
+            )
+        return self
+
+
 class FormalExecutionCaseResult(Strict):
+    partial: PartialReport | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     case_id: CaseId
     caller: Caller = Field(default="host", exclude_if=lambda value: value == "host")
     model_trace: FormalModelTrace | None = Field(

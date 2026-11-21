@@ -37,6 +37,7 @@ from app.domain.workbench.formal_method_admission_generated import (
 from app.domain.workbench.formal_method_execution_generated import (
     FormalExecutionDecision,
     FormalMethodExecutionRequest,
+    ReceiveBranch,
 )
 from app.domain.workbench.formal_method_generated import MethodRef, Strict
 from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
@@ -276,6 +277,24 @@ async def cancel_formal_execution(
 ):
     try:
         return _out(await svc.cancel(owner_subject, str(run_id), caller=caller.caller))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/formal-method-executions/{run_id}/partial-deliveries")
+async def receive_trial_branch(
+    caller: FormalCaller,
+    run_id: UUID,
+    owner_subject: str,
+    body: ReceiveBranch,
+    svc: FormalExecutionService,
+):
+    try:
+        return _out(
+            await svc.receive_branch(
+                owner_subject, str(run_id), body, caller=caller.caller
+            )
+        )
     except WorkbenchError as exc:
         raise _http(exc) from exc
 

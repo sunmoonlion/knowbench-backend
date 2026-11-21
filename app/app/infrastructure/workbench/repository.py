@@ -2069,7 +2069,8 @@ class WorkbenchRepository(
         r = await self.session.execute(
             text(
                 """select run_id, case_id, position, project_id, session_id, task_id,
-                          result, waiting_since, waited_seconds
+                          result, waiting_since, waited_seconds,
+                          partial_delivery->'report' as branch_report
                    from workbench_test_cases where run_id = :r order by position"""
             ),
             {"r": run_id},
@@ -2088,6 +2089,30 @@ class WorkbenchRepository(
         )
         return r.scalar_one_or_none()
 
+    async def test_branch_delivery(self, run_id: str, case_id: str, step: str):
+        result = await self.session.execute(
+            text("""SELECT result->>'task_id' AS task_id, partial_delivery->'report' AS report,
+                           partial_delivery->'outputs'->cast(:step AS text) AS outputs,
+                           partial_delivery->'receipts'->>cast(:step AS text) AS received_at
+                    FROM workbench_test_cases WHERE run_id=:run AND case_id=:case"""),
+            {"run": run_id, "case": case_id, "step": step},
+        )
+        return result.mappings().first()
+
+    async def receive_test_branch(
+        self, run_id: str, case_id: str, step: str, timestamp: str
+    ):
+        # FormalExecutions holds the run row lock throughout receipt creation.
+        await self.session.execute(
+            text("""UPDATE workbench_test_cases SET partial_delivery = jsonb_set(
+                        jsonb_set(partial_delivery, ARRAY['receipts', cast(:step AS text)],
+                                  to_jsonb(cast(:stamp AS text))),
+                        '{report,received}', (partial_delivery#>'{report,received}') ||
+                                             jsonb_build_array(cast(:step AS text)))
+                    WHERE run_id=:run AND case_id=:case"""),
+            {"run": run_id, "case": case_id, "step": step, "stamp": timestamp},
+        )
+
     async def update_test_case(self, run_id: str, case_id: str, **changes: Any) -> None:
         allowed = {
             "project_id",
@@ -2095,11 +2120,12 @@ class WorkbenchRepository(
             "task_id",
             "result",
             "outputs",
+            "partial_delivery",
             "waiting_since",
             "waited_seconds",
         }
         assert set(changes) <= allowed, sorted(set(changes) - allowed)
-        json_columns = ("result", "outputs")
+        json_columns = ("result", "outputs", "partial_delivery")
         sets = ", ".join(
             f"{k} = cast(:{k} as jsonb)" if k in json_columns else f"{k} = :{k}"
             for k in changes

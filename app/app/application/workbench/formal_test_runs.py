@@ -12,6 +12,7 @@ from typing import Any, cast
 from app.application.workbench.formal_evidence import collect_case_evidence
 from app.application.workbench.formal_execution import FormalExecution
 from app.application.workbench.formal_orchestration import resolve_plan
+from app.application.workbench.formal_partial_delivery import partial_case_delivery
 from app.application.workbench.interactions import cancel_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
@@ -43,9 +44,11 @@ from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodValidationResult,
 )
 from app.domain.workbench.formal_method_execution_generated import (
+    BranchDelivery,
     FormalExecutionCaseResult,
     FormalMethodExecutionRequest,
     FormalMethodExecutionResult,
+    PartialReport,
     evaluate_assertions,
     fingerprint,
 )
@@ -295,6 +298,8 @@ class FormalExecutions:
                                         subject=prompt.get("subject") or {},
                                     )
                                 )
+            if row.get("branch_report"):
+                result = {**result, "partial": row["branch_report"]}
             cases.append(result)
         state = {"accepted": "pending", "error": "failed", "timeout": "failed"}.get(
             run["status"], run["status"]
@@ -319,6 +324,65 @@ class FormalExecutions:
                 actions=actions,
             )
         ).model_dump(mode="json", by_alias=True)
+
+    async def receive_branch(self, subject, run_id, command, *, caller):
+        async with self.repo.transaction():
+            _, run, request = await self.load(subject, run_id, caller, lock=True)
+            if command.request_id != request.request_id or run["status"] in ACTIVE:
+                raise Forbidden("Branch delivery requires the original finished trial")
+            key = case_key(command.case_id, command.repetition)
+            saved = await self.repo.test_branch_delivery(run_id, key, command.step)
+            if not saved or not saved["report"]:
+                raise NotFound("This case has no partial delivery")
+            report = PartialReport.model_validate(saved["report"])
+            expected = fingerprint(
+                [
+                    request.fingerprint(),
+                    saved["task_id"],
+                    command.case_id,
+                    command.repetition,
+                    report.model_dump(
+                        mode="json", exclude={"scope_digest", "received"}
+                    ),
+                ]
+            )
+            if (
+                expected != report.scope_digest
+                or command.scope_digest != report.scope_digest
+            ):
+                raise IdempotencyConflict("The reviewed branch scope changed")
+            step = next((s for s in report.steps if s.step == command.step), None)
+            if (
+                not step
+                or step.state != "accepted"
+                or not step.artifact
+                or not step.artifact.output_names
+                or saved["outputs"] is None
+            ):
+                raise Forbidden("Only verified branch outputs may be received")
+            stamp = (
+                datetime.fromisoformat(saved["received_at"])
+                if saved["received_at"]
+                else self.now()
+            )
+            try:
+                delivery = BranchDelivery(
+                    **command.model_dump(),
+                    run_id=request.run_id,
+                    method_id=request.method_id,
+                    artifact=step.artifact,
+                    received_at=stamp,
+                    outputs=saved["outputs"],
+                )
+            except ValueError as exc:
+                raise IdempotencyConflict(
+                    "The retained artifact no longer matches its receipt"
+                ) from exc
+            if not saved["received_at"]:
+                await self.repo.receive_test_branch(
+                    run_id, key, command.step, stamp.isoformat()
+                )
+            return delivery.model_dump(mode="json")
 
     async def decide(self, subject, run_id, call_id, body, *, caller):
         owner, run, request = await self.load(subject, run_id, caller)
@@ -365,6 +429,7 @@ class FormalExecutions:
 
     async def record_case(self, run, request, case, n, row):
         task = await self.repo.get_task(str(row["task_id"]), for_update=True)
+        snapshot = None
         if task["state"] in (TaskState.CANCELLED, TaskState.FAILED):
             from app.application.workbench.formal_recursive_runtime import (
                 settle_ancestors,
@@ -460,6 +525,9 @@ class FormalExecutions:
             row["case_id"],
             result=result,
             outputs=actual.get("outputs") or {},
+            partial_delivery=await partial_case_delivery(
+                self.repo, request, task, snapshot, case, n, result, attempts
+            ),
         )
 
     async def finish(self, run, request, *, forced=None, detail=""):

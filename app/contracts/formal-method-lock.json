@@ -6,7 +6,7 @@
     "formal_method_compiler.py": "d81c2c623e70e1b4243dfefbc8411a118d42f38d64cc2faea33f8f6550fb5055",
     "formal_method_plan.py": "ba51aac57b588835d24c1a2a7f2b728121067028902fa216508a9f1e4efbfe46",
     "formal_method_admission.py": "958af627608682b8c0f1292453471d91572c7f59be72a4bd7f46cc1112dd1bec",
-    "formal_method_execution.py": "4e695d490e10da5045087a2e22f45f76c8f86ff14feb68a85f61f1cb830b8351"
+    "formal_method_execution.py": "d507843753a8637fc900a7c8095ebe1b6fce2b530e39262ef7573811347c572d"
   },
   "schema_sha256": "5a9cd84e4f2c12a8fd84669e605d44fa3e27a9721eaf1fa4f7dc845268bde52c",
   "validation_schema_sha256": {
@@ -15,7 +15,9 @@
     "registration-request": "a5ffab77340379191b1052b40762435426a7e970175835ee4ca2c3da4399271a",
     "registration-result": "a7672a35e9bd9e3563cf1a6b021ebe44895cf7b6fa88c29effaa77b2535c2f3e",
     "execution-request": "1baf845253731dd0260e0cfa35f86532a5537e27abab26f5346568f9564bf857",
-    "execution-result": "304adf33597f7051a1c8632a333691148762b2aad92d352fff67f9b0aa8d04c6",
-    "execution-decision": "fedd38af9df912400a1431bde573c0cf7736c73d4a645fd22b14a99a3a2e43e1"
+    "execution-result": "07a66832312e90661d32a91748a7e486cb9b01c5f1380394ecff184f611cc6b3",
+    "execution-decision": "fedd38af9df912400a1431bde573c0cf7736c73d4a645fd22b14a99a3a2e43e1",
+    "partial-delivery-request": "7ce6bc0b9a6aa1d94c12ec6a4e8fe00de7c3e3ddca3768e39c7ef2efd344441f",
+    "partial-delivery-result": "30efaec345275b80fcb56fa46ae0e77e6beea96aa059d2285c3a49e83117ac79"
   }
 }

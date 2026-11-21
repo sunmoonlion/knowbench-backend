@@ -350,7 +350,7 @@ async def instruction_step_proof(repo, task, attempt, leaf, outputs, intent):
     return proof
 
 
-async def _step_evidence(
+async def verify_step_evidence(
     repo,
     owner,
     task,
@@ -699,7 +699,7 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             zip(plan, attempts, evidence["steps"], strict=True)
         ):
             stage = step.id
-            await _step_evidence(
+            await verify_step_evidence(
                 repo,
                 owner,
                 task,

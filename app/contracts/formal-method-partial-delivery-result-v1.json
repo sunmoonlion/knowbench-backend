@@ -1,0 +1,120 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/partial-delivery-result.schema.json",
+  "$defs": {
+    "BranchArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "content_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "output_names": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Output Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "content_digest",
+        "output_names"
+      ],
+      "title": "BranchArtifact",
+      "type": "object"
+    },
+    "JsonValue": {}
+  },
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "case_id": {
+      "pattern": "^[A-Za-z0-9_-]{1,48}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "repetition": {
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Repetition",
+      "type": "integer"
+    },
+    "step": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+      "title": "Step",
+      "type": "string"
+    },
+    "scope_digest": {
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "title": "Scope Digest",
+      "type": "string"
+    },
+    "method_id": {
+      "format": "uuid",
+      "title": "Method Id",
+      "type": "string"
+    },
+    "run_id": {
+      "format": "uuid",
+      "title": "Run Id",
+      "type": "string"
+    },
+    "artifact": {
+      "$ref": "#/$defs/BranchArtifact"
+    },
+    "received_at": {
+      "format": "date-time",
+      "title": "Received At",
+      "type": "string"
+    },
+    "outputs": {
+      "patternProperties": {
+        "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+          "$ref": "#/$defs/JsonValue"
+        }
+      },
+      "title": "Outputs",
+      "type": "object"
+    }
+  },
+  "required": [
+    "request_id",
+    "case_id",
+    "repetition",
+    "step",
+    "scope_digest",
+    "method_id",
+    "run_id",
+    "artifact",
+    "received_at",
+    "outputs"
+  ],
+  "title": "Verified partial trial delivery",
+  "type": "object"
+}

@@ -2,6 +2,103 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/execution-result.schema.json",
   "$defs": {
+    "BranchArtifact": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "format": "uuid",
+          "title": "Id",
+          "type": "string"
+        },
+        "version": {
+          "minimum": 1,
+          "title": "Version",
+          "type": "integer"
+        },
+        "digest": {
+          "pattern": "^[a-f0-9]{64}$",
+          "title": "Digest",
+          "type": "string"
+        },
+        "content_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Content Digest",
+          "type": "string"
+        },
+        "output_names": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Output Names",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "digest",
+        "content_digest",
+        "output_names"
+      ],
+      "title": "BranchArtifact",
+      "type": "object"
+    },
+    "BranchProgress": {
+      "additionalProperties": false,
+      "properties": {
+        "step": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Step",
+          "type": "string"
+        },
+        "depends_on": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Depends On",
+          "type": "array"
+        },
+        "state": {
+          "enum": [
+            "accepted",
+            "failed",
+            "cancelled",
+            "unknown",
+            "not_run",
+            "unverified"
+          ],
+          "title": "State",
+          "type": "string"
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/BranchArtifact"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "detail": {
+          "default": "",
+          "maxLength": 2000,
+          "title": "Detail",
+          "type": "string"
+        }
+      },
+      "required": [
+        "step",
+        "depends_on",
+        "state"
+      ],
+      "title": "BranchProgress",
+      "type": "object"
+    },
     "FormalAssertionResult": {
       "additionalProperties": false,
       "properties": {
@@ -106,6 +203,17 @@
     "FormalExecutionCaseResult": {
       "additionalProperties": false,
       "properties": {
+        "partial": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/PartialReport"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "case_id": {
           "pattern": "^[A-Za-z0-9_-]{1,48}$",
           "title": "Case Id",
@@ -599,6 +707,73 @@
         "digest"
       ],
       "title": "MethodRef",
+      "type": "object"
+    },
+    "MissingPromise": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "missing_outputs": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Missing Outputs",
+          "type": "array"
+        }
+      },
+      "required": [
+        "description",
+        "missing_outputs"
+      ],
+      "title": "MissingPromise",
+      "type": "object"
+    },
+    "PartialReport": {
+      "additionalProperties": false,
+      "properties": {
+        "scope_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Scope Digest",
+          "type": "string"
+        },
+        "steps": {
+          "items": {
+            "$ref": "#/$defs/BranchProgress"
+          },
+          "maxItems": 100,
+          "minItems": 1,
+          "title": "Steps",
+          "type": "array"
+        },
+        "missing_promises": {
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/MissingPromise"
+            }
+          },
+          "title": "Missing Promises",
+          "type": "object"
+        },
+        "received": {
+          "default": [],
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "title": "Received",
+          "type": "array"
+        }
+      },
+      "required": [
+        "scope_digest",
+        "steps",
+        "missing_promises"
+      ],
+      "title": "PartialReport",
       "type": "object"
     },
     "UncoveredScenario": {

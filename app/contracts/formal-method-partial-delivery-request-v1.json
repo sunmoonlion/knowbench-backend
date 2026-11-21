@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.sunmoonai.com/knowlab/formal-method/v1/partial-delivery-request.schema.json",
+  "additionalProperties": false,
+  "properties": {
+    "request_id": {
+      "format": "uuid",
+      "title": "Request Id",
+      "type": "string"
+    },
+    "case_id": {
+      "pattern": "^[A-Za-z0-9_-]{1,48}$",
+      "title": "Case Id",
+      "type": "string"
+    },
+    "repetition": {
+      "maximum": 10,
+      "minimum": 1,
+      "title": "Repetition",
+      "type": "integer"
+    },
+    "step": {
+      "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+      "title": "Step",
+      "type": "string"
+    },
+    "scope_digest": {
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "title": "Scope Digest",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_id",
+    "case_id",
+    "repetition",
+    "step",
+    "scope_digest"
+  ],
+  "title": "Reviewed trial branch selection",
+  "type": "object"
+}
