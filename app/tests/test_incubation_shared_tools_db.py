@@ -1,13 +1,17 @@
 """A public tool runs in another author's real expert validation on their own connection."""
 
+import asyncio
+import json
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from formal_plan_support import advance, freeze, setup_plan
 from formal_recursive_support import accept_request, parent_request, register_completed
 from test_capabilities_db import body, service
 from test_formal_execution_db import approve
 from test_source_licenses import license_record
+from test_workbench_knowmart_client import _client as market_client
 from test_workbench_ledger_db import OTHER, seed
 from test_workbench_ledger_db import db as db
 
@@ -18,13 +22,27 @@ from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
 )
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.incubation_tools import IncubationGrant, IncubationGrants
 from app.domain.workbench.source_licenses import SourceLicenseCatalog
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-@pytest.mark.parametrize("revoke", [False, True])
-async def test_cross_author_reference_uses_consumers_account(db, revoke):
+def market_for(repo, resolve):
+    async def handle(request):
+        assert not repo.session.in_transaction()
+        assert request.url.path.endswith("/formal-methods/incubation-tools")
+        query = json.loads(request.content)
+        if query["reference"]:
+            query["reference"] = MethodRef.model_validate(query["reference"])
+        result = await resolve(**query)
+        return httpx.Response(200, json=result.model_dump(mode="json"))
+
+    return market_client(handle)
+
+
+@pytest.mark.parametrize("change", ["none", "revoke", "rebind", "before_send"])
+async def test_cross_author_reference_uses_consumers_account(db, change):
     ctx = await setup_plan(db, accept=False, public_leaf=True)
     pub = ctx.leaf
     grant = IncubationGrant(
@@ -36,13 +54,18 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
 
     class Market:
         active = True
-        author_session = None
+        pause_after = 0
+        entered = asyncio.Event()
+        resume = asyncio.Event()
 
         async def incubation_tools(
             self, subject, *, reference=None, after=None, limit=30
         ):
-            if self.author_session is not None:
-                assert not self.author_session.in_transaction()
+            if self.pause_after:
+                self.pause_after -= 1
+                if self.pause_after == 0:
+                    self.entered.set()
+                    await self.resume.wait()
             allowed = (
                 self.active
                 and subject == "other"
@@ -66,7 +89,8 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
     def factory(repo):
         caps = original(repo)
         caps.formal_sources.source_licenses = licenses
-        caps.formal_sources.market = market
+
+        caps.formal_sources.market = market_for(repo, market.incubation_tools)
         return caps
 
     ctx.factory = factory
@@ -79,7 +103,6 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
     ctx.request = FormalMethodExecutionRequest.model_validate(raw)
     async with db() as sql:
         repo = WorkbenchRepository(sql)
-        market.author_session = sql
         svc = factory(repo).formal_sources
         assert not (await svc.shared_tools("other"))["items"]
         buyer_asset = await service(repo).create_connection(
@@ -123,7 +146,6 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
         assert (await svc.shared_tools("other", reference=pub.reference))["items"][0][
             "selected"
         ] == buyer_asset["id"]
-        market.author_session = None
         assert (
             await FormalExecutions(repo, factory(repo)).accept(
                 ctx.request, caller="knowlab"
@@ -132,12 +154,39 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
     for i in range(2):
         pending = await advance(db, ctx)
         assert pending["actions"], pending
-        if revoke and i == 1:
-            market.active = False
-            with pytest.raises(CapabilityError):
+        if i and change != "none":
+            market.pause_after = 2 if change == "before_send" else 1
+            decision = asyncio.create_task(
+                approve(db, ctx.request, ctx.factory, pending)
+            )
+            try:
+                await asyncio.wait_for(market.entered.wait(), 5)
+                if change in ("revoke", "before_send"):
+                    market.active = False
+                else:
+                    async with db() as sql:
+                        alternate = UUID(second["id"])
+                        revision = next(
+                            x["revision"]
+                            for x in detail["installations"]
+                            if x["asset_id"] == str(alternate)
+                        )
+                        await factory(
+                            WorkbenchRepository(sql)
+                        ).formal_sources.choose_incubation_asset(
+                            "other", pub.reference, alternate, revision
+                        )
+            finally:
+                market.resume.set()
+            if change == "before_send":
+                await decision
                 await approve(db, ctx.request, ctx.factory, pending)
+            else:
+                with pytest.raises(CapabilityError):
+                    await decision
             assert len(ctx.remote.calls) == 1
             return
+        await approve(db, ctx.request, ctx.factory, pending)
         await approve(db, ctx.request, ctx.factory, pending)
         assert len(ctx.remote.calls) == i + 1
         assert ctx.remote.calls[-1][1] == "only-consumer-token"
@@ -196,10 +245,9 @@ async def test_shared_script_uses_consumers_verified_package_and_meter(db):
         scope="platform",
     )
 
-    class Platform:
-        async def incubation_tools(self, subject, **kw):
-            assert subject == "other"
-            return IncubationGrants(subject=subject, items=(grant,), next=None)
+    async def platform_grant(subject, **kw):
+        assert subject == "other"
+        return IncubationGrants(subject=subject, items=(grant,), next=None)
 
     async with db() as sql:
         repo = WorkbenchRepository(sql)
@@ -238,7 +286,7 @@ async def test_shared_script_uses_consumers_verified_package_and_meter(db):
     def factory(repo):
         svc = original(repo)
         svc.formal_sources.source_licenses = licenses
-        svc.formal_sources.market = Platform()
+        svc.formal_sources.market = market_for(repo, platform_grant)
         return svc
 
     env, _, _ = await seed(db, owner=OTHER)

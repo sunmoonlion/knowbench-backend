@@ -25,8 +25,9 @@ def runner_for(task):
             get_task=AsyncMock(return_value=task),
         )
 
-    runner = object.__new__(Runner)
-    runner.stores, runner.driving, runner.capabilities = stores, {}, None
+    runner = Runner(
+        stores, connector=AsyncMock(), publisher=AsyncMock(), runner_id="formal-test"
+    )
     runner.link_for = AsyncMock(
         side_effect=AssertionError("Formal work cannot acquire a Codex link")
     )

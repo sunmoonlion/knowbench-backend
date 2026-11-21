@@ -143,6 +143,12 @@ async def _collect(svc, call):
             await _missing_receipt(svc, call)
         raise
     amount, evidence = rated_usage(intent["script_quote"], cid, meter)
+    grants = {}
+    if authorized:
+        try:
+            grants = await svc._dispatch_grants(owner, intent)
+        except WorkbenchError:
+            authorized = False
     async with svc.repo.transaction():
         await svc._locked_call_session(owner, call)
         current = await svc.repo.capability_call(owner, cid, lock=True)
@@ -151,7 +157,7 @@ async def _collect(svc, call):
         intent = current["detail"]
         if current["status"] == "dispatching":
             try:
-                await svc._check_before_send(owner, current, intent)
+                await svc._check_before_send(owner, current, intent, grants=grants)
             except WorkbenchError:
                 authorized = False
         await settle(svc.repo, owner, cid, amount=amount, evidence=evidence)

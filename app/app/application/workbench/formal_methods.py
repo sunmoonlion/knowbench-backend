@@ -302,8 +302,10 @@ class FormalMethods:
             validate_values(step.inputs, arguments)
             return req, entry
 
-    async def dependency(self, owner, reference, *, shared=True):
-        return await self.registry.dependency(owner, reference, shared=shared)
+    async def dependency(self, owner, reference, *, shared=True, grants=None):
+        return await self.registry.dependency(
+            owner, reference, shared=shared, grants=grants
+        )
 
     async def binding_options(self, owner, frozen):
         from app.domain.workbench.formal_execution import same_implementation
@@ -382,7 +384,9 @@ class FormalMethods:
             declaration=declaration,
         )
 
-    async def _compile(self, owner: str, method_id, definition, *, documents=None):
+    async def _compile(
+        self, owner: str, method_id, definition, *, documents=None, grants=None
+    ):
         resolved: dict = {}
 
         async def collect(current, path=()):
@@ -402,7 +406,7 @@ class FormalMethods:
                             )
                         continue
                     frozen, _ = await self.dependency(
-                        owner, ref, shared=documents is None
+                        owner, ref, shared=documents is None, grants=grants
                     )
                     if documents is not None:
                         documents.append(frozen)
@@ -592,8 +596,21 @@ class FormalMethods:
                 }
             return result
 
-    async def validate(self, request: FormalMethodValidationRequest, *, caller: str):
+    async def validate(
+        self, request: FormalMethodValidationRequest, *, caller: str, grants=None
+    ):
         self.require_supported_graph(request.draft)
+        if grants is None and request.dependencies:
+            async with self.repo.transaction(independent=True):
+                actor = await self._owner(request.owner_subject)
+                prior = await self.repo.formal_validation(actor, str(request.run_id))
+            grants = (
+                {}
+                if prior
+                else await self.registry.request_grants(
+                    request.owner_subject, request.dependencies
+                )
+            )
         async with self.repo.transaction():
             owner = await self._owner(request.owner_subject)
             prior = await self.repo.formal_validation(
@@ -613,7 +630,7 @@ class FormalMethods:
                 owner, request.owner_subject, request.draft.source
             )
             compilation = await self._compile(
-                owner, request.method_id, request.draft.definition
+                owner, request.method_id, request.draft.definition, grants=grants
             )
             if set(request.dependencies) != set(compilation.dependencies):
                 raise CapabilityError("Validation must include every frozen candidate")
@@ -669,6 +686,17 @@ class FormalMethods:
             raise Forbidden(
                 "Formal expert execution currently qualifies private use only"
             )
+        grants = {}
+        if frozen.validation.dependencies:
+            async with self.repo.transaction(independent=True):
+                actor = await self._owner(frozen.owner_subject)
+                prior = await self.repo.formal_method(
+                    actor, str(frozen.reference.method_id), frozen.reference.version
+                )
+            if not prior:
+                grants = await self.registry.request_grants(
+                    frozen.owner_subject, frozen.validation.dependencies
+                )
         async with self.repo.transaction():
             owner = await self._owner(frozen.owner_subject)
             existing = await self.repo.formal_method(
@@ -766,6 +794,7 @@ class FormalMethods:
                     owner,
                     frozen.draft,
                     frozen.reference.method_id,
+                    grants=grants,
                 )
                 if frozen.visibility == "public" and any(
                     dep.draft.source and dep.draft.source.is_instruction
@@ -783,7 +812,10 @@ class FormalMethods:
             if not await self._source(owner, frozen.owner_subject, frozen.draft.source):
                 raise Forbidden("Source execution rights have not been verified")
             compilation = await self._compile(
-                owner, frozen.reference.method_id, frozen.draft.definition
+                owner,
+                frozen.reference.method_id,
+                frozen.draft.definition,
+                grants=grants,
             )
             if set(compilation.dependencies) != set(frozen.validation.dependencies):
                 raise Forbidden("Frozen dependencies differ from validation")

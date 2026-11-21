@@ -254,8 +254,14 @@ async def manage(
     from app.application.workbench.formal_host_calls import FormalHostCalls
 
     repo = svc.repo
-    async with repo.transaction():
+    async with repo.transaction(independent=True):
         peek = await repo.capability_call(owner, str(call_id))
+    grants = (
+        await svc.formal_sources.registry.task_grants(str(peek["task_id"]), owner=owner)
+        if peek.get("task_id")
+        else {}
+    )
+    async with repo.transaction():
         if not peek.get("task_id"):
             raise CapabilityError("This action has no method task")
         task = await repo.get_task(
@@ -266,7 +272,7 @@ async def manage(
             raise CapabilityError("The artifact action is no longer pending")
         formal = FormalHostCalls(svc)
         host = formal.pending_invocation(task, call)
-        ctx = await formal.approval_context(owner, call, host)
+        ctx = await formal.approval_context(owner, call, host, grants=grants)
         binding = ctx.artifact_read
         if not binding:
             raise CapabilityError("This action has no planned artifact read")

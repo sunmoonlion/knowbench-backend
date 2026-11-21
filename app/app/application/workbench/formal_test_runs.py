@@ -143,6 +143,14 @@ class FormalExecutions:
     async def accept(self, request, *, caller):
         self.formal.require_supported_graph(request.draft)
         run_id = str(request.run_id)
+        grants = {}
+        if request.dependencies:
+            async with self.repo.transaction(independent=True):
+                prior = await self.repo.get_test_run(run_id)
+            if not prior:
+                grants = await self.formal.registry.request_grants(
+                    request.owner_subject, request.dependencies
+                )
         async with self.repo.transaction():
             await self.repo.lock_formal_execution(run_id)
             prior = await self.repo.get_test_run(run_id, for_update=True)
@@ -179,7 +187,7 @@ class FormalExecutions:
                         "Budget is too small for the number of test repetitions"
                     )
                 admission = await self.formal.validate(
-                    request.admission_request(), caller=caller
+                    request.admission_request(), caller=caller, grants=grants
                 )
                 if (
                     admission["status"] != "pending"
@@ -190,7 +198,11 @@ class FormalExecutions:
                     )
                 if isinstance(request.draft.definition.procedure, Orchestration):
                     dependencies = await resolve_plan(
-                        self.capabilities, owner, request.draft, request.method_id
+                        self.capabilities,
+                        owner,
+                        request.draft,
+                        request.method_id,
+                        grants=grants,
                     )
                     if any(
                         d.draft.source and d.draft.source.is_instruction
@@ -567,7 +579,7 @@ class FormalExecutions:
             ),
         )
 
-    async def finish(self, run, request, *, forced=None, detail=""):
+    async def finish(self, run, request, *, forced=None, detail="", grants=None):
         """Caller serializes this run. Retained evidence is sealed only once."""
         run_id, owner = (
             str(run["run_id"]),
@@ -629,6 +641,7 @@ class FormalExecutions:
                     request.draft,
                     request.method_id,
                     bindings=bindings,
+                    grants=grants,
                 )
                 policies = {}
                 inference_refs = set()
@@ -896,6 +909,26 @@ async def advance_formal(conductor, run_id):
     if factory is None:
         return
     task_id = None
+    async with conductor.stores() as reader:
+        async with reader.transaction():
+            initial = await reader.get_test_run(run_id)
+            if not initial or initial["status"] not in ACTIVE:
+                return
+            planning = FormalMethodExecutionRequest.model_validate(initial["request"])
+            rows = await reader.list_test_cases(run_id)
+            upcoming = next((row for row in rows if not row.get("result")), None)
+            needs_plan = not upcoming or not upcoming.get("task_id")
+            deadline = (
+                planning.execution.timeout_seconds + planning.execution.max_wait_seconds
+            )
+            expired = (
+                conductor.now() - initial["created_at"]
+            ).total_seconds() > deadline
+        grants = {}
+        if needs_plan and not expired:
+            grants = await factory(reader).formal_sources.registry.request_grants(
+                planning.owner_subject, planning.dependencies
+            )
     async with conductor.stores() as repo, repo.transaction():
         await repo.lock_formal_execution(run_id)
         run = await repo.get_test_run(run_id, for_update=True)
@@ -903,6 +936,8 @@ async def advance_formal(conductor, run_id):
             return
         svc = FormalExecutions(repo, factory(repo), now=conductor.now)
         request = FormalMethodExecutionRequest.model_validate(run["request"])
+        if request != planning:
+            raise IdempotencyConflict("Execution request changed during authorization")
         now = conductor.now()
         if (
             (now - run["created_at"]).total_seconds()
@@ -917,6 +952,10 @@ async def advance_formal(conductor, run_id):
             return
         rows = await repo.list_test_cases(run_id)
         current = next((r for r in rows if not r.get("result")), None)
+        if not needs_plan and (not current or not current.get("task_id")):
+            # Another worker advanced the case between the two reads. The next
+            # tick qualifies that case before it is started or sealed.
+            return
         task = None
         if current and current.get("task_id"):
             task_id = str(current["task_id"])
@@ -1010,7 +1049,7 @@ async def advance_formal(conductor, run_id):
             )
             return
         if current is None:
-            await svc.finish(run, request)
+            await svc.finish(run, request, grants=grants)
             return
         case, repetition = expanded(request)[current["position"]]
         if task and task["state"] in TASK_TERMINAL:
@@ -1053,6 +1092,7 @@ async def advance_formal(conductor, run_id):
                         request.draft,
                         request.method_id,
                         bindings=bindings,
+                        grants=grants,
                     )
                 except WorkbenchError as exc:
                     await svc.finish(

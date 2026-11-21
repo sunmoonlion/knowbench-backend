@@ -81,7 +81,7 @@ class FormalHostCalls:
         self.repo = capabilities.repo
 
     async def context(
-        self, owner, task_id, attempt_id, *, caller="host"
+        self, owner, task_id, attempt_id, *, caller="host", grants=None
     ) -> HostContext:
         """Caller owns a transaction; lock the authoritative Task before its work."""
         task = await self.repo.get_task(task_id, owner_actor_id=owner, for_update=True)
@@ -116,6 +116,7 @@ class FormalHostCalls:
                 snapshot.draft,
                 snapshot.method_id,
                 bindings=bindings,
+                grants=grants,
             )
             if live != snapshot.dependencies or tuple(bindings) != snapshot.bindings:
                 raise CapabilityError("Formal dependency admission changed")
@@ -500,6 +501,13 @@ class FormalHostCalls:
         )
 
     async def request(self, owner, task_id, attempt_id, *, model=None):
+        grants = (
+            {}
+            if model is not None
+            else await self.capabilities.formal_sources.registry.task_grants(
+                task_id, owner=owner, replay_attempt=attempt_id
+            )
+        )
         async with self.repo.transaction():
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
@@ -580,7 +588,9 @@ class FormalHostCalls:
 
                     validate_host_call(task, attempt, existing)
                 return public_call(existing)
-            context = await self.context(owner, task_id, attempt_id, caller=caller)
+            context = await self.context(
+                owner, task_id, attempt_id, caller=caller, grants=grants
+            )
             if model is not None:
                 from app.application.workbench.formal_model_calls import (
                     bind_model_intent,
@@ -770,13 +780,14 @@ class FormalHostCalls:
             raise CapabilityError("Formal approval no longer belongs to active work")
         return host
 
-    async def approval_context(self, owner, call, host):
+    async def approval_context(self, owner, call, host, *, grants=None):
         is_model = call["detail"]["execution_kind"] == "formal_probe"
         context = await self.context(
             owner,
             host["task_id"],
             host["attempt_id"],
             caller="model" if is_model else "host",
+            grants=grants,
         )
         if context.artifact_read and "artifact_read_digest" not in call["detail"]:
             # Pending actions created before resource consent require explicit
@@ -814,6 +825,11 @@ class FormalHostCalls:
     async def decide(self, owner, peek, body):
         if getattr(body, "remember_read", False):
             raise CapabilityError("This formal action requires an exact approval")
+        grants = {}
+        if body.decision == "accept" and peek["status"] == "awaiting_approval":
+            grants = await self.capabilities.formal_sources.registry.task_grants(
+                str(peek["task_id"]), owner=owner
+            )
         async with self.repo.transaction():
             # The lock order agrees with request/cancel: Task before Attempt/call.
             task = await self.repo.get_task(
@@ -828,7 +844,7 @@ class FormalHostCalls:
             intent = call["detail"]
             context = None
             if body.decision == "accept":
-                context = await self.approval_context(owner, call, host)
+                context = await self.approval_context(owner, call, host, grants=grants)
             await Ledger(self.repo).respond_interaction(
                 call["interaction_id"],
                 token=body.token,

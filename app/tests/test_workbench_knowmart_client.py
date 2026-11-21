@@ -125,3 +125,38 @@ async def test_formal_use_decisions_bind_owner_and_each_pinned_version():
             await _client(
                 lambda _, reply=reply: httpx.Response(200, json=reply)
             ).eligible_formal_refs(owner, refs[:1])
+
+
+async def test_planning_window_checks_subject_bound_and_continuation():
+    import json
+    from uuid import uuid4
+
+    from app.domain.workbench.formal_method_generated import MethodRef
+
+    owner = "test/consumer"
+    ref = {"method_id": str(uuid4()), "version": 1, "digest": "sha256:" + "1" * 64}
+    reply = {"owner_subject": owner, "references": [ref], "more": True}
+
+    def serve(req):
+        assert req.url.path.endswith("/formal-methods/planning-window")
+        assert json.loads(req.content) == {
+            "owner_subject": owner,
+            "offset": 3,
+            "limit": 1,
+        }
+        return httpx.Response(200, json=reply)
+
+    assert await _client(serve).planning_window(owner, 3, 1) == (
+        [MethodRef.model_validate(ref)],
+        True,
+    )
+    for bad in (
+        {"owner_subject": "other"},
+        {"references": []},
+        {"more": 1},
+        {"references": [ref, ref]},
+    ):
+        with pytest.raises(KnowbotUnavailable):
+            await _client(
+                lambda _, bad=bad: httpx.Response(200, json={**reply, **bad})
+            ).planning_window(owner, 3, 1)

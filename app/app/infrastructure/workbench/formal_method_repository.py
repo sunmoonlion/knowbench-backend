@@ -183,6 +183,7 @@ class FormalMethodRepositoryMixin:
         experts_only=False,
         reference=None,
         identities_only=False,
+        definitions=False,
         eligible=None,
     ):
         # All metadata is projected from the admitted document. Public rows are
@@ -196,7 +197,7 @@ class FormalMethodRepositoryMixin:
         columns = "method_id,latest_version,digest"
         if not identities_only:
             columns += ",created_at,method_kind,title,summary"
-        if reference:
+        if reference or definitions:
             columns += ",definition"
         grant_filter = (
             """AND (method_id,version,digest) IN (

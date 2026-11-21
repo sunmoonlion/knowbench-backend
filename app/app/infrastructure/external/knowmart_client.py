@@ -38,6 +38,35 @@ class KnowmartSummonClient:
     ) -> set[MethodRef]:
         return await self._use_refs(subject, references, include_acquired=False)
 
+    async def planning_window(self, subject, offset, limit):
+        try:
+            _, body = await self._connect().request(
+                "POST",
+                "/formal-methods/planning-window",
+                json={"owner_subject": subject, "offset": offset, "limit": limit},
+            )
+            if (
+                not isinstance(body, dict)
+                or body.get("owner_subject") != subject
+                or type(body.get("more")) is not bool
+            ):
+                raise ValueError("invalid subject or continuation")
+            raw = body.get("references")
+            if (
+                not isinstance(raw, list)
+                or len(raw) > limit
+                or (body["more"] and len(raw) != limit)
+            ):
+                raise ValueError("invalid window size")
+            refs = [MethodRef.model_validate(ref) for ref in raw]
+            if len(set(refs)) != len(refs):
+                raise ValueError("duplicate version in planning window")
+            return refs, body["more"]
+        except (BadGatewayError, ServiceUnavailableError, ValueError) as exc:
+            raise KnowbotUnavailable(
+                "KnowMart planning qualification is unavailable"
+            ) from exc
+
     async def planning_formal_refs(self, subject, references):
         return await self._use_refs(subject, references, include_acquired=True)
 

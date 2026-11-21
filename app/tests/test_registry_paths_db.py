@@ -353,6 +353,10 @@ async def test_registry_scenes_share_versions_but_not_grants(db):
     class Market:
         permitted = set()
 
+        async def planning_window(self, subject, offset, limit):
+            assert not session.in_transaction() and subject == "author"
+            return list(self.permitted)[offset : offset + limit], False
+
         async def planning_formal_refs(self, subject, references):
             assert not session.in_transaction()
             assert subject == "author"
@@ -469,10 +473,14 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
         allowed = {v2}
         checks = []
 
+        async def planning_window(self, subject, offset, limit):
+            assert not session.in_transaction() and subject == "author"
+            self.checks.append((subject, offset, limit))
+            return list(self.allowed)[offset : offset + limit], False
+
         async def planning_formal_refs(self, subject, refs):
             assert not session.in_transaction()
             assert subject == "author"
-            self.checks.append(refs)
             return self.allowed.intersection(MethodRef.model_validate(r) for r in refs)
 
     market = Market()
@@ -572,9 +580,7 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
             expert.reference.method_id
         )
         assert market.checks[-1] == english_check
-        assert all(
-            set(ref) == {"method_id", "version", "digest"} for ref in english_check
-        )
+        assert english_check == ("author", 0, 100)
         assert (await http.post(url, json={"stage": "expert"})).status_code == 422
         market.allowed.remove(v2)
         assert (
@@ -621,13 +627,15 @@ async def test_sparse_planning_window_advances_without_scanning_the_entire_marke
             offset : offset + limit
         ]
 
+    allowed = [
+        MethodRef.model_validate(SceneRegistry.reference(row)) for row in rows[100:]
+    ]
     market = SimpleNamespace(
-        planning_formal_refs=AsyncMock(
-            side_effect=lambda owner, refs: {
-                MethodRef.model_validate(pin)
-                for pin in refs
-                if int(UUID(pin["method_id"])) > 100
-            }
+        planning_window=AsyncMock(
+            side_effect=lambda subject, offset, limit: (
+                allowed[offset : offset + limit],
+                offset + limit < len(allowed),
+            )
         )
     )
     repo = SimpleNamespace(
@@ -638,13 +646,12 @@ async def test_sparse_planning_window_advances_without_scanning_the_entire_marke
     registry = SceneRegistry(SimpleNamespace(market=market), repo)
     query = PlanningQuery(stage="expert", question="Review")
     page = await registry.planning_versions(OWNER, 30, 0, query=query)
-    assert page == {"items": [], "next": 90}
     ids = []
-    while page["next"] is not None:
-        page = await registry.planning_versions(OWNER, 30, page["next"], query=query)
+    while True:
         ids.extend(int(row["method_id"]) for row in page["items"])
+        if page["next"] is None:
+            break
+        page = await registry.planning_versions(OWNER, 30, page["next"], query=query)
     assert ids == list(range(101, 233))
-    assert market.planning_formal_refs.await_count == 6
-    assert all(
-        len(call.args[1]) <= 100 for call in market.planning_formal_refs.await_args_list
-    )
+    assert market.planning_window.await_count == 5
+    assert all(call.args[2] == 90 for call in market.planning_window.await_args_list)

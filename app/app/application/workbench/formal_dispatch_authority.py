@@ -13,7 +13,7 @@ from app.domain.workbench.method_authorization import (
 from app.domain.workbench.states import TaskState
 
 
-async def check_formal_dispatch(svc, owner, call, intent):
+async def check_formal_dispatch(svc, owner, call, intent, *, grants=None):
     repo = svc.repo
     if intent.get("execution_kind") in ("formal_method", "formal_method_model"):
         await svc.require_formal_use(owner, intent["formal_method"]["reference"])
@@ -33,6 +33,7 @@ async def check_formal_dispatch(svc, owner, call, intent):
             host["task_id"],
             host["attempt_id"],
             caller="model" if function_probe else "host",
+            grants=grants,
         )
         if function_probe:
             from app.application.workbench.formal_model_calls import (
@@ -57,7 +58,7 @@ async def check_formal_dispatch(svc, owner, call, intent):
         from app.application.workbench.formal_host_calls import FormalHostCalls
 
         context = await FormalHostCalls(svc).context(
-            owner, host["task_id"], host["attempt_id"]
+            owner, host["task_id"], host["attempt_id"], grants=grants
         )
         reservations = await repo.script_budget_entries(call["id"])
         asset = context.asset
@@ -150,7 +151,7 @@ async def check_formal_dispatch(svc, owner, call, intent):
             from app.application.workbench.formal_host_calls import FormalHostCalls
 
             context = await FormalHostCalls(svc).context(
-                owner, host["task_id"], host["attempt_id"]
+                owner, host["task_id"], host["attempt_id"], grants=grants
             )
             if context.identity != call["digest"]:
                 raise CapabilityError(

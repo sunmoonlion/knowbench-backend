@@ -159,7 +159,7 @@ class SceneRegistry:
         terms = search_terms(query.question) if query and query.question else []
         experts_only = bool(query and query.stage == "expert")
         # Bound both the authorization request and the in-memory ranking window.
-        # The market receives a stable catalog slice independent of the question.
+        # KnowMart pages only this actor's usable pins. Ranking stays local.
         window = (100 // limit) * limit
         start, within = divmod(offset, window)
         start *= window
@@ -167,19 +167,8 @@ class SceneRegistry:
             subject = await self.repo.subject_of_actor(owner)
             if not subject or self.market is None:
                 raise CapabilityError("Formal method use qualification is unavailable")
-            rows = await self.repo.registry_method_candidates(
-                owner,
-                window + 1,
-                start,
-                public=True,
-                experts_only=experts_only,
-                identities_only=True,
-            )
-        refs = [self.reference(row) for row in rows[:window]]
-        allowed = (
-            await self.market.planning_formal_refs(subject, refs) if refs else set()
-        )
-        eligible = [ref for ref in refs if MethodRef.model_validate(ref) in allowed]
+        refs, more = await self.market.planning_window(subject, start, window)
+        eligible = [ref.model_dump(mode="json") for ref in refs]
         async with self.repo.transaction():
             visible = (
                 await self.repo.registry_method_candidates(
@@ -197,7 +186,7 @@ class SceneRegistry:
         next_page = None
         if len(visible) > limit:
             next_page = offset + limit
-        elif len(rows) > window:
+        elif more:
             next_page = start + window
         return {"items": visible[:limit], "next": next_page}
 
@@ -255,14 +244,86 @@ class SceneRegistry:
                 return grant
         return None
 
-    async def dependency(self, owner, reference, *, shared=True):
+    async def _read_grants(self, subject, refs):
+        grants = {}
+        for ref in refs:
+            grant = await self.shared_grant(subject, ref)
+            if grant is not None:
+                grants[subject, ref] = grant
+        return grants
+
+    async def request_grants(self, subject, refs):
+        """Resolve only non-owned pins of this request before the caller takes locks."""
+        if not refs or self.market is None:
+            return {}
+        from app.domain.workbench.formal_method_generated import Orchestration
+
+        # The admission contract pins the immediate children. An owned child
+        # expert may depend on other authors' tools several levels below it.
+        missing = []
+        seen = set()
+        pending = set(refs)
+        depth = 0
+        async with self.repo.transaction(independent=True):
+            owner = await self.methods._owner(subject)
+            while pending:
+                depth += 1
+                if depth > 16:
+                    raise CapabilityError("Formal dependency depth limit")
+                seen.update(pending)
+                if len(seen) > 1000:
+                    raise CapabilityError("Formal dependency closure limit")
+                rows = await self.repo.registry_method_candidates(
+                    owner,
+                    len(pending),
+                    0,
+                    eligible=[ref.model_dump(mode="json") for ref in pending],
+                    definitions=True,
+                    identities_only=True,
+                )
+                children = set()
+                for row in rows:
+                    pending.remove(MethodRef.model_validate(self.reference(row)))
+                    definition = FormalMethodDefinition.model_validate(
+                        row["definition"]
+                    )
+                    if isinstance(definition.procedure, Orchestration):
+                        for step in definition.procedure.steps:
+                            children.update(step.candidates)
+                missing.extend(pending)
+                pending = children - seen
+        return await self._read_grants(subject, missing)
+
+    async def task_grants(self, task_id, *, owner=None, replay_attempt=None):
+        """Use only shared pins already bound to this exact execution snapshot."""
+        from app.domain.workbench.formal_execution import snapshot_for_task
+
+        if self.market is None:
+            return {}
+        async with self.repo.transaction(independent=True):
+            task = await self.repo.get_task(task_id, owner_actor_id=owner)
+            if not (task.get("pack_snapshot") or {}).get("bindings"):
+                return {}
+            if replay_attempt:
+                attempt = await self.repo.get_attempt(replay_attempt)
+                if str(attempt["task_id"]) == str(task_id) and (
+                    attempt.get("refs") or {}
+                ).get("capability_call_id"):
+                    return {}
+            snapshot = snapshot_for_task(task)
+            subject = await self.repo.subject_of_actor(str(task["owner_actor_id"]))
+        return await self._read_grants(
+            subject, (binding.reference for binding in snapshot.bindings)
+        )
+
+    async def dependency(self, owner, reference, *, shared=True, grants=None):
         row = await self.repo.formal_method(
             owner, str(reference.method_id), reference.version
         )
         grant = None
-        if row is None and shared and self.market is not None:
+        if row is None and shared and grants:
             subject = await self.repo.subject_of_actor(owner)
-            grant = await self.shared_grant(subject, reference)
+            grant = grants.get((subject, reference))
             if grant:
                 publisher = await self.repo.actor_for_subject(grant.owner_subject)
                 if publisher:

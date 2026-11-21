@@ -2136,7 +2136,17 @@ class Capabilities:
         ):
             raise CapabilityError("Operation policy changed; request approval again")
 
-    async def _check_before_send(self, owner, call, intent):
+    async def _dispatch_grants(self, owner, intent):
+        host = intent.get("formal_host")
+        if not host:
+            return {}
+        return await self.formal_sources.registry.task_grants(
+            host["task_id"], owner=owner
+        )
+
+    async def _check_before_send(self, owner, call, intent, *, grants=None):
+        if grants is None:
+            grants = await self._dispatch_grants(owner, intent)
         async with self.repo.transaction():
             await self._locked_call_session(owner, call)
             current = await self.repo.capability_call(owner, call["id"], lock=True)
@@ -2182,7 +2192,7 @@ class Capabilities:
                     check_formal_dispatch,
                 )
 
-                await check_formal_dispatch(self, owner, current, intent)
+                await check_formal_dispatch(self, owner, current, intent, grants=grants)
                 return
             asset = await self.repo.capability_asset(
                 owner, call["source_asset_id"], lock=True

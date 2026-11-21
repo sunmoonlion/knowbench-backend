@@ -86,8 +86,14 @@ def verify_material(content, binding):
 async def pending_read(svc, owner, call_id):
     from app.application.workbench.formal_host_calls import FormalHostCalls
 
-    async with svc.repo.transaction():
+    async with svc.repo.transaction(independent=True):
         call = await svc.repo.capability_call(owner, str(call_id))
+    grants = (
+        await svc.formal_sources.registry.task_grants(str(call["task_id"]), owner=owner)
+        if call.get("task_id")
+        else {}
+    )
+    async with svc.repo.transaction():
         if not call.get("task_id"):
             raise CapabilityError("This call has no formal Task")
         task = await svc.repo.get_task(
@@ -98,7 +104,7 @@ async def pending_read(svc, owner, call_id):
             raise CapabilityError("This call has no pending KnowBase material read")
         formal = FormalHostCalls(svc)
         host = formal.pending_invocation(task, call)
-        context = await formal.approval_context(owner, call, host)
+        context = await formal.approval_context(owner, call, host, grants=grants)
         if not context.knowbase_read:
             raise CapabilityError("This action does not read a KnowBase material")
         interaction = await svc.repo.get_interaction(str(call["interaction_id"]))

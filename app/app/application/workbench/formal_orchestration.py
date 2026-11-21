@@ -18,7 +18,9 @@ from app.domain.workbench.formal_method_plan_generated import (
 )
 
 
-async def resolve_plan(capabilities, owner, draft, method_id, *, bindings=None):
+async def resolve_plan(
+    capabilities, owner, draft, method_id, *, bindings=None, grants=None
+):
     return await resolve_owned_plan(
         capabilities.repo,
         capabilities.formal_sources,
@@ -27,18 +29,27 @@ async def resolve_plan(capabilities, owner, draft, method_id, *, bindings=None):
         draft,
         method_id,
         bindings=bindings,
+        grants=grants,
     )
 
 
 async def resolve_owned_plan(
-    repo, formal_sources, operations, owner, draft, method_id, *, bindings=None
+    repo,
+    formal_sources,
+    operations,
+    owner,
+    draft,
+    method_id,
+    *,
+    bindings=None,
+    grants=None,
 ):
     catalog = FormalMethodCatalog(repo, formal_sources, operations)
     async with repo.transaction():
         resolved = {}
         postorder = []
         assets = set()
-        grants = {}
+        shared_bindings = {}
 
         async def collect(current, ancestors):
             if not isinstance(current.procedure, Orchestration):
@@ -56,7 +67,9 @@ async def resolve_owned_plan(
                     continue
                 if len(resolved) >= 1000:
                     raise CapabilityError("Formal dependency closure limit")
-                frozen, grant = await formal_sources.registry.dependency(owner, ref)
+                frozen, grant = await formal_sources.registry.dependency(
+                    owner, ref, grants=grants
+                )
                 if (
                     frozen.reference != ref
                     or "host" not in frozen.draft.allowed_callers
@@ -69,7 +82,7 @@ async def resolve_owned_plan(
                     if grant:
                         publisher = await repo.actor_for_subject(grant.owner_subject)
                         binding = await formal_sources.bind_tool(owner, frozen, grant)
-                        grants[key] = (grant, binding)
+                        shared_bindings[key] = (grant, binding)
                         assets.add((str(owner), str(binding.source.asset_id)))
                     assets.add((str(publisher), str(source.asset_id)))
                 await collect(frozen.draft.definition, (*ancestors, ref.method_id))
@@ -96,8 +109,8 @@ async def resolve_owned_plan(
             await repo.capability_asset(actor, asset_id, lock=True)
         for key in postorder:
             frozen = resolved[key]
-            if key in grants:
-                grant, binding = grants[key]
+            if key in shared_bindings:
+                grant, binding = shared_bindings[key]
                 admitted = await catalog.shared_tool(grant)
                 if await formal_sources.bind_tool(owner, admitted, grant) != binding:
                     raise CapabilityError("Incubation source binding changed")

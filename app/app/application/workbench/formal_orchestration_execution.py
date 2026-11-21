@@ -428,18 +428,6 @@ class FormalOrchestrationExecution:
                     return task["state"]
                 validate_host_call(task, attempt, call)
                 status = call["status"]
-                if status == "awaiting_approval":
-                    denial = await self.pending_denial(task_id, str(active), call_id)
-                    if denial is not None:
-                        return await self.finish(
-                            task_id,
-                            str(active),
-                            "rejected",
-                            rejection_code="authorization_denied",
-                            detail=denial[1],
-                            observed=denial[0],
-                        )
-                    return task["state"]
                 instruction_ready = (
                     status == "dispatching"
                     and call["detail"].get("execution_kind") == "formal_instruction"
@@ -469,6 +457,18 @@ class FormalOrchestrationExecution:
                         )
                 else:
                     outputs = None
+            if status == "awaiting_approval":
+                denial = await self.pending_denial(task_id, str(active), call_id)
+                if denial is not None:
+                    return await self.finish(
+                        task_id,
+                        str(active),
+                        "rejected",
+                        rejection_code="authorization_denied",
+                        detail=denial[1],
+                        observed=denial[0],
+                    )
+                return task["state"]
             if instruction_ready:
                 # The model round trip must not occupy the polling repository connection.
                 assert self.instructions is not None
@@ -503,6 +503,12 @@ class FormalOrchestrationExecution:
         """Expire invalid authority only while the exact action is undispatched."""
         from app.application.workbench.formal_host_calls import FormalHostCalls
 
+        grants = {}
+        if self.capabilities is not None:
+            async with self.stores() as reader:
+                grants = await self.capabilities(
+                    reader
+                ).formal_sources.registry.task_grants(task_id)
         async with self.stores() as repo, repo.transaction():
             task = await repo.get_task(task_id, for_update=True)
             if (
@@ -520,7 +526,7 @@ class FormalOrchestrationExecution:
                 if self.capabilities is None:
                     raise CapabilityError("Formal execution service is unavailable")
                 await FormalHostCalls(self.capabilities(repo)).context(
-                    owner, task_id, attempt_id
+                    owner, task_id, attempt_id, grants=grants
                 )
             except (CapabilityError, ValueError) as exc:
                 await repo.cancel_pending_interactions(
