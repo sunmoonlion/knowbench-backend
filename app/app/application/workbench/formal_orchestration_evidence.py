@@ -99,13 +99,13 @@ async def _approval(
     payload = matches[0]["payload"]
     source = snapshot_for_task(task).execution_source(leaf)
     assert source is not None
-    inference = source.kind == "skill_instruction"
-    if source.kind == "registered_script":
+    inference = source.is_instruction
+    if source.is_registered:
         _require(
             subject.get("registered_source")
             == intent.get("registered_source")
             == source.model_dump(mode="json"),
-            "registered_script_approval_mismatch",
+            "registered_source_approval_mismatch",
         )
     if inference:
         from app.application.workbench.instruction_leaf import leaf_operation
@@ -297,7 +297,7 @@ async def _approval(
 
 
 def step_registration(leaf, inputs, refs, intent):
-    if leaf.draft.source.kind == "skill_instruction":
+    if leaf.draft.source.is_instruction:
         from app.application.workbench.instruction_leaf import leaf_operation
 
         registration, _, _ = leaf_operation(
@@ -365,7 +365,7 @@ async def _step_evidence(
     assert source is not None
     _require(
         len(leaf.draft.definition.access_requirements)
-        == (0 if source.kind == "skill_instruction" else 1),
+        == (0 if source.is_instruction else 1),
         "leaf_access_mismatch",
     )
     row = await repo.formal_method(
@@ -397,11 +397,11 @@ async def _step_evidence(
         and attempt["step_id"] == step.id
         and attempt["step_version"] == digest(identity)
         and attempt["status"] == AttemptState.COMPLETED
-        and (source.kind == "skill_instruction" or attempt.get("turn_ids") == [])
+        and (source.is_instruction or attempt.get("turn_ids") == [])
         and not refs.get("usage_pending")
         and not refs.get("pending_usage")
         and (
-            source.kind == "skill_instruction"
+            source.is_instruction
             or (
                 _zero((attempt.get("budget_consumed") or {}).get("amount", "0"))
                 and not any(
@@ -477,7 +477,13 @@ async def _step_evidence(
         and call["digest"] == host_intent_digest(intent)
         and (
             call.get("connection_id") is None
-            if source.kind in ("skill_script", "registered_script", "skill_instruction")
+            if source.kind
+            in (
+                "skill_script",
+                "registered_script",
+                "skill_instruction",
+                "registered_instruction",
+            )
             else str(call.get("connection_id")) == str(source.asset_id)
         )
         and str(call["source_asset_id"]) == str(source.asset_id)
@@ -494,7 +500,7 @@ async def _step_evidence(
         step,
         (
             intent["result"]["structuredContent"]
-            if source.kind == "skill_instruction"
+            if source.is_instruction
             else structured_outputs(leaf.draft, intent["result"])
         ),
     )
@@ -524,7 +530,7 @@ async def _step_evidence(
         and fingerprint(artifact["content"]) == fingerprint(outputs),
         "step_artifact_mismatch",
     )
-    if source.kind == "skill_instruction":
+    if source.is_instruction:
         item["governance"]["instruction"] = await instruction_step_proof(
             repo, task, attempt, leaf, outputs, intent
         )

@@ -202,10 +202,7 @@ class FormalMethods:
                     raise CapabilityError(
                         "Registered entry is not a supported script path"
                     ) from exc
-                return True
-            raise RuntimeCapabilityGap(
-                "Direct source is registered; its trial executor is not bound"
-            )
+            return True
         if source.asset_id is None:
             # Platform implementations need their own reviewed source records;
             # being built in does not exempt them from incubation.
@@ -215,7 +212,7 @@ class FormalMethods:
         asset = await self._installed_source(owner, subject, source)
         if source.license_basis == "pending":
             return False
-        if source.kind == "skill_instruction":
+        if source.is_instruction:
             await self._instruction_text(owner, asset)
         return True
 
@@ -230,6 +227,19 @@ class FormalMethods:
     async def _instruction_text(self, owner, asset):
         data = await self.repo.skill_file(owner, str(asset["id"]), "SKILL.md")
         return verified_instruction(asset["detail"]["files"], data)
+
+    async def instruction_source(self, owner, subject, source):
+        if source.kind == "registered_instruction":
+            revision = await self.registry.check_direct_source(owner, source)
+            return self.registry.registered_asset(source, revision), revision.content
+        asset = await self._installed_source(owner, subject, source)
+        if asset["detail"].get("tool_requirements") or asset["detail"].get(
+            "dependencies"
+        ):
+            raise CapabilityError(
+                "The Skill requires tools outside this instruction trial"
+            )
+        return asset, await self._instruction_text(owner, asset)
 
     async def prepare_instruction_trial(self, subject, run_id, arguments, *, caller):
         """Resolve a retained, single-turn host draft and its inputs for a local rehearsal."""
@@ -248,7 +258,7 @@ class FormalMethods:
                 or req.owner_subject != subject
                 or digest(row["request"]) != row["request_digest"]
                 or source is None
-                or source.kind != "skill_instruction"
+                or not source.is_instruction
                 or source.license_basis == "pending"
                 or req.draft.allowed_callers != ("host",)
                 or step.kind != "direct"
@@ -261,16 +271,10 @@ class FormalMethods:
                 raise CapabilityError(
                     "The trial needs a licensed single-turn instruction with no tools"
                 )
-            asset = await self._installed_source(owner, subject, source)
-            if asset["detail"].get("tool_requirements") or asset["detail"].get(
-                "dependencies"
-            ):
-                raise CapabilityError(
-                    "The Skill requires tools outside this instruction trial"
-                )
+            _, entry = await self.instruction_source(owner, subject, source)
             bounded_json(arguments)
             validate_values(step.inputs, arguments)
-            return req, await self._instruction_text(owner, asset)
+            return req, entry
 
     async def dependency(self, owner, reference, *, shared=True):
         return await self.registry.dependency(owner, reference, shared=shared)
@@ -395,8 +399,8 @@ class FormalMethods:
                 raise Forbidden("Business coverage review is missing or has changed")
         if source is None:
             return
-        if source.kind == "registered_script":
-            raise Forbidden("Owner-registered scripts have no reviewed delivery rights")
+        if source.is_registered:
+            raise Forbidden("Owner-registered sources have no reviewed delivery rights")
         if not await self._source(owner, frozen.owner_subject, source):
             raise Forbidden("Source is unavailable")
         identity = SourceIdentity.model_validate(
@@ -682,7 +686,7 @@ class FormalMethods:
                 raise Forbidden(
                     "Registered script methods require verified script execution"
                 )
-            if frozen.draft.source and frozen.draft.source.kind == "skill_instruction":
+            if frozen.draft.source and frozen.draft.source.is_instruction:
                 if (
                     frozen.visibility != "private"
                     or frozen.validation.execution is None
@@ -715,7 +719,7 @@ class FormalMethods:
                     frozen.reference.method_id,
                 )
                 if frozen.visibility == "public" and any(
-                    dep.draft.source and dep.draft.source.kind == "skill_instruction"
+                    dep.draft.source and dep.draft.source.is_instruction
                     for dep in dependencies
                 ):
                     raise Forbidden(

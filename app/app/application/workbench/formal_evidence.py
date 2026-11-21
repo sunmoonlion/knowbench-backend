@@ -105,9 +105,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             "execution_not_terminal",
         )
         model = case.caller == "model"
-        instruction = bool(
-            request.draft.source and request.draft.source.kind == "skill_instruction"
-        )
+        instruction = bool(request.draft.source and request.draft.source.is_instruction)
         if not model and not instruction:
             require(attempt.get("turn_ids") == [], "unexpected_model_turns")
         if not instruction:

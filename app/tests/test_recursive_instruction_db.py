@@ -26,11 +26,18 @@ from app.domain.workbench.formal_method_execution_generated import FormalTestSui
 
 
 @pytest.mark.parametrize(
-    "scenario", ["complete", "intermediate_revoked", "registration_changed", "budget"]
+    "scenario",
+    [
+        "registered",
+        "complete",
+        "intermediate_revoked",
+        "registration_changed",
+        "budget",
+    ],
 )
 async def test_nested_instruction_graph(db, scenario):
     s, factory, conductor, leaf, child, base = await fixed_instruction_plan(
-        db, "complete"
+        db, "complete", registered=scenario == "registered"
     )
     req = parent_request(base, [child, child], depth=3, expansions=7, steps=6)
     suite = req.execution.suite.model_dump(mode="json", exclude={"digest"})

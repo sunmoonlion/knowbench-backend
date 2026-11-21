@@ -43,17 +43,21 @@ class SceneRegistry:
 
         return SourceRevision.from_row(row)
 
+    @staticmethod
+    def registered_asset(source, revision):
+        return {
+            "kind": source.kind,
+            "id": str(revision.source_id),
+            "revision": revision.version,
+            "name": revision.name,
+            "status": "active",
+            "detail": {},
+        }
+
     async def execution_asset(self, owner, source):
-        if source.kind == "registered_script":
+        if source.is_registered:
             revision = await self.check_direct_source(owner, source)
-            return {
-                "kind": source.kind,
-                "id": str(revision.source_id),
-                "revision": revision.version,
-                "name": revision.name,
-                "status": "active",
-                "detail": {},
-            }
+            return self.registered_asset(source, revision)
         return await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
 
     async def sources(self, subject):

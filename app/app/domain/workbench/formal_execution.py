@@ -186,7 +186,7 @@ def orchestration_plan(snapshot: FormalTaskSnapshot):
         if "host" not in frozen.draft.allowed_callers:
             raise ValueError("Formal dependency must allow the host caller")
         if isinstance(frozen.draft.definition.procedure, ToolProcedure):
-            if frozen.draft.source and frozen.draft.source.kind == "skill_instruction":
+            if frozen.draft.source and frozen.draft.source.is_instruction:
                 if (
                     frozen.visibility != "private"
                     or frozen.draft.definition.procedure.max_model_turns != 1
@@ -301,9 +301,9 @@ def structured_outputs(draft: FormalMethodDraft, result: dict) -> dict:
 
 def fixed_step_outputs(draft: FormalMethodDraft, result: dict) -> dict:
     procedure = draft.definition.procedure
-    if (
-        isinstance(procedure, ToolProcedure)
-        and procedure.implementation.kind == "skill_instruction"
+    if isinstance(procedure, ToolProcedure) and procedure.implementation.kind in (
+        "skill_instruction",
+        "registered_instruction",
     ):
         if procedure.max_model_turns != 1 or result.get("isError"):
             raise ValueError("A single successful instruction turn is required")

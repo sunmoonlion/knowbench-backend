@@ -314,10 +314,7 @@ class FormalOrchestrationExecution:
                     instruction_meta = {}
                     reserve = Decimal(0)
                     frozen = dependency_for_step(snapshot, step)
-                    if (
-                        frozen.draft.source
-                        and frozen.draft.source.kind == "skill_instruction"
-                    ):
+                    if frozen.draft.source and frozen.draft.source.is_instruction:
                         from app.domain.workbench.models import Budget
 
                         try:

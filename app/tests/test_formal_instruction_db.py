@@ -39,32 +39,50 @@ def test_instruction_cannot_reuse_an_mcp_dispatch_or_its_evidence():
         retained_registration(req.draft, {"name": "SKILL.md", "inputSchema": {}})
 
 
-async def install(db):
+async def install(db, *, registered=False):
     await setup(db)
     async with db() as session:
         repo = WorkbenchRepository(session)
-        asset = await service(repo).create_skill(
-            OWNER,
-            SkillCreate(
-                request_id="instruction-rehearsal",
-                name="Summary",
-                description="Synthetic test",
-                version="1",
-                content=ENTRY,
-            ),
-        )
-        source = next(
-            s
-            for s in (await FormalMethods(repo).sources("author"))["items"]
-            if s["kind"] == "skill_instruction"
-        )
-        license = license_record(source)
-        svc = FormalMethods(repo, source_licenses=(license,))
-        source = next(
-            s
-            for s in (await svc.sources("author"))["items"]
-            if s["kind"] == "skill_instruction"
-        )
+        if registered:
+            from app.domain.workbench.registry_sources import SourceDraft
+
+            async with repo.transaction():
+                asset = await repo.register_direct_revision(
+                    OWNER,
+                    uuid4(),
+                    1,
+                    SourceDraft(kind="instruction", name="summary.md", content=ENTRY),
+                )
+            license = None
+            svc = FormalMethods(repo)
+            source = next(
+                s
+                for s in (await svc.sources("author"))["items"]
+                if s["kind"] == "registered_instruction"
+            )
+        else:
+            asset = await service(repo).create_skill(
+                OWNER,
+                SkillCreate(
+                    request_id="instruction-rehearsal",
+                    name="Summary",
+                    description="Synthetic test",
+                    version="1",
+                    content=ENTRY,
+                ),
+            )
+            source = next(
+                s
+                for s in (await FormalMethods(repo).sources("author"))["items"]
+                if s["kind"] == "skill_instruction"
+            )
+            license = license_record(source)
+            svc = FormalMethods(repo, source_licenses=(license,))
+            source = next(
+                s
+                for s in (await svc.sources("author"))["items"]
+                if s["kind"] == "skill_instruction"
+            )
         doc = validation_body()
         doc["draft"]["source"] = source
         step = doc["draft"]["definition"]["procedure"]
@@ -78,6 +96,26 @@ async def install(db):
         pending = await svc.validate(req, caller="knowlab")
         assert pending["status"] == "pending" and pending["receipt"] is None
         return license, req, asset
+
+
+async def test_registered_instruction_checks_owner_and_full_source_identity(db):
+    from test_workbench_ledger_db import OTHER
+
+    _, req, _ = await install(db, registered=True)
+    async with db() as session:
+        svc = FormalMethods(WorkbenchRepository(session))
+        source = req.draft.source
+        assert not (await svc.sources("other"))["items"]
+        with pytest.raises(NotFound):
+            await svc.prepare_instruction_trial(
+                "other", req.run_id, ARGS, caller="knowlab"
+            )
+        with pytest.raises(NotFound):
+            await svc.registry.check_direct_source(OTHER, source)
+        with pytest.raises(CapabilityError, match="registered revision"):
+            await svc.registry.check_direct_source(
+                OWNER, source.model_copy(update={"entry": "other.md"})
+            )
 
 
 async def test_instruction_preparation_rechecks_stored_run_owner_rights_and_entry(db):

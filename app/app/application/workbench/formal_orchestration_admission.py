@@ -95,11 +95,17 @@ def verify_leaf_authority(
     require(
         source is not None
         and source.kind
-        in ("mcp", "skill_script", "registered_script", "skill_instruction"),
+        in (
+            "mcp",
+            "skill_script",
+            "registered_script",
+            "skill_instruction",
+            "registered_instruction",
+        ),
         "Sealed leaf implementation is unsupported",
     )
     assert source is not None
-    if source.kind == "skill_instruction":
+    if source.is_instruction:
         from app.application.workbench.instruction_leaf import leaf_operation
 
         proof = item["governance"]["instruction"]
@@ -136,7 +142,7 @@ def verify_leaf_authority(
             digest(["mcp", source.source, source.entry]),
             source.digest.removeprefix("sha256:"),
         )
-    if source.kind != "skill_instruction":
+    if not source.is_instruction:
         operation = policy.resolve(inputs)
         policy_digest = policy.policy_digest
         declared = leaf.draft.definition.access_requirements[0].model_dump(mode="json")
@@ -316,7 +322,7 @@ def _old_case(
             operations,
             frozen.validation.completed_at,
         )
-        if leaf.draft.source and leaf.draft.source.kind == "skill_instruction":
+        if leaf.draft.source and leaf.draft.source.is_instruction:
             read = recorded["governance"]["artifact_read"]
             expected_fields = {}
             for name in inputs:
@@ -460,7 +466,7 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                 ref = step_proof["reference"]
                 dep = resolved[(UUID(ref["method_id"]), ref["version"])]
                 require(
-                    dep.draft.source and dep.draft.source.kind == "skill_instruction",
+                    dep.draft.source and dep.draft.source.is_instruction,
                     "Unexpected instruction charge",
                 )
                 case_charge += instruction_receipt_cost(
@@ -889,7 +895,7 @@ def _tree_case(
                     },
                 )
                 governance = raw["governance"]
-                if leaf.draft.source and leaf.draft.source.kind == "skill_instruction":
+                if leaf.draft.source and leaf.draft.source.is_instruction:
                     verify_instruction(node, raw, arguments)
                 else:
                     spent = raw["budget_consumed"] or {}

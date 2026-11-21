@@ -295,7 +295,7 @@ class FormalMethodExecutionRequest(Strict):
         if isinstance(p, ToolProcedure):
             if self.dependencies:
                 raise ValueError("Direct trials cannot dispatch other methods")
-            if p.implementation.kind == "skill_instruction":
+            if p.implementation.kind in ("skill_instruction", "registered_instruction"):
                 if (
                     self.draft.allowed_callers != ("host",)
                     or p.max_model_turns != 1

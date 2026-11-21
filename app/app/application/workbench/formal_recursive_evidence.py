@@ -477,7 +477,7 @@ class _Tree:
         _require(
             source is not None
             and len(leaf.draft.definition.access_requirements)
-            == (0 if source.kind == "skill_instruction" else 1),
+            == (0 if source.is_instruction else 1),
             "leaf_source_or_access_missing",
         )
         assert source is not None
@@ -493,7 +493,7 @@ class _Tree:
             and not refs.get("pending_cost")
             and not attempt.get("turn_open")
             and (
-                source.kind == "skill_instruction"
+                source.is_instruction
                 or (
                     attempt.get("turn_ids") == []
                     and _zero((attempt.get("budget_consumed") or {}).get("amount", "0"))
@@ -570,7 +570,12 @@ class _Tree:
             and (
                 call.get("connection_id") is None
                 if source.kind
-                in ("skill_script", "registered_script", "skill_instruction")
+                in (
+                    "skill_script",
+                    "registered_script",
+                    "skill_instruction",
+                    "registered_instruction",
+                )
                 else str(call.get("connection_id")) == str(source.asset_id)
             )
             and str(call["source_asset_id"]) == str(source.asset_id)
@@ -638,7 +643,7 @@ class _Tree:
             attempt_id=str(attempt["id"]),
         )
         self.artifacts.append(artifact["id"])
-        if source.kind == "skill_instruction":
+        if source.is_instruction:
             governance["instruction"] = await instruction_step_proof(
                 self.repo, self.task, attempt, leaf, outputs, intent
             )

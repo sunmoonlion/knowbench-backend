@@ -13,6 +13,7 @@ DIRECT_HOST_ADAPTERS = {
     "mcp": "formal_mcp",
     "skill_script": "formal_script",
     "registered_script": "formal_script",
+    "registered_instruction": "formal_instruction",
     "skill_instruction": "formal_instruction",
 }
 

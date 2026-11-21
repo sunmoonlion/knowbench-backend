@@ -18,6 +18,10 @@ from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 _SCRIPT_BINDINGS = {
     "skill_script": ("script_asset_id", "script_revision"),
     "skill_instruction": ("instruction_asset_id", "instruction_revision"),
+    "registered_instruction": (
+        "registered_instruction_id",
+        "registered_instruction_version",
+    ),
     "registered_script": ("registered_script_id", "registered_script_version"),
 }
 
@@ -46,6 +50,12 @@ class PermissionGrant(Requirement):
     registered_script_version: int | None = Field(
         default=None, strict=True, ge=1, exclude_if=lambda v: v is None
     )
+    registered_instruction_id: UUID | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    registered_instruction_version: int | None = Field(
+        default=None, strict=True, ge=1, exclude_if=lambda v: v is None
+    )
     instruction_asset_id: UUID | None = Field(
         default=None, exclude_if=lambda v: v is None
     )
@@ -72,6 +82,7 @@ class PermissionGrant(Requirement):
         revisions = (
             (self.connection_id, self.connection_revision),
             (self.script_asset_id, self.script_revision),
+            (self.registered_instruction_id, self.registered_instruction_version),
             (self.registered_script_id, self.registered_script_version),
             (self.instruction_asset_id, self.instruction_revision),
         )
@@ -80,11 +91,12 @@ class PermissionGrant(Requirement):
             or sum(a is not None for a, _ in revisions) != 1
         ):
             raise ValueError(
-                "Specify exactly one connection, Skill or registered script revision"
+                "Specify exactly one connection, Skill or registered source revision"
             )
         if (
             self.script_asset_id
             or self.instruction_asset_id
+            or self.registered_instruction_id
             or self.registered_script_id
         ) and (
             self.resource_authority is not None
@@ -155,6 +167,8 @@ def covers(
         or parent.confirmation_context != child.confirmation_context
         or parent.connection_id != child.connection_id
         or parent.connection_revision != child.connection_revision
+        or parent.registered_instruction_id != child.registered_instruction_id
+        or parent.registered_instruction_version != child.registered_instruction_version
         or parent.registered_script_id != child.registered_script_id
         or parent.registered_script_version != child.registered_script_version
         or parent.script_asset_id != child.script_asset_id

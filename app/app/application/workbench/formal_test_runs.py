@@ -145,7 +145,7 @@ class FormalExecutions:
                 if (
                     not isinstance(request.draft.definition.procedure, Orchestration)
                     and request.draft.definition.procedure.implementation.kind
-                    != "skill_instruction"
+                    not in ("skill_instruction", "registered_instruction")
                     and len(request.draft.definition.access_requirements) != 1
                 ):
                     raise CapabilityError(
@@ -172,7 +172,7 @@ class FormalExecutions:
                         self.capabilities, owner, request.draft, request.method_id
                     )
                     if any(
-                        d.draft.source and d.draft.source.kind == "skill_instruction"
+                        d.draft.source and d.draft.source.is_instruction
                         for d in dependencies
                     ):
                         if not self.capabilities.instruction_service:
@@ -180,10 +180,7 @@ class FormalExecutions:
                                 "Isolated instruction execution is disabled"
                             )
                         await self.capabilities.instruction_service(self.formal, owner)
-                elif (
-                    request.draft.source
-                    and request.draft.source.kind == "skill_instruction"
-                ):
+                elif request.draft.source and request.draft.source.is_instruction:
                     if self.instruction_service is None:
                         raise CapabilityError(
                             "Dedicated instruction execution is disabled"
@@ -501,9 +498,7 @@ class FormalExecutions:
         )
         governed = all(e["validated"] for e in evidence_cases)
         leaves = ()
-        instruction = bool(
-            request.draft.source and request.draft.source.kind == "skill_instruction"
-        )
+        instruction = bool(request.draft.source and request.draft.source.is_instruction)
         try:
             licensed = await self.formal._source(
                 owner, request.owner_subject, request.draft.source
@@ -522,7 +517,7 @@ class FormalExecutions:
                 for leaf in leaves:
                     if leaf.draft.source is None:
                         continue
-                    if leaf.draft.source.kind == "skill_instruction":
+                    if leaf.draft.source.is_instruction:
                         inference_refs.add(
                             fingerprint(leaf.reference.model_dump(mode="json"))
                         )
@@ -566,8 +561,7 @@ class FormalExecutions:
         except WorkbenchError:
             licensed = False
         if any(
-            leaf.draft.source and leaf.draft.source.kind == "skill_instruction"
-            for leaf in leaves
+            leaf.draft.source and leaf.draft.source.is_instruction for leaf in leaves
         ):
             from app.application.workbench.formal_method_catalog import (
                 instruction_receipt_cost,
@@ -582,11 +576,7 @@ class FormalExecutions:
                 for evidence_case in evidence_cases:
                     for step in evidence_case.get("steps", []):
                         dep = by_ref.get(fingerprint(step.get("reference")))
-                        if (
-                            dep
-                            and dep.draft.source
-                            and dep.draft.source.kind == "skill_instruction"
-                        ):
+                        if dep and dep.draft.source and dep.draft.source.is_instruction:
                             instruction_receipt_cost(
                                 step["governance"]["instruction"],
                                 dep.draft.source,
@@ -661,7 +651,7 @@ class FormalExecutions:
                 "metered_model_request"
                 if instruction
                 or any(
-                    leaf.draft.source and leaf.draft.source.kind == "skill_instruction"
+                    leaf.draft.source and leaf.draft.source.is_instruction
                     for leaf in leaves
                 )
                 else "metered_scripts"
@@ -997,10 +987,7 @@ async def advance_formal(conductor, run_id):
             )
             if (
                 case.caller == "model"
-                or (
-                    request.draft.source
-                    and request.draft.source.kind == "skill_instruction"
-                )
+                or (request.draft.source and request.draft.source.is_instruction)
             ) and not made.get("queued_behind"):
                 talk = await repo.get_session(session["session_id"])
                 await repo.enqueue_command(

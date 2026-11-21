@@ -255,7 +255,7 @@ docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-
 
 ### 单轮纯指令工具的隔离试跑
 
-KnowBench 的正式来源校验会从作者获准的安装读回 `SKILL.md`，核对清单中的字节数和 SHA-256。工程试跑以已有的校验运行号为入口，重新核对作者、服务调用方、定义、安装修订、执行许可及输入槽，只将指令正文、步骤说明及本次输入交给隔离进程。当前样例取独立文本输出，不需要其他工具或文件。
+对于 Skill，KnowBench 从作者获准的安装读回 `SKILL.md`，核对清单中的字节数和 SHA-256。对于独立登记的指令，KnowBench 按作者、来源 ID、版本和摘要从管理中心读取正文，重新计算 UTF-8 字节的 SHA-256。工程试跑以已有的校验运行号为入口，重新核对作者、服务调用方、定义、安装修订、执行许可及输入槽，只将指令正文、步骤说明及本次输入交给隔离进程。当前样例取独立文本输出，不需要其他工具或文件。
 
 在后端 `app/` 下提供一次性 PostgreSQL 测试库（`AGENT_TEST_DATABASE_URL` 的库名以 `_tests` 结尾），以及项目的本地 `luna-local/sandbox:codex-0.170.0` 镜像，即可复跑。模型供应商和价目均使用本地测试数据。
 
@@ -316,11 +316,11 @@ RUN_CODEX_INSTRUCTION_PROBE=1 .venv/bin/pytest -q tests/test_instruction_runner_
 
 ### 作者单轮纯指令试跑与私有冻结
 
-作者在 KnowLab 选择有执行许可的纯指令 Skill，按已声明的输入输出填写用例和断言。每个用例可以重复；每次由宿主发起一个模型轮次，转发器最多放行一次供应商请求。作者提交的断言留在评判端。KnowBench 受理前按总重复次数核对路由报价与整组预算，各次任务分摊预算。受理后若报价已超出该次份额，派发前结束本轮，作者可重新提交预算。
+作者在 KnowLab 选择管理中心内本人直接登记的指令版本，或有执行许可的纯指令 Skill，按已声明的输入输出填写用例和断言。每个用例可以重复；每次由宿主发起一个模型轮次，转发器最多放行一次供应商请求。作者提交的断言留在评判端。KnowBench 受理前按总重复次数核对路由报价与整组预算，各次任务分摊预算。受理后若报价已超出该次份额，派发前结束本轮，作者可重新提交预算。
 
 成功回执关联冻结的测试集、来源和定义、每次任务与尝试、线程和轮次、供应商响应编号、用量及根账本核销。断言按各用例的通过次数判定；证据必须逐次齐全。作者可据此冻结并登记私有版本。固定专家图调度见下节。目标集群的运营路由开放另行验收。
 
-在后端 `app/` 用独立 PostgreSQL 运行 `tests/test_formal_instruction_trial_db.py`。同一测试库设置 `RUN_CODEX_INSTRUCTION_PROBE=1` 后，`tests/test_instruction_runner_codex.py` 使用真实 Codex 和本地供应商验证重启及迟到回执。跨服务联调入口是平台仓的 `scripts/local-integration/instruction_author.py`，需要同时提供 `DELIVERY_TEST_DATABASE_URL` 和 `AGENT_TEST_DATABASE_URL`，各指向一次性测试库。
+在后端 `app/` 用独立 PostgreSQL 运行 `tests/test_formal_instruction_trial_db.py`。同一测试库设置 `RUN_CODEX_INSTRUCTION_PROBE=1` 后，`tests/test_instruction_runner_codex.py` 使用真实 Codex 和本地供应商验证重启及迟到回执。跨服务联调入口是平台仓的 `scripts/local-integration/instruction_author.py`，需要同时提供 `DELIVERY_TEST_DATABASE_URL` 和 `AGENT_TEST_DATABASE_URL`，各指向一次性测试库。传入 `--registered-instruction` 可沿作者来源目录、单方法试跑、两层固定图与三级固定图复跑独立指令的私有冻结。
 
 ### 专家引用纯指令的准入与计费基础
 
@@ -330,7 +330,7 @@ KnowBench 可复核作者本人私有登记的精确指令版本。核对项包�
 
 ### 固定专家图的纯指令步骤
 
-作者为每个固定步骤选定确切方法版本，并在用例中声明输入、输出断言及根预算。运行时按步骤开立 Attempt 和预留费用。每个纯指令步骤单独展示输入字段、前序产物版本、外发目的、供应商、模型、地址和报价上限。用户接受该步后，runner 才能领取专用执行单元。转发器在发送前重读固定输入，核对当前许可证、账号路由、父子授权和批准记录，再按已批准的 Skill 指令、业务输入和输出 Schema 构造一次供应商请求。
+作者为每个固定步骤选定确切方法版本，并在用例中声明输入、输出断言及根预算。运行时按步骤开立 Attempt 和预留费用。每个纯指令步骤单独展示输入字段、前序产物版本、外发目的、供应商、模型、地址和报价上限。用户接受该步后，runner 才能领取专用执行单元。转发器在发送前重读固定输入，核对当前许可证、账号路由、父子授权和批准记录，直接登记的指令另核对批准中的来源身份和版本，授权记录使用 `registered_instruction_id` 和 `registered_instruction_version`。再按已批准的指令正文、业务输入和输出 Schema 构造一次供应商请求。
 
 同一子专家被引用两次时，宿主为每次引用建立独立的调用路径。模型请求发出前，网关核对路径上每层的执行权限、所用子专家在方法技能管理中心的确切登记，以及用户给当前指令步骤的外发批准。中间任一层撤权即停止该次外发。已领取请求的 Attempt 在恢复后继续核销原回执。
 

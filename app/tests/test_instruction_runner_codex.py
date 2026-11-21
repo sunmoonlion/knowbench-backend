@@ -33,13 +33,15 @@ from app.interfaces.http.internal import instruction_control
     reason="requires pinned local Codex and Docker",
 )
 @pytest.mark.parametrize(
-    "late_receipt", [False, True], ids=["runner-restart", "receipt-delay"]
+    "late_receipt,registered",
+    [(False, False), (True, False), (False, True)],
+    ids=["runner-restart", "receipt-delay", "registered-runner-restart"],
 )
 async def test_real_instruction_runner(
-    db, make_client, monkeypatch, tmp_path, late_receipt
+    db, make_client, monkeypatch, tmp_path, late_receipt, registered
 ):
     trial = AuthorTrial()
-    s = await stack(db, author_trial=trial.start)
+    s = await stack(db, author_trial=trial.start, registered=registered)
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
     monkeypatch.syspath_prepend(str(PROBES))

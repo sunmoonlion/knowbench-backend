@@ -22,6 +22,7 @@ ToolSource = Literal[
     "skill_script",
     "skill_instruction",
     "registered_script",
+    "registered_instruction",
 ]
 
 

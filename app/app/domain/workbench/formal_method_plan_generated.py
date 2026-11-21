@@ -87,7 +87,10 @@ def expand_unique_plan(
                     implementation in ("mcp", "skill_script", "registered_script")
                     and turns == 0
                 )
-                or (implementation == "skill_instruction" and turns == 1)
+                or (
+                    implementation in ("skill_instruction", "registered_instruction")
+                    and turns == 1
+                )
             ):
                 raise ValueError("Unsupported execution contract for a fixed plan leaf")
             leaves += 1

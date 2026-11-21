@@ -49,8 +49,9 @@ async def setup(
     route=ROUTE,
     prices=PRICES,
     author_trial=None,
+    registered=False,
 ):
-    license, req, asset = await install(db)
+    license, req, asset = await install(db, registered=registered)
     env, sandbox, sid = await seed(db)
     snapshot = FormalTaskSnapshot(
         runtime_contract=FORMAL_RUNTIME,
@@ -89,7 +90,7 @@ async def setup(
         task = await author_trial(db, req, license, env)
 
     @asynccontextmanager
-    async def host(route=route, licenses=(license,), default_url=""):
+    async def host(route=route, licenses=(license,) if license else (), default_url=""):
         async with db() as session:
             repo = WorkbenchRepository(session)
             yield InstructionRequests(

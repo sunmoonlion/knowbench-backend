@@ -100,16 +100,20 @@ class FormalMethodSource(Strict):
         return self
 
     @property
+    def is_registered(self) -> bool:
+        return self.kind in ("registered_script", "registered_instruction")
+
+    @property
+    def is_instruction(self) -> bool:
+        return self.kind in ("skill_instruction", "registered_instruction")
+
+    @property
     def authorization_id(self):
-        return UUID(self.source) if self.kind == "registered_script" else self.asset_id
+        return UUID(self.source) if self.is_registered else self.asset_id
 
     @property
     def authorization_revision(self):
-        return (
-            int(self.version)
-            if self.kind == "registered_script"
-            else self.asset_revision
-        )
+        return int(self.version) if self.is_registered else self.asset_revision
 
     def fingerprint(self) -> str:
         import hashlib
@@ -314,11 +318,11 @@ class FrozenFormalMethod(Strict):
         source = self.draft.source
         if (
             source
-            and source.kind == "registered_script"
+            and source.is_registered
             and (self.visibility != "private" or execution is None)
         ):
             raise ValueError(
-                "Registered scripts require private freeze and trial evidence"
+                "Registered sources require private freeze and trial evidence"
             )
         if (
             self.visibility == "public"

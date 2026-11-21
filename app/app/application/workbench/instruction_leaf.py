@@ -33,7 +33,7 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
         frozen.owner_subject != subject
         or frozen.visibility != "private"
         or source is None
-        or source.kind != "skill_instruction"
+        or not source.is_instruction
         or source.license_basis == "pending"
         or frozen.draft.allowed_callers != ("host",)
         or procedure.kind != "direct"
@@ -45,12 +45,10 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
         raise CapabilityError(
             "A fixed instruction step needs an owned, licensed single-turn method"
         )
-    asset = await formal._installed_source(owner, subject, source)
-    if asset["detail"].get("tool_requirements") or asset["detail"].get("dependencies"):
-        raise CapabilityError("Instruction requires additional tools")
+    asset, entry = await formal.instruction_source(owner, subject, source)
     job = instruction_job(
         frozen,
-        await formal._instruction_text(owner, asset),
+        entry,
         validate_values(procedure.inputs, arguments),
     )
     quote = await svc.route_quote(owner, task, "knowlab")
@@ -92,7 +90,7 @@ def leaf_operation(frozen, arguments, quote, job_digest):
         }
     ).model_dump(mode="json")
     registration = ToolRegistration.discover(
-        "skill_instruction",
+        source.kind,
         source.digest,
         {
             "name": "instruction_responses",
@@ -171,6 +169,8 @@ async def approved_leaf(svc, owner, task, caller):
     job, asset, quote, registration, requirement, operation, binding = await leaf_input(
         svc, owner, task, attempt, snapshot, frozen, child, arguments
     )
+    source = frozen.draft.source
+    assert source is not None  # leaf_input verified the exact instruction source.
     intent = call["detail"]
     interaction = await repo.get_interaction(str(call["interaction_id"]))
     grant_ref = intent.get("authorization") or {}
@@ -192,7 +192,7 @@ async def approved_leaf(svc, owner, task, caller):
         or str(auth.parent_call_id) != grant_parent_id
         or auth.method_id != str(frozen.reference.method_id)
         or grant_ref != {"call_id": child["id"], "revision": auth.revision}
-        or not grant.matches_asset("skill_instruction", asset["id"], asset["revision"])
+        or not grant.matches_asset(source.kind, asset["id"], asset["revision"])
         or grant.confirmation_context != task["pack_digest"]
         or grant.operation_digest != digest(operation)
         or grant.requirement.model_dump(mode="json") != requirement
@@ -200,7 +200,15 @@ async def approved_leaf(svc, owner, task, caller):
         or intent["instruction_quote"] != quote
         or intent["artifact_read_digest"] != digest(binding)
         or call["registration_digest"] != registration.descriptor_digest
-        or call["source_asset_id"] != str(asset["id"])
+        or str(call["source_asset_id"]) != str(source.asset_id)
+        or (
+            source.is_registered
+            and not (
+                intent.get("registered_source")
+                == interaction["prompt"]["subject"].get("registered_source")
+                == source.model_dump(mode="json")
+            )
+        )
         or interaction["status"] != "consumed"
         or str(interaction["responded_by"]) != owner
         or str(interaction["attempt_id"]) != str(attempt["id"])

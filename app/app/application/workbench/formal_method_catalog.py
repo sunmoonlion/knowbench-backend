@@ -499,10 +499,7 @@ class FormalMethodCatalog:
             try:
                 frozen = FrozenFormalMethod.model_validate(row["document"])
                 if not isinstance(frozen.draft.definition.procedure, Orchestration):
-                    if (
-                        frozen.draft.source
-                        and frozen.draft.source.kind == "skill_instruction"
-                    ):
+                    if frozen.draft.source and frozen.draft.source.is_instruction:
                         frozen, request, evidence = await self._admission(
                             owner, reference, row
                         )
@@ -634,9 +631,7 @@ class FormalMethodCatalog:
             and fingerprint(evidence) == execution_ref.evidence_digest,
             "Formal execution evidence is missing or changed",
         )
-        instruction = bool(
-            frozen.draft.source and frozen.draft.source.kind == "skill_instruction"
-        )
+        instruction = bool(frozen.draft.source and frozen.draft.source.is_instruction)
         _require(
             evidence["contract"] == FORMAL_RUNTIME
             and (
@@ -845,7 +840,7 @@ class FormalMethodCatalog:
                         identity not in identities, "Case execution identity was reused"
                     )
                     identities.add(identity)
-            if source.kind == "skill_instruction":
+            if source.is_instruction:
                 model_cost += _instruction_case_cost(request, item, result, identities)
                 continue
             if case.caller == "model":
@@ -1002,7 +997,7 @@ class FormalMethodCatalog:
             and (
                 model_cost > 0
                 if "model" in request.draft.allowed_callers
-                else source.kind == "skill_instruction" or model_cost == 0
+                else source.is_instruction or model_cost == 0
             )
             and sum((case_script_cost(case) for case in retained), Decimal(0))
             == Decimal(evidence.get("script_cost", "0"))

@@ -267,7 +267,7 @@ class FormalHostCalls:
             step is not None
             and frozen is not None
             and child is not None
-            and source.kind == "skill_instruction"
+            and source.is_instruction
         ):
             if not self.capabilities.instruction_service:
                 raise CapabilityError("Isolated instruction execution is unavailable")
@@ -291,7 +291,12 @@ class FormalHostCalls:
             intent = {
                 "formal_host": host,
                 "execution_kind": "formal_instruction",
-                "source_asset_id": asset["id"],
+                "source_asset_id": str(source.asset_id) if source.asset_id else None,
+                **(
+                    {"registered_source": source.model_dump(mode="json")}
+                    if source.is_registered
+                    else {}
+                ),
                 "revision": asset["revision"],
                 "connection_id": None,
                 "connection_name": asset["name"],

@@ -77,7 +77,9 @@ class AuthorTrial:
         )
         self.request = FormalMethodExecutionRequest.model_validate(document)
         self.factory = lambda repo: SimpleNamespace(
-            formal_sources=FormalMethods(repo, source_licenses=(license,))
+            formal_sources=FormalMethods(
+                repo, source_licenses=(license,) if license else ()
+            )
         )
         self.conductor = KnowbotTestConductor(
             workbench_stores(db), formal_capabilities=self.factory
@@ -156,18 +158,31 @@ class AuthorTrial:
                 "formal_instruction",
             )
             assert "host" in method.allowed_callers
-            asset = await installed_registration(
-                repo, OWNER, str(method.source_asset_id)
-            )
-            assert method.path == "formal" and method.source_kind == "skill_instruction"
-            assert (
-                asset.path == "installed" and asset.revision == method.source_revision
-            )
-            assert method.source_entry == "SKILL.md"
-            assert any(
-                e.entry == method.source_entry and e.tool_key is None
-                for e in asset.entries
-            )
+            registered = version.draft.source.kind == "registered_instruction"
+            if registered:
+                assert method.source_asset_id is None and method.source_revision == 1
+                assert (
+                    method.source_kind == "registered_instruction"
+                    and method.source_entry == "summary.md"
+                )
+                assert method.source_digest == version.draft.source.digest
+            else:
+                asset = await installed_registration(
+                    repo, OWNER, str(method.source_asset_id)
+                )
+                assert (
+                    method.path == "formal"
+                    and method.source_kind == "skill_instruction"
+                )
+                assert (
+                    asset.path == "installed"
+                    and asset.revision == method.source_revision
+                )
+                assert method.source_entry == "SKILL.md"
+                assert any(
+                    e.entry == method.source_entry and e.tool_key is None
+                    for e in asset.entries
+                )
             formal = self.factory(repo).formal_sources
             catalog = FormalMethodCatalog(repo, formal, formal.operations)
             assert (
@@ -185,6 +200,14 @@ class AuthorTrial:
             with pytest.raises(CapabilityError):
                 await catalog.resolve_owned_admission(OWNER, wrong, resolved={})
             formal.source_licenses = ()
+            if registered:
+                assert (
+                    await catalog.resolve_owned_admission(
+                        OWNER, version.reference, resolved={}
+                    )
+                    == version
+                )
+                return version
             with pytest.raises(CapabilityError):
                 await catalog.resolve_owned_admission(
                     OWNER, version.reference, resolved={}
@@ -280,15 +303,18 @@ async def test_private_instruction_remains_qualified_only_after_safe_cleanup(db)
         "revoke_parent",
         "cancel_approved",
         "cancel_claimed",
+        "registered_body_changed",
     ],
 )
 async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
     db, decision
 ):
-    await fixed_instruction_plan(db, decision)
+    await fixed_instruction_plan(
+        db, decision, registered=decision == "registered_body_changed"
+    )
 
 
-async def fixed_instruction_plan(db, decision):
+async def fixed_instruction_plan(db, decision, *, registered=False):
     import json
     from decimal import Decimal
 
@@ -300,10 +326,23 @@ async def fixed_instruction_plan(db, decision):
     from app.application.workbench.formal_execution import FormalExecution
 
     trial = AuthorTrial()
-    s = await stack(db, author_trial=trial.start)
+    s = await stack(db, author_trial=trial.start, registered=registered)
     s.units.ready = True
     await drive(s)
     leaf = await trial.finish(db)
+    if registered:
+        from app.domain.workbench.registry_sources import SourceDraft
+
+        async with s.host() as svc, svc.repo.transaction():
+            source = leaf.draft.source
+            await svc.repo.register_direct_revision(
+                OWNER,
+                source.source,
+                2,
+                SourceDraft(
+                    kind="instruction", name=source.entry, content="Different revision."
+                ),
+            )
     route = partial(
         InstructionRequests.for_account,
         routes=(ROUTE,),
@@ -341,6 +380,11 @@ async def fixed_instruction_plan(db, decision):
     for index in range(2):
         (action,) = result["actions"]
         subject = action["subject"]
+        if registered:
+            assert subject["registered_source"] == leaf.draft.source.model_dump(
+                mode="json"
+            )
+            assert "content" not in subject["registered_source"]
         assert subject["arguments"] == {
             "status": "ready" if index else "awaiting review"
         }
@@ -367,6 +411,24 @@ async def fixed_instruction_plan(db, decision):
                 )
             return
         await approve(db, request, factory, result)
+        if index and decision == "registered_body_changed":
+            from sqlalchemy import text
+
+            async with s.host() as svc, svc.repo.transaction():
+                await svc.repo.session.execute(
+                    text(
+                        "UPDATE workbench_registry_sources SET content='Changed' WHERE source_id=:id AND version=1"
+                    ),
+                    {"id": leaf.draft.source.source},
+                )
+            sent = len(s.provider_requests)
+            async with s.host() as svc, svc.repo.transaction():
+                with pytest.raises(CapabilityError, match="pinned digest"):
+                    await svc.authority(OWNER, await svc.repo.get_task(task), "knowlab")
+            await graph.drive(task)
+            assert await graph.drive(task) == "FAILED"
+            assert len(s.provider_requests) == sent
+            return
         if index and decision == "cancel_approved":
             async with s.host() as svc:
                 await FormalExecutions(svc.repo, factory(svc.repo)).cancel(
