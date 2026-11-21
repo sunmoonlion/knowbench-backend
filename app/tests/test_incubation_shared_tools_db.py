@@ -36,10 +36,13 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
 
     class Market:
         active = True
+        author_session = None
 
         async def incubation_tools(
             self, subject, *, reference=None, after=None, limit=30
         ):
+            if self.author_session is not None:
+                assert not self.author_session.in_transaction()
             allowed = (
                 self.active
                 and subject == "other"
@@ -76,6 +79,7 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
     ctx.request = FormalMethodExecutionRequest.model_validate(raw)
     async with db() as sql:
         repo = WorkbenchRepository(sql)
+        market.author_session = sql
         svc = factory(repo).formal_sources
         assert not (await svc.shared_tools("other"))["items"]
         buyer_asset = await service(repo).create_connection(
@@ -119,6 +123,7 @@ async def test_cross_author_reference_uses_consumers_account(db, revoke):
         assert (await svc.shared_tools("other", reference=pub.reference))["items"][0][
             "selected"
         ] == buyer_asset["id"]
+        market.author_session = None
         assert (
             await FormalExecutions(repo, factory(repo)).accept(
                 ctx.request, caller="knowlab"

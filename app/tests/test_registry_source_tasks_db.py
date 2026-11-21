@@ -354,6 +354,9 @@ async def test_uncertain_script_is_never_resent_and_late_usage_settles_once(db):
 async def test_stop_outage_after_prepare_preserves_request_until_metered(db):
     from datetime import UTC, datetime, timedelta
 
+    from sqlalchemy import text
+
+    from app.application.workbench.cleanup_observation import snapshot
     from app.domain.workbench.script_contract_generated import ScriptContainerMeter
 
     sid, req, service, executor = await setup(db, "script")
@@ -383,6 +386,8 @@ async def test_stop_outage_after_prepare_preserves_request_until_metered(db):
 
     async def release(owner, run):
         releases.append(run)
+        if len(releases) == 1:
+            raise RuntimeError("Job deletion temporarily unavailable")
 
     executor.prepare, executor.stop_metered, executor.cancel = prepare, stop, release
     async with db() as session:
@@ -391,15 +396,36 @@ async def test_stop_outage_after_prepare_preserves_request_until_metered(db):
         tid = await confirm(svc, sid, req)
         await drive_script(svc, tid)
         (cid,) = stops
+        async with repo.transaction():
+            await session.execute(
+                text("""
+                UPDATE workbench_budget_ledger SET created_at=now()-interval '301 seconds'
+                WHERE script_call_id=:cid AND entry='reserve'
+            """),
+                {"cid": cid},
+            )
+        pending = (await snapshot(repo))["metered_scripts"]
+        assert pending["pending"] == 1 and pending["oldest_seconds"] >= 300
+        assert pending["alert"]
         assert (await repo.capability_call(OWNER, cid))["detail"]["result"][
             "stop_requested"
         ]
     async with db() as session:
         repo = WorkbenchRepository(session)
         svc = service(repo)
+        await svc.reconcile_scripts()  # stop the original reservation
+        await svc.reconcile_scripts()  # settle its meter; first deletion fails
+        pending = (await snapshot(repo))["metered_scripts"]
+        assert pending["pending"] == 1 and pending["alert"]
+        assert "consume" in await repo.script_budget_entries(cid)
         for _ in range(3):
             await svc.reconcile_scripts()
-        assert executor.calls == [] and stops == [cid, cid] and releases == [cid]
+        assert (await snapshot(repo))["metered_scripts"] == {
+            "pending": 0,
+            "oldest_seconds": 0,
+            "alert": False,
+        }
+        assert executor.calls == [] and stops == [cid, cid] and releases == [cid, cid]
         assert (await repo.capability_call(OWNER, cid))["status"] == "failed"
         assert (await repo.get_task(tid))["budget"]["used"] == "0.020000"
 

@@ -24,6 +24,7 @@ from app.application.ports.workbench import (
     WorkbenchStore,
     WorkbenchStores,
 )
+from app.application.workbench import cleanup_observation
 from app.application.workbench.advisor import Advisor, TurnResult
 from app.application.workbench.deliverable_check import DeliverableCheck
 from app.application.workbench.execution_plan import (
@@ -2404,6 +2405,9 @@ class Runner:
 
     async def run_forever(self) -> None:
         log.info("workbench runner starting id=%s", self.runner_id)
+        observation = asyncio.create_task(
+            cleanup_observation.watch(self.stores), name="cleanup-observation"
+        )
         try:
             while not self._stop.is_set():
                 try:
@@ -2419,6 +2423,8 @@ class Runner:
                     except TimeoutError:
                         pass
         finally:
+            observation.cancel()
+            await asyncio.gather(observation, return_exceptions=True)
             await self._shutdown()
 
     async def _shutdown(self) -> None:

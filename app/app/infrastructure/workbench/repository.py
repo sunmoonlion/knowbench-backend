@@ -44,7 +44,10 @@ from app.infrastructure.workbench.authorization_repository import (
     AuthorizationRepositoryMixin,
 )
 from app.infrastructure.workbench.call_repository import CallRepositoryMixin
-from app.infrastructure.workbench.capability_repository import CapabilityRepositoryMixin
+from app.infrastructure.workbench.capability_repository import (
+    INSTRUCTION_CLEANUP,
+    CapabilityRepositoryMixin,
+)
 from app.infrastructure.workbench.formal_method_repository import (
     FormalMethodRepositoryMixin,
 )
@@ -3136,17 +3139,17 @@ class WorkbenchRepository(
 
     async def claim_instruction_cleanup(self, sandbox_ids):
         rows = await self.session.execute(
-            text("""
+            text(f"""
             with due as (
                 select a.id, t.owner_actor_id from workbench_attempts a
                 join workbench_tasks t on t.id=a.task_id
                 join workbench_sessions s on s.id=t.session_id
                 where s.sandbox_id::text = any(:sbs)
-                  and a.ended_at is not null and a.refs->'instruction_unit'->>'pending'='true'
+                  and {INSTRUCTION_CLEANUP}
                   and coalesce((a.refs->'instruction_unit'->>'retry_after')::bigint, 0) <= extract(epoch from now())
                 order by coalesce((a.refs->'instruction_unit'->>'retry_after')::bigint, 0), a.id
                 limit 16 for update of a skip locked
-            ) update workbench_attempts a set refs=jsonb_set(a.refs,'{instruction_unit,retry_after}',
+            ) update workbench_attempts a set refs=jsonb_set(a.refs,'{{instruction_unit,retry_after}}',
                       to_jsonb(extract(epoch from now())::bigint + 15))
               from due where a.id=due.id returning due.owner_actor_id, a.task_id, a.id"""),
             {"sbs": list(sandbox_ids)},

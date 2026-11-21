@@ -228,9 +228,13 @@ class WorkbenchStore(Protocol):
     一个实例对应一次工作单元。状态改动是比较并交换；业务上合不合法不在这里判断。
     """
 
-    def transaction(self) -> AbstractAsyncContextManager[None]:
-        """可嵌套。最外层退出时提交，出错时回滚。"""
+    def transaction(
+        self, *, independent: bool = False
+    ) -> AbstractAsyncContextManager[None]:
+        """最外层退出时提交，出错时回滚。independent 要求进入时无外层事务块。"""
         ...
+
+    async def cleanup_backlog(self) -> dict[str, dict[str, int]]: ...
 
     async def commit(self) -> None:
         """把这个工作单元里到目前为止的改动提交。"""

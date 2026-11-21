@@ -236,6 +236,10 @@ async def drive(s):
 
 
 async def test_runner_resumes_prepared_worker_and_reclaims_settled_attempt(db):
+    from sqlalchemy import text
+
+    from app.application.workbench.cleanup_observation import snapshot
+
     s = await stack(db)
     await asyncio.gather(drive(s), s.driver.drive(s.task))
     assert s.turns == [] and s.units.bindings
@@ -251,11 +255,30 @@ async def test_runner_resumes_prepared_worker_and_reclaims_settled_attempt(db):
         }
         assert set(s.units.scopes) == {str(attempt["id"])}
         assert s.turns == [1] and attempt["budget_consumed"]["tokens"]["output"] == 1
+    async with db() as session, session.begin():
+        await session.execute(
+            text("""
+            UPDATE workbench_attempts
+            SET started_at=started_at-interval '301 seconds', ended_at=ended_at-interval '301 seconds'
+            WHERE id=:id
+        """),
+            {"id": attempt["id"]},
+        )
     await s.driver.reconcile([s.sandbox])
     assert s.units.deleted and not s.units.reclaimed
+    async with s.host() as svc:
+        queue = (await snapshot(svc.repo))["instruction_units"]
+        assert (
+            queue["pending"] == 1 and queue["oldest_seconds"] >= 300 and queue["alert"]
+        )
     await s.driver.cleanup(OWNER, s.task, str(attempt["id"]))
     assert s.units.reclaimed
     async with s.host() as svc:
+        assert (await snapshot(svc.repo))["instruction_units"] == {
+            "pending": 0,
+            "oldest_seconds": 0,
+            "alert": False,
+        }
         assert not (await svc.repo.get_attempt(str(attempt["id"])))["refs"][
             "instruction_unit"
         ]["pending"]

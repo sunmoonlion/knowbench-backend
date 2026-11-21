@@ -354,6 +354,7 @@ async def test_registry_scenes_share_versions_but_not_grants(db):
         permitted = set()
 
         async def planning_formal_refs(self, subject, references):
+            assert not session.in_transaction()
             assert subject == "author"
             return self.permitted.intersection(
                 MethodRef.model_validate(r) for r in references
@@ -469,6 +470,7 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
         checks = []
 
         async def planning_formal_refs(self, subject, refs):
+            assert not session.in_transaction()
             assert subject == "author"
             self.checks.append(refs)
             return self.allowed.intersection(MethodRef.model_validate(r) for r in refs)
@@ -597,6 +599,7 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
 
 
 async def test_sparse_planning_window_advances_without_scanning_the_entire_market():
+    from contextlib import nullcontext
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from uuid import UUID
@@ -628,6 +631,7 @@ async def test_sparse_planning_window_advances_without_scanning_the_entire_marke
         )
     )
     repo = SimpleNamespace(
+        transaction=lambda **_: nullcontext(),
         subject_of_actor=AsyncMock(return_value="author"),
         registry_method_candidates=candidates,
     )

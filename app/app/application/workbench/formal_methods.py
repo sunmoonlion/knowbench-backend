@@ -343,14 +343,21 @@ class FormalMethods:
     async def choose_incubation_asset(self, subject, reference, asset_id, revision):
         from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 
-        async with self.repo.transaction():
+        async with self.repo.transaction(independent=True):
             owner = await self._owner(subject)
-            frozen, grant = await self.dependency(owner, reference)
-            if not grant:
-                raise Forbidden("A shared-tool permission is required")
-            await FormalMethodCatalog(self.repo, self, self.operations).shared_tool(
-                grant
+            owned = await self.repo.formal_method(
+                owner, str(reference.method_id), reference.version
             )
+        grant = None if owned else await self.registry.shared_grant(subject, reference)
+        if not grant:
+            raise Forbidden("A shared-tool permission is required")
+        async with self.repo.transaction():
+            if await self._owner(subject) != owner:
+                raise Forbidden("The author account changed")
+            frozen = await FormalMethodCatalog(
+                self.repo, self, self.operations
+            ).shared_tool(grant)
+            self.require_supported_graph(frozen.draft)
             options, _ = await self.binding_options(owner, frozen)
             if (
                 asset_id not in options

@@ -326,22 +326,23 @@ class FindExpertService:
 
         directory = None
         if formal:
-            await self.repo.get_project(project_id, owner_actor_id=owner_actor_id)
-            if source_session:
-                session = await self.repo.get_session(
-                    source_session, owner_actor_id=owner_actor_id
+            async with self.repo.transaction():
+                await self.repo.get_project(project_id, owner_actor_id=owner_actor_id)
+                if source_session:
+                    session = await self.repo.get_session(
+                        source_session, owner_actor_id=owner_actor_id
+                    )
+                    if (
+                        session.get("project_id") is not None
+                        and str(session["project_id"]) != project_id
+                    ):
+                        raise NotFound("No such source session in this project")
+                existing = await self.repo.find_task_by_idempotency(
+                    tenant="default",
+                    owner_actor_id=owner_actor_id,
+                    profile_id=FIND_EXPERT.profile_id,
+                    idempotency_key=key,
                 )
-                if (
-                    session.get("project_id") is not None
-                    and str(session["project_id"]) != project_id
-                ):
-                    raise NotFound("No such source session in this project")
-            existing = await self.repo.find_task_by_idempotency(
-                tenant="default",
-                owner_actor_id=owner_actor_id,
-                profile_id=FIND_EXPERT.profile_id,
-                idempotency_key=key,
-            )
             if existing is None:
                 if self.formal_registry is None:
                     raise ExpertDirectoryUnavailable(

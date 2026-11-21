@@ -109,7 +109,8 @@ async def check_current(registry, owner, option):
 
 
 async def review(repo, registry, owner, task, artifact):
-    result = await read_verified(repo, task, artifact)
+    async with repo.transaction():
+        result = await read_verified(repo, task, artifact)
     for option in result["options"]:
         await check_current(registry, owner, option)
     selections = await repo.list_task_events(str(task["id"]), types=(SELECTION,))
@@ -125,13 +126,14 @@ async def review(repo, registry, owner, task, artifact):
 
 
 async def confirm(repo, registry, owner, task_id, body):
-    task = await repo.get_task(task_id, owner_actor_id=owner)
-    if task["profile_id"] != "FIND_EXPERT" or str(task["profile_version"]) != "5":
-        raise NotFound("No such formal expert match")
-    if task["state"] != "SUCCEEDED":
-        raise StaleStateVersion("Matching has not succeeded")
-    artifact = await repo.get_artifact(task_id=task_id, name="find_expert")
-    result = await read_verified(repo, task, artifact)
+    async with repo.transaction():
+        task = await repo.get_task(task_id, owner_actor_id=owner)
+        if task["profile_id"] != "FIND_EXPERT" or str(task["profile_version"]) != "5":
+            raise NotFound("No such formal expert match")
+        if task["state"] != "SUCCEEDED":
+            raise StaleStateVersion("Matching has not succeeded")
+        artifact = await repo.get_artifact(task_id=task_id, name="find_expert")
+        result = await read_verified(repo, task, artifact)
     ref = body.reference.model_dump(mode="json")
     option = next((e for e in result["options"] if e["reference"] == ref), None)
     if body.review_digest != result["review_digest"] or option is None:

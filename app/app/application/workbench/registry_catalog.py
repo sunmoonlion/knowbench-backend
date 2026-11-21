@@ -156,9 +156,6 @@ class SceneRegistry:
         )
 
     async def planning_versions(self, owner, limit, offset, *, query=None):
-        subject = await self.repo.subject_of_actor(owner)
-        if not subject or self.market is None:
-            raise CapabilityError("Formal method use qualification is unavailable")
         terms = search_terms(query.question) if query and query.question else []
         experts_only = bool(query and query.stage == "expert")
         # Bound both the authorization request and the in-memory ranking window.
@@ -166,32 +163,37 @@ class SceneRegistry:
         window = (100 // limit) * limit
         start, within = divmod(offset, window)
         start *= window
-        rows = await self.repo.registry_method_candidates(
-            owner,
-            window + 1,
-            start,
-            public=True,
-            experts_only=experts_only,
-            identities_only=True,
-        )
+        async with self.repo.transaction(independent=True):
+            subject = await self.repo.subject_of_actor(owner)
+            if not subject or self.market is None:
+                raise CapabilityError("Formal method use qualification is unavailable")
+            rows = await self.repo.registry_method_candidates(
+                owner,
+                window + 1,
+                start,
+                public=True,
+                experts_only=experts_only,
+                identities_only=True,
+            )
         refs = [self.reference(row) for row in rows[:window]]
         allowed = (
             await self.market.planning_formal_refs(subject, refs) if refs else set()
         )
         eligible = [ref for ref in refs if MethodRef.model_validate(ref) in allowed]
-        visible = (
-            await self.repo.registry_method_candidates(
-                owner,
-                limit + 1,
-                within,
-                public=True,
-                experts_only=experts_only,
-                terms=terms,
-                eligible=eligible,
+        async with self.repo.transaction():
+            visible = (
+                await self.repo.registry_method_candidates(
+                    owner,
+                    limit + 1,
+                    within,
+                    public=True,
+                    experts_only=experts_only,
+                    terms=terms,
+                    eligible=eligible,
+                )
+                if eligible
+                else []
             )
-            if eligible
-            else []
-        )
         next_page = None
         if len(visible) > limit:
             next_page = offset + limit
@@ -202,16 +204,18 @@ class SceneRegistry:
     async def planning_declaration(self, owner, reference, *, experts_only=False):
         from app.domain.workbench.errors import NotFound
 
-        subject = await self.repo.subject_of_actor(owner)
+        async with self.repo.transaction(independent=True):
+            subject = await self.repo.subject_of_actor(owner)
         if not subject or self.market is None:
             raise CapabilityError("Formal method use qualification is unavailable")
         if reference not in await self.market.planning_formal_refs(
             subject, [reference.model_dump(mode="json")]
         ):
             raise NotFound("No available method with this reference")
-        rows = await self.repo.registry_method_candidates(
-            owner, 1, 0, public=True, reference=reference, experts_only=experts_only
-        )
+        async with self.repo.transaction():
+            rows = await self.repo.registry_method_candidates(
+                owner, 1, 0, public=True, reference=reference, experts_only=experts_only
+            )
         if not rows:
             raise NotFound("No available method with this reference")
         try:
@@ -241,6 +245,16 @@ class SceneRegistry:
             "digest": row["digest"],
         }
 
+    async def shared_grant(self, subject, reference):
+        if not subject or self.market is None:
+            return None
+        page = await self.market.incubation_tools(subject, reference=reference)
+        if page.subject == subject and len(page.items) == 1:
+            grant = page.items[0]
+            if grant.reference == reference:
+                return grant
+        return None
+
     async def dependency(self, owner, reference, *, shared=True):
         row = await self.repo.formal_method(
             owner, str(reference.method_id), reference.version
@@ -248,9 +262,8 @@ class SceneRegistry:
         grant = None
         if row is None and shared and self.market is not None:
             subject = await self.repo.subject_of_actor(owner)
-            page = await self.market.incubation_tools(subject, reference=reference)
-            if len(page.items) == 1:
-                grant = page.items[0]
+            grant = await self.shared_grant(subject, reference)
+            if grant:
                 publisher = await self.repo.actor_for_subject(grant.owner_subject)
                 if publisher:
                     row = await self.repo.formal_method(
@@ -279,7 +292,8 @@ class SceneRegistry:
         from app.application.workbench.formal_method_catalog import FormalMethodCatalog
         from app.domain.workbench.errors import WorkbenchError
 
-        owner = await self.repo.actor_for_subject(subject)
+        async with self.repo.transaction(independent=True):
+            owner = await self.repo.actor_for_subject(subject)
         if owner is None:
             return {"items": [], "next": None}
         if self.market is None:

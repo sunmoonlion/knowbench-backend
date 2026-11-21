@@ -13,6 +13,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.workbench.capabilities import default_selection
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 
+# Only a reserve without a final debit, or a settled Job awaiting deletion, is due.
+PENDING_SCRIPTS = """
+    FROM workbench_calls c
+    JOIN workbench_budget_ledger h ON h.script_call_id=c.id AND h.entry='reserve'
+    LEFT JOIN workbench_budget_ledger d ON d.script_call_id=c.id AND d.entry='consume'
+    WHERE c.detail->>'execution_kind' IN ('formal_script','registry_script')
+      AND (c.detail ? 'script_cleanup_pending' OR d.script_call_id IS NULL)
+"""
+
+INSTRUCTION_CLEANUP = """a.ended_at IS NOT NULL
+    AND a.refs->'instruction_unit'->>'pending'='true'"""
+
 
 def row(value):
     result = dict(value)
@@ -405,14 +417,30 @@ class CapabilityRepositoryMixin:
         )
         return row(result) if result else None
 
+    async def cleanup_backlog(self):
+        # Retries update call/Attempt metadata. Only immutable lifecycle times
+        # measure how long a reservation or a retired unit has actually waited.
+        counts = await self.session.execute(
+            text(f"""
+            SELECT 'metered_scripts' AS queue, count(*) AS pending,
+                floor(greatest(0, extract(epoch FROM statement_timestamp()
+                    - min(h.created_at))))::bigint AS oldest_seconds
+                {PENDING_SCRIPTS}
+            UNION ALL
+            SELECT 'instruction_units', count(*),
+                floor(greatest(0, extract(epoch FROM statement_timestamp()
+                    - min(a.ended_at))))::bigint
+            FROM workbench_attempts a WHERE {INSTRUCTION_CLEANUP}
+        """)
+        )
+        return {
+            queue: {"pending": pending, "oldest_seconds": age}
+            for queue, pending, age in counts
+        }
+
     async def pending_metered_scripts(self):
         result = await self.session.execute(
-            text("""SELECT c.* FROM workbench_calls c
-            JOIN workbench_budget_ledger h ON h.script_call_id=c.id AND h.entry='reserve'
-            WHERE c.detail->>'execution_kind' in ('formal_script','registry_script') AND (
-              c.detail ? 'script_cleanup_pending' OR NOT EXISTS (
-                SELECT 1 FROM workbench_budget_ledger d WHERE d.script_call_id=c.id AND d.entry='consume'))
-            ORDER BY c.updated_at,c.id""")
+            text("SELECT c.* " + PENDING_SCRIPTS + " ORDER BY c.updated_at,c.id")
         )
         return [row(r) for r in result.mappings()]
 
