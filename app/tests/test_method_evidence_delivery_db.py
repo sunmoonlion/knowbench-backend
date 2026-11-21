@@ -17,7 +17,7 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 
 from app.application.workbench.advisor import Advisor
-from app.application.workbench.knowbot_compute import COMPUTE_EVENT
+from app.application.workbench.knowbot_compute import COMPUTE_EVENT, KnowbotCompute
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_files import task_dossier
 from app.application.workbench.run_reader import RunReader
@@ -33,7 +33,6 @@ from app.infrastructure.workbench.repository import (
     SqlWorkbenchStores,
     WorkbenchRepository,
 )
-from app.interfaces.mcp.workbench_mcp import call
 
 pytestmark = pytest.mark.asyncio
 FACT = "fact:11111111-2222-3333-4444-555555555555"
@@ -228,14 +227,12 @@ async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
                                 },
                             ],
                         }
-                    computed = await call(
+                    computed = await KnowbotCompute(
                         ProjectRecords(
                             WorkbenchRepository(session), owner_actor_id=OWNER
                         ),
-                        "compute",
-                        args,
                         reader,
-                    )
+                    ).execute(args)
                 if batch_mode:
                     assert computed["results"][1]["value"] == "4500.75"
                     computed = computed["results"][0]

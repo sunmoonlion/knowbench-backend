@@ -9,10 +9,10 @@ from test_knowbot_compute import Reader, fact, world
 
 from app.application.workbench.acceptance import Verdict
 from app.application.workbench.acceptance_numbers import judge_numbers
+from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.domain.workbench.errors import ComputeRefused
 from app.domain.workbench.packs import AcceptanceRule
 from app.domain.workbench.platform_tools import TOOLS
-from app.interfaces.mcp.workbench_mcp import call
 
 
 def batch():
@@ -98,7 +98,7 @@ async def test_batch_mcp_and_single_call_have_unambiguous_schema():
     args = {"task": records.task["id"], "batch": batch()}
     schema = TOOLS["compute"]["inputSchema"]
     jsonschema.validate(args, schema)
-    result = await call(records, "compute", args, Reader())
+    result = await KnowbotCompute(records, Reader()).execute(args)
     assert len(result["results"]) == 3
     single = {
         "task": records.task["id"],
@@ -112,7 +112,7 @@ async def test_batch_mcp_and_single_call_have_unambiguous_schema():
         jsonschema.validate(mixed, schema)
     before = len(records.repo.events)
     with pytest.raises(ComputeRefused):
-        await call(records, "compute", mixed, Reader())
+        await KnowbotCompute(records, Reader()).execute(mixed)
     assert len(records.repo.events) == before
 
 
@@ -168,7 +168,7 @@ async def test_incomplete_compute_payloads_remain_invalid_in_schema_and_service(
     if "task" in args:
         args = args | {"task": records.task["id"]}
     with pytest.raises(ComputeRefused):
-        await call(records, "compute", args, Reader())
+        await KnowbotCompute(records, Reader()).execute(args)
     assert records.repo.events == []
 
 

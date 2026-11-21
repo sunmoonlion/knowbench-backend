@@ -10,6 +10,7 @@ from app.domain.workbench.records import PAGE_ENTRIES
 from app.domain.workbench.service_functions import FunctionRevision, ServiceFunction
 from app.domain.workbench.tool_registry import ToolRegistration
 
+COMPUTE = "compute"
 PROJECT_LIST = "list_project_conversations"
 PROJECT_READ = "read_project_conversation"
 
@@ -116,12 +117,55 @@ def project_read_revision():
     return FunctionRevision.build("knowbench", PROJECT_READ, 1, contract)
 
 
-PROJECT_REVISIONS = {
+def compute_revision():
+    def record(fields):
+        return {
+            "type": "object",
+            "properties": fields,
+            "required": list(fields),
+            "additionalProperties": False,
+        }
+
+    text = {"type": "string"}
+    strings = {"type": "array", "items": text}
+    input_entry = {
+        "oneOf": [
+            record({"name": text, "ref": text, "value": text}),
+            record({"name": text, "refs": strings, "values": strings}),
+        ]
+    }
+    fields = {
+        "id": {"type": "string", "pattern": "^c[1-9][0-9]*$"},
+        "name": text,
+        "value": text,
+        "formula": text,
+        "inputs": {"type": "array", "items": input_entry},
+    }
+    spec = TOOLS[COMPUTE]
+    batch = {
+        "type": "array",
+        "items": record({**fields, "key": text}),
+        "minItems": 1,
+        "maxItems": spec["inputSchema"]["properties"]["batch"]["maxItems"],
+    }
+    contract = ServiceFunction(
+        description=spec["description"],
+        operation=COMPUTE,
+        scenes=["native", "step"],
+        required_permissions=["task.computations.record"],
+        input_schema=spec["inputSchema"],
+        output_schema={"oneOf": [record(fields), record({"results": batch})]},
+    )
+    return FunctionRevision.build("knowbench", COMPUTE, 1, contract)
+
+
+LOCAL_REVISIONS = {
+    COMPUTE: compute_revision,
     PROJECT_LIST: project_list_revision,
     PROJECT_READ: project_read_revision,
 }
 BINDINGS = {
-    **{name: ("knowbench", 1) for name in PROJECT_REVISIONS},
+    **{name: ("knowbench", 1) for name in LOCAL_REVISIONS},
     **{name: ("knowbase", 1) for name in DATA_QUERIES if name != "read_method_input"},
 }
 
@@ -175,7 +219,7 @@ def native_registration(revision):
         raise CapabilityError("Missing native function binding")
     if (
         revision.provider == "knowbench"
-        and revision != PROJECT_REVISIONS[revision.name]()
+        and revision != LOCAL_REVISIONS[revision.name]()
     ):
         raise CapabilityError("Local function differs from its registered contract")
     if revision.name in DATA_QUERIES and revision.contract.required_permissions != [

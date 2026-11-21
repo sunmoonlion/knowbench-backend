@@ -81,11 +81,31 @@ def _prepare(name: Any, expression: Any, inputs: Any, places: Any) -> _Calculati
 
 class KnowbotCompute:
     def __init__(
-        self, records: ProjectRecords, reader: RunReader | None = None
+        self,
+        records: ProjectRecords,
+        reader: RunReader | None = None,
+        *,
+        call_id: str | None = None,
     ) -> None:
         self.records = records
         self.repo = records.repo
         self.reader = reader
+        self.call_id = call_id
+
+    async def execute(self, args: dict[str, Any]):
+        if "batch" in args:
+            if set(args) - {"task", "batch"}:
+                raise ComputeRefused(
+                    "use either a single calculation or a batch, not both"
+                )
+            return await self.compute_batch(args.get("task"), args["batch"])
+        return await self.compute(
+            args.get("task"),
+            args.get("name"),
+            args.get("expression"),
+            args.get("inputs"),
+            args.get("round"),
+        )
 
     async def compute(
         self,
@@ -248,6 +268,8 @@ class KnowbotCompute:
                         entry["refs"] = [resolve(ref) for ref in entry["refs"]]
                     else:
                         entry["ref"] = resolve(entry["ref"])
+                if self.call_id is not None:
+                    payload["call_id"] = self.call_id
                 event = await self.repo.append_event(
                     session_id=str(working["session_id"]),
                     kind="records",

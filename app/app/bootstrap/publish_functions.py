@@ -1,9 +1,9 @@
-"""Publish the local project conversation functions under KnowBench's service identity."""
+"""Publish the registered workbench functions under KnowBench's service identity."""
 
 import asyncio
 
 from app.application.errors.exceptions import ServiceUnavailableError
-from app.domain.workbench.native_functions import PROJECT_REVISIONS
+from app.domain.workbench.native_functions import LOCAL_REVISIONS
 from app.infrastructure.external.downstream_service import DownstreamServiceClient
 from core.config import get_settings
 
@@ -28,9 +28,9 @@ async def publish_revision(client, revision):
         return revision.digest
 
 
-async def publish_project_functions(client):
+async def publish_workbench_functions(client):
     published = {}
-    for name, build in PROJECT_REVISIONS.items():
+    for name, build in LOCAL_REVISIONS.items():
         published[name] = await publish_revision(client, build())
     return published
 
@@ -39,7 +39,7 @@ async def main():
     settings = get_settings()
     if settings.downstream_scope.strip() != "knowbench:function-publish":
         raise ValueError("Expected a knowbench:function-publish service identity")
-    print(await publish_project_functions(DownstreamServiceClient(settings)))
+    print(await publish_workbench_functions(DownstreamServiceClient(settings)))
 
 
 if __name__ == "__main__":

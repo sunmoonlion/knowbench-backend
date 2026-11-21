@@ -15,9 +15,10 @@ from tool_invocation_support import ObservedPlatformTransport
 from tool_invocation_support import running_platform_world as world
 
 from app.domain.workbench.native_functions import (
+    COMPUTE,
+    LOCAL_REVISIONS,
     PROJECT_LIST,
     PROJECT_READ,
-    PROJECT_REVISIONS,
 )
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
@@ -80,7 +81,7 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
                 )
                 == 1
             )
-            revision = PROJECT_REVISIONS[operation]()
+            revision = LOCAL_REVISIONS[operation]()
             assert row["detail"]["operation"][
                 "registered_source"
             ] == revision.model_dump(exclude={"contract"})
@@ -127,7 +128,7 @@ async def test_platform_mcp_writes_the_shared_ledger_and_replays_only_the_receip
         await fake.close()
 
 
-@pytest.mark.parametrize("operation", [PROJECT_LIST, PROJECT_READ])
+@pytest.mark.parametrize("operation", [PROJECT_LIST, PROJECT_READ, COMPUTE])
 async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
     served, db, monkeypatch, operation
 ):
@@ -140,6 +141,8 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
     args = {"task": ids["task"]}
     if operation == PROJECT_READ:
         args["conversation"] = ids["chat"]
+    elif operation == COMPUTE:
+        args.update(name="reuse", expression="x", inputs={"x": "c1"})
 
     async def withdraw(*args, **kwargs):
         async with db() as session, session.begin():
@@ -188,7 +191,7 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
             assert (
                 await session.scalar(
                     text(
-                        "SELECT count(*) FROM workbench_session_events WHERE event_type='records/read'"
+                        "SELECT count(*) FROM workbench_session_events WHERE event_type IN ('records/read','knowbot/compute')"
                     )
                 )
                 == 0

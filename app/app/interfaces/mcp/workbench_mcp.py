@@ -24,7 +24,6 @@ from app.application.workbench.find_expert import find_expert
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.method_tools import MethodToolGuard
 from app.application.workbench.records import ProjectRecords
-from app.application.workbench.run_reader import RunReader
 from app.application.workbench.scoped_data_functions import ScopedDataFunctions
 from app.application.workbench.tokens import TokenIssuer
 from app.application.workbench.tool_registry import (
@@ -40,9 +39,10 @@ from app.bootstrap.workbench import (
 )
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.data_function import DATA_QUERIES
-from app.domain.workbench.errors import ComputeRefused, WorkbenchError
+from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.native_functions import (
     BINDINGS,
+    COMPUTE,
     PROJECT_LIST,
     PROJECT_READ,
 )
@@ -104,7 +104,6 @@ async def call(
     records: ProjectRecords,
     name: str,
     args: dict[str, Any],
-    reader: RunReader | None = None,
 ) -> Any:
     if name == "request_data":
         working = await records._working(args.get("task"))
@@ -124,22 +123,6 @@ async def call(
         # 找专家（请专家方案设计第 4.9 节）：凭这件「找专家」委托，查这个用户的 knowmart 目录
         working = await records._working(args.get("task"))
         return await find_expert(records.repo, knowmart_catalog(), working)
-    if name == "compute":
-        if "batch" in args:
-            if set(args) - {"task", "batch"}:
-                raise ComputeRefused(
-                    "use either a single calculation or a batch, not both"
-                )
-            return await KnowbotCompute(records, reader).compute_batch(
-                args.get("task"), args["batch"]
-            )
-        return await KnowbotCompute(records, reader).compute(
-            args.get("task"),
-            args.get("name"),
-            args.get("expression"),
-            args.get("inputs"),
-            args.get("round"),
-        )
     raise ValueError(f"unknown tool {name}")
 
 
@@ -284,19 +267,26 @@ async def dispatch(records, mid, name, args, relay, *, function=None, receipt=No
                 return _tool_error(
                     mid, "Registered function changed before dispatch"
                 ), "failed"
-            if name in (PROJECT_LIST, PROJECT_READ):
+            if function.provider == "knowbench":
                 if name == PROJECT_LIST:
-                    page = await records.list_conversations(
+                    output = await records.list_conversations(
                         args["task"], call_id=receipt["id"]
                     )
-                else:
-                    page = await records.read_conversation(
+                elif name == PROJECT_READ:
+                    output = await records.read_conversation(
                         args["task"],
                         args["conversation"],
                         args.get("page", 1),
                         call_id=receipt["id"],
                     )
-                result = jsonable_encoder(page)
+                elif name == COMPUTE:
+                    reader = relay.reader_for_call(receipt["id"]) if relay else None
+                    output = await KnowbotCompute(
+                        records, reader, call_id=receipt["id"]
+                    ).execute(args)
+                else:
+                    raise CapabilityError("Missing local function implementation")
+                result = jsonable_encoder(output)
                 if not schema_validator(function.contract.output_schema).is_valid(
                     result
                 ):
@@ -310,16 +300,7 @@ async def dispatch(records, mid, name, args, relay, *, function=None, receipt=No
                     "Registered function has no available execution binding"
                 )
         else:
-            result = jsonable_encoder(
-                await call(
-                    records,
-                    name,
-                    args,
-                    relay.reader_for_call(receipt["id"])
-                    if relay and receipt and name == "compute"
-                    else None,
-                )
-            )
+            result = jsonable_encoder(await call(records, name, args))
         rendered = json.dumps(result, ensure_ascii=False, allow_nan=False)
     except WorkbenchError as exc:
         log.info("workbench_mcp_refused tool=%s code=%s", name, exc.code)

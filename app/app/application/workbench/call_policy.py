@@ -39,7 +39,7 @@ def authorize_operation(
     """
     registration.validate_arguments(arguments)
     if native_function is not None:
-        from app.domain.workbench.native_functions import native_registration
+        from app.domain.workbench.native_functions import COMPUTE, native_registration
 
         if method or native_registration(native_function) != registration:
             raise CapabilityError(
@@ -48,7 +48,10 @@ def authorize_operation(
         return CallDecision(
             {
                 "operation": native_function.name,
-                "effect": "read",
+                "effect": "write"
+                if native_function.provider == "knowbench"
+                and native_function.name == COMPUTE
+                else "read",
                 "registered_source": native_function.model_dump(exclude={"contract"}),
                 "required_permissions": native_function.contract.required_permissions,
                 "arguments_digest": digest(arguments),

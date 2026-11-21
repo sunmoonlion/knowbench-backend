@@ -22,7 +22,7 @@ from tool_invocation_support import running_platform_world as world
 
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.bootstrap.api import create_app
-from app.domain.workbench.native_functions import PROJECT_REVISIONS
+from app.domain.workbench.native_functions import LOCAL_REVISIONS
 from app.infrastructure.storage.postgres import get_db_session
 from app.infrastructure.workbench.service_functions import register_revision
 from app.interfaces.endpoints.workbench_routes import (
@@ -55,7 +55,7 @@ def tool(tool_name, **arguments):
 @pytest.fixture
 async def served(db, monkeypatch):  # noqa: F811
     async with db() as session:
-        for build in PROJECT_REVISIONS.values():
+        for build in LOCAL_REVISIONS.values():
             await register_revision(session, build())
     monkeypatch.setenv("WORKBENCH_ENABLED", "true")
     app = create_app(Settings())
@@ -104,13 +104,13 @@ async def test_the_handshake_and_the_list_of_tools(served):
         # knowbase 没配：数据工具不列，项目、要数据、查主体与计算照常；v1 的三个读数据
         # 工具（list_my_data、read_my_data、read_my_table）没了（decisions ⑰）
         assert names == [
+            "compute",
             "list_project_conversations",
             "read_project_conversation",
             "discover_source_tools",
             "find_subject",
             "request_data",
             "find_expert",
-            "compute",
         ]
         # 只读：除了 compute（只记计算记录）与 request_data（只列进用户的确认清单）没有
         # 写的工具（find_subject 只查证券名录，find_expert 只查专家目录）；都要带委托编号
