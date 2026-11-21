@@ -1,0 +1,278 @@
+import asyncio
+import json
+from copy import deepcopy
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from test_find_expert_db import _project
+from test_knowbot_test_runs_db import runner_for, setup_test_computer
+from test_workbench_advisor_db import ScriptedAppServer, close, drive
+from test_workbench_ledger_db import OWNER
+from test_workbench_ledger_db import db as db
+
+from app.application.workbench.find_expert import FindExpertService
+from app.application.workbench.formal_expert_intake import confirm
+from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
+from app.domain.workbench.formal_expert_match import verify_options
+from app.domain.workbench.formal_method_generated import MethodRef
+from app.infrastructure.workbench.repository import WorkbenchRepository
+
+
+class Registry:
+    def __init__(self):
+        self.entries = {}
+        for label in ("逐笔", "汇总"):
+            ref = MethodRef(method_id=uuid4(), version=2, digest="sha256:" + "1" * 64)
+            self.entries[ref] = {
+                "reference": ref.model_dump(mode="json"),
+                "declaration": {
+                    "title": label,
+                    "purpose": "核对交易",
+                    "applies_when": ["交易明细"],
+                    "excludes": ["现金盘点"],
+                    "conditions": {},
+                    "promises": {"result": label + "差异表"},
+                },
+                "promise_outputs": {"result": ["report"]},
+            }
+
+    async def planning_versions(self, owner, limit, offset, *, query):
+        assert owner == OWNER and query.stage == "expert"
+        return {"items": [v["reference"] for v in self.entries.values()], "next": None}
+
+    def reference(self, row):
+        return row
+
+    async def planning_declaration(self, owner, reference, *, experts_only):
+        assert owner == OWNER and experts_only
+        if reference not in self.entries:
+            raise NotFound("access revoked")
+        return self.entries[reference]
+
+
+def proposal(registry):
+    return {
+        "contract": "knowbench/expert-match/v5",
+        "requirements": [
+            {
+                "id": "r",
+                "kind": "result",
+                "statement": "交付差异表",
+                "question_quote": "差异表",
+                "required": True,
+            }
+        ],
+        "outcome": "candidates",
+        "picks": [
+            {
+                "reference": v["reference"],
+                "reason": v["declaration"]["title"],
+                "coverage": [
+                    {"requirement": "r", "promise": "result", "quote": "差异表"}
+                ],
+                "limitations": [],
+            }
+            for v in registry.entries.values()
+        ],
+        "explanation": "交付粒度不同",
+        "clarification": None,
+    }
+
+
+async def test_project_match_compares_pins_and_confirms_once(db):
+    registry = Registry()
+    result = proposal(registry)
+    bad = deepcopy(result)
+    bad["picks"][0]["coverage"][0]["quote"] = "捏造承诺"
+    fake = ScriptedAppServer([json.dumps(bad), json.dumps(result)])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        project = await _project(db)
+
+        async def start():
+            async with db() as session:
+                finder = FindExpertService(
+                    WorkbenchRepository(session), formal_registry=registry
+                )
+                return await finder.start(
+                    owner_actor_id=OWNER,
+                    project_id=project,
+                    question="需要差异表",
+                    idempotency_key="formal-project-round",
+                    match_contract="knowbench/expert-match/v5",
+                )
+
+        made, retry = await asyncio.gather(start(), start())
+        assert made == retry
+        await drive(runner)
+        assert len(fake.turn_inputs) == 2
+        assert (
+            "逐笔差异表" in fake.turn_inputs[0]
+            and "捏造承诺" not in fake.turn_inputs[0]
+        )
+        tid = made["task_id"]
+        async with db() as session:
+            finder = FindExpertService(
+                WorkbenchRepository(session), formal_registry=registry
+            )
+            outcome = await finder.result(OWNER, tid)
+            assert outcome["state"] == "SUCCEEDED", outcome
+            review = outcome["formal"]
+            assert len(review["options"]) == 2 and review["selected"] is None
+        pins = list(registry.entries)
+
+        async def select(pin, fingerprint=review["review_digest"]):
+            async with db() as session:
+                return await confirm(
+                    WorkbenchRepository(session),
+                    registry,
+                    OWNER,
+                    tid,
+                    SimpleNamespace(reference=pin, review_digest=fingerprint),
+                )
+
+        with pytest.raises(StaleStateVersion):
+            await select(pins[0], "sha256:" + "0" * 64)
+        selected, replay = await asyncio.gather(select(pins[0]), select(pins[0]))
+        assert selected == replay
+        with pytest.raises(IdempotencyConflict):
+            await select(pins[1])
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            assert (
+                len(
+                    await repo.list_task_events(
+                        tid, types=("task/formal_expert_selected",)
+                    )
+                )
+                == 1
+            )
+            with pytest.raises(NotFound):
+                await FindExpertService(repo, formal_registry=registry).result(
+                    str(uuid4()), tid
+                )
+        removed = registry.entries.pop(pins[0])
+        with pytest.raises(NotFound):
+            await select(pins[0])
+        assert await start() == made
+        registry.entries[pins[0]] = removed
+        async with db() as session:
+            finder = FindExpertService(
+                WorkbenchRepository(session), formal_registry=registry
+            )
+            revision = await finder.start(
+                owner_actor_id=OWNER,
+                project_id=project,
+                question="仅核对逐笔差异表",
+                reference=pins[0],
+                revises=tid,
+                idempotency_key="formal-revision-2",
+                match_contract="knowbench/expert-match/v5",
+            )
+            assert (await finder.result(OWNER, tid))["superseded_by"] == revision[
+                "task_id"
+            ]
+            new_snapshot = await finder.repo.list_task_events(
+                revision["task_id"], types=("task/formal_expert_directory",)
+            )
+            assert [
+                entry["reference"] for entry in new_snapshot[0]["payload"]["items"]
+            ] == [removed["reference"]]
+            with pytest.raises(StaleStateVersion, match="newer revision"):
+                await finder.start(
+                    owner_actor_id=OWNER,
+                    project_id=project,
+                    question="另一版本",
+                    revises=tid,
+                    idempotency_key="concurrent-revision",
+                    match_contract="knowbench/expert-match/v5",
+                )
+        with pytest.raises(StaleStateVersion, match="revised"):
+            await select(pins[0])
+
+    finally:
+        await close(runner)
+        await fake.close()
+
+
+def test_every_mandatory_delivery_needs_a_real_promise_and_output():
+    registry = Registry()
+    result = proposal(registry)
+    result["requirements"].append({**result["requirements"][0], "id": "second"})
+    with pytest.raises(ValueError, match="required delivery"):
+        verify_options("差异表", {"items": list(registry.entries.values())}, result)
+
+
+async def test_web_intake_empty_directory_starts_no_model_and_named_match_reopens(
+    db, monkeypatch
+):
+    from httpx import ASGITransport, AsyncClient
+    from sqlalchemy import text
+    from test_formal_method_use_routes_db import application
+
+    from app.interfaces.http.web import workbench_expert as routes
+
+    registry = Registry()
+    entries = registry.entries.copy()
+    registry.entries.clear()
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        project = await _project(db)
+        app = application(db, lambda repo: None)
+
+        async def session():
+            async with db() as s:
+                yield s
+
+        async def wake():
+            pass
+
+        app.dependency_overrides[routes.get_db_session] = session
+        monkeypatch.setattr(
+            routes,
+            "find_expert_service",
+            lambda s: FindExpertService(
+                WorkbenchRepository(s), formal_registry=registry
+            ),
+        )
+        monkeypatch.setattr(routes, "publish_commands_wakeup", wake)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            url = f"/api/workbench/projects/{project}/find-expert"
+            body = {
+                "question": "差异表",
+                "budget_limit": "2",
+                "idempotency_key": "formal-route-1",
+                "match_contract": "knowbench/expert-match/v5",
+            }
+            empty = await client.post(url, json=body)
+            assert empty.status_code == 201 and empty.json()["empty"] is True
+            async with db() as s:
+                assert await s.scalar(text("SELECT count(*) FROM workbench_tasks")) == 0
+            named = next(iter(entries))
+            body["reference"] = named.model_dump(mode="json")
+            assert (await client.post(url, json=body)).status_code == 404
+            registry.entries.update(entries)
+            made = await client.post(url, json=body)
+            assert made.status_code == 201, made.text
+            tid = made.json()["task_id"]
+            assert (await client.post(url, json=body)).json() == made.json()
+            recovered = await client.get(f"/api/workbench/find-expert/{tid}")
+            assert (
+                recovered.status_code == 200
+                and recovered.json()["question"] == body["question"]
+            )
+            assert "no-store" in recovered.headers["cache-control"]
+            pending = await client.put(
+                f"/api/workbench/find-expert/{tid}/selection",
+                json={"reference": body["reference"], "review_digest": named.digest},
+            )
+            assert pending.status_code == 409
+    finally:
+        await fake.close()

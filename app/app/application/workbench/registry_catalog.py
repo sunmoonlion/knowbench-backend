@@ -188,7 +188,7 @@ class SceneRegistry:
             "next": offset + limit if len(visible) > limit else None,
         }
 
-    async def planning_declaration(self, owner, reference):
+    async def planning_declaration(self, owner, reference, *, experts_only=False):
         from app.domain.workbench.errors import NotFound
 
         subject = await self.repo.subject_of_actor(owner)
@@ -199,7 +199,7 @@ class SceneRegistry:
         ):
             raise NotFound("No available method with this reference")
         rows = await self.repo.registry_method_candidates(
-            owner, 1, 0, public=True, reference=reference
+            owner, 1, 0, public=True, reference=reference, experts_only=experts_only
         )
         if not rows:
             raise NotFound("No available method with this reference")

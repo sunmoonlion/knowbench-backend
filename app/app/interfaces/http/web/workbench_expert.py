@@ -10,8 +10,9 @@ from collections.abc import Awaitable, Callable
 from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -35,6 +36,7 @@ from app.bootstrap.workbench import (
 from app.domain.security import Principal
 from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.expert_match import MatchSelection
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
 from app.domain.workbench.supply_prematch import eta_of
@@ -498,8 +500,17 @@ class FindExpertIn(BaseModel):
         "knowbench/expert-match/v2",
         "knowbench/expert-match/v3",
         "knowbench/expert-match/v4",
+        "knowbench/expert-match/v5",
     ] = "knowbench/expert-match/v1"
     expert: str | None = Field(default=None, max_length=128)
+    reference: MethodRef | None = None
+    revises: UUID | None = None
+    source_session: UUID | None = None
+
+
+class FormalExpertChoice(Strict):
+    review_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+    reference: MethodRef
 
 
 class DemandIn(BaseModel):
@@ -535,21 +546,45 @@ async def start_find_expert(
             budget_limit=body.budget_limit,
             match_contract=body.match_contract,
             expert=body.expert,
+            reference=body.reference,
+            revises=str(body.revises) if body.revises else None,
+            source_session=str(body.source_session) if body.source_session else None,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
-    await publish_commands_wakeup()
+    if made.get("task_id"):
+        await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **made}
+
+
+@router.put("/find-expert/{task_id}/selection")
+async def confirm_formal_expert(
+    task_id: UUID,
+    body: FormalExpertChoice,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    from app.application.workbench.formal_expert_intake import confirm
+
+    service = find_expert_service(session)
+    try:
+        return await confirm(
+            service.repo, service.formal_registry, _actor(principal), str(task_id), body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/find-expert/{task_id}")
 async def find_expert_result(
     task_id: str,
+    response: Response,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, Any]:
     """这一轮怎样了：直接请谁（不用另付钱的）/ 要付钱的候选 / 都不合适（推荐与理由、需求草稿）。"""
     try:
+        response.headers["Cache-Control"] = "private, no-store"
         found = await find_expert_service(session).result(_actor(principal), task_id)
     except WorkbenchError as exc:
         raise _http(exc) from exc

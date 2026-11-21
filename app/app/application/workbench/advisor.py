@@ -388,6 +388,13 @@ class Advisor:
             await repo.commit()
             thread_id = task["thread_id"]
             question = task["original_input"].get("input", {})
+            if (
+                task["profile_id"] == FIND_EXPERT.profile_id
+                and str(task.get("profile_version")) == "5"
+            ):
+                from app.application.workbench.formal_expert_intake import snapshot
+
+                question = {**question, "directory": await snapshot(repo, task)}
             # 本步之前用户答过的：开步前的问题（ask_before）、停下时附的要求、模型问过的
             answered = await self._answers_for_step(repo, task, step)
             if step.ask_before and answered["ask_before"] is None:
@@ -559,11 +566,25 @@ class Advisor:
             if (
                 verdict.ok
                 and task["profile_id"] == FIND_EXPERT.profile_id
-                and str(task.get("profile_version")) == "2"
+                and str(task.get("profile_version")) in {"2", "5"}
             ):
                 detail = ""
                 try:
-                    await validate_match_content(repo, task, verdict.parsed)
+                    if str(task["profile_version"]) == "5":
+                        from app.application.workbench.formal_expert_intake import (
+                            snapshot,
+                        )
+                        from app.domain.workbench.formal_expert_match import (
+                            verify_options,
+                        )
+
+                        verify_options(
+                            task["original_input"]["input"]["text"],
+                            await snapshot(repo, task),
+                            verdict.parsed,
+                        )
+                    else:
+                        await validate_match_content(repo, task, verdict.parsed)
                 except (ValueError, KeyError) as exc:
                     detail = str(exc)[:REWORK_FAILURE_CHARS]
                     verdict.ok = False

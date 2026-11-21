@@ -113,8 +113,10 @@ def find_expert_service(session: AsyncSession):
     """AI 请专家（请专家方案设计第 4.9 节）：找专家那一轮、取结果、挂需求、孵化请求。"""
     from app.application.workbench.find_expert import FindExpertService
 
+    repo = web_workbench_store(session)
     return FindExpertService(
-        workbench_store(session),
+        repo,
+        formal_registry=capability_service(repo).formal_sources.registry,
         directory=knowmart_catalog(),
         demands=knowmart_demands(),
         incubations=knowlab_incubation_requests(),

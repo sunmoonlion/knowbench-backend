@@ -23,6 +23,7 @@ from typing import Any, Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from app.application.ports.workbench import WorkbenchStore
+from app.application.workbench import formal_expert_intake
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, WorkbenchError
@@ -36,6 +37,7 @@ from app.domain.workbench.expert_match import (
     parse_match,
     validate_match,
 )
+from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.knowbots import parse_profile
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.packs import FIND_EXPERT
@@ -118,6 +120,11 @@ async def find_expert(
     repo: WorkbenchStore, directory: ExpertDirectory | None, working: dict[str, Any]
 ) -> dict[str, Any]:
     """工具 `find_expert`：这个用户请得动的专家的公开信息（不排序，按名称）。"""
+    if (
+        working.get("profile_id") == FIND_EXPERT.profile_id
+        and str(working.get("profile_version")) == "5"
+    ):
+        raise FindExpertRefused("This match already has its scoped declarations")
     if working.get("profile_id") == FIND_EXPERT.profile_id and str(
         working.get("profile_version")
     ) in {"2", "3", "4"}:
@@ -235,12 +242,14 @@ class FindExpertService:
         repo: WorkbenchStore,
         *,
         directory: ExpertDirectory | None = None,
+        formal_registry=None,
         demands: DemandBoard | None = None,
         incubations: IncubationDesk | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.repo = repo
         self.directory = directory
+        self.formal_registry = formal_registry
         self.demands = demands
         self.incubations = incubations
         self.now = now
@@ -258,8 +267,12 @@ class FindExpertService:
             "knowbench/expert-match/v2",
             "knowbench/expert-match/v3",
             "knowbench/expert-match/v4",
+            "knowbench/expert-match/v5",
         ] = "knowbench/expert-match/v1",
         expert: str | None = None,
+        reference: MethodRef | None = None,
+        revises: str | None = None,
+        source_session: str | None = None,
     ) -> dict[str, Any]:
         """开「找专家」那一轮：用户项目里一段专家对话、一件内部委托，排上去跑。"""
         text = question.strip()
@@ -279,6 +292,11 @@ class FindExpertService:
             raise FindExpertRefused(
                 "scope checking needs a versioned marketplace expert"
             )
+        formal = match_contract.endswith("/v5")
+        if (
+            reference is not None or revises is not None or source_session is not None
+        ) and not formal:
+            raise FindExpertRefused("A formal method needs an exact-version match")
         key = task_key(project_id, text, idempotency_key)
 
         def request(session_id: str) -> HandoverRequest:
@@ -291,11 +309,49 @@ class FindExpertService:
                     if match_contract.endswith("/v1")
                     else match_contract.rsplit("/v", 1)[-1]
                 ),
-                original_input={"text": text, **({"expert": expert} if expert else {})},
+                original_input={
+                    "text": text,
+                    **({"source_session": source_session} if source_session else {}),
+                    **({"revises": revises} if revises else {}),
+                    **({"expert": expert} if expert else {}),
+                    **(
+                        {"reference": reference.model_dump(mode="json")}
+                        if reference
+                        else {}
+                    ),
+                },
                 budget_limit=budget_limit,
                 client_context={"entry": "find-expert"},
             )
 
+        directory = None
+        if formal:
+            await self.repo.get_project(project_id, owner_actor_id=owner_actor_id)
+            if source_session:
+                session = await self.repo.get_session(
+                    source_session, owner_actor_id=owner_actor_id
+                )
+                if (
+                    session.get("project_id") is not None
+                    and str(session["project_id"]) != project_id
+                ):
+                    raise NotFound("No such source session in this project")
+            existing = await self.repo.find_task_by_idempotency(
+                tenant="default",
+                owner_actor_id=owner_actor_id,
+                profile_id=FIND_EXPERT.profile_id,
+                idempotency_key=key,
+            )
+            if existing is None:
+                if self.formal_registry is None:
+                    raise ExpertDirectoryUnavailable(
+                        "Formal expert directory unavailable"
+                    )
+                directory = await formal_expert_intake.directory_for(
+                    self.formal_registry, owner_actor_id, text, reference
+                )
+                if not directory["items"]:
+                    return {"empty": True}
         async with self.repo.transaction():
             # 同项目的重复请求串行核幂等，再建新会话；会话、委托与派发命令同提交。
             # 不能先建会话：session_id 参与摘要，重发会冲突并遗留空会话。
@@ -321,6 +377,13 @@ class FindExpertService:
                     "task_id": str(prior["id"]),
                     "session_id": str(prior["session_id"]),
                 }
+            previous = None
+            if revises:
+                previous = await formal_expert_intake.previous_round(
+                    self.repo, owner_actor_id, project_id, revises
+                )
+            if formal and directory is None:
+                raise FindExpertRefused("Matching request changed, retry")
             started = await SessionService(self.repo).start(
                 owner_actor_id=owner_actor_id,
                 kind="expert",
@@ -330,6 +393,22 @@ class FindExpertService:
             made = await Ledger(self.repo).handover(
                 request(started["session_id"]), owner_actor_id=owner_actor_id
             )
+            if previous is not None:
+                await self.repo.append_event(
+                    session_id=str(previous["session_id"]),
+                    kind="task",
+                    task_id=str(previous["id"]),
+                    event_type=formal_expert_intake.REVISION,
+                    payload={"task_id": made["task_id"]},
+                )
+            if directory is not None:
+                await self.repo.append_event(
+                    session_id=started["session_id"],
+                    kind="task",
+                    task_id=made["task_id"],
+                    event_type=formal_expert_intake.DIRECTORY,
+                    payload=directory,
+                )
             session = await self.repo.get_session(started["session_id"])
             if not made.get("queued_behind"):
                 await self.repo.enqueue_command(
@@ -357,6 +436,13 @@ class FindExpertService:
             "question": question,
             "state": state.value,
         }
+        if str(task["profile_version"]) == "5":
+            base["session_id"] = str(task["session_id"])
+            revised = await self.repo.list_task_events(
+                task_id, types=(formal_expert_intake.REVISION,)
+            )
+            if revised:
+                return base | {"superseded_by": revised[0]["payload"]["task_id"]}
         if state not in TASK_TERMINAL:
             return base
         if state != TaskState.SUCCEEDED:
@@ -374,6 +460,12 @@ class FindExpertService:
         found = await self.repo.get_artifact(
             task_id=str(task["id"]), name=step.output_artifact
         )
+        if str(task.get("profile_version")) == "5":
+            return base | {
+                "formal": await formal_expert_intake.review(
+                    self.repo, self.formal_registry, owner_actor_id, task, found
+                )
+            }
         if str(task.get("profile_version")) in {"2", "3", "4"}:
             if found is None:
                 return base | {"error": "matching result is missing"}
@@ -492,7 +584,11 @@ class FindExpertService:
         deadline: date | None = None,
     ) -> dict[str, Any]:
         """用户看过描述、点了「发布」：替他在 knowmart 挂需求（要专家）。"""
-        await self._task(owner_actor_id, task_id)
+        task = await self._task(owner_actor_id, task_id)
+        if str(task.get("profile_version")) == "5":
+            raise FindExpertRefused(
+                "Formal matching does not authorize demand publication"
+            )
         if self.demands is None:
             raise FindExpertRefused("publishing demands is not configured")
         subject = await self.repo.subject_of_actor(owner_actor_id)
@@ -520,6 +616,10 @@ class FindExpertService:
     ) -> dict[str, Any]:
         """「孵化一个专家」：knowlab 以用户的名义建「问题」申请；先直接答过的那份回答附过去。"""
         task = await self._task(owner_actor_id, task_id)
+        if str(task.get("profile_version")) == "5":
+            raise FindExpertRefused(
+                "Formal matching needs a separate incubation handoff"
+            )
         if self.incubations is None:
             raise FindExpertRefused("incubation requests are not configured")
         subject = await self.repo.subject_of_actor(owner_actor_id)
