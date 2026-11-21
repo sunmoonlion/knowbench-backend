@@ -40,7 +40,9 @@ PRICES = PriceList(
 BILL = Usage(input=1, output=1)
 
 
-async def setup(db, *, budget="1", credential_url=ROUTE.base_url):
+async def setup(
+    db, *, budget="1", credential_url=ROUTE.base_url, route=ROUTE, prices=PRICES
+):
     license, req, asset = await install(db)
     _, sandbox, sid = await seed(db)
     snapshot = FormalTaskSnapshot(
@@ -59,7 +61,7 @@ async def setup(db, *, budget="1", credential_url=ROUTE.base_url):
         async with repo.transaction():
             cred = await repo.add_credential(
                 owner_actor_id=OWNER,
-                provider=ROUTE.provider,
+                provider=route.provider,
                 ciphertext="fixture",
                 hint="test",
                 sandbox_id=sandbox,
@@ -77,19 +79,19 @@ async def setup(db, *, budget="1", credential_url=ROUTE.base_url):
         await led.transition(task, TaskState.QUEUED)
 
     @asynccontextmanager
-    async def host(route=ROUTE, licenses=(license,), default_url=""):
+    async def host(route=route, licenses=(license,), default_url=""):
         async with db() as session:
             repo = WorkbenchRepository(session)
             yield InstructionRequests(
                 FormalMethods(repo, source_licenses=licenses),
                 route,
-                PRICES,
+                prices,
                 default_base_url=default_url,
             )
 
     job = instruction_job(req, ENTRY, ARGS)
     body = {
-        "model": ROUTE.model,
+        "model": route.model,
         "stream": True,
         "store": False,
         "input": [

@@ -32,6 +32,7 @@ from app.application.workbench.instruction_requests import (
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 from app.domain.workbench.errors import Forbidden
+from app.domain.workbench.pricing import DEFAULT_PRICES
 from app.domain.workbench.states import AttemptState
 from app.interfaces.endpoints.knowbot_runtime_routes import formal_methods
 from app.interfaces.endpoints.workbench_routes import token_issuer
@@ -50,8 +51,10 @@ def sandbox_relay():
 
 
 @asynccontextmanager
-async def gateway_app(db, app, monkeypatch):
-    host, task, cred, body = await setup(db)
+async def gateway_app(db, app, monkeypatch, *, route=ROUTE, prices=PRICES, budget="1"):
+    host, task, cred, body = await setup(
+        db, route=route, prices=prices, budget=budget, credential_url=route.base_url
+    )
     pod = uuid4()
     issuer = TokenIssuer(generate_private_key_pem())
     async with host() as svc:
@@ -86,9 +89,9 @@ async def gateway_app(db, app, monkeypatch):
     app.dependency_overrides[formal_methods] = formal
     app.dependency_overrides[token_issuer] = lambda: issuer
     settings = SimpleNamespace(
-        workbench_instruction_routes=(ROUTE,),
-        workbench_model_prices=lambda: PRICES,
-        workbench_sandbox_provider_base_url=ROUTE.base_url,
+        workbench_instruction_routes=(route,),
+        workbench_model_prices=lambda: prices,
+        workbench_sandbox_provider_base_url=route.base_url,
     )
     monkeypatch.setattr(instruction_control, "get_settings", lambda: settings)
     yield host, binding, issuer, body, settings
@@ -186,6 +189,104 @@ async def test_bound_control_claim_and_late_receipt(db, make_client, monkeypatch
             assert (await svc.repo.get_task(str(identity.task)))["budget"][
                 "used"
             ] == "0.000006"
+
+
+@pytest.mark.parametrize(
+    ("cached", "written", "expected"),
+    [
+        pytest.param(0, 0, "0.005920", id="recorded-kimi-usage"),
+        pytest.param(80, 32, "0.004480", id="synthetic-cache-hit-and-write"),
+    ],
+)
+async def test_kimi_receipt_reconciles_with_root_budget(
+    db, make_client, monkeypatch, cached, written, expected
+):
+    # Only the zero-cache sample was observed at the provider. Replay into a
+    # fresh local task, without a provider key or a connection to its endpoint.
+    route = replace(
+        ROUTE,
+        provider="kimi",
+        model="kimi-k3",
+        price_key="kimi-k3",
+        base_url="https://api.moonshot.cn/v1",
+        context_tokens=1048576,
+        output_tokens=64,
+    )
+    app = make_client.app
+    prefix = "/api/internal/v1/instruction-control/"
+    async with (
+        gateway_app(
+            db, app, monkeypatch, route=route, prices=DEFAULT_PRICES, budget="22"
+        ) as (host, binding, issuer, body, settings),
+        httpx.AsyncClient(
+            base_url="https://localhost", transport=httpx.ASGITransport(app=app)
+        ) as http,
+    ):
+        headers = {
+            "Authorization": "Bearer " + issuer.instruction_ticket(binding).token,
+            "X-Instruction-Gateway": str(binding.gateway),
+            "X-Instruction-Attempt": str(binding.attempt),
+        }
+        response = await http.post(
+            prefix + "claim",
+            headers=headers,
+            json={
+                "credential_id": str(binding.credential),
+                "provider": route.provider,
+                "endpoint": route.base_url + "/responses",
+                "turn_id": "replay",
+                "body": body,
+            },
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["outgoing"]["max_output_tokens"] == 64
+        task, attempt = str(binding.task), str(binding.attempt)
+        async with host() as svc:
+            reserved = (await svc.repo.get_task(task))["budget"]["reserved"]
+            assert Decimal(reserved) == Decimal("20.977920")
+        settings.workbench_model_prices = lambda: (
+            PRICES
+        )  # settlement uses the original quote
+        bill = {
+            "turn_id": "replay",
+            "response_id": "local-replay",
+            "usage": {
+                "input_tokens": 176,
+                "output_tokens": 24,
+                "total_tokens": 200,
+                "input_tokens_details": {
+                    "cached_tokens": cached,
+                    "cache_write_tokens": written,
+                },
+                "output_tokens_details": {"reasoning_tokens": 18},
+            },
+        }
+        for completed in (False, True):
+            response = await http.post(prefix + "receipt", headers=headers, json=bill)
+            assert response.status_code == 200, response.text
+            if not completed:
+                async with host() as svc:
+                    await Ledger(svc.repo).attempt_transition(
+                        attempt, AttemptState.COMPLETED
+                    )
+        async with host() as svc:
+            budget = (await svc.repo.get_task(task))["budget"]
+            assert Decimal(budget["used"]) == Decimal(expected)
+            assert Decimal(budget["reserved"]) == 0
+            charges = [
+                row
+                for row in await svc.repo.ledger_list(task)
+                if row["entry"] == "consume"
+            ]
+            assert len(charges) == 1
+            assert charges[0]["amount"] == Decimal(expected)
+            assert charges[0]["tokens"] == {
+                "input": 176 - cached - written,
+                "cached_input": cached,
+                "cache_write": written,
+                "output": 24,
+                "total": 200,
+            }
 
 
 @asynccontextmanager

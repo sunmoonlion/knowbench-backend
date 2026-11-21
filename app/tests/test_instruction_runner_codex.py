@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import threading
+from decimal import Decimal
 from functools import partial
 from http.server import HTTPServer
 from types import SimpleNamespace
@@ -30,7 +31,12 @@ from app.interfaces.http.internal import instruction_control
     os.getenv("RUN_CODEX_INSTRUCTION_PROBE") != "1",
     reason="requires pinned local Codex and Docker",
 )
-async def test_real_instruction_runner(db, make_client, monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "late_receipt", [False, True], ids=["runner-restart", "receipt-delay"]
+)
+async def test_real_instruction_runner(
+    db, make_client, monkeypatch, tmp_path, late_receipt
+):
     s = await stack(db)
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
@@ -160,6 +166,19 @@ async def test_real_instruction_runner(db, make_client, monkeypatch, tmp_path):
                                     tls_context=tls,
                                 )
 
+                                if late_receipt:
+                                    normal_post = control._post
+
+                                    def delay_receipt(operation, payload):
+                                        if operation == "receipt":
+                                            raise ConnectionResetError(
+                                                "test receipt link unavailable"
+                                            )
+                                        return normal_post(operation, payload)
+
+                                    monkeypatch.setattr(control, "_post", delay_receipt)
+                                relay.gateway_control = control
+
                                 def local_provider(host, port, *, timeout):
                                     assert (
                                         host == "instruction.example.test"
@@ -193,10 +212,32 @@ async def test_real_instruction_runner(db, make_client, monkeypatch, tmp_path):
                             raise asyncio.CancelledError
                         await commit_result(*args, **kwargs)
 
-                    s.driver.finish = lose_runner
-                    with pytest.raises(asyncio.CancelledError):
+                    if late_receipt:
                         await asyncio.wait_for(drive(s), 45)
-                    s.driver.finish = commit_result
+                        async with s.host() as svc:
+                            pending_task = await svc.repo.get_task(s.task)
+                            (pending,) = await svc.repo.list_attempts(s.task)
+                            assert pending_task["state"] == "RUNNING"
+                            assert pending["status"] == "RUNNING"
+                            assert "instruction_usage" not in pending["refs"]
+                            assert "formal_result" not in pending["refs"]
+                            assert Decimal(pending_task["budget"]["reserved"]) > 0
+                        assert relay.gateway_control.proof.exists()
+                        fresh_control = gateway.InstructionControl(
+                            origin,
+                            gateway_uid=s.units.uid,
+                            attempt_id=str(pending["id"]),
+                            ticket_file=tmp_path / "ticket",
+                            credential_file=tmp_path / "provider",
+                            receipt_dir=tmp_path,
+                            tls_context=tls,
+                        )
+                        assert await asyncio.to_thread(fresh_control.reconcile)
+                    else:
+                        s.driver.finish = lose_runner
+                        with pytest.raises(asyncio.CancelledError):
+                            await asyncio.wait_for(drive(s), 45)
+                        s.driver.finish = commit_result
                     for _ in range(5):
                         await s.runner.run_once()
                         if active := s.runner.driving.get(s.task):
@@ -213,6 +254,8 @@ async def test_real_instruction_runner(db, make_client, monkeypatch, tmp_path):
                     assert task["state"] == "SUCCEEDED", attempt["refs"].get(
                         "formal_result"
                     )
+                    assert Decimal(task["budget"]["reserved"]) == 0
+                    assert Decimal(task["budget"]["used"]) == Decimal("0.000006")
                     assert len(fixtures.captures) == initial + 1
                     assert (
                         attempt["refs"]["formal_result"]["outputs"] == provider.output

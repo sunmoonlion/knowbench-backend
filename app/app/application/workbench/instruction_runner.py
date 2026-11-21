@@ -247,11 +247,12 @@ class InstructionRunner:
                 if not expired and thread != dispatch.get("thread"):
                     return
                 if outputs is not None:
+                    turn = refs.get("runtime_turn_id")
+                    claim = refs.get("instruction_request") or {}
                     if (
                         not dispatch
-                        or not refs.get("instruction_usage")
-                        or refs["instruction_usage"]["turn_id"]
-                        != refs.get("runtime_turn_id")
+                        or not turn
+                        or claim.get("turn_id") != turn
                         or refs["instruction_unit"].get("protocol_error")
                         or refs.get("permission_revocation")
                     ):
@@ -264,6 +265,15 @@ class InstructionRunner:
                             "Instruction output requires a direct method"
                         )
                     outputs = validate_values(step.outputs, outputs)
+                    bill = refs.get("instruction_usage")
+                    if bill is None:
+                        # The gateway may still be delivering its durable receipt.
+                        # Re-read this same worker turn on the next runner poll.
+                        return
+                    if bill["turn_id"] != turn:
+                        raise CapabilityError(
+                            "Usage belongs to another instruction turn"
+                        )
                 result = {
                     "outcome": "failed" if code else "succeeded",
                     "outputs": outputs or {},
