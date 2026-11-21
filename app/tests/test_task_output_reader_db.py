@@ -28,7 +28,8 @@ from app.application.workbench.task_output_reader import (
 )
 from app.application.workbench.test_runs import KnowbotTestConductor
 from app.bootstrap.workbench import workbench_stores
-from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.capabilities import AssetAction, CapabilityError
+from app.domain.workbench.errors import NotFound
 from app.domain.workbench.formal_execution import FORMAL_RUNTIME
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
@@ -67,7 +68,14 @@ async def reader(db):
             ),
         }
     )
-    licenses = ()
+    identity = {
+        "kind": "mcp",
+        "source": URL,
+        "version": policy.version,
+        "entry": TOOL,
+        "digest": "sha256:" + policy.descriptor_digest,
+    }
+    licenses = (license_record(identity),)
 
     def factory(repo):
         return Capabilities(
@@ -82,15 +90,34 @@ async def reader(db):
     async with db() as session:
         repo = WorkbenchRepository(session)
         svc = factory(repo)
-        await svc.create_connection(
+        catalog = svc.formal_sources
+        assert (await catalog.sources("author"))["items"] == []
+        with pytest.raises(NotFound):
+            await catalog.validate(
+                validation_request(
+                    {
+                        **identity,
+                        "asset_id": str(uuid4()),
+                        "asset_revision": 1,
+                        "license_basis": licenses[0].basis,
+                    }
+                ),
+                caller="knowlab",
+            )
+        asset = await svc.create_connection(
             OWNER,
             body(key="read-platform-output").model_copy(
                 update={"url": URL, "token": None}
             ),
         )
-        source = (await svc.formal_sources.sources("author"))["items"][0]
-        licenses = (license_record(source),)
-        source = (await factory(repo).formal_sources.sources("author"))["items"][0]
+        [source] = (await catalog.sources("author"))["items"]
+        assert source == {
+            **identity,
+            "asset_id": asset["id"],
+            "asset_revision": asset["revision"],
+            "license_basis": licenses[0].basis,
+        }
+        assert (await catalog.sources("other"))["items"] == []
         for owner, selection in [
             (OTHER, args),
             (OWNER, {**args, "version": 2}),
@@ -99,6 +126,38 @@ async def reader(db):
             with pytest.raises(CapabilityError):
                 await selected_output(repo, owner, selection)
     return args, source, producer.request.execution.runner, factory, remote
+
+
+async def test_disabled_registration_stops_output_reader_before_approval_and_dispatch(
+    db,
+):
+    args, source, account, factory, remote = await reader(db)
+    req = request_for(args, source, account, "host")
+    ctx = SimpleNamespace(
+        request=req,
+        factory=factory,
+        conductor=KnowbotTestConductor(
+            workbench_stores(db), formal_capabilities=factory
+        ),
+    )
+    await accept_request(db, ctx)
+    pending = await advance(db, ctx)
+    [action] = pending["actions"]
+    async with db() as session:
+        svc = factory(WorkbenchRepository(session))
+        await svc.action(
+            OWNER,
+            source["asset_id"],
+            AssetAction(action="disable", revision=source["asset_revision"]),
+        )
+        assert (await svc.formal_sources.sources("author"))["items"] == []
+        call = await svc.repo.capability_call(OWNER, action["call_id"])
+        with pytest.raises(CapabilityError, match="Installed source changed"):
+            await svc.decide(OWNER, call["id"], approval(call))
+        stored = await svc.repo.capability_call(OWNER, call["id"])
+        assert stored["status"] == "awaiting_approval"
+        assert "result" not in stored["detail"]
+    assert not remote.calls
 
 
 def request_for(args, source, runner, caller):
