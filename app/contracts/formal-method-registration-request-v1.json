@@ -198,6 +198,16 @@
           },
           "title": "Promises",
           "type": "object"
+        },
+        "conditions": {
+          "maxProperties": 30,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "$ref": "#/$defs/PromiseCondition"
+            }
+          },
+          "title": "Conditions",
+          "type": "object"
         }
       },
       "required": [
@@ -997,6 +1007,33 @@
         "max_replans"
       ],
       "title": "Orchestration",
+      "type": "object"
+    },
+    "PromiseCondition": {
+      "additionalProperties": false,
+      "properties": {
+        "when": {
+          "maxLength": 20000,
+          "minLength": 1,
+          "pattern": "\\S",
+          "title": "When",
+          "type": "string"
+        },
+        "input_slots": {
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Input Slots",
+          "type": "array"
+        }
+      },
+      "required": [
+        "when",
+        "input_slots"
+      ],
+      "title": "PromiseCondition",
       "type": "object"
     },
     "ResourceScope": {

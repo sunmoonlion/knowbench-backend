@@ -58,4 +58,5 @@ def positive_fields(declaration):
         declaration.purpose,
         *declaration.promises.values(),
         *declaration.applies_when,
+        *(item.when for item in declaration.conditions.values()),
     )

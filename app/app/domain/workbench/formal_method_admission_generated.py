@@ -331,6 +331,11 @@ class FrozenFormalMethod(Strict):
             raise ValueError("Frozen identity differs from its validation receipt")
         execution = self.validation.execution
         if (
+            self.draft.definition.capability_declaration.conditions
+            and execution is None
+        ):
+            raise ValueError("Conditional delivery promises require execution evidence")
+        if (
             "model" in self.draft.allowed_callers
             and execution is None
             or execution is not None

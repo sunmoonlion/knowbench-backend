@@ -222,7 +222,8 @@ class FormalMethodRepositoryMixin:
             concat_ws(' ', document#>>'{{draft,definition,capability_declaration,title}}',
               document#>>'{{draft,definition,capability_declaration,purpose}}',
               document#>>'{{draft,definition,capability_declaration,applies_when}}',
-              document#>>'{{draft,definition,capability_declaration,promises}}') AS positive_text
+              document#>>'{{draft,definition,capability_declaration,promises}}',
+              jsonb_path_query_array(document, '$.draft.definition.capability_declaration.conditions.*.when')::text) AS positive_text
           FROM workbench_formal_methods WHERE caller='knowlab' {pin} {grant_filter}
             AND document#>>'{{reference,digest}}' = digest
             AND document#>>'{{reference,method_id}}' = method_id::text

@@ -434,6 +434,21 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
     updated["draft"]["definition"]["capability_declaration"]["title"] = (
         "Updated synthetic notice"
     )
+    from app.domain.workbench.formal_method_execution_generated import (
+        FormalTestSuiteDraft,
+    )
+
+    declaration = updated["draft"]["definition"]["capability_declaration"]
+    promise = next(iter(declaration["promises"]))
+    declaration["conditions"] = {
+        promise: {"when": "Certified ledger reconciliations", "input_slots": ["to"]}
+    }
+    suite = updated["execution"]["suite"]
+    suite.pop("digest")
+    suite["cases"][0]["covers_promises"] = [promise]
+    updated["execution"]["suite"] = (
+        FormalTestSuiteDraft.model_validate(suite).freeze().model_dump(mode="json")
+    )
     trial = FormalMethodExecutionRequest.model_validate(updated)
 
     async with db() as sql:
@@ -537,6 +552,15 @@ async def test_question_and_declaration_search_use_qualified_versions_and_pinned
             ]
             assert page.json()["next"] == (1 if offset == 0 else None)
         english_check = market.checks[-1]
+        conditional = await http.post(
+            url,
+            params={"limit": 1},
+            json={"stage": "composition", "question": "certified reconciliations"},
+        )
+        assert conditional.json()["items"][0]["method_id"] == str(v2.method_id)
+        detail = await http.post(url + "/declaration", json=v2.model_dump(mode="json"))
+        assert detail.json()["promise_outputs"][promise] == ["receipt"]
+        assert detail.json()["declaration"]["conditions"] == declaration["conditions"]
         chinese = await http.post(
             url,
             params={"limit": 1},

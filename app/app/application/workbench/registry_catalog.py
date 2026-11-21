@@ -211,8 +211,14 @@ class SceneRegistry:
             raise CapabilityError(
                 "Registered declaration differs from the requested version"
             )
+        outputs = {}
+        for rule in definition.how_to_validate:
+            outputs.setdefault(rule.promise_id, {}).update(dict.fromkeys(rule.outputs))
         return {
             "reference": self.reference(rows[0]),
+            "promise_outputs": {
+                promise: list(names) for promise, names in outputs.items()
+            },
             "declaration": definition.capability_declaration.model_dump(mode="json"),
         }
 

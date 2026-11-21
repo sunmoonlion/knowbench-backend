@@ -25,6 +25,7 @@ from app.domain.workbench.formal_method_admission_generated import (
 from app.domain.workbench.formal_method_generated import (
     Digest,
     MethodRef,
+    Name,
     Strict,
     ToolProcedure,
 )
@@ -132,6 +133,9 @@ class FormalCaseExpectation(Strict):
 
 
 class FormalExecutionCase(Strict):
+    covers_promises: tuple[Name, ...] = Field(
+        default=(), max_length=30, exclude_if=lambda value: not value
+    )
     case_id: CaseId
     caller: Caller = Field(default="host", exclude_if=lambda value: value == "host")
     input: FormalCaseInput
@@ -141,6 +145,11 @@ class FormalExecutionCase(Strict):
 
     @model_validator(mode="after")
     def threshold(self):
+        if self.covers_promises and (
+            self.expected.outcome != "succeeded"
+            or len(set(self.covers_promises)) != len(self.covers_promises)
+        ):
+            raise ValueError("Only positive cases can cover distinct delivery promises")
         if self.minimum_passes > self.repetitions:
             raise ValueError("Minimum passes exceeds repetitions")
         if (self.caller == "model") != (self.input.model_prompt is not None):
@@ -289,8 +298,40 @@ class FormalMethodExecutionRequest(Strict):
     def fingerprint(self) -> str:
         return fingerprint(self.model_dump(mode="json", by_alias=True))
 
+    def validate_promise_coverage(self):
+        definition = self.draft.definition
+        declaration = definition.capability_declaration
+        required_outputs: dict[str, set[str]] = {}
+        for rule in definition.how_to_validate:
+            required_outputs.setdefault(rule.promise_id, set()).update(rule.outputs)
+        covered = set()
+        for case in self.execution.suite.cases:
+            checked = set()
+            for assertion in case.expected.assertions:
+                if assertion.pointer:
+                    # Public output names use Name, so no pointer escaping is needed.
+                    checked.add(assertion.pointer.split("/", 2)[1])
+                elif isinstance(assertion, EqualsAssertion) and isinstance(
+                    assertion.value, dict
+                ):
+                    checked.update(assertion.value)
+            for promise in case.covers_promises:
+                if promise not in declaration.promises:
+                    raise ValueError("Case refers to an unknown delivery promise")
+                condition = declaration.conditions.get(promise)
+                if condition and set(condition.input_slots) - case.input.values.keys():
+                    raise ValueError("Case lacks the inputs for this delivery promise")
+                if required_outputs[promise] - checked:
+                    raise ValueError("Case needs assertions for every promised output")
+                covered.add(promise)
+        if declaration.conditions and covered != declaration.promises.keys():
+            raise ValueError(
+                "Conditional declarations need cases covering every promise"
+            )
+
     @model_validator(mode="after")
     def supported(self):
+        self.validate_promise_coverage()
         p = self.draft.definition.procedure
         if isinstance(p, ToolProcedure):
             if self.dependencies:

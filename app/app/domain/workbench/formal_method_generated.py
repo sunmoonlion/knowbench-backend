@@ -35,12 +35,26 @@ class MethodRef(Strict):
     digest: Digest
 
 
+class PromiseCondition(Strict):
+    when: Text
+    input_slots: tuple[Name, ...] = Field(max_length=100)
+
+
 class CapabilityDeclaration(Strict):
     title: Text
     purpose: Text
     applies_when: tuple[Text, ...] = Field(min_length=1, max_length=30)
     excludes: tuple[Text, ...] = Field(max_length=30)
     promises: dict[Name, Text] = Field(min_length=1, max_length=30)
+    conditions: dict[Name, PromiseCondition] = Field(
+        default_factory=dict, max_length=30, exclude_if=lambda value: not value
+    )
+
+    @model_validator(mode="after")
+    def declared_conditions(self):
+        if self.conditions.keys() - self.promises.keys():
+            raise ValueError("A delivery condition must refer to a declared promise")
+        return self
 
 
 class ValueSlot(Strict):
@@ -395,6 +409,15 @@ class FormalMethodDefinition(Strict):
                                 "Resource input must name a declared permission role"
                             )
         views = self.interfaces()  # Also detects conflicting external names.
+        for condition in self.capability_declaration.conditions.values():
+            slots = set(condition.input_slots)
+            if (
+                len(slots) != len(condition.input_slots)
+                or slots - views["inputs"].keys()
+            ):
+                raise ValueError(
+                    "Condition inputs must name distinct public input slots"
+                )
         for rule in self.how_to_validate:
             if not set(rule.outputs) <= views["outputs"].keys():
                 raise ValueError("Validation must name generated public outputs")
