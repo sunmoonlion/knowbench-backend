@@ -5,6 +5,7 @@ from app.domain.workbench.capabilities import (
     CapabilityOutcomeUnknown,
     digest,
 )
+from app.domain.workbench.fact_function import FACT_QUERIES
 from app.domain.workbench.tool_schema import schema_validator
 
 
@@ -14,16 +15,11 @@ class FactFunction:
 
     async def invoke(self, revision, *, subject, sandbox, call_id, arguments):
         if (
-            revision.provider,
-            revision.name,
-            revision.version,
-            revision.contract.operation,
-        ) != (
-            "knowbase",
-            "query_facts",
-            1,
-            "query_facts",
-        ) or revision.contract.required_permissions != ["facts.read"]:
+            (revision.provider, revision.version) != ("knowbase", 1)
+            or revision.name not in FACT_QUERIES
+            or revision.contract.operation != revision.name
+            or revision.contract.required_permissions != ["facts.read"]
+        ):
             raise CapabilityError("Unsupported fact query binding")
         if not schema_validator(revision.contract.input_schema).is_valid(arguments):
             raise CapabilityError("Invalid registered function input")
@@ -35,7 +31,7 @@ class FactFunction:
             "digest": revision.digest,
             "arguments": arguments,
         }
-        receipt = await self.client.invoke_query_facts(ticket.token, body)
+        receipt = await self.client.invoke_fact_query(revision.name, ticket.token, body)
         if (
             not isinstance(receipt, dict)
             or receipt.get("call_id") != str(call_id)

@@ -6,14 +6,23 @@ from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.tool_registry import ToolRegistration
 
 # Logical permission destination; transport resolves only the configured internal KnowBase.
-DESTINATION = "https://knowbase/api/internal/v1/functions/query_facts/1"
+FACT_QUERIES = frozenset({"query_facts", "query_metric"})
+
+
+def destination(name):
+    if name not in FACT_QUERIES:
+        raise CapabilityError("Unsupported KnowBase query")
+    return f"https://knowbase/api/internal/v1/functions/{name}/1"
 
 
 def require_fact_source(source):
-    if (source.kind, source.source, source.entry, source.version) != (
+    if source.entry not in FACT_QUERIES or (
+        source.kind,
+        source.source,
+        source.version,
+    ) != (
         "service_function",
         "knowbase",
-        "query_facts",
         "1",
     ):
         raise CapabilityError("Unsupported service function revision")
@@ -21,7 +30,9 @@ def require_fact_source(source):
 
 def descriptor(revision):
     if (
-        revision.contract.operation != "query_facts"
+        (revision.provider, revision.version) != ("knowbase", 1)
+        or revision.name not in FACT_QUERIES
+        or revision.contract.operation != revision.name
         or revision.contract.required_permissions != ["facts.read"]
     ):
         raise CapabilityError(
@@ -39,7 +50,7 @@ def descriptor(revision):
     schema["additionalProperties"] = False
     schema["required"] = sorted(set(schema.get("required", [])) | {"scope"})
     return {
-        "name": "query_facts",
+        "name": revision.name,
         "description": revision.contract.description,
         "inputSchema": schema,
     }
@@ -49,4 +60,6 @@ def registration(source, tool):
     require_fact_source(source)
     if tool.get("name") != source.entry:
         raise CapabilityError("Function name differs from the pinned source")
-    return ToolRegistration.discover("service_function", DESTINATION, tool)
+    return ToolRegistration.discover(
+        "service_function", destination(source.entry), tool
+    )

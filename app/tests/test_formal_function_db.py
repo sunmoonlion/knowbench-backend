@@ -24,7 +24,7 @@ from app.application.workbench.tokens import TokenIssuer
 from app.bootstrap.workbench import workbench_stores
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.capability_contract import Call
-from app.domain.workbench.fact_function import DESTINATION, descriptor, registration
+from app.domain.workbench.fact_function import descriptor, destination, registration
 from app.domain.workbench.formal_execution import FORMAL_RUNTIME
 from app.domain.workbench.formal_method_admission_generated import FormalMethodSource
 from app.domain.workbench.formal_method_execution_generated import (
@@ -58,7 +58,18 @@ async def test_approved_host_function_freezes_with_exact_provider_receipt(db):
     await exercise_function(db, rev, issuer, ["row-1"])
 
 
-async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=None):
+async def exercise_function(
+    db,
+    rev,
+    issuer,
+    expected,
+    *,
+    forward=None,
+    grant=None,
+    query=None,
+    output_name="facts",
+):
+    arguments = {"scope": "run", **(query or {})}
     admission, _ = await admission_setup(db)
     env, _, _ = await seed(db)
     async with db() as s:
@@ -70,8 +81,8 @@ async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=No
     tool = registration(source, descriptor(rev))
     op = FORMAL_OPERATION.model_copy(
         update={
-            "operation": "query_facts",
-            "service_url": DESTINATION,
+            "operation": rev.name,
+            "service_url": destination(rev.name),
             "tool_name": tool.name,
             "effect": "read",
             "descriptor_digest": tool.descriptor_digest,
@@ -88,17 +99,17 @@ async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=No
     slot = proc["inputs"]["to"]
     proc.update(
         implementation=pin(rev) | {"requirement_ids": [ACCESS["requirement_id"]]},
-        inputs={"scope": slot},
+        inputs={name: slot for name in arguments},
         outputs={
-            "facts": slot
-            | {"schema": rev.contract.output_schema["properties"]["facts"]}
+            name: slot | {"schema": schema}
+            for name, schema in rev.contract.output_schema["properties"].items()
         },
     )
-    definition["how_to_validate"][0]["outputs"] = ["facts"]
+    definition["how_to_validate"][0]["outputs"] = [output_name]
     definition["access_requirements"] = [
         ACCESS
         | {
-            "operations": ["query_facts"],
+            "operations": [rev.name],
             "resources": [
                 {
                     "resource_role": "scope",
@@ -107,20 +118,22 @@ async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=No
                 }
             ],
             "data_transfer": {
-                "destination": DESTINATION,
-                "argument_fields": ["scope"],
+                "destination": destination(rev.name),
+                "argument_fields": list(arguments),
                 "purpose": "Query this test's facts",
             },
         }
     ]
     case = {
         "case_id": "query",
-        "input": {"values": {"scope": "run"}},
+        "input": {"values": arguments},
         "repetitions": 1,
         "minimum_passes": 1,
         "expected": {
             "outcome": "succeeded",
-            "assertions": [{"kind": "equals", "pointer": "/facts", "value": expected}],
+            "assertions": [
+                {"kind": "equals", "pointer": "/" + output_name, "value": expected}
+            ],
         },
     }
     suite = FormalTestSuiteDraft(suite_id=uuid4(), version=1, cases=[case]).freeze()
@@ -145,7 +158,7 @@ async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=No
     sent = []
 
     async def provider(req):
-        assert req.url.path == "/api/internal/v1/functions/query_facts/1"
+        assert req.url.path == f"/api/internal/v1/functions/{rev.name}/1"
         body = json.loads(req.content)
         claims = jwt.decode(req.headers["authorization"].split()[1], issuer.key).claims
         assert claims["sub"] == "author" and claims["aud"] == "knowbase-function"
@@ -154,7 +167,7 @@ async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=No
             and claims["function_digest"] == rev.digest == body["digest"]
         )
         assert claims["arguments_digest"] == digest(body["arguments"])
-        assert body["arguments"] == {"scope": "run", "run": scope_ref}
+        assert body["arguments"] == arguments | {"run": scope_ref}
         sent.append(body)
         if forward:
             return await forward(req)
@@ -205,7 +218,12 @@ async def exercise_function(db, rev, issuer, expected, *, forward=None, grant=No
     # Fixed expert with two visits to the same pinned function. Each visit needs
     # its own approval even when both read the same case grant.
     expert = plan_request(
-        request, leaf, case, input_name="scope", output_name="facts", repeat_input=True
+        request,
+        leaf,
+        case,
+        input_name="scope",
+        output_name=output_name,
+        repeat_input=True,
     )
     scope_ref = f"{expert.run_id}:expert:1"
     async with db() as s:

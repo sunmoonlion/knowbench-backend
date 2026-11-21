@@ -120,7 +120,6 @@ def plan_request(
     definition = deepcopy(document["draft"]["definition"])
     if expert_purpose:
         definition["capability_declaration"]["purpose"] = expert_purpose
-    slot = definition["procedure"]["inputs"][input_name]
     output = definition["procedure"]["outputs"][output_name]
     steps = []
     for name, binding, depends in (
@@ -141,7 +140,15 @@ def plan_request(
                 "required_when": "Always",
                 "always_required": True,
                 "depends_on": depends,
-                "inputs": {input_name: {"slot": slot, "binding": binding}},
+                "inputs": {
+                    key: {
+                        "slot": input_slot,
+                        "binding": binding
+                        if key == input_name
+                        else {"source": "caller", "name": key},
+                    }
+                    for key, input_slot in definition["procedure"]["inputs"].items()
+                },
                 "outputs": {output_name: output},
                 "on_failure": "fail",
             }

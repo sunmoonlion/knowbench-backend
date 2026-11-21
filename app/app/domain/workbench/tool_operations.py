@@ -255,9 +255,11 @@ class OperationCatalog:
             raise CapabilityError(
                 "Tool has no matching reviewed operation; contact the administrator"
             )
-        from app.domain.workbench.fact_function import DESTINATION
+        from app.domain.workbench.fact_function import FACT_QUERIES, destination
 
-        if (tool.service == DESTINATION) != (tool.source == "service_function"):
+        if (tool.service in {destination(name) for name in FACT_QUERIES}) != (
+            tool.source == "service_function"
+        ):
             raise CapabilityError(
                 "Registered service functions have a dedicated dispatch path"
             )

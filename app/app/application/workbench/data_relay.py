@@ -29,19 +29,20 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.records import ProjectRecords, as_id
 from app.application.workbench.tokens import TokenIssuer
 from app.domain.workbench.errors import RecordsRefused, UserDataUnavailable
+from app.domain.workbench.fact_function import FACT_QUERIES
 from app.domain.workbench.knowbots import DATA_MCP_TOOLS
 from app.domain.workbench.native_functions import workbench_data_descriptor
 
 NO_SCOPE = frozenset({"describe_items", "lookup"})
 # 中继的工具：专家步骤能用的那几个，加会话里列他名下资料的 list_library
-RELAYED = (DATA_MCP_TOOLS | {"list_library"}) - {"query_facts"}
+RELAYED = (DATA_MCP_TOOLS | {"list_library"}) - FACT_QUERIES
 _TOOLS_TTL_SECONDS = 600
 _tools_cache: OrderedDict[tuple, tuple[float, list[dict[str, Any]]]] = OrderedDict()
 log = logging.getLogger(__name__)
 
 
 class KnowbaseDataMcp(Protocol):
-    async def invoke_query_facts(self, token: str, body: dict) -> dict: ...
+    async def invoke_fact_query(self, name: str, token: str, body: dict) -> dict: ...
 
     async def data_mcp(self, token: str, message: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -160,7 +161,7 @@ class DataRelay:
             await self.records._noted(working, name)
         return {**reply, "id": mid}
 
-    async def query_facts(self, revision, args, call_id):
+    async def fact_query(self, revision, args, call_id):
         from app.application.workbench.fact_function import FactFunction
 
         if not self.available:
@@ -169,7 +170,7 @@ class DataRelay:
             args.get("scope") == "market" and ("task" in args or "conversation" in args)
         ):
             raise RecordsRefused("Use one data scope for this fact query")
-        working, forwarded = await self.forward_arguments("query_facts", args)
+        working, forwarded = await self.forward_arguments(revision.name, args)
         forwarded.setdefault("scope", "run")
         receipt = await FactFunction(self.knowbase, self.issuer).invoke(
             revision,
@@ -179,7 +180,7 @@ class DataRelay:
             arguments=forwarded,
         )
         if working is not None:
-            await self.records._noted(working, "query_facts", call_id=call_id)
+            await self.records._noted(working, revision.name, call_id=call_id)
         return receipt["output"]
 
     async def forward_arguments(self, name, args):

@@ -317,7 +317,7 @@ class FakeDataMcp:
     def __init__(self) -> None:
         self.seen: list[tuple[dict, dict]] = []
 
-    async def invoke_query_facts(self, token, body):
+    async def invoke_fact_query(self, name, token, body):
         from joserfc import jwt
 
         claims = jwt.decode(token, ISSUER.key).claims

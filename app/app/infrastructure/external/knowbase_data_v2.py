@@ -327,15 +327,17 @@ class KnowbaseDataV2(KnowbaseClient):
             token,
         )
 
-    async def invoke_query_facts(self, token, body):
+    async def invoke_fact_query(self, name, token, body):
         from app.domain.workbench.capabilities import (
             CapabilityError,
             CapabilityOutcomeUnknown,
         )
+        from app.domain.workbench.fact_function import FACT_QUERIES
 
+        if name not in FACT_QUERIES:
+            raise CapabilityError("Unsupported KnowBase function")
         url = (
-            self._base().removesuffix(BASE_V2)
-            + "/api/internal/v1/functions/query_facts/1"
+            self._base().removesuffix(BASE_V2) + f"/api/internal/v1/functions/{name}/1"
         )
         try:
             async with httpx.AsyncClient(

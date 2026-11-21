@@ -377,7 +377,7 @@ class FormalHostCalls:
                 or caller != "host"
                 or policy.read_result_id_field
                 or policy.effect != "read"
-                or policy.operation != "query_facts"
+                or policy.operation != source.entry
             ):
                 raise CapabilityError("Missing reviewed host fact-query policy")
             if not any(
