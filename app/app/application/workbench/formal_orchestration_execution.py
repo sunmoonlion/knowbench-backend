@@ -11,10 +11,10 @@ from app.domain.workbench.formal_execution import (
     execution_slot,
     execution_steps,
     expanded_plan,
+    fixed_step_outputs,
     orchestration_plan,
     recursive_plan,
     snapshot_for_task,
-    structured_outputs,
 )
 from app.domain.workbench.formal_host import validate_host_call
 from app.domain.workbench.formal_method_execution_generated import bounded_json
@@ -178,6 +178,8 @@ class FormalOrchestrationExecution:
         self.stores, self.capabilities = stores, capabilities
 
     async def drive(self, task_id):
+        from app.application.workbench.formal_recursive_runtime import settle_ancestors
+
         # Each pass advances at most the declared step count. I/O never runs
         # inside the Task transaction and a pending action returns to the caller.
         for _ in range(1001):
@@ -188,10 +190,6 @@ class FormalOrchestrationExecution:
                     if task["state"] in (TaskState.FAILED, TaskState.CANCELLED):
                         snapshot = snapshot_for_task(task)
                         if recursive_plan(snapshot):
-                            from app.application.workbench.formal_recursive_runtime import (
-                                settle_ancestors,
-                            )
-
                             await settle_ancestors(
                                 repo,
                                 task,
@@ -263,10 +261,6 @@ class FormalOrchestrationExecution:
                             )
                             await execution_scopes(repo, task, snapshot)
                         except (CapabilityError, ValueError) as exc:
-                            from app.application.workbench.formal_recursive_runtime import (
-                                settle_ancestors,
-                            )
-
                             await settle_ancestors(
                                 repo,
                                 task,
@@ -363,6 +357,14 @@ class FormalOrchestrationExecution:
                                 "failed",
                                 {**child["detail"], "error": str(exc)},
                             )
+                            if recursive_plan(snapshot):
+                                await settle_ancestors(
+                                    repo,
+                                    task,
+                                    snapshot,
+                                    outcome="failed",
+                                    detail=str(exc),
+                                )
                             return (
                                 await led.transition(
                                     task_id,
@@ -455,13 +457,8 @@ class FormalOrchestrationExecution:
                     try:
                         outputs = validate_step_outputs(
                             step,
-                            (
-                                call["detail"]["result"]["structuredContent"]
-                                if call["detail"]["execution_kind"]
-                                == "formal_instruction"
-                                else structured_outputs(
-                                    frozen.draft, call["detail"].get("result") or {}
-                                )
+                            fixed_step_outputs(
+                                frozen.draft, call["detail"].get("result") or {}
                             ),
                         )
                         bounded_json(outputs)

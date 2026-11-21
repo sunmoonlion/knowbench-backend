@@ -251,6 +251,17 @@ class FormalHostCalls:
                 method_call_id=child["id"],
                 inputs_digest=digest(arguments),
             )
+        if scopes is not None:
+            from app.domain.workbench.formal_recursive import TREE_ADAPTER
+
+            leaf = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])]
+            host.update(
+                adapter=TREE_ADAPTER,
+                path=list(leaf.path),
+                parent_method_id=scopes[-1].method_id,
+                parent_method_call_id=refs["parent_method_call_id"],
+                root_method_call_id=refs["root_method_call_id"],
+            )
         if (
             step is not None
             and frozen is not None
@@ -301,6 +312,7 @@ class FormalHostCalls:
                 operation,
                 intent,
                 child,
+                scopes=scopes,
                 artifact_read=binding,
             )
         if step is not None:
@@ -350,17 +362,6 @@ class FormalHostCalls:
         )
         if not decision.requires_approval:
             raise CapabilityError("Formal external operations require exact approval")
-        if scopes is not None:
-            from app.domain.workbench.formal_recursive import TREE_ADAPTER
-
-            leaf = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])]
-            host.update(
-                adapter=TREE_ADAPTER,
-                path=list(leaf.path),
-                parent_method_id=scopes[-1].method_id,
-                parent_method_call_id=refs["parent_method_call_id"],
-                root_method_call_id=refs["root_method_call_id"],
-            )
         knowbase_read = None
         reader = self.capabilities.knowbase_reader
         if reader and asset["detail"].get("url") == reader.url:

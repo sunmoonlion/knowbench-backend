@@ -287,6 +287,52 @@ async def _approval(
     }
 
 
+def step_registration(leaf, inputs, refs, intent):
+    if leaf.draft.source.kind == "skill_instruction":
+        from app.application.workbench.instruction_leaf import leaf_operation
+
+        registration, _, _ = leaf_operation(
+            leaf,
+            inputs,
+            refs["instruction_quote"],
+            refs["instruction_request"]["job_digest"],
+        )
+        _require(
+            intent["tool"] == registration.descriptor(),
+            "instruction_descriptor_mismatch",
+        )
+    else:
+        registration = retained_registration(leaf.draft, intent["tool"])
+    return registration
+
+
+async def instruction_step_proof(repo, task, attempt, leaf, outputs, intent):
+    from app.application.workbench.formal_method_catalog import (
+        instruction_receipt_cost,
+    )
+    from app.application.workbench.instruction_evidence import instruction_evidence
+    from app.domain.workbench.formal_execution import validate_values
+
+    procedure = leaf.draft.definition.procedure
+    if procedure.kind != "direct":
+        raise ValueError("instruction_procedure_mismatch")
+    validate_values(
+        procedure.outputs,
+        intent["result"]["structuredContent"],
+    )
+    proof = await instruction_evidence(repo, task, attempt, leaf, outputs, leaf=True)
+    _require(proof is not None, "instruction_receipt_missing")
+    instruction_receipt_cost(
+        proof,
+        leaf.draft.source,
+        task["pack_digest"],
+        attempt["turn_ids"],
+        task["budget"]["currency"],
+        set(),
+    )
+    return proof
+
+
 async def _step_evidence(
     repo,
     owner,
@@ -404,21 +450,7 @@ async def _step_evidence(
         "method_call_id": str(child["id"]),
         "inputs_digest": digest(inputs),
     }
-    if source.kind == "skill_instruction":
-        from app.application.workbench.instruction_leaf import leaf_operation
-
-        registration, _, _ = leaf_operation(
-            leaf,
-            inputs,
-            refs["instruction_quote"],
-            refs["instruction_request"]["job_digest"],
-        )
-        _require(
-            intent["tool"] == registration.descriptor(),
-            "instruction_descriptor_mismatch",
-        )
-    else:
-        registration = retained_registration(leaf.draft, intent["tool"])
+    registration = step_registration(leaf, inputs, refs, intent)
     _require(
         str(call["id"]) == refs["capability_call_id"]
         and call["kind"] == "tool"
@@ -484,32 +516,9 @@ async def _step_evidence(
         "step_artifact_mismatch",
     )
     if source.kind == "skill_instruction":
-        from app.application.workbench.formal_method_catalog import (
-            instruction_receipt_cost,
+        item["governance"]["instruction"] = await instruction_step_proof(
+            repo, task, attempt, leaf, outputs, intent
         )
-        from app.application.workbench.instruction_evidence import instruction_evidence
-        from app.domain.workbench.formal_execution import validate_values
-
-        procedure = leaf.draft.definition.procedure
-        if procedure.kind != "direct":
-            raise ValueError("instruction_procedure_mismatch")
-        validate_values(
-            procedure.outputs,
-            intent["result"]["structuredContent"],
-        )
-        proof = await instruction_evidence(
-            repo, task, attempt, leaf, outputs, leaf=True
-        )
-        _require(proof is not None, "instruction_receipt_missing")
-        instruction_receipt_cost(
-            proof,
-            source,
-            task["pack_digest"],
-            attempt["turn_ids"],
-            task["budget"]["currency"],
-            set(),
-        )
-        item["governance"]["instruction"] = proof
         item["model_turn_ids"] = attempt["turn_ids"]
     accepted[step.id] = outputs
     versions.append({"step_id": step.id, **version})

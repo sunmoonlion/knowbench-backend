@@ -84,14 +84,6 @@ async def resolve_owned_plan(
             # Expansion counts invocations, including repeated references; only
             # immutable registration reads are deduplicated above.
             plan = expand_unique_plan(method_id, draft.definition, definitions)
-            if any(
-                f.draft.source and f.draft.source.kind == "skill_instruction"
-                for f in resolved.values()
-            ) and any(
-                isinstance(f.draft.definition.procedure, Orchestration)
-                for f in resolved.values()
-            ):
-                raise CapabilityError("Nested instruction dispatch is unavailable")
             compiled = compile_method(method_id, draft.definition, definitions)
         except ValueError as exc:
             raise CapabilityError(str(exc)) from exc

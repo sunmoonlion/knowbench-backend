@@ -42,14 +42,7 @@ async def planned_read(
     )
     if root is None:
         raise CapabilityError("Artifact recipient has no root method call")
-    path = [
-        {
-            "call_id": str(root["id"]),
-            "method_id": str(snapshot.method_id),
-            "definition_digest": snapshot.definition_digest,
-            "version": None,
-        }
-    ]
+    parent_id = root["id"]
     legs = []
     for depth in range(1, len(leaf.path) + 1):
         node = by_path[leaf.path[:depth]]
@@ -62,25 +55,51 @@ async def planned_read(
                 node_key(task["id"], node.path),
             )
         )
-        if call is None or str(call["parent_call_id"]) != path[-1]["call_id"]:
+        if call is None or str(call["parent_call_id"]) != str(parent_id):
             raise CapabilityError(
                 "Artifact recipient differs from the planned method path"
             )
+        parent_id = call["id"]
+        refs = call["detail"] if recursive else attempt["refs"]
+        legs.append((node, call["id"], refs["input_bindings"]))
+
+    binding = planned_binding(
+        task["id"],
+        task["owner_actor_id"],
+        snapshot,
+        root["id"],
+        legs,
+        arguments,
+        transfer,
+    )
+    return binding if include_empty or binding["fields"] else None
+
+
+def planned_binding(task_id, owner, snapshot, root_id, legs, arguments, transfer):
+    """Derive the same field recipients from live calls or sealed invocation facts."""
+    path = [
+        {
+            "call_id": str(root_id),
+            "method_id": str(snapshot.method_id),
+            "definition_digest": snapshot.definition_digest,
+            "version": None,
+        }
+    ]
+    inputs = []
+    for node, call_id, bindings in legs:
         path.append(
             {
-                "call_id": str(call["id"]),
+                "call_id": str(call_id),
                 "method_id": str(node.reference.method_id),
                 "version": node.reference.version,
                 "definition_digest": node.reference.digest,
             }
         )
-        refs = call["detail"] if recursive else attempt["refs"]
-        legs.append((node, {r["step_id"]: r for r in refs["input_bindings"]}))
-
+        inputs.append((node, {ref["step_id"]: ref for ref in bindings}))
     fields = {}
     for target in sorted(arguments):
         name = target
-        for node, artifacts in reversed(legs):
+        for node, artifacts in reversed(inputs):
             binding = node.step.inputs[name].binding
             if binding.source == "caller":
                 name = binding.name
@@ -98,11 +117,9 @@ async def planned_read(
                     "output": binding.output,
                 }
             break
-    if not fields and not include_empty:
-        return None
     return {
-        "task_id": str(task["id"]),
-        "owner_actor_id": str(task["owner_actor_id"]),
+        "task_id": str(task_id),
+        "owner_actor_id": str(owner),
         "path": path,
         "fields": fields,
         "purpose": transfer["purpose"],

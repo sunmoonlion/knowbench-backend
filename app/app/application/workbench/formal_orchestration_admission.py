@@ -10,6 +10,7 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
+from app.application.workbench.artifact_read_authority import planned_binding
 from app.application.workbench.script_budget import case_script_cost, verify_proof
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_adapter import script_registration
@@ -449,6 +450,7 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
     charges = Decimal(0)
     metering_ids = set()
     for case_evidence in evidence["cases"]:
+        case_charge = Decimal(0)
         for step_proof in case_evidence.get("steps", []):
             governance = step_proof.get("governance") or {}
             if "instruction" in governance:
@@ -458,7 +460,7 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                     dep.draft.source and dep.draft.source.kind == "skill_instruction",
                     "Unexpected instruction charge",
                 )
-                charges += instruction_receipt_cost(
+                case_charge += instruction_receipt_cost(
                     governance["instruction"],
                     dep.draft.source,
                     case_evidence["snapshot_digest"],
@@ -466,6 +468,13 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                     request.execution.budget.currency,
                     metering_ids,
                 )
+        if evidence["adapter"] == TREE_ADAPTER:
+            require(
+                Decimal(case_evidence["task"]["budget"]["used"])
+                == case_charge + case_script_cost(case_evidence),
+                "Sealed tree task budget changed",
+            )
+        charges += case_charge
     cost = Decimal(evidence["model_cost"])
     require(
         cost.is_finite()
@@ -612,7 +621,6 @@ def _tree_case(
         and task["state"] == "SUCCEEDED"
         and task["current_step"] == len(plan.leaf_nodes) - 1
         and datetime.fromisoformat(task["scope_deadline"]) == deadline
-        and Decimal(str(task["budget"].get("used", "0"))) == case_script_cost(item)
         and _zero(task["budget"].get("reserved", "0")),
         "Sealed tree task or budget changed",
     )
@@ -736,6 +744,39 @@ def _tree_case(
 
     grants, last_end, leaf_index = [], None, 0
 
+    def verify_instruction(node, raw, arguments):
+        governance = raw["governance"]
+        spent = raw["budget_consumed"]
+        path_prefixes = (node.path[:i] for i in range(1, len(node.path) + 1))
+        legs = [
+            (nodes[p], retained[p]["method_call_id"], retained[p]["input_bindings"])
+            for p in path_prefixes
+        ]
+        binding = planned_binding(
+            task_id,
+            owner,
+            snapshot,
+            root_id,
+            legs,
+            arguments,
+            governance["operation"]["data_transfer"],
+        )
+        read = governance["artifact_read"]
+        require(
+            read["binding"] == binding
+            and read["scope_digest"] == digest(binding)
+            and governance["confirmation_event"]["payload"]["artifact_read_digest"]
+            == read["grant_digest"],
+            "Sealed instruction input versions or destination changed",
+        )
+        usage = governance["instruction"]["usage"]
+        require(
+            raw["turn_ids"] == raw["model_turn_ids"]
+            and Decimal(spent["amount"]) == Decimal(usage["amount"])
+            and spent["tokens"] == usage["tokens"],
+            "Sealed instruction usage differs from its attempt",
+        )
+
     def visit(definition, inputs, path, parent_id):
         nonlocal last_end, leaf_index
         validate_plan_inputs(definition, inputs)
@@ -802,11 +843,6 @@ def _tree_case(
                     and raw["status"] == "COMPLETED"
                     and raw["outcome"] == "succeeded"
                     and raw["slot"] == node_slot(node.path)
-                    and raw["turn_ids"] == []
-                    and _zero((raw["budget_consumed"] or {}).get("amount", "0"))
-                    and not any(
-                        (raw["budget_consumed"] or {}).get("tokens", {}).values()
-                    )
                     and raw["method_outputs_digest"] == digest(raw["method_outputs"]),
                     "Sealed tree leaf execution changed",
                 )
@@ -850,6 +886,18 @@ def _tree_case(
                     },
                 )
                 governance = raw["governance"]
+                if leaf.draft.source and leaf.draft.source.kind == "skill_instruction":
+                    verify_instruction(node, raw, arguments)
+                else:
+                    spent = raw["budget_consumed"] or {}
+                    require(
+                        "instruction" not in governance
+                        and not raw.get("model_turn_ids")
+                        and raw["turn_ids"] == []
+                        and _zero(spent.get("amount", "0"))
+                        and not any(spent.get("tokens", {}).values()),
+                        "Unexpected tree model usage",
+                    )
                 consumed = datetime.fromisoformat(governance["approval"]["consumed_at"])
                 grants.append(auth.grants[0])
                 require(

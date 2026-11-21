@@ -5,6 +5,7 @@ from decimal import Decimal
 from app.application.workbench.formal_orchestration_execution import read_step_output
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.formal_execution import validate_values
+from app.domain.workbench.formal_recursive import node_artifact
 
 
 def instruction_charge(task, attempt, entries):
@@ -87,7 +88,9 @@ async def instruction_evidence(repo, task, attempt, request, outputs, *, leaf=Fa
                 repo,
                 str(task["id"]),
                 str(attempt["id"]),
-                "formal-step:" + attempt["step_id"],
+                node_artifact(refs["path"])
+                if leaf and refs.get("path")
+                else "formal-step:" + attempt["step_id"],
                 versions,
                 refs["formal_result"],
             )

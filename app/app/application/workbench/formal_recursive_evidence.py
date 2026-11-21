@@ -9,15 +9,19 @@ an intermediate execution scope. Only complete observed host trees qualify.
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
-from app.application.workbench.formal_orchestration_evidence import _approval
+from app.application.workbench.formal_orchestration_evidence import (
+    _approval,
+    instruction_step_proof,
+    step_registration,
+)
 from app.application.workbench.script_budget import task_script_cost
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import WorkbenchError
-from app.domain.workbench.formal_adapter import host_kind, retained_registration
+from app.domain.workbench.formal_adapter import host_kind
 from app.domain.workbench.formal_execution import (
     case_key,
+    fixed_step_outputs,
     snapshot_for_task,
-    structured_outputs,
 )
 from app.domain.workbench.formal_host import host_intent_digest
 from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
@@ -471,7 +475,9 @@ class _Tree:
         leaf = self.frozen[(node.reference.method_id, node.reference.version)]
         source = self.snapshot.execution_source(leaf)
         _require(
-            source is not None and len(leaf.draft.definition.access_requirements) == 1,
+            source is not None
+            and len(leaf.draft.definition.access_requirements)
+            == (0 if source.kind == "skill_instruction" else 1),
             "leaf_source_or_access_missing",
         )
         assert source is not None
@@ -482,14 +488,21 @@ class _Tree:
             and attempt["step_id"] == slot
             and attempt["step_version"] == digest(node_identity(self.task, node))
             and attempt["status"] == AttemptState.COMPLETED
-            and attempt.get("turn_ids") == []
             and not refs.get("usage_pending")
             and not refs.get("pending_usage")
             and not refs.get("pending_cost")
             and not attempt.get("turn_open")
-            and _zero((attempt.get("budget_consumed") or {}).get("amount", "0"))
-            and not any(
-                (attempt.get("budget_consumed") or {}).get("tokens", {}).values()
+            and (
+                source.kind == "skill_instruction"
+                or (
+                    attempt.get("turn_ids") == []
+                    and _zero((attempt.get("budget_consumed") or {}).get("amount", "0"))
+                    and not any(
+                        (attempt.get("budget_consumed") or {})
+                        .get("tokens", {})
+                        .values()
+                    )
+                )
             )
             and refs.get("kind") == "formal_orchestration_step"
             and refs.get("slot") == slot
@@ -538,7 +551,7 @@ class _Tree:
             "parent_method_call_id": str(child["parent_call_id"]),
             "root_method_call_id": str(self.calls[()]["id"]),
         }
-        registration = retained_registration(leaf.draft, intent["tool"])
+        registration = step_registration(leaf, inputs, refs, intent)
         _require(
             str(call["id"]) == refs["capability_call_id"]
             and call["kind"] == "tool"
@@ -550,13 +563,13 @@ class _Tree:
             and str(call["attempt_id"]) == str(attempt["id"])
             and str(call["parent_call_id"]) == str(child["id"])
             and call["call_key"] == "formal-host:" + str(self.task["id"]) + ":" + slot
-            and intent.get("execution_kind") == host_kind(source)
+            and intent.get("execution_kind") == host_kind(source, instruction_leaf=True)
             and intent.get("formal_host") == expected_host
             and fingerprint(intent.get("arguments")) == fingerprint(inputs)
             and call["digest"] == host_intent_digest(intent)
             and (
                 call.get("connection_id") is None
-                if source.kind == "skill_script"
+                if source.kind in ("skill_script", "skill_instruction")
                 else str(call.get("connection_id")) == str(source.asset_id)
             )
             and str(call["source_asset_id"]) == str(source.asset_id)
@@ -605,7 +618,7 @@ class _Tree:
             scope_facts=self.approved_scopes(node, confirmations[0], consumed),
             confirmation_event=_event_fact(confirmations[0]),
         )
-        method_outputs = structured_outputs(leaf.draft, intent["result"])
+        method_outputs = fixed_step_outputs(leaf.draft, intent["result"])
         bounded_json(method_outputs)
         outputs = validate_step_outputs(node.step, method_outputs)
         _result(actual, outputs)
@@ -624,6 +637,11 @@ class _Tree:
             attempt_id=str(attempt["id"]),
         )
         self.artifacts.append(artifact["id"])
+        if source.kind == "skill_instruction":
+            governance["instruction"] = await instruction_step_proof(
+                self.repo, self.task, attempt, leaf, outputs, intent
+            )
+            item["model_turn_ids"] = attempt["turn_ids"]
         item.update(
             attempt_id=str(attempt["id"]),
             slot=slot,
@@ -775,6 +793,11 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
         _require(
             Decimal(str(task["budget"].get("used", "0")))
             == await task_script_cost(repo, task["id"])
+            + sum(
+                Decimal(a["refs"]["instruction_usage"]["amount"])
+                for a in attempts
+                if "instruction_quote" in a["refs"]
+            )
             and _zero(task["budget"].get("reserved", "0")),
             "unexpected_tree_cost",
         )
@@ -860,7 +883,9 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
             root_call=_call_fact(root),
             root_exports_artifact=root_artifact,
             root_scope_facts=tree.scope_facts[()][2],
-            model_turn_ids=[],
+            model_turn_ids=[
+                t for s in evidence["steps"] for t in s.get("model_turn_ids", [])
+            ],
             task={
                 "id": str(task["id"]),
                 "state": task["state"],

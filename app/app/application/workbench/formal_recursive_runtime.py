@@ -12,7 +12,7 @@ from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import (
     dependency_for_step,
     expanded_plan,
-    structured_outputs,
+    fixed_step_outputs,
 )
 from app.domain.workbench.formal_host import validate_host_call
 from app.domain.workbench.formal_method_execution_generated import (
@@ -222,7 +222,7 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
             _require(
                 action["status"] == "succeeded", "Formal leaf operation did not succeed"
             )
-            actual = structured_outputs(
+            actual = fixed_step_outputs(
                 dependency_for_step(snapshot, step).draft,
                 action["detail"].get("result") or {},
             )

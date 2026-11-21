@@ -188,12 +188,12 @@ def orchestration_plan(snapshot: FormalTaskSnapshot):
         if isinstance(frozen.draft.definition.procedure, ToolProcedure):
             if frozen.draft.source and frozen.draft.source.kind == "skill_instruction":
                 if (
-                    recursive_plan(snapshot)
-                    or frozen.visibility != "private"
+                    frozen.visibility != "private"
+                    or frozen.draft.definition.procedure.max_model_turns != 1
                     or frozen.draft.allowed_callers != ("host",)
                 ):
                     raise ValueError(
-                        "Instruction leaves require an owned one-level host plan"
+                        "Instruction leaves require a private host-only single-turn method"
                     )
             else:
                 direct_procedure(frozen.draft, caller="host")
@@ -296,6 +296,18 @@ def structured_outputs(draft: FormalMethodDraft, result: dict) -> dict:
 
         return validate_values(procedure.outputs, method_script_outputs(result))
     return validate_values(procedure.outputs, result.get("structuredContent"))
+
+
+def fixed_step_outputs(draft: FormalMethodDraft, result: dict) -> dict:
+    procedure = draft.definition.procedure
+    if (
+        isinstance(procedure, ToolProcedure)
+        and procedure.implementation.kind == "skill_instruction"
+    ):
+        if procedure.max_model_turns != 1 or result.get("isError"):
+            raise ValueError("A single successful instruction turn is required")
+        return validate_values(procedure.outputs, result.get("structuredContent"))
+    return structured_outputs(draft, result)
 
 
 def case_key(case_id: str, repetition: int) -> str:

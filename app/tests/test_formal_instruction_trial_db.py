@@ -285,6 +285,10 @@ async def test_private_instruction_remains_qualified_only_after_safe_cleanup(db)
 async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
     db, decision
 ):
+    await fixed_instruction_plan(db, decision)
+
+
+async def fixed_instruction_plan(db, decision):
     import json
     from decimal import Decimal
 
@@ -518,3 +522,5 @@ async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
                 {(leaf.reference.method_id, leaf.reference.version): leaf},
                 operations=caps.operations,
             )
+
+    return s, factory, conductor, leaf, version, request

@@ -8,7 +8,12 @@ from app.application.workbench.formal_orchestration_execution import (
     step_context,
 )
 from app.domain.workbench.capabilities import CapabilityError, digest
-from app.domain.workbench.formal_execution import validate_values
+from app.domain.workbench.formal_execution import (
+    dependency_for_step,
+    expanded_plan,
+    recursive_plan,
+    validate_values,
+)
 from app.domain.workbench.formal_host import validate_host_call
 from app.domain.workbench.instruction_requests import instruction_job
 from app.domain.workbench.method_authorization import (
@@ -141,9 +146,26 @@ async def approved_leaf(svc, owner, task, caller):
         raise CapabilityError("Instruction leaf has no approved external call")
     call = await repo.capability_call(owner, call_id, lock=True)
     validate_host_call(task, attempt, call)
-    child = await repo.call_by_key(
-        owner, str(task["session_id"]), step_call_key(str(task["id"]), refs["slot"])
-    )
+    if recursive_plan(snapshot):
+        from app.application.workbench.formal_recursive_runtime import execution_scopes
+        from app.domain.workbench.formal_recursive import node_key
+
+        scopes = await execution_scopes(repo, task, snapshot)
+        path = tuple(refs["path"])
+        nodes = {node.path: node for node in expanded_plan(snapshot).nodes}
+        for depth in range(1, len(path)):
+            ancestor = dependency_for_step(snapshot, nodes[path[:depth]].step)
+            live, _ = await svc.formal.registry.dependency(
+                owner, ancestor.reference, shared=False
+            )
+            if live != ancestor:
+                raise CapabilityError("Instruction ancestor registration changed")
+        grant_parent_id = str(scopes[0].call_id)
+        key = node_key(task["id"], refs["path"])
+    else:
+        grant_parent_id = None
+        key = step_call_key(str(task["id"]), refs["slot"])
+    child = await repo.call_by_key(owner, str(task["session_id"]), key)
     if child is None or child["id"] != refs["method_call_id"]:
         raise CapabilityError("Instruction recipient differs from its approved child")
     job, asset, quote, registration, requirement, operation, binding = await leaf_input(
@@ -153,7 +175,8 @@ async def approved_leaf(svc, owner, task, caller):
     interaction = await repo.get_interaction(str(call["interaction_id"]))
     grant_ref = intent.get("authorization") or {}
     raw = await repo.method_authorization(owner, child["id"], lock=True)
-    parent = await repo.method_authorization(owner, child["parent_call_id"], lock=True)
+    grant_parent_id = grant_parent_id or child["parent_call_id"]
+    parent = await repo.method_authorization(owner, grant_parent_id, lock=True)
     if not raw or not parent or call["status"] != "dispatching":
         raise CapabilityError("Instruction leaf has no current parent authorization")
     auth = MethodAuthorization.model_validate(raw)
@@ -166,7 +189,7 @@ async def approved_leaf(svc, owner, task, caller):
         not grant
         or grant.recipient_call_id != auth.call_id
         or str(auth.call_id) != child["id"]
-        or str(auth.parent_call_id) != child["parent_call_id"]
+        or str(auth.parent_call_id) != grant_parent_id
         or auth.method_id != str(frozen.reference.method_id)
         or grant_ref != {"call_id": child["id"], "revision": auth.revision}
         or not grant.matches_asset("skill_instruction", asset["id"], asset["revision"])
