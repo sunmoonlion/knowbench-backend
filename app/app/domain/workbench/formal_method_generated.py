@@ -162,6 +162,22 @@ class StepValue(Strict):
     output: Name
 
 
+class ObjectItem(Strict):
+    source: Literal["object_item"]
+    name: Name
+
+
+class ObjectRows(Strict):
+    source: Literal["object_rows"]
+    step: Name
+    output: Name
+
+
+class ObjectBatch(Strict):
+    max_objects: int = Field(strict=True, ge=1, le=99)
+    on_missing: Literal["stop", "request_partial"]
+
+
 class LiteralValue(Strict):
     source: Literal["literal"]
     value: Any
@@ -179,7 +195,7 @@ class ResourceValue(Strict):
 
 
 InputSource = Annotated[
-    CallerValue | StepValue | LiteralValue | ResourceValue,
+    CallerValue | StepValue | LiteralValue | ResourceValue | ObjectItem | ObjectRows,
     Field(discriminator="source"),
 ]
 
@@ -254,6 +270,10 @@ class CollaborationStep(Strict):
 
 
 class Orchestration(Strict):
+    object_batch: ObjectBatch | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
     collaboration: (
         dict[Annotated[str, Field(pattern=COLLABORATION_ID)], CollaborationStep] | None
     ) = Field(
@@ -271,6 +291,91 @@ class Orchestration(Strict):
     max_expansions: int = Field(strict=True, ge=1, le=1000)
     max_steps: int = Field(strict=True, ge=1, le=1000)
     max_replans: int = Field(strict=True, ge=0, le=10)
+
+    def validate_object_batch(self):
+        items = [
+            (s, i)
+            for s in self.steps
+            for i in s.inputs.values()
+            if isinstance(i.binding, ObjectItem)
+        ]
+        rows = [
+            (s, i)
+            for s in self.steps
+            for i in s.inputs.values()
+            if isinstance(i.binding, ObjectRows)
+        ]
+        batch = self.object_batch
+        if batch is None:
+            if items or rows:
+                raise ValueError("Object bindings require a bounded comparison")
+            return
+        if len(self.steps) != 2 or len(items) != 1 or len(rows) != 1:
+            raise ValueError("Object comparison requires one worker and one collector")
+        worker, item = items[0]
+        collector, collection = rows[0]
+        assert isinstance(item.binding, ObjectItem) and isinstance(
+            collection.binding, ObjectRows
+        )
+        ref = collection.binding
+        if (
+            worker.depends_on
+            or collector.depends_on != (worker.id,)
+            or ref.step != worker.id
+            or ref.output not in worker.outputs
+            or any(not s.always_required or len(s.candidates) != 1 for s in self.steps)
+            or any(
+                isinstance(i.binding, StepValue)
+                for s in self.steps
+                for i in s.inputs.values()
+            )
+            or any(e.step != collector.id for e in self.exports.values())
+            or self.max_depth < 2
+            or self.max_replans != 0
+            or self.max_steps < batch.max_objects + 1
+            or self.max_expansions < batch.max_objects + 2
+        ):
+            raise ValueError("Invalid object comparison topology, limits or exports")
+        output = worker.outputs[ref.output]
+        key = item.slot.schema_
+        if key not in ({"type": "string"}, {"type": "string", "minLength": 1}):
+            raise ValueError("Object identity requires a string key")
+
+        # Wrapping a schema inside a keyed row changes the root of JSON pointers.
+        def relative_reference(value: Any) -> bool:
+            if isinstance(value, dict):
+                return "$ref" in value or any(
+                    relative_reference(v) for v in value.values()
+                )
+            return isinstance(value, list) and any(relative_reference(v) for v in value)
+
+        if relative_reference(output.schema_):
+            raise ValueError(
+                "Object result schemas must be self-contained when embedded in rows"
+            )
+        row_schema = {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["object_id", "value"],
+                "additionalProperties": False,
+                "properties": {"object_id": key, "value": output.schema_},
+            },
+        }
+        alias = item.binding.name
+        if (
+            not all(s.required for s in (item.slot, output, collection.slot))
+            or collection.slot.schema_ != row_schema
+            or collection.slot.meaning != output.meaning
+            or any(
+                isinstance(i.binding, CallerValue) and i.binding.name == alias
+                for s in self.steps
+                for i in s.inputs.values()
+            )
+        ):
+            raise ValueError(
+                "Object comparison needs distinct list input and matching required rows"
+            )
 
     def validate_collaboration(self, roles: dict[str, CollaborationStep]) -> None:
         steps = {s.id: s for s in self.steps}
@@ -379,6 +484,7 @@ class Orchestration(Strict):
                 raise ValueError(
                     "Every legal plan must produce an unconditional export"
                 )
+        self.validate_object_batch()
         if self.collaboration:
             self.validate_collaboration(self.collaboration)
         return self
@@ -478,10 +584,19 @@ class FormalMethodDefinition(Strict):
         inputs: dict[str, Any] = {}
         for step in self.procedure.steps:
             for item in step.inputs.values():
-                if not isinstance(item.binding, CallerValue):
+                if not isinstance(item.binding, (CallerValue, ObjectItem)):
                     continue
                 key = item.binding.name
                 slot = item.slot.model_dump(mode="json", by_alias=True)
+                if isinstance(item.binding, ObjectItem):
+                    assert self.procedure.object_batch is not None
+                    slot["schema"] = {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": self.procedure.object_batch.max_objects,
+                        "uniqueItems": True,
+                        "items": {"type": "string", "minLength": 1},
+                    }
                 if key in inputs and inputs[key]["slot"] != slot:
                     raise ValueError(
                         "External aliases cannot merge different meanings or shapes"

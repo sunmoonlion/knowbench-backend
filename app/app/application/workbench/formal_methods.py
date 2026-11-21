@@ -66,6 +66,8 @@ class FormalMethods:
     @staticmethod
     def require_supported_graph(draft):
         graph = draft.definition.procedure
+        if isinstance(graph, Orchestration) and graph.object_batch:
+            raise RuntimeCapabilityGap("Runner lacks bounded object fanout")
         if isinstance(graph, Orchestration) and graph.collaboration:
             raise RuntimeCapabilityGap("Runner lacks isolated collaboration execution")
 

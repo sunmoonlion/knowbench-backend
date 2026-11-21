@@ -373,7 +373,9 @@ class FormalMethodExecutionRequest(Strict):
                     "scripts and ordinary service functions are host-only"
                 )
         else:
-            plan = unique_plan(self.draft.definition)
+            # Transport the pinned draft to the runner for a capability decision.
+            # Only a supported fixed graph can enter the static plan executor.
+            plan = p.steps if p.object_batch else unique_plan(self.draft.definition)
             if self.draft.allowed_callers != ("host",):
                 raise ValueError("Unique plan execution supports only the host caller")
             references = {

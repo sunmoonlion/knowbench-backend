@@ -163,6 +163,8 @@ def unique_plan(definition: FormalMethodDefinition) -> tuple[MethodStep, ...]:
     procedure = definition.procedure
     if not isinstance(procedure, Orchestration):
         raise ValueError("A unique plan requires an orchestration definition")
+    if procedure.object_batch:
+        raise ValueError("Runner lacks bounded object fanout")
     if procedure.max_replans != 0:
         raise ValueError("Unique plans cannot replan")
     if (

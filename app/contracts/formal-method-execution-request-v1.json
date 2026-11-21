@@ -1102,9 +1102,93 @@
       "title": "ModelProbeLimits",
       "type": "object"
     },
+    "ObjectBatch": {
+      "additionalProperties": false,
+      "properties": {
+        "max_objects": {
+          "maximum": 99,
+          "minimum": 1,
+          "title": "Max Objects",
+          "type": "integer"
+        },
+        "on_missing": {
+          "enum": [
+            "stop",
+            "request_partial"
+          ],
+          "title": "On Missing",
+          "type": "string"
+        }
+      },
+      "required": [
+        "max_objects",
+        "on_missing"
+      ],
+      "title": "ObjectBatch",
+      "type": "object"
+    },
+    "ObjectItem": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "object_item",
+          "title": "Source",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "name"
+      ],
+      "title": "ObjectItem",
+      "type": "object"
+    },
+    "ObjectRows": {
+      "additionalProperties": false,
+      "properties": {
+        "source": {
+          "const": "object_rows",
+          "title": "Source",
+          "type": "string"
+        },
+        "step": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Step",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source",
+        "step",
+        "output"
+      ],
+      "title": "ObjectRows",
+      "type": "object"
+    },
     "Orchestration": {
       "additionalProperties": false,
       "properties": {
+        "object_batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectBatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "collaboration": {
           "anyOf": [
             {
@@ -1373,6 +1457,8 @@
             "mapping": {
               "caller": "#/$defs/CallerValue",
               "literal": "#/$defs/LiteralValue",
+              "object_item": "#/$defs/ObjectItem",
+              "object_rows": "#/$defs/ObjectRows",
               "resource": "#/$defs/ResourceValue",
               "step": "#/$defs/StepValue"
             },
@@ -1390,6 +1476,12 @@
             },
             {
               "$ref": "#/$defs/ResourceValue"
+            },
+            {
+              "$ref": "#/$defs/ObjectItem"
+            },
+            {
+              "$ref": "#/$defs/ObjectRows"
             }
           ],
           "title": "Binding"
