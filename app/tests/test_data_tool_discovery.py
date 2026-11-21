@@ -85,10 +85,14 @@ async def test_missing_route_is_an_error_and_recovers_without_cache_expiry(caplo
     restored = await listed(relay)
     specs = {tool["name"]: tool for tool in restored["result"]["tools"]}
     assert RELAYED <= specs.keys()
-    assert "list_inputs" not in specs and "read_input" in specs
+    assert (
+        "list_inputs" not in specs
+        and "read_input" not in specs
+        and "search_evidence" in specs
+    )
     assert "query_facts" not in specs
-    assert specs["read_input"]["inputSchema"]["required"] == ["task"]
-    assert "run" not in specs["read_input"]["inputSchema"]["properties"]
+    assert specs["search_evidence"]["inputSchema"]["required"] == ["task"]
+    assert "run" not in specs["search_evidence"]["inputSchema"]["properties"]
     assert len(seen) == 2
     await listed(relay)
     assert len(seen) == 2

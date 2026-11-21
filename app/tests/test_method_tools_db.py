@@ -295,9 +295,15 @@ async def test_selected_http_call_still_uses_the_existing_data_grant(
     from app.interfaces.mcp import workbench_mcp
 
     ctx = await context(db)
+    from test_service_function_management_db import material_read_revision
+
+    from app.infrastructure.workbench.service_functions import register_revision
+
+    async with db() as session:
+        await register_revision(session, material_read_revision())
     kb = FakeDataMcp()
     monkeypatch.setattr(workbench_mcp, "knowbase_v2", lambda: kb)
-    args = {"task": ctx[0], "material_id": "document"}
+    args = {"task": ctx[0], "material_id": "document", "what": "pages"}
     meta = await observed(db, ctx, "read_input", args)
     message = {
         "jsonrpc": "2.0",
@@ -330,12 +336,18 @@ async def test_selected_http_call_still_uses_the_existing_data_grant(
                     "status": "ready",
                 }
             )
+    # The first invocation already recorded the denial. A new request has its own identity.
+    message["params"]["_meta"] = await observed(
+        db, ctx, "read_input", args, call="after-grant"
+    )
     async with client(served) as http:
         allowed = await http.post(URL, headers=bearer(), json=message)
     assert allowed.json()["result"]["isError"] is False
-    claims, forwarded = kb.seen[-1]
-    assert claims["tools"] == ["read_input"]
-    assert forwarded["params"]["arguments"] == {
+    claims, forwarded = kb.function_call
+    assert claims["call_id"] == forwarded["call_id"]
+    assert forwarded["arguments"] == {
+        "scope": "run",
+        "what": "pages",
         "material_id": "document",
         "run": "dynamic-task-grant",
     }
@@ -347,10 +359,10 @@ async def test_selected_http_call_still_uses_the_existing_data_grant(
             refused = await http.post(URL, headers=bearer(), json=message)
         assert refused.json()["result"]["isError"] is True
         assert (
-            "assigned by the workbench"
+            "do not match the registered schema"
             in refused.json()["result"]["content"][0]["text"]
         )
-    assert [m["method"] for _, m in kb.seen] == ["tools/list", "tools/call"]
+    assert not kb.seen
 
 
 @pytest.mark.parametrize(

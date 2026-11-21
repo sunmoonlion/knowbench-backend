@@ -51,6 +51,31 @@ def input_listing_revision():
     )
 
 
+def material_read_revision():
+    return revision(
+        name="read_input",
+        scenes=["native", "step"],
+        required_permissions=["inputs.read"],
+        input_schema={
+            "type": "object",
+            "properties": {
+                "scope": {"enum": ["run"]},
+                "run": {"type": "string"},
+                "session": {"type": "string"},
+                "material_id": {"type": "string"},
+                "version_no": {"type": "integer"},
+                "what": {"type": "string"},
+                "existing_only": {"type": "boolean"},
+                "offset": {"type": "integer"},
+                "page_from": {"type": "integer"},
+                "page_to": {"type": "integer"},
+            },
+            "required": ["material_id", "what"],
+        },
+        output_schema={"type": "object", "required": ["source"]},
+    )
+
+
 def pin(r):
     return {
         "kind": "service_function",

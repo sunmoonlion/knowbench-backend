@@ -65,6 +65,7 @@ def workbench_data_descriptor(spec: dict[str, Any]) -> dict[str, Any]:
     out = copy.deepcopy(spec)
     schema = out.setdefault("inputSchema", {"type": "object", "properties": {}})
     props = schema.setdefault("properties", {})
+    props.pop("existing_only", None)
     had_run = props.pop("run", None) is not None
     had_session = props.pop("session", None) is not None
     if had_run:

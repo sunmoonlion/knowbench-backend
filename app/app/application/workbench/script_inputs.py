@@ -4,7 +4,8 @@ import base64
 import hashlib
 import json
 
-from app.application.workbench.data_relay import DataRelay
+from app.application.workbench.data_function import DataFunction
+from app.application.workbench.data_relay import forward_arguments
 from app.application.workbench.records import ProjectRecords
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.script_contract_generated import (
@@ -21,30 +22,23 @@ FILE_LIMIT = 512 * 1024
 MAX_MATERIAL_PAGES = FILE_LIMIT // 1024
 
 
-async def material_text(relay, ref, scope):
-    if relay is None:
-        raise CapabilityError("The authorized material reader is unavailable")
+async def material_text(read_page, ref, *, recheck=False):
     data = bytearray()
     offset = 0
     for _ in range(MAX_MATERIAL_PAGES):
-        reply = await relay.call(
-            1,
-            "read_input",
+        record = await read_page(
             {
-                **scope,
                 "material_id": str(ref.material_id),
                 "version_no": ref.version_no,
                 "what": "text",
                 "offset": offset,
-            },
+                "existing_only": recheck or offset > 0,
+            }
         )
-        result = reply.get("result") or {}
-        record = result.get("structuredContent") or {}
         source = record.get("source") or {}
         part = record.get("text")
         if (
-            result.get("isError") is not False
-            or source.get("material_id") != str(ref.material_id)
+            source.get("material_id") != str(ref.material_id)
             or source.get("version_no") != ref.version_no
             or source.get("reading") != ref.reading
             or record.get("offset") != offset
@@ -123,7 +117,7 @@ async def step_field(repo, owner, call, ref):
     ).encode()
 
 
-async def resolve_inputs(repo, owner, call, source):
+async def resolve_inputs(repo, owner, call, source, *, recheck=False):
     refs = ScriptArguments.model_validate(call["detail"]["arguments"]).inputs
     if not refs:
         return []
@@ -133,18 +127,39 @@ async def resolve_inputs(repo, owner, call, source):
         if binding
         else {"conversation": call["session_id"]}
     )
-    relay = (
-        DataRelay(
-            ProjectRecords(repo, owner_actor_id=owner), *source, sandbox="skill-input"
+    records = ProjectRecords(repo, owner_actor_id=owner)
+    reader = DataFunction(*source) if source else None
+
+    async def read_page(arguments):
+        if reader is None:
+            raise CapabilityError("The authorized material reader is unavailable")
+        task, forwarded = await forward_arguments(
+            records, "read_input", {**scope, **arguments}
         )
-        if source
-        else None
-    )
+        if binding and (
+            task is None or str(task["active_attempt_id"]) != str(binding["attempt_id"])
+        ):
+            raise CapabilityError(
+                "The consuming attempt changed before its material read"
+            )
+        parent = await repo.capability_call(owner, call["id"])
+        if not parent or parent["status"] != "dispatching":
+            raise CapabilityError("The script call is no longer active")
+        return await reader.host_read(
+            repo,
+            "read_input",
+            {"scope": "run", **forwarded},
+            owner=owner,
+            session_id=str(call["session_id"]),
+            task=task,
+            parent_call_id=call["id"],
+        )
+
     result = []
     total = 0
     for ref in refs:
         raw = (
-            await material_text(relay, ref, scope)
+            await material_text(read_page, ref, recheck=recheck)
             if isinstance(ref, MaterialInput)
             else await step_field(repo, owner, call, ref)
         )

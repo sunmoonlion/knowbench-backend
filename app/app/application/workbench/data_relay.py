@@ -135,7 +135,7 @@ class DataRelay:
         """换好范围、签好令牌，转给 knowbase；回 knowbase 的 JSON-RPC 回复（编号换回来）。"""
         if name not in RELAYED:
             raise RecordsRefused("This operation has no data MCP binding")
-        working, forwarded = await self.forward_arguments(name, args)
+        working, forwarded = await forward_arguments(self.records, name, args)
         token = self.issuer.data_token(
             await self._subject(), sandbox=self.sandbox, tools=[name]
         ).token
@@ -161,7 +161,7 @@ class DataRelay:
             args.get("scope") == "market" and ("task" in args or "conversation" in args)
         ):
             raise RecordsRefused("Use one data scope for this data query")
-        working, forwarded = await self.forward_arguments(revision.name, args)
+        working, forwarded = await forward_arguments(self.records, revision.name, args)
         forwarded.setdefault("scope", "run")
         receipt = await DataFunction(self.knowbase, self.issuer).invoke(
             revision,
@@ -174,42 +174,42 @@ class DataRelay:
             await self.records._noted(working, revision.name, call_id=call_id)
         return receipt["output"]
 
-    async def forward_arguments(self, name, args):
-        if "run" in args or "session" in args:
-            raise RecordsRefused("data service grants are assigned by the workbench")
-        forwarded = {k: v for k, v in args.items() if k not in ("task", "conversation")}
-        working = None
-        if name not in NO_SCOPE and args.get("scope") != "market":
-            if args.get("task"):
-                working = await self.records._working(args["task"])
-                forwarded["run"] = await run_ref(self.repo, working)
-            elif args.get("conversation"):
-                forwarded["session"] = await self._knowbase_session(
-                    args["conversation"]
-                )
-            else:
-                raise RecordsRefused(
-                    "give the task id (or, in a chat, the conversation)"
-                )
-        return working, forwarded
-
     async def _subject(self) -> str:
         subject = await self.repo.subject_of_actor(self.records.owner)
         if subject is None:
             raise RecordsRefused("this account is not known to the data service")
         return subject
 
-    async def _knowbase_session(self, conversation: Any) -> str:
-        session = await self.repo.get_session(
-            as_id(conversation, "conversation"), owner_actor_id=self.records.owner
-        )
-        if session.get("wheel") != "user" or session.get("active_task_id"):
-            # 专家正在这段对话里做委托：读数据只认 task（这件委托的授权）
-            raise RecordsRefused("in an expert's step, give the task id, not the chat")
-        found = session.get("knowbase_session_id")
-        expires = session.get("knowbase_session_expires_at")
-        if not found or (expires is not None and expires <= datetime.now(UTC)):
-            raise RecordsRefused(
-                "this chat has no data session yet; ask the user to send a message"
+
+async def forward_arguments(records: ProjectRecords, name, args):
+    if "run" in args or "session" in args:
+        raise RecordsRefused("data service grants are assigned by the workbench")
+    forwarded = {k: v for k, v in args.items() if k not in ("task", "conversation")}
+    working = None
+    if name not in NO_SCOPE and args.get("scope") != "market":
+        if args.get("task"):
+            working = await records._working(args["task"])
+            forwarded["run"] = await run_ref(records.repo, working)
+        elif args.get("conversation"):
+            forwarded["session"] = await _knowbase_session(
+                records, args["conversation"]
             )
-        return str(found)
+        else:
+            raise RecordsRefused("give the task id (or, in a chat, the conversation)")
+    return working, forwarded
+
+
+async def _knowbase_session(records: ProjectRecords, conversation: Any) -> str:
+    session = await records.repo.get_session(
+        as_id(conversation, "conversation"), owner_actor_id=records.owner
+    )
+    if session.get("wheel") != "user" or session.get("active_task_id"):
+        # 专家正在这段对话里做委托：读数据只认 task（这件委托的授权）
+        raise RecordsRefused("in an expert's step, give the task id, not the chat")
+    found = session.get("knowbase_session_id")
+    expires = session.get("knowbase_session_expires_at")
+    if not found or (expires is not None and expires <= datetime.now(UTC)):
+        raise RecordsRefused(
+            "this chat has no data session yet; ask the user to send a message"
+        )
+    return str(found)

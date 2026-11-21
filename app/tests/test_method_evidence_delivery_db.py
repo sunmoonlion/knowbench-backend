@@ -101,41 +101,29 @@ class DataPort:
             issuer=self.issuer.issuer,
         )
         args = body["arguments"]
-        assert name == "read_facts" and args == {
-            "run": GRANT,
-            "scope": "run",
-            "refs": [FACT],
-        }
+        assert args["scope"] == "run" and args["run"] == GRANT
         assert (
             claims["sub"] == "synthetic-author" and claims["call_id"] == body["call_id"]
         )
         self.calls.append((name, args))
         self.read_ids.append(body["call_id"])
-        return {
-            "call_id": body["call_id"],
-            "digest": body["digest"],
-            "output": {"facts": [{"ref": FACT, "value": "1500.25"}], "not_found": []},
-        }
-
-    async def data_mcp(self, token, message):
-        claims = verify(
-            token,
-            self.issuer.public_pem(),
-            audience="knowbase-data",
-            issuer=self.issuer.issuer,
-        )
-        name = message["params"]["name"]
-        args = message["params"]["arguments"]
-        assert claims["sub"] == "synthetic-author" and claims["tools"] == [name]
-        assert args["run"] == GRANT
-        self.calls.append((name, args))
-        assert name == "read_input" and args["material_id"] == "synthetic-report"
-        content = {"pages": [{"page": 3, "text": PAGE}]}
-        return {
-            "jsonrpc": "2.0",
-            "id": message["id"],
-            "result": {"isError": False, "structuredContent": content},
-        }
+        if name == "read_facts":
+            assert args["refs"] == [FACT]
+            output = {"facts": [{"ref": FACT, "value": "1500.25"}], "not_found": []}
+        else:
+            assert name == "read_input" and args["material_id"] == "synthetic-report"
+            assert args["page_from"] == args["page_to"] == 3
+            output = {
+                "source": {
+                    "material_id": "synthetic-report",
+                    "version_no": 1,
+                    "reading": "pages/1",
+                    "sha256": "12345678",
+                },
+                "pages": [{"page": 3, "text": PAGE}],
+                "total_pages": 3,
+            }
+        return {"call_id": body["call_id"], "digest": body["digest"], "output": output}
 
 
 class Files:
@@ -160,12 +148,13 @@ class Files:
 async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
     db, tmp_path, fault, batch_mode
 ):
-    from test_service_function_management_db import revision
+    from test_service_function_management_db import material_read_revision, revision
 
     from app.infrastructure.workbench.service_functions import register_revision
 
     tid, sid = await task(db)
     async with db() as session:
+        await register_revision(session, material_read_revision())
         await register_revision(
             session,
             revision(

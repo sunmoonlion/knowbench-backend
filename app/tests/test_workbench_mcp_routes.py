@@ -8,7 +8,11 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 from sample_replies import PROFILE, SCOPE
-from test_service_function_management_db import input_listing_revision, revision
+from test_service_function_management_db import (
+    input_listing_revision,
+    material_read_revision,
+    revision,
+)
 from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
@@ -325,6 +329,19 @@ class FakeDataMcp:
         output = {"facts": []}
         if name == "list_inputs":
             output = {"run": body["arguments"]["run"], "inputs": []}
+        elif name == "read_input":
+            args = body["arguments"]
+            assert args["what"] == "pages"
+            output = {
+                "source": {
+                    "material_id": args["material_id"],
+                    "version_no": 1,
+                    "reading": "pages/1",
+                    "sha256": "12345678",
+                },
+                "pages": [{"page": 1, "text": "authorized"}],
+                "total_pages": 1,
+            }
         elif name == "read_facts":
             assert body["arguments"]["refs"] == [self.FACT]
             output = {
@@ -359,7 +376,7 @@ class FakeDataMcp:
             }
         name = message["params"]["name"]
         structured = {"ok": True}
-        assert name not in {"read_facts", "list_inputs"}
+        assert name not in {"read_facts", "list_inputs", "read_input"}
         return {
             "jsonrpc": "2.0",
             "id": message["id"],
@@ -401,6 +418,7 @@ async def test_the_data_tools_are_relayed_to_knowbase(
         },
     )
     async with db() as session:
+        await register_revision(session, material_read_revision())
         await register_revision(session, fact)
         listing = input_listing_revision()
         await register_revision(session, listing)
@@ -525,7 +543,12 @@ async def test_the_data_tools_are_relayed_to_knowbase(
             relayed_count = len(fake_kb.seen)
             chat = await http.post(
                 URL,
-                json=tool("read_input", conversation=ids["chat"], material_id="m"),
+                json=tool(
+                    "read_input",
+                    conversation=ids["chat"],
+                    material_id="m",
+                    what="pages",
+                ),
                 headers=bearer(),
             )
             assert "no data session" in chat.json()["result"]["content"][0]["text"]
@@ -542,7 +565,12 @@ async def test_the_data_tools_are_relayed_to_knowbase(
                 )
             held = await http.post(
                 URL,
-                json=tool("read_input", conversation=ids["chat"], material_id="m"),
+                json=tool(
+                    "read_input",
+                    conversation=ids["chat"],
+                    material_id="m",
+                    what="pages",
+                ),
                 headers=bearer(),
             )
             assert (

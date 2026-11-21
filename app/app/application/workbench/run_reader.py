@@ -5,7 +5,7 @@
 - 数值验收 `sourced` 的地址是事实编号时同样回查；`quoted` 引的是第四版资料
   （`{material_id, page, text}`）时，取那一页的按页文字找原话。
 
-事实按中心登记的函数版本直接取数，引文暂经数据 MCP 取页。两者均使用本次委托授权
+事实和引文均按中心登记的函数版本直接取数。两者均使用本次委托授权
 （ref 在请专家时服务端生成，记在清单那一行），委托没钉的读不到。
 """
 
@@ -22,15 +22,12 @@ from app.application.workbench.tokens import TokenIssuer
 from app.domain.workbench import compute as calc
 from app.domain.workbench.errors import (
     ComputeRefused,
-    RecordsRefused,
-    UserDataUnavailable,
 )
 
 FACT_REF = re.compile(
     r"^(?:fact|raw):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
 )
 MATERIAL_ID = re.compile(r"^[0-9A-Za-z-]{1,64}$")
-READER_SANDBOX = "workbench"
 _SPACE = re.compile(r"\s+")
 
 
@@ -55,9 +52,7 @@ class RunReader:
     ) -> dict[str, Decimal]:
         """按事实编号取数；不在这件委托的授权里、没有、不是数，都回 ComputeRefused。"""
         wanted = list(dict.fromkeys(refs))
-        got = await DataFunction(self.knowbase, self.issuer).read_task_refs(
-            repo, task, await run_ref(repo, task), wanted, self.parent_call_id
-        )
+        got = await self._read(repo, task, "read_facts", {"refs": wanted})
         rows = {str(f.get("ref")): f for f in got.get("facts") or []}
         values: dict[str, Decimal] = {}
         for ref in wanted:
@@ -95,9 +90,10 @@ class RunReader:
         self, repo: WorkbenchStore, task: dict[str, Any], material_id: str, page: int
     ) -> str | None:
         try:
-            got = await self._read_page(
+            got = await self._read(
                 repo,
                 task,
+                "read_input",
                 {
                     "material_id": material_id,
                     "what": "pages",
@@ -110,38 +106,13 @@ class RunReader:
         found = [p for p in got.get("pages") or [] if int(p.get("page") or 0) == page]
         return str(found[0].get("text") or "") if found else None
 
-    async def _read_page(
-        self,
-        repo: WorkbenchStore,
-        task: dict[str, Any],
-        args: dict[str, Any],
-    ) -> dict[str, Any]:
-        subject = await repo.subject_of_actor(str(task["owner_actor_id"]))
-        if subject is None:
-            raise RecordsRefused("this account is not known to the data service")
-        ref = await run_ref(repo, task)
-        token = self.issuer.data_token(
-            subject, sandbox=READER_SANDBOX, tools=["read_input"]
-        ).token
-        try:
-            reply = await self.knowbase.data_mcp(
-                token,
-                {
-                    "jsonrpc": "2.0",
-                    "id": 1,
-                    "method": "tools/call",
-                    "params": {
-                        "name": "read_input",
-                        "arguments": {**args, "run": ref},
-                    },
-                },
-            )
-        except Exception as exc:  # noqa: BLE001 — 取不到是平台的事
-            raise UserDataUnavailable("the data service cannot be reached") from exc
-        if reply.get("error"):
-            raise UserDataUnavailable("the data service refused the call")
-        result = reply.get("result") or {}
-        if result.get("isError"):
-            content = result.get("content") or [{}]
-            raise ComputeRefused(str(content[0].get("text") or "refused")[:300])
-        return result.get("structuredContent") or {}
+    async def _read(self, repo, task, name, arguments):
+        return await DataFunction(self.knowbase, self.issuer).host_read(
+            repo,
+            name,
+            {"scope": "run", "run": await run_ref(repo, task), **arguments},
+            owner=str(task["owner_actor_id"]),
+            session_id=str(task["session_id"]),
+            task=task,
+            parent_call_id=self.parent_call_id,
+        )

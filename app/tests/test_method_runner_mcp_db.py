@@ -25,8 +25,13 @@ pytestmark = pytest.mark.asyncio
 async def test_runner_observation_authorizes_only_the_current_method_data_grant(
     served, db, monkeypatch
 ):
+    from test_service_function_management_db import material_read_revision
+
+    from app.infrastructure.workbench.service_functions import register_revision
     from app.interfaces.mcp import workbench_mcp
 
+    async with db() as session:
+        await register_revision(session, material_read_revision())
     kb = FakeDataMcp()
     monkeypatch.setattr(workbench_mcp, "knowbase_v2", lambda: kb)
     responses = []
@@ -45,7 +50,11 @@ async def test_runner_observation_authorizes_only_the_current_method_data_grant(
                     if event.get("method") == "item/completed":
                         params = event["params"]
                         thread, turn = params["threadId"], params["turnId"]
-                        args = {"task": task_id, "material_id": "synthetic-document"}
+                        args = {
+                            "task": task_id,
+                            "material_id": "synthetic-document",
+                            "what": "pages",
+                        }
                         item = {
                             "type": "mcpToolCall",
                             "id": "call-data",
@@ -151,10 +160,15 @@ async def test_runner_observation_authorizes_only_the_current_method_data_grant(
         await drive(runner)
         assert len(responses) == 1
         assert responses[0]["result"]["isError"] is False, responses
-        assert [m["method"] for _, m in kb.seen] == ["tools/list", "tools/call"]
-        claims, request = kb.seen[-1]
-        assert claims["tools"] == ["read_input"]
-        assert request["params"]["arguments"] == {
+        assert not kb.seen
+        claims, request = kb.function_call
+        assert (
+            claims["aud"] == "knowbase-function"
+            and claims["call_id"] == request["call_id"]
+        )
+        assert request["arguments"] == {
+            "scope": "run",
+            "what": "pages",
             "material_id": "synthetic-document",
             "run": "only-this-task",
         }

@@ -22,7 +22,7 @@ async def test_invalid_relay_response_is_unknown(response):
         return response
 
     result, status = await dispatch(
-        None, 1, "read_input", {}, SimpleNamespace(call=reply), True
+        None, 1, "search_evidence", {}, SimpleNamespace(call=reply), True
     )
     assert status == "unknown" and result["result"]["isError"] is True
 
@@ -40,6 +40,6 @@ async def test_explicit_relay_outcome_is_recorded(reply, status):
         return reply
 
     result, actual = await dispatch(
-        None, 1, "read_input", {}, SimpleNamespace(call=respond), True
+        None, 1, "search_evidence", {}, SimpleNamespace(call=respond), True
     )
     assert actual == status and result == reply

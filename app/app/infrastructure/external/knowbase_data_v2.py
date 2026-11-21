@@ -352,6 +352,16 @@ class KnowbaseDataV2(KnowbaseClient):
             raise CapabilityOutcomeUnknown(
                 "KnowBase did not confirm the function result"
             )
+        if (
+            name == "read_input"
+            and 400 <= response.status_code < 500
+            and response.headers.get("X-KnowBase-Refusal") == "resource"
+        ):
+            from app.domain.workbench.errors import ComputeRefused
+
+            raise ComputeRefused(
+                "The requested material or rendition is unavailable in this scope"
+            )
         if response.status_code != 200:
             raise CapabilityError(
                 f"KnowBase refused the data query (HTTP {response.status_code})"

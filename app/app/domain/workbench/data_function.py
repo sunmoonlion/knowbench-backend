@@ -11,6 +11,7 @@ QUERY_PERMISSIONS = {
     "query_metric": "facts.read",
     "read_facts": "facts.read",
     "list_inputs": "inputs.list",
+    "read_input": "inputs.read",
 }
 DATA_QUERIES = frozenset(QUERY_PERMISSIONS)
 
@@ -22,14 +23,19 @@ def destination(name):
 
 
 def require_data_source(source):
-    if source.entry not in DATA_QUERIES or (
-        source.kind,
-        source.source,
-        source.version,
-    ) != (
-        "service_function",
-        "knowbase",
-        "1",
+    if (
+        source.entry == "read_input"
+        or source.entry not in DATA_QUERIES
+        or (
+            source.kind,
+            source.source,
+            source.version,
+        )
+        != (
+            "service_function",
+            "knowbase",
+            "1",
+        )
     ):
         raise CapabilityError("Unsupported service function revision")
 

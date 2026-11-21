@@ -57,13 +57,43 @@ class DataFunction:
             )
         ):
             raise CapabilityOutcomeUnknown("Unverified KnowBase function receipt")
+        if revision.name == "read_input":
+            result = receipt["output"]
+            source = result["source"]
+            mode = arguments["what"]
+            kind_field = {
+                "pages": "pages",
+                "text": "offset",
+                "format": "media_type",
+                "original": "text",
+            }[mode]
+            if (
+                source["material_id"] != arguments["material_id"]
+                or (
+                    "version_no" in arguments
+                    and source["version_no"] != arguments["version_no"]
+                )
+                or kind_field not in result
+                or (
+                    mode in ("pages", "text")
+                    and not str(source["reading"]).startswith(mode + "/")
+                )
+                or (mode in ("format", "original") and source["reading"] is not None)
+                or (
+                    mode == "text"
+                    and result["offset"] != max(0, arguments.get("offset", 0))
+                )
+            ):
+                raise CapabilityOutcomeUnknown(
+                    "KnowBase returned a different material, rendition or offset"
+                )
         return receipt
 
-    async def read_task_refs(self, repo, task, run_ref, refs, parent_call_id):
-        """Fixed input to compute and sourced acceptance. Only the host supplies scope."""
-        owner = str(task["owner_actor_id"])
-        task_id, session_id = str(task["id"]), str(task["session_id"])
-        args = {"scope": "run", "run": run_ref, "refs": refs}
+    async def host_read(
+        self, repo, name, args, *, owner, session_id, task, parent_call_id
+    ):
+        """Record a host-bound read under the consuming task or approved script."""
+        task_id = str(task["id"]) if task else None
         subject = await repo.subject_of_actor(owner)
         if not subject:
             raise RecordsRefused("this account is not known to the data service")
@@ -71,31 +101,41 @@ class DataFunction:
         try:
             async with repo.transaction():
                 revisions = await repo.scene_function_revisions(
-                    {"read_facts": ("knowbase", 1)}, scene="step"
+                    {name: ("knowbase", 1)}, scene="step"
                 )
                 if not revisions:
-                    raise UserDataUnavailable(
-                        "read_facts v1 is unavailable for this step"
-                    )
+                    raise UserDataUnavailable(f"{name} v1 is unavailable for this step")
                 revision = revisions[0]
                 tool = ToolRegistration.discover(
                     "service_function", destination(revision.name), descriptor(revision)
                 )
                 if not schema_validator(revision.contract.input_schema).is_valid(args):
                     raise ComputeRefused(
-                        "Fact references do not match the registered read contract"
+                        "Arguments do not match the registered read contract"
                     )
                 session = await repo.get_session(session_id, owner_actor_id=owner)
-                active = await repo.get_task(
-                    task_id, owner_actor_id=owner, for_update=True
-                )
-                if (
-                    str(session.get("active_task_id")) != task_id
-                    or active["state"] in TASK_TERMINAL
-                    or active.get("active_attempt_id") != task.get("active_attempt_id")
+                parent = parent_call_id
+                if task:
+                    active = await repo.get_task(
+                        task_id, owner_actor_id=owner, for_update=True
+                    )
+                    if (
+                        str(session.get("active_task_id")) != task_id
+                        or active["state"] in TASK_TERMINAL
+                        or active.get("active_attempt_id")
+                        != task.get("active_attempt_id")
+                    ):
+                        raise RecordsRefused("The task changed before its data read")
+                    parent = parent or (await root_call(repo, active))["id"]
+                elif (
+                    not parent
+                    or session.get("active_task_id")
+                    or session.get("wheel") != "user"
+                    or str(session.get("knowbase_session_id")) != args.get("session")
                 ):
-                    raise RecordsRefused("The task changed before its fact read")
-                parent = parent_call_id or (await root_call(repo, active))["id"]
+                    raise RecordsRefused(
+                        "The conversation changed before its material read"
+                    )
                 detail = {
                     "tool": tool.descriptor(),
                     "operation": {
@@ -104,7 +144,9 @@ class DataFunction:
                         "registered_source": revision.model_dump(exclude={"contract"}),
                         "arguments_digest": digest(args),
                     },
-                    "identity_basis": "host_task_data_read",
+                    "identity_basis": "host_task_data_read"
+                    if task
+                    else "host_session_data_read",
                     "call_id": call_id,
                 }
                 await repo.add_call(
@@ -117,7 +159,7 @@ class DataFunction:
                         "session_id": session_id,
                         "task_id": task_id,
                         "parent_call_id": parent,
-                        "attempt_id": task.get("active_attempt_id"),
+                        "attempt_id": task.get("active_attempt_id") if task else None,
                         "registration_id": tool.tool_id,
                         "registration_digest": tool.descriptor_digest,
                         "digest": digest(detail),
@@ -126,7 +168,7 @@ class DataFunction:
                     }
                 )
         except CapabilityError as exc:
-            raise UserDataUnavailable("Invalid registered fact reader") from exc
+            raise UserDataUnavailable("Invalid registered data reader") from exc
         try:
             receipt = await self.invoke(
                 revision,
@@ -138,14 +180,16 @@ class DataFunction:
         except Exception as exc:
             status = (
                 "failed"
-                if isinstance(exc, CapabilityError)
+                if isinstance(exc, (ComputeRefused, CapabilityError))
                 and not isinstance(exc, CapabilityOutcomeUnknown)
                 else "unknown"
             )
             async with repo.transaction():
                 await repo.update_call(owner, call_id, status, detail)
+            if isinstance(exc, ComputeRefused):
+                raise
             raise UserDataUnavailable(
-                "The registered fact reader could not confirm the result"
+                "The registered data reader could not confirm the result"
             ) from exc
         async with repo.transaction():
             await repo.update_call(

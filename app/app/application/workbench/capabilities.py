@@ -2185,7 +2185,7 @@ class Capabilities:
             if inputs:
                 # A slow image pull must not extend a revoked material grant.
                 live = await resolve_inputs(
-                    self.repo, owner, call, self.script_material_source
+                    self.repo, owner, call, self.script_material_source, recheck=True
                 )
                 if live != inputs:
                     raise CapabilityError(

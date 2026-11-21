@@ -9,66 +9,78 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import text
 from test_capabilities_db import approval, service
+from test_service_function_management_db import material_read_revision
 from test_skill_execution_db import setup
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from tool_invocation_support import request_call
 
+from app.domain.workbench.capabilities import CapabilityError
 from app.infrastructure.workbench.repository import WorkbenchRepository
+from app.infrastructure.workbench.service_functions import register_revision
 
 
 class Materials:
-    def __init__(self, material, session):
+    def __init__(self, material, ref, *, method=False):
         self.material = material
-        self.session = session
+        self.scope = {"run" if method else "session": ref}
         self.page_chars = 60000
         self.allowed = True
         self.content = "经批准的正文" * 14000
         self.calls = []
 
-    def data_token(self, subject, *, sandbox, tools):
-        assert (
-            subject == "script-reader"
-            and sandbox == "skill-input"
-            and tools == ["read_input"]
-        )
+    def function_ticket(
+        self, subject, sandbox, call_id, revision_digest, arguments_digest
+    ):
+        assert subject == "script-reader" and sandbox
         return SimpleNamespace(token="synthetic-read-only")
 
-    async def data_mcp(self, token, request):
-        args = request["params"]["arguments"]
-        assert token == "synthetic-read-only" and args["session"] == self.session
+    async def invoke_data_query(self, name, token, body):
+        args = body["arguments"]
+        assert name == "read_input" and token == "synthetic-read-only"
+        assert self.scope.items() <= args.items() and args["scope"] == "run"
+        assert ("run" in args) != ("session" in args)
         assert args["material_id"] == self.material and args["version_no"] == 1
-        self.calls.append(args["offset"])
-        if not self.allowed:
-            return {"result": {"isError": True}}
+        return {
+            "call_id": body["call_id"],
+            "digest": body["digest"],
+            "output": await self.page(args),
+        }
+
+    async def page(self, args):
+        assert args["existing_only"] == bool(self.calls)
         start = args["offset"]
+        self.calls.append(start)
+        if not self.allowed:
+            raise CapabilityError("Resource access revoked")
         part = self.content[start : start + self.page_chars]
         return {
-            "result": {
-                "isError": False,
-                "structuredContent": {
-                    "source": {
-                        "material_id": self.material,
-                        "version_no": 1,
-                        "reading": "text/3",
-                    },
-                    "offset": start,
-                    "text": part,
-                    "more": start + len(part) < len(self.content),
-                },
-            }
+            "source": {
+                "material_id": self.material,
+                "version_no": 1,
+                "reading": "text/3",
+                "sha256": "12345678",
+            },
+            "offset": start,
+            "text": part,
+            "more": start + len(part) < len(self.content),
+            "title": None,
+            "published_on": None,
         }
 
 
+@pytest.mark.parametrize("method", [False, True])
 @pytest.mark.parametrize(
-    "change", ["none", "revoked", "replaced", "too_big", "lost_call"]
+    "change", ["none", "revoked", "replaced", "too_big", "lost_call", "unregistered"]
 )
 async def test_material_is_resolved_only_after_approval_and_rechecked_before_input(
-    db, change
+    db, change, method
 ):
-    sid, executor, _, key, token = await setup(db)
+    sid, executor, _, key, token = await setup(db, method=method)
     kb_session, material = str(uuid4()), str(uuid4())
-    data = Materials(material, kb_session)
+    data = Materials(material, kb_session, method=method)
+    async with db() as session:
+        await register_revision(session, material_read_revision())
     args = {
         "path": "scripts/calculate.py",
         "inputs": [
@@ -89,9 +101,24 @@ async def test_material_is_resolved_only_after_approval_and_rechecked_before_inp
                 VALUES (:id,'test','script-reader','[]','[]')"""),
                 {"id": OWNER},
             )
-            await repo.set_knowbase_session(
-                sid, kb_session, datetime.now(UTC) + timedelta(minutes=10)
-            )
+            if method:
+                state = await repo.get_session(sid)
+                task_id = str(state["active_task_id"])
+                await repo.insert_task_resolution(
+                    {
+                        "task_id": task_id,
+                        "resolution_id": task_id,
+                        "revision": 1,
+                        "consumer": "expert:fixture@1",
+                        "params": {},
+                        "grant_ref": kb_session,
+                        "status": "ready",
+                    }
+                )
+            else:
+                await repo.set_knowbase_session(
+                    sid, kb_session, datetime.now(UTC) + timedelta(minutes=10)
+                )
         svc = service(repo)
         svc.script_executor = executor
         svc.script_material_source = (data, data)
@@ -103,6 +130,13 @@ async def test_material_is_resolved_only_after_approval_and_rechecked_before_inp
             data.content = "界" * 180000
 
         async def prepare(owner, run, body):
+            if change == "unregistered":
+                async with repo.transaction():
+                    await session.execute(
+                        text(
+                            "DELETE FROM workbench_registry_service_functions WHERE name='read_input'"
+                        )
+                    )
             if change == "revoked":
                 data.allowed = False
             if change == "replaced":
@@ -215,17 +249,9 @@ async def test_smaller_material_pages_use_character_offsets_and_return_complete_
     provider.page_chars = 1024
     provider.content = "项🙂a" * 30000
 
-    class Reader:
-        async def call(self, _, name, args):
-            assert name == "read_input"
-            return await provider.data_mcp(
-                "synthetic-read-only", {"params": {"arguments": args}}
-            )
-
     actual = await material_text(
-        Reader(),
+        provider.page,
         SimpleNamespace(material_id=material, version_no=1, reading="text/3"),
-        {"session": "session"},
     )
     assert actual == provider.content.encode()
     assert provider.calls == list(range(0, len(provider.content), provider.page_chars))
