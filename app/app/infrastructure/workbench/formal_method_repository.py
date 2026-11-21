@@ -169,7 +169,9 @@ class FormalMethodRepositoryMixin:
                    document#>'{draft,allowed_callers}' AS allowed_callers,
                    document#>>'{draft,definition,capability_declaration,title}' AS title,
                    document#>>'{draft,source,asset_id}' AS source_asset_id,
-                   (document#>>'{draft,source,asset_revision}')::int AS source_revision,
+                   CASE WHEN document#>>'{draft,source,kind}'='registered_script'
+                        THEN (document#>>'{draft,source,version}')::int
+                        ELSE (document#>>'{draft,source,asset_revision}')::int END AS source_revision,
                    document#>>'{draft,source,entry}' AS source_entry,
                    document#>>'{draft,source,kind}' AS source_kind,
                    document#>>'{draft,source,digest}' AS source_digest,

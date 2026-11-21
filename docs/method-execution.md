@@ -341,3 +341,11 @@ KnowBench 可复核作者本人私有登记的精确指令版本。核对项包�
 在后端 `app/` 指定独立 PostgreSQL 测试库，运行 `.venv/bin/pytest -q tests/test_formal_instruction_trial_db.py -k fixed`。样例先试跑并私有登记一个纯指令工具，再在专家的两个步骤中分别调用该版本。正常路径验收到专家私有登记，另验用户拒绝、父授权撤销及取消与外发的先后顺序。批准后、领取供应商请求前取消会释放预留；请求已领取时保留未知结果和待核销费用，迟到回执只结算原 Attempt。该组使用合成模型和执行单元。平台仓的 `scripts/local-integration/instruction_author.py` 还会从两个真实服务的 HTTP 路由提交作者用例、逐步批准外发并登记私有专家。
 
 在同一测试环境运行 `tests/test_recursive_instruction_db.py`，覆盖两次调用同一子专家、四次逐步批准、跨子专家的版本交接、中间层撤权、登记变化、恢复与预算不足。上述双服务作者联调也会继续将两步专家用作子专家，试跑并私有冻结三级专家。
+
+### 本人登记的单文件脚本用于正式方法孵化
+
+在方法技能管理中心登记脚本后，作者可在 KnowLab 的「选择已有实现来源」中选定该版本，允许调用来源选宿主。定义须包含输入输出契约、隔离脚本执行权限及验收用例。每次试跑逐步确认来源、参数和报价。脚本从 `arguments.json` 读取输入，将符合声明的输出写入输出目录的 `result.json`。通过试跑后可私有冻结登记，并在固定专家图中按方法版本引用。
+
+KnowBench 在登记簿中按作者、来源 ID、版本和摘要读取脚本。审批和发往执行器前再次核对来源；试跑费用按容器运行时间计入根任务。直接登记脚本的授权独立于安装的 Skill 版本。运行器重启后按原调用取回结果和用量。后续修订保留已经确认的来源版本。
+
+在两套一次性 PostgreSQL 测试库上运行平台仓的 `scripts/local-integration/p1_author.py --registered-script`，沿用该脚本开头的两项数据库配置和 KnowLab 虚拟环境。本地需备好 `luna-local/script-input:work8` 镜像。该用例通过作者接口、P1 编辑组件及真实离线工作容器核验产物，容器时长和价格使用测试配置。后端 `tests/test_formal_script_execution_db.py -k registered_script` 另行覆盖来源修订、摘要重核和三级固定图。

@@ -193,6 +193,16 @@ class FormalMethods:
             return True
         if source.kind in ("registered_script", "registered_instruction"):
             await self.registry.check_direct_source(owner, source)
+            if source.kind == "registered_script":
+                from app.domain.workbench.script_contract_generated import ScriptCommand
+
+                try:
+                    ScriptCommand(path=source.entry)
+                except ValueError as exc:
+                    raise CapabilityError(
+                        "Registered entry is not a supported script path"
+                    ) from exc
+                return True
             raise RuntimeCapabilityGap(
                 "Direct source is registered; its trial executor is not bound"
             )
@@ -385,6 +395,8 @@ class FormalMethods:
                 raise Forbidden("Business coverage review is missing or has changed")
         if source is None:
             return
+        if source.kind == "registered_script":
+            raise Forbidden("Owner-registered scripts have no reviewed delivery rights")
         if not await self._source(owner, frozen.owner_subject, source):
             raise Forbidden("Source is unavailable")
         identity = SourceIdentity.model_validate(
@@ -661,6 +673,15 @@ class FormalMethods:
                     raise Forbidden(
                         "Execution evidence is missing or differs from the receipt"
                     )
+            if (
+                frozen.draft.source
+                and frozen.draft.source.kind == "registered_script"
+                and (run.get("execution_evidence") or {}).get("adapter")
+                != "knowbench/formal-script-host/v1"
+            ):
+                raise Forbidden(
+                    "Registered script methods require verified script execution"
+                )
             if frozen.draft.source and frozen.draft.source.kind == "skill_instruction":
                 if (
                     frozen.visibility != "private"

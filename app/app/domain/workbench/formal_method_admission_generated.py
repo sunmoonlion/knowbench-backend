@@ -99,6 +99,18 @@ class FormalMethodSource(Strict):
             raise ValueError("Installed sources require the exact asset revision")
         return self
 
+    @property
+    def authorization_id(self):
+        return UUID(self.source) if self.kind == "registered_script" else self.asset_id
+
+    @property
+    def authorization_revision(self):
+        return (
+            int(self.version)
+            if self.kind == "registered_script"
+            else self.asset_revision
+        )
+
     def fingerprint(self) -> str:
         import hashlib
         import json
@@ -300,6 +312,14 @@ class FrozenFormalMethod(Strict):
         ):
             raise ValueError("Frozen callers lack matching execution coverage")
         source = self.draft.source
+        if (
+            source
+            and source.kind == "registered_script"
+            and (self.visibility != "private" or execution is None)
+        ):
+            raise ValueError(
+                "Registered scripts require private freeze and trial evidence"
+            )
         if (
             self.visibility == "public"
             and source

@@ -235,7 +235,7 @@ class OperationCatalog:
             self._operations[key] = operation
 
     def formal_policy(self, registration):
-        if registration.source == "skill_script":
+        if registration.source in ("skill_script", "registered_script"):
             from app.domain.workbench.script_pricing import ScriptOperation
 
             if self.script_tariff is None:

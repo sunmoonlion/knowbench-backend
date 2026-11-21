@@ -39,6 +39,23 @@ class SceneRegistry:
                 "Direct implementation differs from its registered revision"
             )
 
+        from app.domain.workbench.registry_sources import SourceRevision
+
+        return SourceRevision.from_row(row)
+
+    async def execution_asset(self, owner, source):
+        if source.kind == "registered_script":
+            revision = await self.check_direct_source(owner, source)
+            return {
+                "kind": source.kind,
+                "id": str(revision.source_id),
+                "revision": revision.version,
+                "name": revision.name,
+                "status": "active",
+                "detail": {},
+            }
+        return await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
+
     async def sources(self, subject):
         async with self.repo.transaction():
             owner = await self.methods._owner(subject)

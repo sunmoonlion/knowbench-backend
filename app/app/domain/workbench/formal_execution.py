@@ -253,7 +253,8 @@ def direct_tool_procedure(draft: FormalMethodDraft) -> ToolProcedure:
     procedure = draft.definition.procedure
     if (
         not isinstance(procedure, ToolProcedure)
-        or procedure.implementation.kind not in ("mcp", "skill_script")
+        or procedure.implementation.kind
+        not in ("mcp", "skill_script", "registered_script")
         or procedure.max_model_turns != 0
     ):
         raise ValueError(
@@ -266,7 +267,7 @@ def direct_procedure(
     draft: FormalMethodDraft, *, caller: str = "host"
 ) -> ToolProcedure:
     procedure = direct_tool_procedure(draft)
-    if procedure.implementation.kind == "skill_script" and (
+    if procedure.implementation.kind in ("skill_script", "registered_script") and (
         caller != "host" or draft.allowed_callers != ("host",)
     ):
         raise ValueError("An isolated script method requires host execution")
@@ -291,7 +292,7 @@ def structured_outputs(draft: FormalMethodDraft, result: dict) -> dict:
     procedure = direct_tool_procedure(draft)
     if result.get("isError"):
         raise ValueError("The method implementation reported an execution error")
-    if procedure.implementation.kind == "skill_script":
+    if procedure.implementation.kind in ("skill_script", "registered_script"):
         from app.domain.workbench.skill_execution import method_script_outputs
 
         return validate_values(procedure.outputs, method_script_outputs(result))

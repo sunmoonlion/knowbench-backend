@@ -83,7 +83,10 @@ def expand_unique_plan(
             implementation = current.procedure.implementation.kind
             turns = current.procedure.max_model_turns
             if not (
-                (implementation in ("mcp", "skill_script") and turns == 0)
+                (
+                    implementation in ("mcp", "skill_script", "registered_script")
+                    and turns == 0
+                )
                 or (implementation == "skill_instruction" and turns == 1)
             ):
                 raise ValueError("Unsupported execution contract for a fixed plan leaf")

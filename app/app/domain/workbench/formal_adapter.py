@@ -12,6 +12,7 @@ from app.domain.workbench.tool_registry import (
 DIRECT_HOST_ADAPTERS = {
     "mcp": "formal_mcp",
     "skill_script": "formal_script",
+    "registered_script": "formal_script",
     "skill_instruction": "formal_instruction",
 }
 
@@ -37,11 +38,13 @@ def script_registration(draft):
         ],
     }
     return ToolRegistration.discover(
-        "skill_script",
+        source.kind,
         source.digest,
         {
             "name": "skill_run",
-            "description": f"Execute the installed entry {source.entry}",
+            "description": f"Execute the registered script {source.entry}"
+            if source.kind == "registered_script"
+            else f"Execute the installed entry {source.entry}",
             "inputSchema": schema,
         },
     )
@@ -65,6 +68,8 @@ def retained_registration(draft, tool):
 
 def live_registration(draft, asset):
     source = draft.source
+    if source.kind == "registered_script" and asset["kind"] == source.kind:
+        return script_registration(draft)
     if source.kind == "skill_script" and asset["kind"] == "skill":
         # The licensed manifest and exact asset revision are verified by FormalMethods._source.
         return script_registration(draft)

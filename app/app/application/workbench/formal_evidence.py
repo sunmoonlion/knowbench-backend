@@ -300,10 +300,10 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             str(call.get("source_asset_id")) == str(source.asset_id)
             and (
                 call.get("connection_id") is None
-                if source.kind == "skill_script"
+                if source.kind in ("skill_script", "registered_script")
                 else str(call.get("connection_id")) == str(source.asset_id)
             )
-            and intent.get("revision") == source.asset_revision,
+            and intent.get("revision") == source.authorization_revision,
             "call_source_mismatch",
         )
         registration = retained_registration(request.draft, intent["tool"])
@@ -349,6 +349,13 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             "interaction_identity_mismatch",
         )
         subject = (interaction.get("prompt") or {}).get("subject") or {}
+        if source.kind == "registered_script":
+            require(
+                subject.get("registered_source")
+                == intent.get("registered_source")
+                == source.model_dump(mode="json"),
+                "registered_script_approval_mismatch",
+            )
         require(
             subject.get("capability_call_id") == call_id
             and fingerprint(subject.get("arguments"))
@@ -389,7 +396,11 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         )
         if model:
             governance["formal_probe"] = governance.pop("formal_host")
-        if approved and source.kind == "skill_script" and outcome == "succeeded":
+        if (
+            approved
+            and source.kind in ("skill_script", "registered_script")
+            and outcome == "succeeded"
+        ):
             from app.application.workbench.script_budget import cost_proof
 
             governance["script_cost"] = await cost_proof(repo, call, subject)
@@ -477,7 +488,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
                 not grant.delegable
                 and grant.recipient_call_id == auth.call_id
                 and grant.matches_asset(
-                    source.kind, source.asset_id, source.asset_revision
+                    source.kind, source.authorization_id, source.authorization_revision
                 )
                 and grant.operation_digest == access["operation_digest"]
                 and grant.confirmation_context == task["pack_digest"]
@@ -495,7 +506,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
                 authorization=auth.model_dump(mode="json"),
             )
             adapter_result = intent.get("result")
-            if source.kind != "skill_script":
+            if source.kind not in ("skill_script", "registered_script"):
                 bounded_json(adapter_result)
             require(isinstance(adapter_result, dict), "adapter_result_missing")
             if outcome == "succeeded":

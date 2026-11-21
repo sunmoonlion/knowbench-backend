@@ -2108,9 +2108,6 @@ class Capabilities:
             selected = await self.repo.capability_selection(
                 owner, call["session_id"], lock=True
             )
-            asset = await self.repo.capability_asset(
-                owner, call["source_asset_id"], lock=True
-            )
             if (
                 intent.get("execution_kind") == "skill_script"
                 and self.operations.script_tariff
@@ -2144,8 +2141,11 @@ class Capabilities:
                     check_formal_dispatch,
                 )
 
-                await check_formal_dispatch(self, owner, current, asset, intent)
+                await check_formal_dispatch(self, owner, current, intent)
                 return
+            asset = await self.repo.capability_asset(
+                owner, call["source_asset_id"], lock=True
+            )
             await self._check_managed_action(owner, current, asset, selected, intent)
             if intent.get(
                 "read_approval_id"

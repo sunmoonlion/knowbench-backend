@@ -569,11 +569,12 @@ class _Tree:
             and call["digest"] == host_intent_digest(intent)
             and (
                 call.get("connection_id") is None
-                if source.kind in ("skill_script", "skill_instruction")
+                if source.kind
+                in ("skill_script", "registered_script", "skill_instruction")
                 else str(call.get("connection_id")) == str(source.asset_id)
             )
             and str(call["source_asset_id"]) == str(source.asset_id)
-            and intent["revision"] == source.asset_revision
+            and intent["revision"] == source.authorization_revision
             and intent["tool"]["name"] == registration.name
             and call["registration_id"] == registration.tool_id
             and call["registration_digest"] == registration.descriptor_digest,

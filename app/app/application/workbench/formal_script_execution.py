@@ -29,10 +29,19 @@ async def dispatch(svc, owner, call, intent, asset):
             leaf = dependency_for_step(snapshot, step)
             draft = leaf.draft
             bound_source = snapshot.execution_source(leaf)
-        resources = await repo.skill_package_files(owner, asset["id"])
-        payload = method_script_input(
-            asset, draft, intent["arguments"], resources, bound_source=bound_source
-        )
+        source = bound_source or draft.source
+        if source is not None and source.kind == "registered_script":
+            from app.domain.workbench.source_tasks import script_input
+
+            revision = await svc.formal_sources.registry.check_direct_source(
+                owner, source
+            )
+            payload = script_input(revision, revision.content, intent["arguments"])
+        else:
+            resources = await repo.skill_package_files(owner, asset["id"])
+            payload = method_script_input(
+                asset, draft, intent["arguments"], resources, bound_source=bound_source
+            )
     except Exception:
         await settle(
             repo,

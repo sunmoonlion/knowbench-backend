@@ -278,53 +278,16 @@ async def test_web_approval_and_changed_authority_between_prepare_and_input(db):
     reason="uses the local isolated script image",
 )
 async def test_registered_source_executes_in_real_worker(db):
-    import asyncio
-    import json
-
+    from script_worker_support import run_script_image
     from test_formal_script_execution_db import SOURCE
-
-    from app.domain.workbench.script_contract_generated import (
-        ScriptExecution,
-        execution_frame,
-    )
 
     sid, req, service, executor = await setup(db, "script", SOURCE)
     adapter_start = executor.start
 
     async def run_image(owner, run, body):
-        frame, raw = execution_frame(ScriptExecution.model_validate(body))
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "run",
-            "--rm",
-            "--pull=never",
-            "--network=none",
-            "--read-only",
-            "--cap-drop=ALL",
-            "--security-opt=no-new-privileges",
-            "--memory=256m",
-            "--pids-limit=64",
-            "--tmpfs",
-            "/tmp",
-            "-i",
-            "--entrypoint",
-            "/usr/bin/python3",
-            "luna-local/script-input:work8",
-            "/opt/sandbox/skill_execute.py",
-            str(frame.size),
-            frame.sha256,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        out, err = await asyncio.wait_for(proc.communicate(raw), 60)
-        assert proc.returncode == 0, err.decode()
-        ack, result = out.decode().splitlines()
-        assert ack == "SUNMOON_INPUT_ACCEPTED"
-        await adapter_start(
-            owner, run, body
-        )  # Supplies the controlled metering fixture.
-        executor.receipts[run]["result"] = json.loads(result)
+        result = await run_script_image(body)
+        await adapter_start(owner, run, body)
+        executor.receipts[run]["result"] = result
 
     executor.start = run_image
     async with db() as session:

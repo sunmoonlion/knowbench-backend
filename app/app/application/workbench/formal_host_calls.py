@@ -42,6 +42,7 @@ from app.domain.workbench.method_authorization import (
     MethodAuthorization,
     PermissionGrant,
     delegate,
+    grant_binding,
 )
 from app.domain.workbench.method_capabilities import AccessRequirement
 from app.domain.workbench.models import InteractionPrompt
@@ -340,10 +341,15 @@ class FormalHostCalls:
             owner, request.owner_subject, source
         ):
             raise CapabilityError("Source execution rights have not been verified")
-        asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
+        asset = await self.capabilities.formal_sources.registry.execution_asset(
+            owner, source
+        )
         registration = live_registration(draft, asset)
         policy = self.capabilities.operations.formal_policy(registration)
-        if source.kind == "skill_script" and self.capabilities.script_executor is None:
+        if (
+            source.kind in ("skill_script", "registered_script")
+            and self.capabilities.script_executor is None
+        ):
             raise CapabilityError("Isolated script execution is unavailable")
         tool = registration.descriptor()
         access = {
@@ -399,8 +405,15 @@ class FormalHostCalls:
         intent = {
             "execution_kind": host_kind(source),
             "formal_host": host,
-            "source_asset_id": asset["id"],
-            "connection_id": None if source.kind == "skill_script" else asset["id"],
+            "source_asset_id": str(source.asset_id) if source.asset_id else None,
+            **(
+                {"registered_source": source.model_dump(mode="json")}
+                if source.kind == "registered_script"
+                else {}
+            ),
+            "connection_id": None
+            if source.kind in ("skill_script", "registered_script")
+            else asset["id"],
             "revision": asset["revision"],
             "connection_name": asset["name"],
             "account_label": asset["detail"].get("account_label", ""),
@@ -410,7 +423,7 @@ class FormalHostCalls:
             "operation": decision.operation,
             "access": access,
         }
-        if source.kind == "skill_script":
+        if source.kind in ("skill_script", "registered_script"):
             intent["script_quote"] = decision.operation["script_quote"]
         artifact_read = None
         if (
@@ -611,6 +624,11 @@ class FormalHostCalls:
                     subject={
                         "capability_call_id": call_id,
                         "connection": context.asset["name"],
+                        **(
+                            {"registered_source": context.intent["registered_source"]}
+                            if "registered_source" in context.intent
+                            else {}
+                        ),
                         "account": context.intent["account_label"],
                         "purpose": context.intent["purpose"],
                         "tool": context.intent["tool"]["name"],
@@ -661,7 +679,7 @@ class FormalHostCalls:
                     "call_key": key,
                     "registration_id": context.registration.tool_id,
                     "registration_digest": context.registration.descriptor_digest,
-                    "source_asset_id": context.asset["id"],
+                    "source_asset_id": context.intent["source_asset_id"],
                     "connection_id": context.intent["connection_id"],
                     "interaction_id": opened["interaction_id"],
                     "digest": context.identity,
@@ -752,7 +770,7 @@ class FormalHostCalls:
                 {k: v for k, v in call["detail"].items() if k != "approval_token"}
             )
             or context.intent["formal_probe" if is_model else "formal_host"] != host
-            or call["source_asset_id"] != context.asset["id"]
+            or call["source_asset_id"] != context.intent["source_asset_id"]
             or call["connection_id"] != context.intent["connection_id"]
             or call["registration_id"] != context.registration.tool_id
             or call["registration_digest"] != context.registration.descriptor_digest
@@ -875,21 +893,10 @@ class FormalHostCalls:
         grant = PermissionGrant(
             grant_id=digest([call["id"], call["digest"]]),
             confirmation_context=host["snapshot_digest"],
-            **(
-                {
-                    "script_asset_id": context.asset["id"],
-                    "script_revision": context.asset["revision"],
-                }
-                if context.intent["execution_kind"] == "formal_script"
-                else {
-                    "instruction_asset_id": context.asset["id"],
-                    "instruction_revision": context.asset["revision"],
-                }
-                if context.intent["execution_kind"] == "formal_instruction"
-                else {
-                    "connection_id": context.asset["id"],
-                    "connection_revision": context.asset["revision"],
-                }
+            **grant_binding(
+                context.registration.source,
+                context.asset["id"],
+                context.asset["revision"],
             ),
             operation_digest=context.access["operation_digest"],
             requirement=exact,

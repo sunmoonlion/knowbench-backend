@@ -100,6 +100,13 @@ async def _approval(
     source = snapshot_for_task(task).execution_source(leaf)
     assert source is not None
     inference = source.kind == "skill_instruction"
+    if source.kind == "registered_script":
+        _require(
+            subject.get("registered_source")
+            == intent.get("registered_source")
+            == source.model_dump(mode="json"),
+            "registered_script_approval_mismatch",
+        )
     if inference:
         from app.application.workbench.instruction_leaf import leaf_operation
 
@@ -236,7 +243,7 @@ async def _approval(
             if inference
             else {
                 "destination": declared["data_transfer"]["destination"]
-                if source.kind == "skill_script"
+                if source.kind in ("skill_script", "registered_script")
                 else source.source,
                 "arguments_digest": digest(inputs),
             }
@@ -246,7 +253,9 @@ async def _approval(
         and grant.resource_authority is None
         and grant.recipient_call_id == auth.call_id
         and grant.confirmation_context == task["pack_digest"]
-        and grant.matches_asset(source.kind, source.asset_id, source.asset_revision)
+        and grant.matches_asset(
+            source.kind, source.authorization_id, source.authorization_revision
+        )
         and grant.operation_digest == access["operation_digest"]
         and grant.method_ids == (str(leaf.reference.method_id),)
         and grant.requirement.model_dump(mode="json") == exact
@@ -254,7 +263,7 @@ async def _approval(
         "exact_child_direct_grant_missing",
     )
     metering = {}
-    if source.kind == "skill_script":
+    if source.kind in ("skill_script", "registered_script"):
         from app.application.workbench.script_budget import cost_proof
 
         metering["script_cost"] = await cost_proof(repo, call, subject)
@@ -468,11 +477,11 @@ async def _step_evidence(
         and call["digest"] == host_intent_digest(intent)
         and (
             call.get("connection_id") is None
-            if source.kind in ("skill_script", "skill_instruction")
+            if source.kind in ("skill_script", "registered_script", "skill_instruction")
             else str(call.get("connection_id")) == str(source.asset_id)
         )
         and str(call["source_asset_id"]) == str(source.asset_id)
-        and intent["revision"] == source.asset_revision
+        and intent["revision"] == source.authorization_revision
         and intent["tool"]["name"] == registration.name
         and call["registration_id"] == registration.tool_id
         and call["registration_digest"] == registration.descriptor_digest,

@@ -14,6 +14,20 @@ from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.method_capabilities import AccessRequirement, Requirement
 from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 
+# Installed entries and author-registered versions occupy separate namespaces.
+_SCRIPT_BINDINGS = {
+    "skill_script": ("script_asset_id", "script_revision"),
+    "skill_instruction": ("instruction_asset_id", "instruction_revision"),
+    "registered_script": ("registered_script_id", "registered_script_version"),
+}
+
+
+def grant_binding(kind, identity, revision):
+    id_field, revision_field = _SCRIPT_BINDINGS.get(
+        kind, ("connection_id", "connection_revision")
+    )
+    return {id_field: identity, revision_field: revision}
+
 
 class PermissionGrant(Requirement):
     grant_id: str = Field(min_length=1, max_length=128)
@@ -24,6 +38,12 @@ class PermissionGrant(Requirement):
     )
     script_asset_id: UUID | None = Field(default=None, exclude_if=lambda v: v is None)
     script_revision: int | None = Field(
+        default=None, strict=True, ge=1, exclude_if=lambda v: v is None
+    )
+    registered_script_id: UUID | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    registered_script_version: int | None = Field(
         default=None, strict=True, ge=1, exclude_if=lambda v: v is None
     )
     instruction_asset_id: UUID | None = Field(
@@ -52,20 +72,27 @@ class PermissionGrant(Requirement):
         revisions = (
             (self.connection_id, self.connection_revision),
             (self.script_asset_id, self.script_revision),
+            (self.registered_script_id, self.registered_script_version),
             (self.instruction_asset_id, self.instruction_revision),
         )
         if (
             any((a is None) != (r is None) for a, r in revisions)
             or sum(a is not None for a, _ in revisions) != 1
         ):
-            raise ValueError("Specify one exact connection or installed Skill revision")
-        if (self.script_asset_id or self.instruction_asset_id) and (
+            raise ValueError(
+                "Specify exactly one connection, Skill or registered script revision"
+            )
+        if (
+            self.script_asset_id
+            or self.instruction_asset_id
+            or self.registered_script_id
+        ) and (
             self.resource_authority is not None
             or self.delegable
             or self.recipient_call_id is None
         ):
             raise ValueError(
-                "An installed Skill permission must name a direct recipient"
+                "A script or instruction permission must name a direct recipient"
             )
         if self.expires_at.tzinfo is None:
             raise ValueError("Permission expiry must include a timezone")
@@ -80,22 +107,14 @@ class PermissionGrant(Requirement):
         return self
 
     def matches_asset(self, kind, asset_id, revision):
-        if kind == "skill_instruction":
-            return (
-                self.instruction_asset_id is not None
-                and str(self.instruction_asset_id) == str(asset_id)
-                and self.instruction_revision == revision
-            )
-        if kind == "skill_script":
-            return (
-                self.script_asset_id is not None
-                and str(self.script_asset_id) == str(asset_id)
-                and self.script_revision == revision
-            )
+        id_field, revision_field = _SCRIPT_BINDINGS.get(
+            kind, ("connection_id", "connection_revision")
+        )
+        identity = getattr(self, id_field)
         return (
-            self.connection_id is not None
-            and str(self.connection_id) == str(asset_id)
-            and self.connection_revision == revision
+            identity is not None
+            and str(identity) == str(asset_id)
+            and getattr(self, revision_field) == revision
         )
 
 
@@ -136,6 +155,8 @@ def covers(
         or parent.confirmation_context != child.confirmation_context
         or parent.connection_id != child.connection_id
         or parent.connection_revision != child.connection_revision
+        or parent.registered_script_id != child.registered_script_id
+        or parent.registered_script_version != child.registered_script_version
         or parent.script_asset_id != child.script_asset_id
         or parent.script_revision != child.script_revision
         or parent.instruction_asset_id != child.instruction_asset_id

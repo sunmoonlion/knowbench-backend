@@ -37,7 +37,11 @@ def authorize_operation(
     dispatch; they are not authorized by a remote readOnlyHint annotation.
     """
     registration.validate_arguments(arguments)
-    if registration.source == "skill_script" and method and access:
+    if (
+        registration.source in ("skill_script", "registered_script")
+        and method
+        and access
+    ):
         if operations is None:
             raise CapabilityError("Script pricing policy is unavailable")
         policy = operations.formal_policy(registration)
@@ -79,11 +83,13 @@ def authorize_operation(
             "capability_ref": registration.source,
             "version": registration.descriptor_digest,
             "operation": registration.name,
-            "effect": "execute" if registration.source == "skill_script" else "read",
+            "effect": "execute"
+            if registration.source in ("skill_script", "registered_script")
+            else "read",
             "resources": [],
             "arguments_digest": digest(arguments),
         },
-        registration.source == "skill_script",
+        registration.source in ("skill_script", "registered_script"),
     )
 
 

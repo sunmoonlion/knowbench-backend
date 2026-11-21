@@ -95,9 +95,12 @@ class FormalExecutions:
             raise CapabilityError(
                 "Formal execution requires a reviewed implementation source"
             )
-        asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
+        asset = await self.formal.registry.execution_asset(owner, source)
         registration = live_registration(request.draft, asset)
-        if source.kind == "skill_script" and self.capabilities.script_executor is None:
+        if (
+            source.kind in ("skill_script", "registered_script")
+            and self.capabilities.script_executor is None
+        ):
             raise CapabilityError("Isolated script execution is unavailable")
         return self.capabilities.operations.formal_policy(registration)
 
@@ -617,12 +620,14 @@ class FormalExecutions:
 
         script_cases = (
             any(
-                leaf.draft.source and leaf.draft.source.kind == "skill_script"
+                leaf.draft.source
+                and leaf.draft.source.kind in ("skill_script", "registered_script")
                 for leaf in leaves
             )
             if isinstance(request.draft.definition.procedure, Orchestration)
             else bool(
-                request.draft.source and request.draft.source.kind == "skill_script"
+                request.draft.source
+                and request.draft.source.kind in ("skill_script", "registered_script")
             )
         )
         script_total = Decimal(0)

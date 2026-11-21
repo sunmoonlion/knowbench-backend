@@ -654,7 +654,8 @@ class FormalMethodCatalog:
                     if "model" in frozen.draft.allowed_callers
                     else "knowbench/formal-script-host/v1"
                     if frozen.draft.source
-                    and frozen.draft.source.kind == "skill_script"
+                    and frozen.draft.source.kind
+                    in ("skill_script", "registered_script")
                     else "knowbench/formal-mcp-host/v1"
                 )
             )
@@ -725,21 +726,24 @@ class FormalMethodCatalog:
         _require(
             len(frozen.draft.definition.access_requirements) == 1
             and not frozen.validation.dependencies,
-            "Only one reviewed direct MCP operation is supported",
+            "A direct method needs one reviewed operation",
         )
         source = frozen.draft.source
         _require(
             source is not None
-            and source.kind in ("mcp", "skill_script")
-            and source.asset_id is not None,
-            "Formal method has no pinned MCP source",
+            and (
+                source.kind == "registered_script"
+                or source.kind in ("mcp", "skill_script")
+                and source.asset_id is not None
+            ),
+            "Formal method has no pinned executable source",
         )
         assert source is not None
         _require(
             await self.formal_sources._source(owner, frozen.owner_subject, source),
             "Source execution rights are unavailable",
         )
-        asset = await self.repo.capability_asset(owner, str(source.asset_id), lock=True)
+        asset = await self.formal_sources.registry.execution_asset(owner, source)
         registration = live_registration(frozen.draft, asset)
         policy = self.operations.formal_policy(registration)
         self._verify_cases(owner, frozen, request, evidence, registration, policy)
@@ -900,7 +904,10 @@ class FormalMethodCatalog:
                 and governance["operation"] == operation,
                 "Current operation policy differs from the validated operation",
             )
-            if source.kind == "skill_script" and result.outcome == "succeeded":
+            if (
+                source.kind in ("skill_script", "registered_script")
+                and result.outcome == "succeeded"
+            ):
                 from app.application.workbench.script_budget import verify_proof
 
                 verify_proof(
@@ -967,7 +974,7 @@ class FormalMethodCatalog:
                 not grant.delegable
                 and grant.recipient_call_id == auth.call_id
                 and grant.matches_asset(
-                    source.kind, source.asset_id, source.asset_revision
+                    source.kind, source.authorization_id, source.authorization_revision
                 )
                 and grant.operation_digest == policy.policy_digest
                 and grant.confirmation_context == item["snapshot_digest"]

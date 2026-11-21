@@ -312,9 +312,10 @@ class FormalMethodExecutionRequest(Strict):
                         "without tools"
                     )
             elif (
-                p.implementation.kind not in ("mcp", "skill_script")
+                p.implementation.kind
+                not in ("mcp", "skill_script", "registered_script")
                 or (
-                    p.implementation.kind == "skill_script"
+                    p.implementation.kind in ("skill_script", "registered_script")
                     and self.draft.allowed_callers != ("host",)
                 )
                 or p.max_model_turns != 0

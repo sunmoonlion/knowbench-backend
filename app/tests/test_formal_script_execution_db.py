@@ -109,38 +109,58 @@ class Executor:
         pass
 
 
-async def script_setup(db, executor=None, *, limit="1", public_review=False):
+async def script_setup(
+    db, executor=None, *, limit="1", public_review=False, registered=False
+):
     await admission_setup(db)
     env, _, _ = await seed(db)
     executor = executor or Executor()
     async with db() as session:
         repo = WorkbenchRepository(session)
         svc = service(repo)
-        await svc.create_skill(
-            OWNER,
-            package().model_copy(
-                update={
-                    "archive_base64": archive(
-                        {"SKILL.md": "Run", "calculate.py": SOURCE}
-                    )
-                }
-            ),
-            package=True,
-        )
-        source = next(
-            x
-            for x in (await svc.formal_sources.sources("author"))["items"]
-            if x["kind"] == "skill_script"
-        )
-    terms = {"origin": "test/skill", "notices": ["Test package"]}
-    record = license_record(
-        source,
-        rights={"execute": True, "deliver": public_review},
-        delivery_terms=terms if public_review else None,
-    )
-    if public_review:
-        source["delivery_terms"] = terms
-    source["license_basis"] = record.basis
+        if registered:
+            from app.domain.workbench.registry_sources import SourceDraft
+
+            source_id = uuid4()
+            async with repo.transaction():
+                await repo.register_direct_revision(
+                    OWNER,
+                    source_id,
+                    1,
+                    SourceDraft(kind="script", name="calculate.py", content=SOURCE),
+                )
+            source = next(
+                x
+                for x in (await svc.formal_sources.sources("author"))["items"]
+                if x["kind"] == "registered_script"
+            )
+            record = None
+        else:
+            await svc.create_skill(
+                OWNER,
+                package().model_copy(
+                    update={
+                        "archive_base64": archive(
+                            {"SKILL.md": "Run", "calculate.py": SOURCE}
+                        )
+                    }
+                ),
+                package=True,
+            )
+            source = next(
+                x
+                for x in (await svc.formal_sources.sources("author"))["items"]
+                if x["kind"] == "skill_script"
+            )
+            terms = {"origin": "test/skill", "notices": ["Test package"]}
+            record = license_record(
+                source,
+                rights={"execute": True, "deliver": public_review},
+                delivery_terms=terms if public_review else None,
+            )
+            if public_review:
+                source["delivery_terms"] = terms
+            source["license_basis"] = record.basis
     doc = validation_request(source).model_dump(mode="json", by_alias=True)
     access = deepcopy(ACCESS)
     access.update(
@@ -205,7 +225,7 @@ async def script_setup(db, executor=None, *, limit="1", public_review=False):
                 expires_at=record.expires_at,
             ),
         )
-        if public_review
+        if public_review and record
         else ()
     )
 
@@ -219,7 +239,7 @@ async def script_setup(db, executor=None, *, limit="1", public_review=False):
             script_tariff=TARIFF.model_copy(update={"provisioner_url": executor.url})
             if isinstance(executor, SkillExecutor)
             else TARIFF,
-            source_licenses=(record,),
+            source_licenses=(record,) if record else (),
             business_reviews=reviews,
         )
 
@@ -312,21 +332,41 @@ async def collect_script(db, factory):
             await asyncio.sleep(0.2)
 
 
-async def mixed_expert(db, behavior, executor=None, *, shared_connector=None):
+async def mixed_expert(
+    db, behavior, executor=None, *, shared_connector=None, registered=False
+):
     from formal_plan_support import EchoRemote
     from test_capabilities_db import SCHEMA, URL, body
     from test_formal_host_calls_db import FORMAL_OPERATION
 
     from app.domain.workbench.tool_registry import ToolRegistration
 
-    req, script_factory, _, executor = await script_setup(db, executor)
+    req, script_factory, _, executor = await script_setup(
+        db, executor, registered=registered
+    )
     async with db() as session:
         repo = WorkbenchRepository(session)
         script_svc = script_factory(repo)
         assets = (await script_svc.formal_sources.sources("author"))["items"]
-        script_record = license_record(
-            next(asset for asset in assets if asset["kind"] == "skill_script")
-        )
+        if registered:
+            from app.domain.workbench.registry_sources import SourceDraft
+
+            source_id = req.draft.source.source
+            # Revising the author's script must not retarget the saved v1 draft.
+            async with repo.transaction():
+                await repo.register_direct_revision(
+                    OWNER,
+                    source_id,
+                    2,
+                    SourceDraft(
+                        kind="script",
+                        name="calculate.py",
+                        content="raise ValueError('wrong revision')",
+                    ),
+                )
+        script_records = [
+            license_record(asset) for asset in assets if asset["kind"] == "skill_script"
+        ]
         remote = shared_connector or EchoRemote()
         lookup = {
             "name": "lookup",
@@ -378,7 +418,7 @@ async def mixed_expert(db, behavior, executor=None, *, shared_connector=None):
         source_read = next(a for a in sources if a["entry"] == "lookup")
         source_send = next(a for a in sources if a["entry"] == "send")
         records = [
-            script_record,
+            *script_records,
             license_record(source_send, record_id="send-license"),
             license_record(source_read, record_id="lookup-license"),
         ]
@@ -622,9 +662,102 @@ async def mixed_expert(db, behavior, executor=None, *, shared_connector=None):
                 },
             )
 
+        if registered:
+            return expert, frozen, leaves, factory, conductor
         if shared_connector is not None:
             assert source_read["asset_id"] == source_send["asset_id"]
             return source_send["asset_id"], operations, result["cases"][0]["task_id"]
+
+
+async def test_registered_script_confirmation_requires_same_bytes(db):
+    from sqlalchemy import text
+
+    from app.domain.workbench.capabilities import CapabilityError
+
+    req, factory, conductor, executor = await script_setup(db, registered=True)
+    await conductor.advance(str(req.run_id))
+    result = await status(db, req, factory)
+    subject = result["actions"][0]["subject"]
+    assert subject["registered_source"] == req.draft.source.model_dump(mode="json")
+    async with db() as session, session.begin():
+        await session.execute(
+            text(
+                "UPDATE workbench_registry_sources SET content=:content WHERE source_id=:source AND version=1"
+            ),
+            {"source": req.draft.source.source, "content": "print('changed')"},
+        )
+    with pytest.raises(CapabilityError, match="pinned digest"):
+        await approve(db, req, factory, result)
+    assert not executor.calls
+
+
+async def test_registered_script_in_private_fixed_expert(db):
+    class PinnedExecutor(Executor):
+        async def start(self, owner, run, body):
+            (file,) = body["files"]
+            assert (
+                file["path"] == "calculate.py"
+                and base64.b64decode(file["data_base64"]) == SOURCE.encode()
+            )
+            await super().start(owner, run, body)
+
+    from formal_recursive_support import parent_request
+
+    expert, child, leaves, factory, conductor = await mixed_expert(
+        db, "success", executor=PinnedExecutor(), registered=True
+    )
+    from app.application.workbench.tool_registry import formal_registration
+    from app.domain.workbench.errors import Forbidden
+
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        revision = await formal_registration(repo, OWNER, leaves[1].reference)
+        assert revision.source_asset_id is None and revision.source_revision == 1
+        assert (
+            revision.runner_route == "formal_script"
+            and revision.source_kind == "registered_script"
+        )
+        with pytest.raises(Forbidden, match="delivery rights"):
+            await factory(repo).formal_sources.delivery(
+                "author", leaves[1].reference, market=False
+            )
+    req = parent_request(expert, [child], depth=3, expansions=5, steps=4)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        await FormalExecutions(repo, factory(repo)).accept(req, caller="knowlab")
+    for name in ("lookup", "calculate", "send"):
+        await settle(conductor, req)
+        run = await status(db, req, factory)
+        if name == "calculate":
+            (action,) = run["actions"]
+            assert action["subject"]["registered_source"] == leaves[
+                1
+            ].draft.source.model_dump(mode="json")
+        await approve(db, req, factory, run)
+        await collect_script(db, factory)
+    await settle(conductor, req)
+    run = await status(db, req, factory)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        evidence = (await repo.formal_validation(OWNER, str(req.run_id)))[
+            "execution_evidence"
+        ]["cases"][0]
+        assert run["status"] == "passed", evidence["errors"]
+        assert [s["path"] for s in evidence["steps"]] == [
+            ["first", n] for n in ("lookup", "calculate", "send")
+        ]
+        svc = factory(repo)
+        frozen = freeze(req, run)
+        await svc.formal_sources.register(frozen, caller="knowlab")
+        deps = {
+            (v.reference.method_id, v.reference.version): v for v in [*leaves, child]
+        }
+        assert (
+            await FormalMethodCatalog(
+                repo, svc.formal_sources, svc.operations
+            ).resolve_owned_admission(OWNER, frozen.reference, resolved=deps)
+            == frozen
+        )
 
 
 @pytest.mark.parametrize(

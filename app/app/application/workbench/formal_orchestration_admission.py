@@ -94,7 +94,8 @@ def verify_leaf_authority(
     source = snapshot.execution_source(leaf)
     require(
         source is not None
-        and source.kind in ("mcp", "skill_script", "skill_instruction"),
+        and source.kind
+        in ("mcp", "skill_script", "registered_script", "skill_instruction"),
         "Sealed leaf implementation is unsupported",
     )
     assert source is not None
@@ -117,7 +118,7 @@ def verify_leaf_authority(
             registration.descriptor_digest,
         )
         policy_digest = digest(operation)
-    elif source.kind == "skill_script":
+    elif source.kind in ("skill_script", "registered_script"):
         registration = script_registration(leaf.draft)
         policy = operations.formal_policy(registration)
         registration_id, descriptor_digest = (
@@ -177,7 +178,7 @@ def verify_leaf_authority(
         and len(observed["adapter_result_digest"]) == 64,
         "Sealed leaf provenance or current operation policy changed",
     )
-    if source.kind == "skill_script":
+    if source.kind in ("skill_script", "registered_script"):
         verify_proof(governance.get("script_cost"), call_id, operation["script_quote"])
     auth = MethodAuthorization.model_validate(governance["authorization"])
     parent = MethodAuthorization.model_validate(governance["parent_authorization"])
@@ -222,7 +223,9 @@ def verify_leaf_authority(
         and grant.resource_authority is None
         and grant.recipient_call_id == auth.call_id
         and grant.confirmation_context == digest(snapshot.document())
-        and grant.matches_asset(source.kind, source.asset_id, source.asset_revision)
+        and grant.matches_asset(
+            source.kind, source.authorization_id, source.authorization_revision
+        )
         and grant.operation_digest == policy_digest
         and grant.method_ids == (str(leaf.reference.method_id),)
         and grant.requirement.model_dump(mode="json") == exact

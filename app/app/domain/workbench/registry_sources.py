@@ -37,3 +37,19 @@ class RegisteredSource(Strict):
 
 class SourceRevision(RegisteredSource):
     content: str
+
+    @classmethod
+    def from_row(cls, row):
+        from app.domain.workbench.capabilities import CapabilityError
+
+        value = cls.model_validate({k: row[k] for k in cls.model_fields})
+        if (
+            SourceDraft(
+                kind=value.kind, name=value.name, content=value.content
+            ).content_digest()
+            != value.digest
+        ):
+            raise CapabilityError(
+                "Registered source content differs from its pinned digest"
+            )
+        return value

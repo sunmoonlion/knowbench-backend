@@ -13,7 +13,7 @@ from app.domain.workbench.capabilities import (
 )
 from app.domain.workbench.errors import IdempotencyConflict, WorkbenchError
 from app.domain.workbench.models import HandoverRequest
-from app.domain.workbench.registry_sources import RegisteredSource, SourceDraft
+from app.domain.workbench.registry_sources import RegisteredSource, SourceRevision
 from app.domain.workbench.skill_execution import method_script_outputs
 from app.domain.workbench.source_tasks import SourceTask, script_input
 from app.domain.workbench.states import (
@@ -26,15 +26,10 @@ from app.domain.workbench.states import (
 
 async def resolve(repo, owner, ref):
     row = await repo.direct_revision(owner, ref.source_id, ref.version, ref.digest)
-    source = RegisteredSource.model_validate(
-        {k: row[k] for k in RegisteredSource.model_fields}
-    )
-    draft = SourceDraft(kind=row["kind"], name=row["name"], content=row["content"])
-    if draft.content_digest() != source.digest:
-        raise CapabilityError(
-            "Registered source content differs from its pinned digest"
-        )
-    return source, draft.content
+    revision = SourceRevision.from_row(row)
+    return RegisteredSource.model_validate(
+        revision.model_dump(exclude={"content"})
+    ), revision.content
 
 
 def script_quote(svc):
