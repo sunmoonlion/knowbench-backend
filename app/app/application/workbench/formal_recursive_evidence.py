@@ -21,6 +21,7 @@ from app.domain.workbench.formal_adapter import call_matches_source, host_kind
 from app.domain.workbench.formal_execution import (
     case_key,
     fixed_step_outputs,
+    invocation_definition,
     snapshot_for_task,
 )
 from app.domain.workbench.formal_host import host_intent_digest
@@ -686,7 +687,7 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
             for f in snapshot.dependencies
         }
         plan = expand_unique_plan(
-            snapshot.method_id, snapshot.draft.definition, resolved
+            snapshot.method_id, invocation_definition(snapshot), resolved
         )
         _require(
             any(n.kind != "tool" for n in plan.nodes),
@@ -709,7 +710,7 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
             for a in attempts
         ]
         direct_refs = {
-            _ref(s.candidates[0]) for s in unique_plan(snapshot.draft.definition)
+            _ref(s.candidates[0]) for s in unique_plan(invocation_definition(snapshot))
         }
         _require(
             str(task["owner_actor_id"]) == str(owner)
@@ -722,8 +723,7 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
             and snapshot.repetition == result["repetition"] == repetition
             and snapshot.caller == case.caller == result.get("caller", "host") == "host"
             and fingerprint(snapshot.arguments) == fingerprint(case.input.values)
-            and len(request.dependencies) == len(direct_refs)
-            and {_ref(ref) for ref in request.dependencies} == direct_refs
+            and direct_refs <= {_ref(ref) for ref in request.dependencies}
             and len(snapshot.dependencies) == len(plan.dependencies)
             and {_ref(f.reference) for f in snapshot.dependencies}
             == {_ref(ref) for ref in plan.dependencies},
@@ -822,7 +822,7 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
         await tree.scope((), root, snapshot.method_id, None)
         stage = "nodes"
         outputs = await tree.visit(
-            snapshot.draft.definition, snapshot.arguments, (), root
+            invocation_definition(snapshot), snapshot.arguments, (), root
         )
         _result(root["detail"].get("exports"), outputs)
         root_artifact = await _artifact(

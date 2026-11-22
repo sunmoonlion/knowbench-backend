@@ -1093,6 +1093,7 @@ async def advance_formal(conductor, run_id):
                         account.actor_id,
                         request.draft,
                         request.method_id,
+                        values=case.input.values,
                         bindings=bindings,
                         grants=grants,
                     )

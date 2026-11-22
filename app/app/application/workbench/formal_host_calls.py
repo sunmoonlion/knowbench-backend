@@ -126,6 +126,7 @@ class FormalHostCalls:
                     snapshot.draft,
                     snapshot.method_id,
                     bindings=bindings,
+                    values=snapshot.arguments,
                     grants=grants,
                 )
                 if (

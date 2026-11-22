@@ -201,6 +201,40 @@ def expand_unique_plan(
     )
 
 
+class UnmatchedCandidate(ValueError):
+    def __init__(self, slot: str):
+        self.slot = slot
+        super().__init__(f"No frozen candidate matches input {slot}")
+
+
+def select_plan(
+    definition: FormalMethodDefinition, values: dict
+) -> FormalMethodDefinition:
+    """Derive a fixed invocation graph from the immutable rule and caller inputs."""
+    graph = definition.procedure
+    if not isinstance(graph, Orchestration) or not graph.has_candidate_choice:
+        return definition
+    steps = []
+    for step in graph.steps:
+        choice = step.candidate_choice
+        if choice is not None:
+            port = step.inputs[choice.input]
+            binding = port.binding
+            if not isinstance(binding, CallerValue):
+                raise ValueError("Candidate selection requires a caller input")
+            value = values.get(binding.name)
+            selected = choice.match(value)
+            if selected is None or not port.slot.accepts(value):
+                raise UnmatchedCandidate(binding.name)
+            step = step.model_copy(
+                update={"candidates": (selected,), "candidate_choice": None}
+            )
+        steps.append(step)
+    return definition.model_copy(
+        update={"procedure": graph.model_copy(update={"steps": tuple(steps)})}
+    )
+
+
 def unique_plan(definition: FormalMethodDefinition) -> tuple[MethodStep, ...]:
     """Stable topological order; textual descriptions do not act as conditions.
 

@@ -223,7 +223,9 @@ async def prepare(
             raise StaleStateVersion("Save and review the current preparation first")
         from app.application.workbench.formal_expert_preview import fixed_graph
 
-        graph, graph_issue = await fixed_graph(registry, owner, selected, definition)
+        graph, graph_issue = await fixed_graph(
+            registry, owner, selected, definition, bindings["values"]
+        )
     materials = bindings["materials"]
     user_token = await token() if materials or browse else None
     shelf = await library.preparation_shelf(user_token) if browse else []

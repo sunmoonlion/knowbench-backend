@@ -14,7 +14,11 @@ from app.application.workbench.artifact_read_authority import planned_binding
 from app.application.workbench.script_budget import case_script_cost, verify_proof
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_adapter import script_registration
-from app.domain.workbench.formal_execution import FormalTaskSnapshot, validate_values
+from app.domain.workbench.formal_execution import (
+    FormalTaskSnapshot,
+    invocation_definition,
+    validate_values,
+)
 from app.domain.workbench.formal_method_compiler_generated import (
     FrozenMethod,
     compile_method,
@@ -29,6 +33,7 @@ from app.domain.workbench.formal_method_plan_generated import (
     bind_step_inputs,
     expand_unique_plan,
     export_outputs,
+    select_plan,
     single_review_edge,
     unique_plan,
     validate_plan_inputs,
@@ -287,7 +292,7 @@ def _old_case(
         },
         "Foreign dependency has no exact consumer binding",
     )
-    plan = unique_plan(snapshot.draft.definition)
+    plan = unique_plan(invocation_definition(snapshot))
     expected = {ref_key(step.candidates[0]) for step in plan}
     require(
         {ref_key(f.reference) for f in snapshot.dependencies} == expected
@@ -300,7 +305,7 @@ def _old_case(
     )
     _identity(identities, "task", result.task_id)
     root = _identity(identities, "method_call", item["root_call_id"])
-    validate_plan_inputs(snapshot.draft.definition, snapshot.arguments)
+    validate_plan_inputs(invocation_definition(snapshot), snapshot.arguments)
     retained = item["steps"]
     require(len(retained) == len(plan), "Sealed proof omits or adds a mandatory step")
     accepted, versions, grants = {}, [], []
@@ -408,7 +413,7 @@ def _old_case(
         and str(result.call_id) == retained[-1]["call_id"],
         "Sealed case does not identify its final actual step",
     )
-    exported = export_outputs(snapshot.draft.definition, accepted)
+    exported = export_outputs(invocation_definition(snapshot), accepted)
     require(
         fingerprint(exported) == fingerprint(item["outputs"])
         and item["outputs_digest"] == digest(exported),
@@ -439,9 +444,33 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
     compiled = compile_method(
         frozen.reference.method_id, frozen.draft.definition, definitions
     )
-    expanded = expand_unique_plan(
-        frozen.reference.method_id, frozen.draft.definition, definitions
-    )
+    proc = frozen.draft.definition.procedure
+    if isinstance(proc, Orchestration) and proc.has_candidate_choice:
+        plans = [
+            expand_unique_plan(
+                frozen.reference.method_id,
+                select_plan(frozen.draft.definition, case.input.values),
+                definitions,
+            )
+            for case in request.execution.suite.cases
+        ]
+        for step in proc.steps:
+            covered = {
+                ref_key(node.reference)
+                for plan in plans
+                for node in plan.nodes
+                if node.path == (step.id,)
+            }
+            require(
+                covered == {ref_key(ref) for ref in step.candidates},
+                "Expert trials omit a permitted candidate",
+            )
+    else:
+        plans = [
+            expand_unique_plan(
+                frozen.reference.method_id, frozen.draft.definition, definitions
+            )
+        ]
     require(
         {ref_key(r) for r in request.dependencies}
         == {ref_key(r) for r in compiled.dependencies}
@@ -455,7 +484,8 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                     and resolved[(r.method_id, r.version)].draft.source is not None
                 )
             )
-            for r in expanded.dependencies
+            for plan in plans
+            for r in plan.dependencies
         ),
         "Expert dependency closure differs from its owned frozen versions",
     )
@@ -465,12 +495,12 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
     )
     require(
         evidence["adapter"] == TREE_ADAPTER
-        or all(n.kind == "tool" for n in expanded.nodes),
+        or all(n.kind == "tool" for p in plans for n in p.nodes),
         "One-level proof cannot qualify a recursive plan",
     )
     require(
         evidence["adapter"] != TREE_ADAPTER
-        or any(n.kind != "tool" for n in expanded.nodes),
+        or any(n.kind != "tool" for p in plans for n in p.nodes),
         "Tree proof requires a recursive plan",
     )
     from app.application.workbench.formal_method_catalog import instruction_receipt_cost
@@ -509,7 +539,7 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                 and producer["thread"]["thread"] != reviewer["thread"]["thread"],
                 "Sealed reviewer shares the producer execution identity",
             )
-        if evidence["adapter"] == TREE_ADAPTER:
+        if case_evidence.get("adapter") == TREE_ADAPTER:
             require(
                 Decimal(case_evidence["task"]["budget"]["used"])
                 == case_charge + case_script_cost(case_evidence),
@@ -555,7 +585,7 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
             "Expert case has missing, duplicated or unqualified execution evidence",
         )
         seen.add(key)
-        checker = _tree_case if evidence["adapter"] == TREE_ADAPTER else _old_case
+        checker = _tree_case if item.get("adapter") == TREE_ADAPTER else _old_case
         passed = checker(
             owner,
             frozen,
@@ -610,7 +640,7 @@ def _tree_case(
         for key, value in resolved.items()
     }
     plan = expand_unique_plan(
-        snapshot.method_id, snapshot.draft.definition, definitions
+        snapshot.method_id, invocation_definition(snapshot), definitions
     )
     require(
         item["adapter"] == TREE_ADAPTER
@@ -836,7 +866,9 @@ def _tree_case(
                 "parent_path": list(path),
                 "reference": node.reference.model_dump(mode="json"),
                 "step_digest": digest(step.model_dump(mode="json", by_alias=True)),
-                "parent_definition_digest": definition.digest(),
+                "parent_definition_digest": (
+                    snapshot.draft.definition if not path else definition
+                ).digest(),
             }
             require(
                 raw["parent_path"] == list(path)
@@ -1034,7 +1066,7 @@ def _tree_case(
             )
         return export_outputs(definition, accepted)
 
-    outputs = visit(snapshot.draft.definition, snapshot.arguments, (), root_id)
+    outputs = visit(invocation_definition(snapshot), snapshot.arguments, (), root_id)
     confirmations = sorted(
         (leaf["governance"]["confirmation_event"] for leaf in leaves),
         key=lambda e: e["cursor"],

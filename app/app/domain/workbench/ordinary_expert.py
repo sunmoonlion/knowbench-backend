@@ -52,7 +52,11 @@ class ConsumerPlan(Strict):
 
     @model_validator(mode="after")
     def verify_plan(self):
-        from app.domain.workbench.formal_execution import expanded_plan, plan_slot
+        from app.domain.workbench.formal_execution import (
+            expanded_plan,
+            invocation_definition,
+            plan_slot,
+        )
         from app.domain.workbench.formal_method_plan_generated import (
             validate_plan_inputs,
         )
@@ -111,7 +115,7 @@ class ConsumerPlan(Strict):
             reads.add(plan_slot(leaf.path, nested=graph.depth > 2))
         if self.materials.keys() != reads:
             raise ValueError("Material selections must match the frozen read steps")
-        validate_plan_inputs(self.draft.definition, self.arguments)
+        validate_plan_inputs(invocation_definition(self), self.arguments)
         return self
 
     @property

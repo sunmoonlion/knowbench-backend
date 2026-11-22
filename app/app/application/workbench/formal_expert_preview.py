@@ -13,7 +13,9 @@ from app.domain.workbench.formal_method_generated import (
     StepValue,
 )
 from app.domain.workbench.formal_method_plan_generated import (
+    UnmatchedCandidate,
     expand_unique_plan,
+    select_plan,
     single_review_edge,
     unique_plan,
 )
@@ -24,7 +26,11 @@ from app.domain.workbench.method_authorization import (
 from app.domain.workbench.tool_registry import connection_registration
 
 
-async def fixed_graph(registry, owner, selected, definition):
+async def fixed_graph(registry, owner, selected, definition, values):
+    try:
+        definition = select_plan(definition, values)
+    except UnmatchedCandidate:
+        return None, "candidate_unmatched"
     """Resolve only a deterministic graph, one qualified frontier at a time."""
     root = MethodRef.model_validate(selected)
     frontier = [definition]
@@ -288,7 +294,29 @@ async def execution_preview(
     limit = bindings["budget"]["limit"]
     if limit is not None and total > Decimal(limit):
         issue("budget_exceeded")
+    choices = []
+    if graph and isinstance(definition.procedure, Orchestration):
+        for template in definition.procedure.steps:
+            rule = template.candidate_choice
+            if rule:
+                source = template.inputs[rule.input].binding
+                if isinstance(source, CallerValue):
+                    value = bindings["values"][source.name]
+                    selected_node = next(
+                        n for n in graph.nodes if n.path == (template.id,)
+                    )
+                    choices.append(
+                        {
+                            "step": template.id,
+                            "input": source.name,
+                            "value": value,
+                            "reference": selected_node.reference.model_dump(
+                                mode="json"
+                            ),
+                        }
+                    )
     return {
+        **({"choices": choices} if choices else {}),
         **(
             {"subexperts": experts, "scope_hours": METHOD_SCOPE_HOURS}
             if experts

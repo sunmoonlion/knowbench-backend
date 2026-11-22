@@ -159,13 +159,19 @@ def recursive_plan(snapshot: FormalTaskSnapshot | ConsumerPlan) -> bool:
     )
 
 
+def invocation_definition(snapshot: FormalTaskSnapshot | ConsumerPlan):
+    from app.domain.workbench.formal_method_plan_generated import select_plan
+
+    return select_plan(snapshot.draft.definition, snapshot.arguments)
+
+
 def expanded_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
     from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
     from app.domain.workbench.formal_method_plan_generated import expand_unique_plan
 
     return expand_unique_plan(
         snapshot.method_id,
-        snapshot.draft.definition,
+        invocation_definition(snapshot),
         {
             (f.reference.method_id, f.reference.version): FrozenMethod(
                 f.reference, f.draft.definition
@@ -180,7 +186,7 @@ def orchestration_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
     from app.domain.workbench.formal_method_plan_generated import unique_plan
 
     if isinstance(snapshot, ConsumerPlan):
-        return unique_plan(snapshot.draft.definition)
+        return unique_plan(invocation_definition(snapshot))
     if snapshot.caller != "host" or snapshot.draft.allowed_callers != ("host",):
         raise ValueError("Formal orchestration currently supports the host caller only")
     refs = [
@@ -215,7 +221,7 @@ def orchestration_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
         raise ValueError(
             "Formal orchestration requires the exact frozen dependency closure"
         )
-    return unique_plan(snapshot.draft.definition)
+    return unique_plan(invocation_definition(snapshot))
 
 
 def execution_steps(snapshot: FormalTaskSnapshot | ConsumerPlan):

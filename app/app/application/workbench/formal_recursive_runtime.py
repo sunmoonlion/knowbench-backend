@@ -13,6 +13,7 @@ from app.domain.workbench.formal_execution import (
     dependency_for_step,
     expanded_plan,
     fixed_step_outputs,
+    invocation_definition,
 )
 from app.domain.workbench.formal_host import validate_host_call
 from app.domain.workbench.formal_method_execution_generated import (
@@ -155,7 +156,7 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
     definition = (
         _node(snapshot, parent_path).definition
         if parent_path
-        else snapshot.draft.definition
+        else invocation_definition(snapshot)
     )
     values, bindings = {}, []
     for step in unique_plan(definition):
@@ -469,7 +470,7 @@ async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
                 )
             continue
         node = _node(snapshot, path) if path else None
-        definition = node.definition if node else snapshot.draft.definition
+        definition = node.definition if node else invocation_definition(snapshot)
         # A parent is ready only after all of its actual direct child calls finish.
         children = [
             await repo.call_by_key(owner, session, node_key(task["id"], (*path, s.id)))

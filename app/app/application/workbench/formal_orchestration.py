@@ -14,12 +14,13 @@ from app.domain.workbench.formal_method_compiler_generated import (
 from app.domain.workbench.formal_method_generated import Orchestration
 from app.domain.workbench.formal_method_plan_generated import (
     expand_unique_plan,
+    select_plan,
     unique_plan,
 )
 
 
 async def resolve_plan(
-    capabilities, owner, draft, method_id, *, bindings=None, grants=None
+    capabilities, owner, draft, method_id, *, bindings=None, grants=None, values=None
 ):
     return await resolve_owned_plan(
         capabilities.repo,
@@ -29,6 +30,7 @@ async def resolve_plan(
         draft,
         method_id,
         bindings=bindings,
+        values=values,
         grants=grants,
     )
 
@@ -43,6 +45,7 @@ async def resolve_owned_plan(
     *,
     bindings=None,
     grants=None,
+    values=None,
 ):
     catalog = FormalMethodCatalog(repo, formal_sources, operations)
     async with repo.transaction():
@@ -56,8 +59,17 @@ async def resolve_owned_plan(
                 return
             if len(ancestors) >= 16:
                 raise CapabilityError("Formal dependency depth limit")
-            for step in unique_plan(current):
-                ref = step.candidates[0]
+            if (
+                current.procedure.has_candidate_choice
+                and len(ancestors) == 1
+                and values is None
+            ):
+                refs = (
+                    ref for step in current.procedure.steps for ref in step.candidates
+                )
+            else:
+                refs = (step.candidates[0] for step in unique_plan(current))
+            for ref in refs:
                 if ref.method_id in ancestors:
                     raise CapabilityError("Cyclic formal method dependency")
                 key = (ref.method_id, ref.version)
@@ -89,15 +101,26 @@ async def resolve_owned_plan(
                 postorder.append(key)
 
         try:
-            await collect(draft.definition, (method_id,))
+            active = (
+                select_plan(draft.definition, values)
+                if values is not None
+                else draft.definition
+            )
+            await collect(active, (method_id,))
             definitions = {
                 key: FrozenMethod(f.reference, f.draft.definition)
                 for key, f in resolved.items()
             }
             # Expansion counts invocations, including repeated references; only
             # immutable registration reads are deduplicated above.
-            plan = expand_unique_plan(method_id, draft.definition, definitions)
-            compiled = compile_method(method_id, draft.definition, definitions)
+            compiled = compile_method(method_id, active, definitions)
+            if (
+                isinstance(active.procedure, Orchestration)
+                and active.procedure.has_candidate_choice
+            ):
+                refs = tuple(f.reference for _, f in sorted(resolved.items()))
+            else:
+                refs = expand_unique_plan(method_id, active, definitions).dependencies
         except ValueError as exc:
             raise CapabilityError(str(exc)) from exc
         if compiled.method_kind != "expert":
@@ -122,6 +145,4 @@ async def resolve_owned_plan(
                 )
             if admitted != frozen:
                 raise CapabilityError("Formal dependency admission changed")
-        return tuple(
-            resolved[(ref.method_id, ref.version)] for ref in plan.dependencies
-        )
+        return tuple(resolved[(ref.method_id, ref.version)] for ref in refs)

@@ -13,6 +13,7 @@ from app.domain.workbench.formal_execution import (
     expanded_plan,
     fixed_step_outputs,
     host_snapshot,
+    invocation_definition,
     orchestration_plan,
     recursive_plan,
 )
@@ -252,7 +253,7 @@ class FormalOrchestrationExecution:
                 if task["state"] == TaskState.VALIDATING:
                     try:
                         validate_plan_inputs(
-                            snapshot.draft.definition, snapshot.arguments
+                            invocation_definition(snapshot), snapshot.arguments
                         )
                     except ValueError as exc:
                         return (
@@ -735,7 +736,7 @@ class FormalOrchestrationExecution:
                     )
             elif index == len(orchestration_plan(snapshot)):
                 accepted, _ = await accepted_outputs(repo, task, snapshot, index)
-                exported = export_outputs(snapshot.draft.definition, accepted)
+                exported = export_outputs(invocation_definition(snapshot), accepted)
                 bounded_json(exported)
                 exports = {"outputs": exported, "outputs_digest": digest(exported)}
             if exports is not None:

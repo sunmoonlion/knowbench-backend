@@ -18,6 +18,7 @@ from app.domain.workbench.formal_adapter import (
 from app.domain.workbench.formal_execution import (
     case_key,
     dependency_for_step,
+    invocation_definition,
     orchestration_plan,
     snapshot_for_task,
     structured_outputs,
@@ -611,7 +612,12 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             and snapshot.caller == case.caller == result.get("caller", "host") == "host"
             and fingerprint(snapshot.arguments) == fingerprint(case.input.values)
             and {
-                (ref.method_id, ref.version, ref.digest) for ref in request.dependencies
+                (
+                    step.candidates[0].method_id,
+                    step.candidates[0].version,
+                    step.candidates[0].digest,
+                )
+                for step in orchestration_plan(snapshot)
             }
             == {
                 (
@@ -650,7 +656,7 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             and task["current_step"] == len(plan) - 1,
             "plan_execution_incomplete",
         )
-        validate_plan_inputs(snapshot.draft.definition, snapshot.arguments)
+        validate_plan_inputs(invocation_definition(snapshot), snapshot.arguments)
         root = await repo.call_by_key(
             owner, str(task["session_id"]), "task:" + str(task["id"])
         )
@@ -708,7 +714,7 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
                 versions,
             )
         stage = "exports"
-        exported = export_outputs(snapshot.draft.definition, accepted)
+        exported = export_outputs(invocation_definition(snapshot), accepted)
         exports = attempts[-1]["refs"].get("formal_exports")
         _require(
             exports == {"outputs": exported, "outputs_digest": digest(exported)}
