@@ -236,3 +236,68 @@ async def test_confirm_route_on_received_artifact_replays_and_rechecks_v0(
             and not blocked["options"]
         )
     assert len(ctx.remote.calls) == 2
+
+
+async def test_replacing_v0_after_reservation_blocks_first_paid_review_request(
+    db, monkeypatch
+):
+    import pytest
+    from branch_review_support import review_case
+
+    from app.application.workbench.formal_test_runs import FormalExecutions
+    from app.application.workbench.ledger import Ledger
+    from app.bootstrap.workbench import capability_service
+    from app.domain.workbench.capabilities import CapabilityError
+    from app.domain.workbench.formal_method_execution_generated import (
+        PrepareBranchReview,
+        ReceiveBranch,
+    )
+    from app.domain.workbench.source_tasks import SourceTask
+
+    host, task_id, cred, wire = await review_case(db, monkeypatch)
+    async with host() as svc:
+        repo = svc.repo
+        ledger = Ledger(repo)
+        await ledger.transition(task_id, "VALIDATING")
+        await ledger.transition(task_id, "QUEUED")
+        aid = await svc.open(OWNER, task_id, caller="registry-source", managed=True)
+        snap = SourceTask.load(await repo.get_task(task_id))
+        binding = snap.review
+        selector = ReceiveBranch.model_validate(
+            binding.model_dump(include=set(ReceiveBranch.model_fields))
+        )
+        executions = FormalExecutions(repo, capability_service(repo))
+        run = str(binding.run_id)
+        delivery = await executions.receive_branch(
+            "author", run, selector, caller="knowlab", received_only=True
+        )
+        criteria = delivery["review"]["criteria"]
+        criteria["assertions"][0]["value"] = "superseded assumption"
+        replacement = PrepareBranchReview.model_validate(
+            {
+                **selector.model_dump(),
+                "artifact": delivery["artifact"],
+                "previous": binding.review_digest,
+                "criteria": criteria,
+            }
+        )
+        assert (
+            await executions.receive_branch(
+                "author", run, replacement, caller="knowlab"
+            )
+        )["review"]["status"] == "v0_failed"
+        with pytest.raises(CapabilityError, match="confirmation is no longer active"):
+            await svc.claim(
+                OWNER,
+                task_id,
+                aid,
+                caller="registry-source",
+                credential_id=cred["id"],
+                turn_id="review-turn",
+                body=wire,
+            )
+        attempt = await repo.get_attempt(aid)
+        assert (
+            "instruction_request" not in attempt["refs"]
+            and "instruction_usage" not in attempt["refs"]
+        )

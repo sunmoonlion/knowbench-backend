@@ -118,30 +118,34 @@ async def submit(svc, owner, session_id, body):
             raise CapabilityError(
                 "Source, arguments, session or price changed since confirmation"
             )
-        made = await Ledger(repo).handover(
-            HandoverRequest(
-                idempotency_key=body.idempotency_key,
-                session_id=str(session_id),
-                profile_id="registry-source",
-                original_input={
-                    "source": snap.source.model_dump(mode="json"),
-                    "approval_digest": body.approval_digest,
-                },
-                budget_limit=snap.budget_limit,
-                budget_currency=snap.quote["currency"],
-            ),
-            owner_actor_id=owner,
-            snapshot=snap,
+        return await hand_over_source(repo, owner, snap, body.idempotency_key)
+
+
+async def hand_over_source(repo, owner, snap, idempotency_key):
+    made = await Ledger(repo).handover(
+        HandoverRequest(
+            idempotency_key=idempotency_key,
+            session_id=str(snap.session_id),
+            profile_id="registry-source",
+            original_input={
+                "source": snap.source.model_dump(mode="json"),
+                "approval_digest": snap.task_columns()["pack_digest"],
+            },
+            budget_limit=snap.budget_limit,
+            budget_currency=snap.quote["currency"],
+        ),
+        owner_actor_id=owner,
+        snapshot=snap,
+    )
+    if made["created"] and not made.get("queued_behind"):
+        session = await repo.get_session(str(snap.session_id), owner_actor_id=owner)
+        await repo.enqueue_command(
+            session_id=str(snap.session_id),
+            sandbox_id=str(session["sandbox_id"]),
+            kind="task.drive",
+            payload={"task_id": made["task_id"]},
         )
-        if made["created"] and not made.get("queued_behind"):
-            session = await repo.get_session(str(session_id), owner_actor_id=owner)
-            await repo.enqueue_command(
-                session_id=str(session_id),
-                sandbox_id=str(session["sandbox_id"]),
-                kind="task.drive",
-                payload={"task_id": made["task_id"]},
-            )
-        return made
+    return made
 
 
 async def active_source(repo, owner, task):

@@ -27,6 +27,7 @@ from app.bootstrap.workbench import (
     capability_service,
     incubation_service,
     knowmart_summoner,
+    review_inputs,
     test_run_service,
 )
 from app.domain.workbench.errors import WorkbenchError
@@ -104,6 +105,7 @@ def formal_methods(
         script_tariff=get_settings().workbench_script_tariff,
         source_licenses=get_settings().workbench_source_licenses,
         business_reviews=get_settings().workbench_business_coverage_reviews,
+        review_inputs=review_inputs,
     )
 
 

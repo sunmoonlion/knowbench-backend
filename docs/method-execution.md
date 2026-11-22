@@ -367,4 +367,14 @@ KnowBench 在登记簿中按作者、来源 ID、版本和摘要读取脚本。�
 | `WORKBENCH_REVIEW_MODEL_GRANTS` | 对额外模型、其他供应商或其他地址，运营核定后配置 JSON 数组。每项包含 `credential_id`、`provider`、`model`、`base_url`。同一供应商的第二模型也须核定。凭据由用户连接服务保管。 |
 | `WORKBENCH_INSTRUCTION_ROUTES` 与模型价目表 | 确认时按供应商、模型、地址与价目键取得运行边界和 CNY 单价。每轮上限按整段上下文的最高输入价及最大输出计；严格双轮展示两轮合计，返工另行核对。 |
 
-本人偏好读写使用 `GET / PUT /api/workbench/prefs/reviewer`。本次交接使用 `POST /api/workbench/reviews/{run_id}/route-preview` 和 `PUT /api/workbench/reviews/{run_id}/route`。确认提交预览选项摘要和上一修订号，服务重新检验 V0、当前连接、计划主笔、家族和报价后追加修订。相同确认重放返回原修订。产物、自评可见阶段、已选连接或报价变化需重新核对。迁移 `20261122_0057` 保存本人偏好和每次交接选择。此阶段只保存选择，独立复核线程、实际家族取证、执行前核权及根预算预留在派发阶段实现。
+本人偏好读写使用 `GET / PUT /api/workbench/prefs/reviewer`。本次交接使用 `POST /api/workbench/reviews/{run_id}/route-preview` 和 `PUT /api/workbench/reviews/{run_id}/route`。确认提交预览选项摘要和上一修订号，服务重新检验 V0、当前连接、计划主笔、家族和报价后追加修订。相同确认重放返回原修订。产物、自评可见阶段、已选连接或报价变化需重新核对。迁移 `20261122_0057` 保存本人偏好和每次交接选择。保存选择后，普通单轮可在同页派发；双轮和强制跨家族仍停在准备阶段。
+
+### 从已确认的交接派发单轮复核
+
+当前执行单元支持本人沙箱已加载的连接和模型。作者选择方法技能管理中心中本人登记的一份复核指令及其精确版本，再选择当前沙箱下的空闲项目专家会话。确认发送时显示这次会交出的输出、目的地和单轮上限。`POST /api/workbench/reviews/{run_id}/execution` 只接收交接定位、确认修订、选项摘要、会话和指令版本。平台从已接收的产物重读命名输出。登记的指令正文和这些输出构成该轮业务输入。
+
+已结束的孵化试跑有自己的账本。本次定向复核在所选专家会话内新建委托，以确认金额为根预算。多次提交同一次复核得到同一委托；重开确认页可以进入原会话查看产物。执行器按 Attempt 申请专用执行单元，Codex 在独立的临时工作目录和新线程中运行。网关放行外发前重核 V0、修订、有效账号、价格和目标，按供应商用量回执结算。已发出请求后 runner 重启，读原线程恢复。
+
+这条入口支持允许同模型的单轮定向复核。供应商、模型、账号和端点必须与已确认选择一致；选定的备用连接尚未装载时，页面会显示原因。指定不同模型家族、严格双轮、普通固定图的独立复核边仍需后续运行能力。实际模型家族取证单独验收。
+
+独立库复跑 `tests/test_instruction_runner_codex.py -k branch-review` 时设置 `RUN_CODEX_INSTRUCTION_PROBE=1` 和 `AGENT_TEST_DATABASE_URL`。可用 `CODEX_INSTRUCTION_TEST_IMAGE` 指定已核为 Codex 0.170.0 的本地沙箱镜像。测试使用隔离 Docker 网络、合成供应商和真实 KnowBench 网关核权接口。

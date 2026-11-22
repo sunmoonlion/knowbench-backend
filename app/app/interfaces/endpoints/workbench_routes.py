@@ -36,6 +36,11 @@ from app.application.workbench.agent_service import (
     AgentServiceUnconfigured,
     validate_path,
 )
+from app.application.workbench.branch_review_dispatch import (
+    DispatchReview,
+    dispatch_choices,
+    dispatch_review,
+)
 from app.application.workbench.branch_review_route import (
     RouteConfirmation,
     RoutePreviewRequest,
@@ -1223,13 +1228,24 @@ async def _branch_route(session, principal, run_id, body):
 
     repo = workbench_store(session)
     try:
-        return await branch_route(
-            FormalExecutions(repo, capability_service(repo)),
-            reviewer_choices(),
-            _actor(principal),
-            str(run_id),
-            body,
-        )
+        executions = FormalExecutions(repo, capability_service(repo))
+        owner = _actor(principal)
+        async with repo.transaction():
+            if isinstance(body, DispatchReview):
+                return await dispatch_review(
+                    executions, reviewer_choices(), owner, str(run_id), body
+                )
+            checked = await branch_route(
+                executions, reviewer_choices(), owner, str(run_id), body
+            )
+            execution = await dispatch_choices(executions, owner, checked)
+            return {
+                **checked.page,
+                "isolated_execution_available": bool(
+                    execution and "sessions" in execution
+                ),
+                "execution": execution,
+            }
     except WorkbenchError as exc:
         raise _http(exc) from exc
 
@@ -1250,6 +1266,18 @@ async def preview_branch_route(
 async def confirm_branch_route(
     run_id: UUID,
     body: RouteConfirmation,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await _branch_route(session, principal, run_id, body)
+
+
+@router.post("/reviews/{run_id}/execution")
+async def start_branch_review(
+    run_id: UUID,
+    body: DispatchReview,
     response: Response,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),

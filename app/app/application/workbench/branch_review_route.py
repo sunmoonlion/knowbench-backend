@@ -1,5 +1,6 @@
 """Confirm a planned destination for one already received and V0-checked artifact."""
 
+from dataclasses import dataclass
 from decimal import Decimal
 
 from pydantic import Field
@@ -11,6 +12,20 @@ from app.domain.workbench.formal_method_execution_generated import (
     ReceiveBranch,
     fingerprint,
 )
+from app.domain.workbench.source_tasks import REVIEW_KEY_PREFIX
+
+
+def review_key(review_digest):
+    return REVIEW_KEY_PREFIX + review_digest
+
+
+async def prior_review(repo, owner, review_digest):
+    return await repo.find_task_by_idempotency(
+        tenant="default",
+        owner_actor_id=owner,
+        profile_id="registry-source",
+        idempotency_key=review_key(review_digest),
+    )
 
 
 class RoutePreviewRequest(ReceiveBranch):
@@ -20,6 +35,28 @@ class RoutePreviewRequest(ReceiveBranch):
 class RouteConfirmation(RoutePreviewRequest):
     previous_revision: int = Field(strict=True, ge=0)
     option_digest: Digest
+
+
+@dataclass
+class CheckedReview:
+    page: dict
+    sandbox_id: str | None
+    first_round: dict
+
+    def projection(self, binding):
+        if (
+            binding.option_digest != self.page["confirmed"]
+            or binding.revision != self.page["revision"]
+            or self.page["rounds"] != 1
+            or self.page["requirement"] != "isolated_reviewer"
+        ):
+            raise StaleStateVersion(
+                "Single-round review confirmation changed or requires stronger isolation"
+            )
+        option = next(
+            o for o in self.page["options"] if o["digest"] == binding.option_digest
+        )
+        return option, self.sandbox_id, self.first_round
 
 
 async def branch_route(executions, policy, owner, run_id, command):
@@ -104,6 +141,8 @@ async def branch_route(executions, policy, owner, run_id, command):
             ):
                 raise StaleStateVersion("Review connection revoked")
             if confirmed != command.option_digest:
+                if await prior_review(repo, owner, command.review_digest):
+                    raise StaleStateVersion("This review has already been dispatched")
                 revision += 1
                 await repo.record_review_route(
                     run_id, key, command.step, revision, {**scope, "option": option}
@@ -117,7 +156,7 @@ async def branch_route(executions, policy, owner, run_id, command):
         if not confirmed and (previous or (preference and not recommended)):
             recommended = None
             gap = gap or "selection_changed"
-        return {
+        page = {
             "artifact": scope["artifact"],
             "version": scope["version"],
             "review_digest": review["digest"],
@@ -131,5 +170,9 @@ async def branch_route(executions, policy, owner, run_id, command):
             "confirmed": confirmed,
             "recommended": recommended,
             "gap": gap,
-            "isolated_execution_available": False,
         }
+        return CheckedReview(
+            page,
+            scope["sandbox_id"],
+            {name: delivery["outputs"][name] for name in scope["handoff"]},
+        )

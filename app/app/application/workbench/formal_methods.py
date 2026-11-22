@@ -50,9 +50,11 @@ class FormalMethods:
         market=None,
         script_tariff=None,
         source_licenses=(),
+        review_inputs=None,
         business_reviews=(),
         now: Callable[[], datetime] | None = None,
     ):
+        self.review_inputs = review_inputs
         self.repo = repo
         self.registry = SceneRegistry(self, repo)
         self.market = market

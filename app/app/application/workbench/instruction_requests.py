@@ -10,7 +10,7 @@ from uuid import UUID
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.tokens import InstructionGateway
 from app.domain.workbench.capabilities import CapabilityError, digest
-from app.domain.workbench.errors import Forbidden, IdempotencyConflict
+from app.domain.workbench.errors import Forbidden, IdempotencyConflict, WorkbenchError
 from app.domain.workbench.formal_execution import FormalTaskSnapshot, host_snapshot
 from app.domain.workbench.instruction_requests import (
     InstructionRoute,
@@ -104,7 +104,33 @@ class InstructionRequests:
                 raise CapabilityError(
                     "Registered instruction approval or route changed"
                 )
-            return quote, instruction_input(content, snap.arguments)
+            arguments = snap.arguments
+            if snap.review is not None:
+                if not self.formal.review_inputs:
+                    raise CapabilityError("Review revalidation is unavailable")
+                try:
+                    option, sandbox, arguments = await self.formal.review_inputs(
+                        self.repo, owner, snap.review
+                    )
+                except WorkbenchError as exc:
+                    raise CapabilityError(
+                        "Review confirmation is no longer active"
+                    ) from exc
+                session = await self.repo.get_session(
+                    str(snap.session_id), owner_actor_id=owner
+                )
+                if (
+                    str(session["sandbox_id"]) != sandbox
+                    or {
+                        **option["quote"],
+                        "credential_id": option["pin"]["credential_id"],
+                    }
+                    != snap.quote
+                ):
+                    raise CapabilityError(
+                        "Review budget, destination or connection changed"
+                    )
+            return quote, instruction_input(content, arguments)
         snapshot = host_snapshot(task)
         if snapshot.dependencies:
             from app.application.workbench.instruction_leaf import approved_leaf

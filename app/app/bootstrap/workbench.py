@@ -491,6 +491,18 @@ def build_incubation_folders(
     )
 
 
+async def review_inputs(repo, owner, binding):
+    from app.application.workbench.branch_review_dispatch import review_projection
+    from app.application.workbench.formal_test_runs import FormalExecutions
+
+    return await review_projection(
+        FormalExecutions(repo, capability_service(repo)),
+        reviewer_choices(),
+        owner,
+        binding,
+    )
+
+
 def capability_service(repo):
     from app.application.workbench.capabilities import Capabilities
     from app.infrastructure.workbench.capability_mcp import RemoteMcp
@@ -566,6 +578,7 @@ def capability_service(repo):
             )
         ),
         cipher,
+        review_inputs=review_inputs,
         formal_market=knowmart_summoner(),
         oauth_providers=settings.workbench_connection_oauth_providers,
         oauth_transport=OAuthTransport(),

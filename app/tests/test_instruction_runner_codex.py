@@ -33,15 +33,30 @@ from app.interfaces.http.internal import instruction_control
     reason="requires pinned local Codex and Docker",
 )
 @pytest.mark.parametrize(
-    "late_receipt,registered",
-    [(False, False), (True, False), (False, True)],
-    ids=["runner-restart", "receipt-delay", "registered-runner-restart"],
+    "late_receipt,registered,review",
+    [
+        (False, False, False),
+        (True, False, False),
+        (False, True, False),
+        (False, False, True),
+    ],
+    ids=[
+        "runner-restart",
+        "receipt-delay",
+        "registered-runner-restart",
+        "branch-review-restart",
+    ],
 )
 async def test_real_instruction_runner(
-    db, make_client, monkeypatch, tmp_path, late_receipt, registered
+    db, make_client, monkeypatch, tmp_path, late_receipt, registered, review
 ):
     trial = AuthorTrial()
-    s = await stack(db, author_trial=trial.start, registered=registered)
+    if review:
+        from branch_review_support import review_case
+
+        s = await stack(db, setup_case=partial(review_case, monkeypatch=monkeypatch))
+    else:
+        s = await stack(db, author_trial=trial.start, registered=registered)
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
     monkeypatch.syspath_prepend(str(PROBES))
@@ -54,7 +69,16 @@ async def test_real_instruction_runner(
         async with s.host() as svc:
             yield svc.formal
 
-    app.dependency_overrides[formal_methods] = formal
+    if review:
+        from app.infrastructure.storage.postgres import get_db_session
+
+        async def sessions():
+            async with db() as session:
+                yield session
+
+        app.dependency_overrides[get_db_session] = sessions
+    else:
+        app.dependency_overrides[formal_methods] = formal
     app.dependency_overrides[token_issuer] = lambda: s.driver.issuer
     monkeypatch.setattr(
         instruction_control,
@@ -117,7 +141,9 @@ async def test_real_instruction_runner(
             f"{image_dir / 'instruction_worker.py'}:/worker.py:ro",
             "-v",
             f"{tmp_path / 'token'}:/run/worker/token:ro",
-            "luna-local/sandbox:codex-0.170.0",
+            os.getenv(
+                "CODEX_INSTRUCTION_TEST_IMAGE", "luna-local/sandbox:codex-0.170.0"
+            ),
             "/worker.py",
         )
         worker_ip = json.loads(await docker("inspect", name))[0]["NetworkSettings"][
@@ -141,7 +167,7 @@ async def test_real_instruction_runner(
             ):
                 provider.ask = False
                 provider.limit_one = False
-                provider.output = {"summary": "ready"}
+                provider.output = {"result" if review else "summary": "ready"}
                 provider.first_request = len(fixtures.captures) + 1
                 initial = len(fixtures.captures)
                 threads = [
@@ -274,7 +300,23 @@ async def test_real_instruction_runner(
                         )["response_id"]
                         == attempt["refs"]["instruction_usage"]["response_id"]
                     )
-                    await trial.finish(db)
+                    if review:
+                        assert task["pack_snapshot"]["review"]["revision"] == 1
+                        assert attempt["refs"]["instruction_thread"]["thread"]
+                        from app.domain.workbench.instruction_requests import (
+                            leaf_responses_body,
+                        )
+                        from app.domain.workbench.source_tasks import instruction_input
+
+                        expected = instruction_input(
+                            "Check the approved output independently.",
+                            {"receipt": "test@example.test"},
+                        )
+                        assert fixtures.captures[-1] == leaf_responses_body(
+                            expected, ROUTE.model, ROUTE.output_tokens
+                        )
+                    else:
+                        await trial.finish(db)
                 finally:
                     for v in (relay, provider):
                         await asyncio.to_thread(v.shutdown)

@@ -67,12 +67,13 @@ class Units:
 async def stack(db, *, setup_case=setup, result=None, **kwargs):
     host, task, cred, wire = await setup_case(db, **kwargs)
     async with host() as svc:
+        review_inputs = svc.formal.review_inputs
         catalog = svc.formal.source_licenses
         taskrow = await svc.repo.get_task(task)
         session = await svc.repo.get_session(str(taskrow["session_id"]))
 
     def formal(repo):
-        svc = FormalMethods(repo)
+        svc = FormalMethods(repo, review_inputs=review_inputs)
         svc.source_licenses = catalog
         return svc
 
