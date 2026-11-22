@@ -7,13 +7,16 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from test_workbench_ledger_db import OTHER, OWNER
 
 from app.application.workbench.expert_duties import wake
 from app.domain.workbench.errors import StaleStateVersion
 from app.interfaces.http.web import workbench_expert as routes
 
 
-async def verify_period(db, patch, client, path, result, reference, qualified):
+async def verify_period(
+    db, patch, client, path, result, reference, qualified=None, *, owner=OWNER
+):
     class Area:
         live = True
 
@@ -23,7 +26,7 @@ async def verify_period(db, patch, client, path, result, reference, qualified):
 
         async def write_output(self, **args):
             self.writes.append(args)
-            assert args["content"] == b"ready"
+            assert args["content"] == result["delivery"][output].encode()
             self.pin = self.pin or {
                 "material_id": str(uuid4()),
                 "version_no": 1,
@@ -52,7 +55,6 @@ async def verify_period(db, patch, client, path, result, reference, qualified):
         lambda: SimpleNamespace(workbench_output_write_enabled=True),
     )
     origin = path.rsplit("/", 1)[1]
-    from test_workbench_ledger_db import OTHER, OWNER
 
     output = next(iter(result["delivery"]))
     body = {
@@ -65,11 +67,11 @@ async def verify_period(db, patch, client, path, result, reference, qualified):
     assert created.json()["config"]["reference"] == reference.model_dump(mode="json")
     period = datetime.fromisoformat(created.json()["next_at"])
 
-    async def trigger(owner=OWNER):
+    async def trigger(actor=owner):
         async with db() as session:
             svc = routes.find_expert_service(session)
             svc.now = lambda: period
-            return await wake(svc, owner, origin, period, area)
+            return await wake(svc, actor, origin, period, area)
 
     assert await trigger() is None
     wrong = await client.put(path + "/duty/output", json={"execution_id": str(uuid4())})
@@ -93,11 +95,12 @@ async def verify_period(db, patch, client, path, result, reference, qualified):
     from app.domain.workbench.errors import NotFound
 
     with pytest.raises(NotFound):
-        await trigger(OTHER)
-    qualified.remove(reference)
-    with pytest.raises(StaleStateVersion):
-        await trigger()
-    qualified.add(reference)
+        await trigger(OTHER if owner == OWNER else OWNER)
+    if qualified is not None:
+        qualified.remove(reference)
+        with pytest.raises(StaleStateVersion):
+            await trigger()
+        qualified.add(reference)
     async with db() as session:
         repo = routes.find_expert_service(session).repo
         due = await repo.due_duties(period)
@@ -115,7 +118,7 @@ async def verify_period(db, patch, client, path, result, reference, qualified):
     async with db() as session:
         repo = routes.find_expert_service(session).repo
         assert not await repo.due_duties(period)
-        task = await repo.get_task(new["task_id"], owner_actor_id=OWNER)
+        task = await repo.get_task(new["task_id"], owner_actor_id=owner)
         assert task["original_input"]["input"]["reference"] == reference.model_dump(
             mode="json"
         )
