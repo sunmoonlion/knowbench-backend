@@ -74,13 +74,15 @@ class FormalMethods:
             raise RuntimeCapabilityGap("Runner lacks isolated collaboration execution")
 
     def business_review(self, subject, method_id, draft, suite_digest):
-        if draft.source is None:
+        if draft.source is None and not isinstance(
+            draft.definition.procedure, Orchestration
+        ):
             return None
         key = (
             subject,
             method_id,
             draft.definition.digest(),
-            draft.source.fingerprint(),
+            draft.source.fingerprint() if draft.source else None,
             suite_digest,
         )
         matches = [
@@ -679,13 +681,6 @@ class FormalMethods:
 
     async def register(self, frozen: FrozenFormalMethod, *, caller: str):
         self.require_supported_graph(frozen.draft)
-        if (
-            isinstance(frozen.draft.definition.procedure, Orchestration)
-            and frozen.visibility != "private"
-        ):
-            raise Forbidden(
-                "Formal expert execution currently qualifies private use only"
-            )
         grants = {}
         if frozen.validation.dependencies:
             async with self.repo.transaction(independent=True):
@@ -773,6 +768,7 @@ class FormalMethods:
                     raise Forbidden(
                         "Instruction registration requires private single-turn execution evidence"
                     )
+            public_dependencies = None
             if isinstance(frozen.draft.definition.procedure, Orchestration):
                 from app.application.workbench.formal_orchestration import (
                     resolve_owned_plan,
@@ -796,19 +792,17 @@ class FormalMethods:
                     frozen.reference.method_id,
                     grants=grants,
                 )
-                if frozen.visibility == "public" and any(
-                    dep.draft.source and dep.draft.source.is_instruction
-                    for dep in dependencies
-                ):
-                    raise Forbidden(
-                        "An expert using a private instruction requires private registration"
-                    )
-                if frozen.visibility == "public" and any(
-                    dep.owner_subject != frozen.owner_subject for dep in dependencies
-                ):
-                    raise Forbidden(
-                        "Incubation permission does not grant public distribution"
-                    )
+                if frozen.visibility == "public":
+                    for dep in dependencies:
+                        if dep.owner_subject != frozen.owner_subject:
+                            raise Forbidden(
+                                "Incubation permission does not grant public distribution"
+                            )
+                        await self.check_delivery_source(owner, dep)
+                    public_dependencies = {
+                        (dep.reference.method_id, dep.reference.version): dep
+                        for dep in dependencies
+                    }
             if not await self._source(owner, frozen.owner_subject, frozen.draft.source):
                 raise Forbidden("Source execution rights have not been verified")
             compilation = await self._compile(
@@ -833,6 +827,17 @@ class FormalMethods:
                     "run_id": str(frozen.validation.run_id),
                 }
             )
+            if public_dependencies is not None:
+                # Reuse recursive admission while the new row is still uncommitted.
+                from app.application.workbench.formal_method_catalog import (
+                    FormalMethodCatalog,
+                )
+
+                await FormalMethodCatalog(
+                    self.repo, self, self.operations
+                ).resolve_owned_admission(
+                    owner, frozen.reference, resolved=public_dependencies
+                )
             return {
                 "reference": frozen.reference.model_dump(mode="json"),
                 "owner_subject": frozen.owner_subject,

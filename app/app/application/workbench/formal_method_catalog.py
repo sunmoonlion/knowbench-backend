@@ -533,7 +533,11 @@ class FormalMethodCatalog:
                         await self.resolve_owned(owner, reference, caller="host")
                     ).frozen
                 frozen, request, evidence = await self._admission(
-                    owner, reference, row, orchestration=True
+                    owner,
+                    reference,
+                    row,
+                    orchestration=True,
+                    public=frozen.visibility == "public",
                 )
                 from app.application.workbench.formal_orchestration_admission import (
                     verify_sealed_plan,

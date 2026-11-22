@@ -428,9 +428,8 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
     require(
         isinstance(frozen.draft.definition.procedure, Orchestration)
         and frozen.draft.allowed_callers == ("host",)
-        and frozen.visibility == "private"
         and frozen.draft.source is None,
-        "Only private host-only expert admission is supported",
+        "Expert admission requires a host-only orchestration",
     )
     definitions = {
         key: FrozenMethod(value.reference, value.draft.definition)

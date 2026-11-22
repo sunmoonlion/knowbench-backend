@@ -220,6 +220,8 @@ async def selected_match(
     owner,
     make_capabilities,
     *,
+    market=None,
+    subject="author",
     token=None,
     library=None,
 ):
@@ -230,7 +232,7 @@ async def selected_match(
 
     def factory(repo):
         caps = make_capabilities(repo)
-        caps.formal_sources.market = Market()
+        caps.formal_sources.market = market if market is not None else Market()
         return caps
 
     ref = expert.reference.model_dump(mode="json")
@@ -272,9 +274,9 @@ async def selected_match(
             async with repo.transaction():
                 await s.execute(
                     text(
-                        "update workbench_sandboxes set app_server_url=:url,token_ref='inline:t'"
+                        "update workbench_sandboxes set app_server_url=:url,token_ref='inline:t' where owner_actor_id=:owner"
                     ),
-                    {"url": f"ws://127.0.0.1:{model.port}"},
+                    {"url": f"ws://127.0.0.1:{model.port}", "owner": owner},
                 )
                 env = await s.scalar(
                     text(
@@ -289,7 +291,14 @@ async def selected_match(
                     path="ordinary",
                     title="Ordinary",
                 )
+        from test_workbench_routes import principal
+
+        from app.interfaces.http.middleware.auth import get_web_current_user
+
         app = web_app(db, None, monkeypatch)
+        app.dependency_overrides[get_web_current_user] = lambda: principal(
+            owner
+        ).model_copy(update={"subject": subject})
 
         def finder(session):
             repo = WorkbenchRepository(session, browser_view=True)

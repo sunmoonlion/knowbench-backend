@@ -349,3 +349,9 @@ KnowBench 可复核作者本人私有登记的精确指令版本。核对项包�
 KnowBench 在登记簿中按作者、来源 ID、版本和摘要读取脚本。审批和发往执行器前再次核对来源；试跑费用按容器运行时间计入根任务。直接登记脚本的授权独立于安装的 Skill 版本。运行器重启后按原调用取回结果和用量。后续修订保留已经确认的来源版本。
 
 在两套一次性 PostgreSQL 测试库上运行平台仓的 `scripts/local-integration/p1_author.py --registered-script`，沿用该脚本开头的两项数据库配置和 KnowLab 虚拟环境。本地需备好 `luna-local/script-input:work8` 镜像。该用例通过作者接口、P1 编辑组件及真实离线工作容器核验产物，容器时长和价格使用测试配置。后端 `tests/test_formal_script_execution_db.py -k registered_script` 另行覆盖来源修订、摘要重核和三级固定图。
+
+### 固定专家的公开冻结与买方使用
+
+在 KnowBench API 和 runner 的 `WORKBENCH_BUSINESS_COVERAGE_REVIEWS` 配置中提供相同的独立复核记录。每条指定作者主体、方法编号、定义摘要、测试集摘要、证据引用和摘要以及到期时间。直接方法的 `source_digest` 填确切来源指纹，固定专家显式填 `null`。专家定义摘要锁住各步骤的方法编号、版本、摘要及绑定。所有用例通过且唯一有效的复核与本次试跑匹配时，宿主把凭据指纹写入试跑证据。更换凭据需要重新试跑。
+
+作者可在 KnowLab 选择公开冻结。KnowBench 登记时核对根专家实测证据、完整依赖树及同作者各版本的公开交付资格。KnowMart 独立审核上架，获取前重核交付。买方使用普通委托时，需对根专家和实际固定依赖各有使用资格，并选用本人拥有执行许可的连接。双服务验收使用平台仓 `scripts/local-integration/formal_market_delivery.py --expert`，两个测试数据库的设置见该脚本。

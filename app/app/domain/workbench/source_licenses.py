@@ -51,7 +51,8 @@ class BusinessCoverageReview(LicenseRecord):
     subject: Text
     method_id: UUID
     definition_digest: Digest
-    source_digest: Digest
+    # Orchestrations bind their exact child references in the definition digest.
+    source_digest: Digest | None
     suite_digest: Digest
     evidence: LicenseEvidence
     expires_at: AwareDatetime
