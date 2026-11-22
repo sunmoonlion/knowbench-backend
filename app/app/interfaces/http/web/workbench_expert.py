@@ -28,6 +28,10 @@ from app.application.workbench.formal_expert_preparation import (
     Preparation,
     prepare,
 )
+from app.application.workbench.ordinary_partial_delivery import (
+    BranchReceipt,
+    partial_delivery,
+)
 from app.bootstrap.workbench import (
     delegation_service,
     dynamic_market_owners,
@@ -652,6 +656,37 @@ async def confirm_ordinary_execution(
     receipt = await _preparation(session, principal, task_id, token, submission=body)
     await publish_commands_wakeup()
     return receipt
+
+
+@router.get("/tasks/{task_id}/partial-delivery")
+async def read_partial_delivery(
+    task_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await partial_delivery(
+            workbench_store(session), _actor(principal), str(task_id)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/tasks/{task_id}/partial-delivery")
+async def receive_partial_delivery(
+    task_id: UUID,
+    body: BranchReceipt,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await partial_delivery(
+            workbench_store(session), _actor(principal), str(task_id), body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/find-expert/{task_id}")

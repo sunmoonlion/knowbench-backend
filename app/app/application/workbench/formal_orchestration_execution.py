@@ -90,6 +90,37 @@ async def read_step_output(repo, task_id, attempt_id, name, versions, result):
     return artifact["content"]
 
 
+async def accepted_step(repo, task, snapshot, index, step, matches):
+    if len(matches) != 1:
+        raise CapabilityError("Formal dependency does not have one accepted Attempt")
+    attempt = matches[0]
+    refs = attempt.get("refs") or {}
+    result = refs.get("formal_result") or {}
+    frozen = dependency_for_step(snapshot, step)
+    versions = attempt.get("output_artifacts") or []
+    if (
+        attempt["status"] != AttemptState.COMPLETED
+        or refs.get("kind") != "formal_orchestration_step"
+        or refs.get("snapshot_digest") != task["pack_digest"]
+        or refs.get("step_index") != index
+        or refs.get("reference") != frozen.reference.model_dump(mode="json")
+        or result.get("outcome") != "succeeded"
+        or len(versions) != 1
+    ):
+        raise CapabilityError("Formal dependency is not an accepted step result")
+    content = await read_step_output(
+        repo,
+        str(task["id"]),
+        str(attempt["id"]),
+        "formal-step:" + step.id,
+        versions,
+        result,
+    )
+    value = validate_step_outputs(step, content)
+    bounded_json(value)
+    return value, versions[0]
+
+
 async def accepted_outputs(repo, task, snapshot, before):
     """Read exact accepted artifact versions, never a newer artifact with the same name."""
     steps = orchestration_plan(snapshot)
@@ -97,36 +128,7 @@ async def accepted_outputs(repo, task, snapshot, before):
     outputs, artifacts = {}, []
     for index, step in enumerate(steps[:before]):
         matches = [a for a in attempts if (a.get("refs") or {}).get("slot") == step.id]
-        if len(matches) != 1:
-            raise CapabilityError(
-                "Formal dependency does not have one accepted Attempt"
-            )
-        attempt = matches[0]
-        refs = attempt.get("refs") or {}
-        result = refs.get("formal_result") or {}
-        frozen = dependency_for_step(snapshot, step)
-        versions = attempt.get("output_artifacts") or []
-        if (
-            attempt["status"] != AttemptState.COMPLETED
-            or refs.get("kind") != "formal_orchestration_step"
-            or refs.get("snapshot_digest") != task["pack_digest"]
-            or refs.get("step_index") != index
-            or refs.get("reference") != frozen.reference.model_dump(mode="json")
-            or result.get("outcome") != "succeeded"
-            or len(versions) != 1
-        ):
-            raise CapabilityError("Formal dependency is not an accepted step result")
-        content = await read_step_output(
-            repo,
-            str(task["id"]),
-            str(attempt["id"]),
-            "formal-step:" + step.id,
-            versions,
-            result,
-        )
-        version = versions[0]
-        value = validate_step_outputs(step, content)
-        bounded_json(value)
+        value, version = await accepted_step(repo, task, snapshot, index, step, matches)
         outputs[step.id] = value
         artifacts.append({"step_id": step.id, **version})
     return outputs, artifacts
