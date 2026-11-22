@@ -788,7 +788,8 @@ async def test_real_container_in_three_step_expert(db):
 
 
 @pytest.mark.parametrize(
-    "failure", ["busy", "unstarted", "failed", "missing_meter", "insufficient"]
+    "failure",
+    ["busy", "invalid_package", "unstarted", "failed", "missing_meter", "insufficient"],
 )
 async def test_script_budget_failure_paths(db, failure):
     from app.domain.workbench.capabilities import ScriptNotProvisioned
@@ -797,6 +798,14 @@ async def test_script_budget_failure_paths(db, failure):
 
     class Controlled(Executor):
         async def prepare(self, owner, run, body):
+            if failure == "invalid_package":
+                from app.infrastructure.workbench.skill_executor import SkillExecutor
+
+                # A legacy package may contain both a regular file and a child of it.
+                nested = {**body["files"][0], "path": body["path"] + "/child"}
+                await SkillExecutor("http://127.0.0.1:1", "unused").prepare(
+                    owner, run, {**body, "files": [*body["files"], nested]}
+                )
             if failure == "busy":
                 raise ScriptNotProvisioned(
                     "slot_occupied_before_creation", "Slot already occupied"
@@ -844,7 +853,14 @@ async def test_script_budget_failure_paths(db, failure):
         cost = Decimal("0.04") if failure == "failed" else Decimal(0)
         assert rows["consume"]["amount"] == cost
         assert rows["release"]["amount"] + cost == rows["reserve"]["amount"]
-        assert len(executor.calls) == (0 if failure == "busy" else 1)
+        assert len(executor.calls) == (
+            0 if failure in {"busy", "invalid_package"} else 1
+        )
+        if failure == "invalid_package":
+            assert (
+                rows["consume"]["script_evidence"]["stage"]
+                == "invalid_execution_before_creation"
+            )
     await settle(conductor, req)
     res = await status(db, req, factory)
     assert res["status"] == "failed" and Decimal(res["spent"]) == cost

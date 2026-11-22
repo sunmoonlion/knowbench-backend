@@ -5,7 +5,7 @@ from __future__ import annotations
 from uuid import UUID
 
 import httpx
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from app.domain.workbench.capabilities import (
     CapabilityError,
@@ -75,7 +75,13 @@ class SkillExecutor:
             return ScriptStatus.model_validate_json(response.content).model_dump()
 
     async def prepare(self, owner: str, run: str, body: dict):
-        frame, _ = execution_frame(ScriptExecution.model_validate(body))
+        try:
+            frame, _ = execution_frame(ScriptExecution.model_validate(body))
+        except ValidationError as exc:
+            raise ScriptNotProvisioned(
+                "invalid_execution_before_creation",
+                "Script inputs failed validation before reserving a container",
+            ) from exc
         try:
             return await self.request(
                 "POST", owner, run, frame.model_dump(), suffix="/prepare"

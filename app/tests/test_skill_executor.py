@@ -57,6 +57,33 @@ async def test_stop_requires_confirmed_termination(receipt):
         await executor.cancel(str(uuid4()), str(uuid4()))
 
 
+async def test_local_prepare_failure_is_proven_unbilled_but_invalid_reply_is_not():
+    from app.domain.workbench.capabilities import ScriptNotProvisioned
+
+    sent = []
+
+    def invalid_reply(request):
+        sent.append(request.method)
+        return httpx.Response(200, json={"state": "finished"})
+
+    executor = SkillExecutor(
+        "http://test", "test-only", transport=httpx.MockTransport(invalid_reply)
+    )
+    owner, run = str(uuid4()), str(uuid4())
+    file = {
+        "path": "run.py",
+        "sha256": hashlib.sha256(b"").hexdigest(),
+        "data_base64": "",
+    }
+    with pytest.raises(ScriptNotProvisioned) as error:
+        await executor.prepare(owner, run, {"path": "missing.py", "files": [file]})
+    assert error.value.stage == "invalid_execution_before_creation"
+    assert sent == []
+    with pytest.raises(ValueError):
+        await executor.prepare(owner, run, {"path": "run.py", "files": [file]})
+    assert sent == ["POST"]
+
+
 async def test_lost_upload_response_recovers_through_status_without_sending_again():
     from app.domain.workbench.script_contract_generated import (
         ScriptExecution,
