@@ -271,6 +271,7 @@ class FindExpertService:
         ] = "knowbench/expert-match/v1",
         expert: str | None = None,
         reference: MethodRef | None = None,
+        directory_offset: int = 0,
         revises: str | None = None,
         source_session: str | None = None,
     ) -> dict[str, Any]:
@@ -297,6 +298,10 @@ class FindExpertService:
             reference is not None or revises is not None or source_session is not None
         ) and not formal:
             raise FindExpertRefused("A formal method needs an exact-version match")
+        if directory_offset and (not formal or reference is not None):
+            raise FindExpertRefused(
+                "Pagination requires an unnamed formal expert search"
+            )
         key = task_key(project_id, text, idempotency_key)
 
         def request(session_id: str) -> HandoverRequest:
@@ -311,6 +316,11 @@ class FindExpertService:
                 ),
                 original_input={
                     "text": text,
+                    **(
+                        {"directory_offset": directory_offset}
+                        if directory_offset
+                        else {}
+                    ),
                     **({"source_session": source_session} if source_session else {}),
                     **({"revises": revises} if revises else {}),
                     **({"expert": expert} if expert else {}),
@@ -349,10 +359,14 @@ class FindExpertService:
                         "Formal expert directory unavailable"
                     )
                 directory = await formal_expert_intake.directory_for(
-                    self.formal_registry, owner_actor_id, text, reference
+                    self.formal_registry,
+                    owner_actor_id,
+                    text,
+                    reference,
+                    offset=directory_offset,
                 )
                 if not directory["items"]:
-                    return {"empty": True}
+                    return {"empty": True, "next": directory["next"]}
         async with self.repo.transaction():
             # 同项目的重复请求串行核幂等，再建新会话；会话、委托与派发命令同提交。
             # 不能先建会话：session_id 参与摘要，重发会冲突并遗留空会话。

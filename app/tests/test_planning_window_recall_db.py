@@ -12,6 +12,7 @@ from formal_plan_support import setup_plan
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
+from app.application.workbench.formal_expert_intake import directory_for
 from app.application.workbench.registry_catalog import SceneRegistry
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_search import PlanningQuery, search_terms
@@ -47,14 +48,16 @@ async def test_authorized_top_eight_before_and_after_catalog_growth(db):
             refs = sorted(authorized, key=lambda ref: ref.method_id)
             return refs[offset : offset + limit], len(refs) > offset + limit
 
+        async def planning_formal_refs(self, subject, refs):
+            assert not session.in_transaction()
+            return {MethodRef.model_validate(ref) for ref in refs} & authorized
+
     async with db() as session:
         repo = WorkbenchRepository(session)
         registry = SceneRegistry(SimpleNamespace(market=Market()), repo)
 
-        async def insert(index, title, purpose):
-            definition = ctx.request.draft.definition.model_dump(
-                mode="json", by_alias=True
-            )
+        async def insert(index, title, purpose, *, draft=ctx.request.draft):
+            definition = draft.definition.model_dump(mode="json", by_alias=True)
             definition["capability_declaration"].update(title=title, purpose=purpose)
             definition = type(ctx.request.draft.definition).model_validate(definition)
             ref = MethodRef(
@@ -125,3 +128,26 @@ async def test_authorized_top_eight_before_and_after_catalog_growth(db):
             for i in range(16, 121):
                 await insert(i, "单证归档", "整理归档发票的原始单证")
         assert await measure() == (15, 15, 1)
+
+        # 96 qualified tool versions fill the first window of an 8-candidate query.
+        authorized.clear()
+        async with repo.transaction():
+            for i in range(121, 217):
+                authorized.add(
+                    await insert(i, "归档工具", "整理单据", draft=ctx.leaf.draft)
+                )
+            expert = await insert(217, "归档专家", "整理单据并核对")
+            authorized.add(expert)
+        first = await directory_for(registry, OWNER, "整理单据", None)
+        assert first == {"items": [], "next": 96}
+        second = await directory_for(
+            registry, OWNER, "整理单据", None, offset=first["next"]
+        )
+        assert [item["reference"] for item in second["items"]] == [
+            expert.model_dump(mode="json")
+        ]
+        authorized.remove(expert)
+        assert await directory_for(registry, OWNER, "整理单据", None, offset=96) == {
+            "items": [],
+            "next": None,
+        }

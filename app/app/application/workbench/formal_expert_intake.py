@@ -28,17 +28,19 @@ async def previous_round(repo, owner, project_id, task_id):
     return previous
 
 
-async def directory_for(registry, owner, question, named):
+async def directory_for(registry, owner, question, named, *, offset=0):
     if named:
         refs, more = [named], False
     else:
         page = await registry.planning_versions(
-            owner, 8, 0, query=PlanningQuery(stage="expert", question=question)
+            owner, 8, offset, query=PlanningQuery(stage="expert", question=question)
         )
+        if not page["items"]:
+            return {"items": [], "next": page["next"]}
         refs = [
             MethodRef.model_validate(registry.reference(row)) for row in page["items"]
         ]
-        more = page["next"] is not None
+        more = offset > 0 or page["next"] is not None
     items = []
     used = 0
     for ref in refs:

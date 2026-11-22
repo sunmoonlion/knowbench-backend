@@ -504,6 +504,7 @@ class FindExpertIn(BaseModel):
     ] = "knowbench/expert-match/v1"
     expert: str | None = Field(default=None, max_length=128)
     reference: MethodRef | None = None
+    directory_offset: int = Field(default=0, strict=True, ge=0, le=2147483647)
     revises: UUID | None = None
     source_session: UUID | None = None
 
@@ -547,6 +548,7 @@ async def start_find_expert(
             match_contract=body.match_contract,
             expert=body.expert,
             reference=body.reference,
+            directory_offset=body.directory_offset,
             revises=str(body.revises) if body.revises else None,
             source_session=str(body.source_session) if body.source_session else None,
         )

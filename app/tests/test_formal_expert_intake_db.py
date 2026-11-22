@@ -253,9 +253,49 @@ async def test_web_intake_empty_directory_starts_no_model_and_named_match_reopen
             }
             empty = await client.post(url, json=body)
             assert empty.status_code == 201 and empty.json()["empty"] is True
+            assert empty.json()["next"] is None
             async with db() as s:
                 assert await s.scalar(text("SELECT count(*) FROM workbench_tasks")) == 0
+            # One window contains only tools. The next window contains experts.
+            # Each request scans just the requested window and rechecks current access.
+            calls = []
+
+            async def windows(owner, limit, offset, *, query):
+                assert owner == OWNER and limit == 8 and query.stage == "expert"
+                calls.append(offset)
+                if offset == 0:
+                    return {"items": [], "next": 96}
+                assert offset == 96
+                return {
+                    "items": [v["reference"] for v in registry.entries.values()],
+                    "next": None,
+                }
+
+            monkeypatch.setattr(registry, "planning_versions", windows)
+            first = await client.post(url, json=body)
+            assert first.json()["empty"] is True and first.json()["next"] == 96
+            continuation = {**body, "directory_offset": first.json()["next"]}
+            exhausted = await client.post(url, json=continuation)
+            assert (
+                exhausted.json()["empty"] is True and exhausted.json()["next"] is None
+            )
+            async with db() as s:
+                assert await s.scalar(text("SELECT count(*) FROM workbench_tasks")) == 0
+            registry.entries.update(entries)
+            found = await client.post(url, json=continuation)
+            assert found.status_code == 201 and found.json()["task_id"]
+            assert (await client.post(url, json=continuation)).json() == found.json()
+            assert (await client.post(url, json=body)).status_code == 409
+            assert calls == [0, 96, 96]
             named = next(iter(entries))
+            assert (
+                await client.post(
+                    url,
+                    json={**continuation, "reference": named.model_dump(mode="json")},
+                )
+            ).status_code == 409
+            registry.entries.clear()
+            body["idempotency_key"] = "formal-named-1"
             body["reference"] = named.model_dump(mode="json")
             assert (await client.post(url, json=body)).status_code == 404
             registry.entries.update(entries)
