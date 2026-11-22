@@ -16,7 +16,10 @@ from app.domain.workbench.formal_method_plan_generated import (
     expand_unique_plan,
     unique_plan,
 )
-from app.domain.workbench.method_authorization import covers_requirement
+from app.domain.workbench.method_authorization import (
+    METHOD_SCOPE_HOURS,
+    covers_requirement,
+)
 from app.domain.workbench.tool_registry import connection_registration
 
 
@@ -172,12 +175,20 @@ async def execution_preview(
         issue(graph_issue)
     total = Decimal(0)
     priced = graph is not None
-    steps = []
+    steps, experts = [], []
     assets_by_id = {a["id"]: a for a in assets}
     contexts = {(): (bindings["values"], {})}
     for node in graph.nodes if graph else ():
         values, pending = project_arguments(node, *contexts[node.parent_path])
         if node.kind != "tool":
+            experts.append(
+                {
+                    "path": list(node.path),
+                    "reference": node.reference.model_dump(mode="json"),
+                    "title": node.definition.capability_declaration.title,
+                    "outputs": list(node.step.outputs),
+                }
+            )
             contexts[node.path] = values, pending
             continue
         proc = node.definition.procedure
@@ -252,6 +263,11 @@ async def execution_preview(
     if limit is not None and total > Decimal(limit):
         issue("budget_exceeded")
     return {
+        **(
+            {"subexperts": experts, "scope_hours": METHOD_SCOPE_HOURS}
+            if experts
+            else {}
+        ),
         "task_id": task_id,
         "revision": revision,
         "reference": selected,

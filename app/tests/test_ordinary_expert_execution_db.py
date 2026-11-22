@@ -3,13 +3,14 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 
 import httpx
 import pytest
-from formal_plan_support import advance, freeze, setup_plan
+from formal_plan_support import setup_plan
+from formal_recursive_support import register_completed, setup_recursive
 from sqlalchemy import text
 from test_capabilities_db import approval
-from test_formal_execution_db import approve
 from test_formal_expert_intake_db import web_app
 from test_knowbot_test_runs_db import runner_for
 from test_workbench_advisor_db import ScriptedAppServer, close, drive
@@ -17,27 +18,32 @@ from test_workbench_ledger_db import db as db
 
 from app.application.workbench.find_expert import FindExpertService
 from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.formal_recursive import node_key
 from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints import capability_routes
 from app.interfaces.http.web import workbench_expert as routes
 
 
-@pytest.mark.parametrize("revoke", [False, True])
+@pytest.mark.parametrize(
+    ("nested", "revoke"),
+    [
+        (False, None),
+        (True, None),
+        (False, "qualification"),
+        (True, "qualification"),
+        (True, "parent_scope"),
+    ],
+)
 async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
-    db, monkeypatch, revoke
+    db, monkeypatch, revoke, nested
 ):
-    ctx = await setup_plan(db)
-    for _ in range(2):
-        await approve(db, ctx.request, ctx.factory, await advance(db, ctx))
-    sealed = await advance(db, ctx)
-    expert = freeze(ctx.request, sealed)
-    async with db() as s:
-        repo = WorkbenchRepository(s)
-        await ctx.factory(repo).formal_sources.register(expert, caller="knowlab")
-        await repo.purge_test_run(str(ctx.request.run_id))
-        await repo.commit()
+    ctx = await setup_recursive(db) if nested else await setup_plan(db)
+    expert = await register_completed(db, ctx)
     ctx.remote.calls.clear()
     qualified = {expert.reference, ctx.leaf.reference}
+    if nested:
+        qualified.update(e.reference for e in ctx.experts)
+    steps = 4 if nested else 2
 
     async with selected_match(
         db, monkeypatch, expert, qualified, ctx.owner, ctx.factory
@@ -61,9 +67,23 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
             view = (await client.get(path + "/execution-preview?revision=1")).json()
             assert not view["dispatch_gap"] and not view["issues"], view
             assert view["steps"][1]["from_outputs"]["to"] == {
-                "step": ["first"],
+                "step": ["first", "first"] if nested else ["first"],
                 "output": "receipt",
             }
+            if nested:
+                assert view["scope_hours"] == 24
+                assert [e["path"] for e in view["subexperts"]] == [
+                    ["first"],
+                    ["second"],
+                ]
+                assert all(
+                    e["reference"] == ctx.experts[0].reference.model_dump(mode="json")
+                    for e in view["subexperts"]
+                )
+                assert view["steps"][2]["from_outputs"]["to"] == {
+                    "step": ["first"],
+                    "output": "final_receipt",
+                }
             body = {"revision": 1, "preview_digest": view["preview_digest"]}
             refused = await client.put(
                 path + "/execution",
@@ -78,7 +98,7 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
             assert receipt == responses[1].json()
             task = receipt["task_id"]
             assert (await client.get(path)).json()["execution"] == receipt
-            for i in range(2):
+            for i in range(steps):
                 await drive(runner)
                 async with db() as s:
                     repo = WorkbenchRepository(s)
@@ -105,7 +125,37 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
                         assert restored["interaction_id"] == call["interaction_id"]
                         assert len(ctx.remote.calls) == 1
                 if revoke and i == 1:
-                    qualified.remove(ctx.leaf.reference)
+                    if revoke == "parent_scope":
+                        async with db() as s:
+                            repo = WorkbenchRepository(s)
+                            async with repo.transaction():
+                                parent = await repo.call_by_key(
+                                    ctx.owner,
+                                    call["session_id"],
+                                    node_key(task, ["first"]),
+                                )
+                                auth = await repo.method_authorization(
+                                    ctx.owner, parent["id"], lock=True
+                                )
+                                await repo.save_method_authorization(
+                                    ctx.owner,
+                                    call["session_id"],
+                                    {
+                                        **auth,
+                                        "revoked": True,
+                                        "revision": auth["revision"] + 1,
+                                    },
+                                    previous=auth["revision"],
+                                )
+                        refused = await client.post(
+                            f"/api/workbench/capability-calls/{call['id']}/decision",
+                            json=approval(call).model_dump(mode="json"),
+                        )
+                        assert refused.status_code == 409, refused.text
+                    else:
+                        qualified.remove(
+                            ctx.experts[0].reference if nested else ctx.leaf.reference
+                        )
                     await drive(runner)
                     assert len(ctx.remote.calls) == 1
                     break
@@ -118,13 +168,43 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
             async with db() as s:
                 final = (await WorkbenchRepository(s).get_task(task))["state"]
             assert final == ("FAILED" if revoke else "SUCCEEDED")
-            assert len(ctx.remote.calls) == (1 if revoke else 2)
+            assert len(ctx.remote.calls) == (1 if revoke else steps)
             assert (await client.put(path + "/execution", json=body)).json() == receipt
             finished = (await client.get(path)).json()
             assert finished["execution_state"] == final
             assert finished["delivery"] == (
-                None if revoke else {"final_receipt": "test@example.test"}
+                None
+                if revoke
+                else {
+                    "summary_receipt"
+                    if nested
+                    else "final_receipt": "test@example.test"
+                }
             )
+            if nested and not revoke:
+                async with db() as s:
+                    repo = WorkbenchRepository(s)
+                    stored = await repo.get_task(task)
+                    assert stored["pack_snapshot"]["scope_hours"] == view["scope_hours"]
+                    deadline = stored["created_at"] + timedelta(
+                        hours=view["scope_hours"]
+                    )
+                    for name in ("first", "second"):
+                        row = await repo.call_by_key(
+                            ctx.owner, call["session_id"], node_key(task, [name])
+                        )
+                        assert row["detail"]["exports"]["outputs"] == {
+                            "final_receipt": "test@example.test"
+                        }
+                        assert row["status"] == "succeeded"
+                        scope = await repo.method_authorization(ctx.owner, row["id"])
+                        assert datetime.fromisoformat(scope["expires_at"]) == deadline
+                        child = await repo.call_by_key(
+                            ctx.owner,
+                            call["session_id"],
+                            node_key(task, [name, "first"]),
+                        )
+                        assert child["parent_call_id"] == row["id"]
             assert len(model.turn_inputs) == 1
         finally:
             if runner is not match[3]:

@@ -14,6 +14,8 @@ from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.method_capabilities import AccessRequirement, Requirement
 from app.domain.workbench.resource_delegation import ResourceAuthorityRef
 
+METHOD_SCOPE_HOURS = 24
+
 # Installed entries and author-registered versions occupy separate namespaces.
 _SOURCE_BINDINGS = {
     "service_function": ("service_function_digest", "service_function_version"),

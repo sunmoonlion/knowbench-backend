@@ -18,6 +18,20 @@ def is_material_read(implementation):
 
 
 def material_inputs(graph, bindings):
+    nodes = {n.path: n for n in graph.nodes} if graph else {}
+
+    def root_binding(path, binding):
+        # Follow frozen caller aliases only. Outputs produced at run time cannot identify a selected version.
+        while path and isinstance(binding, CallerValue):
+            parent = nodes[path]
+            binding = (
+                parent.step.inputs[binding.name].binding
+                if binding.name in parent.step.inputs
+                else None
+            )
+            path = parent.parent_path
+        return binding
+
     values = dict(bindings["values"])
     pins, used, issues = {}, set(), []
 
@@ -27,17 +41,16 @@ def material_inputs(graph, bindings):
         )
 
     for leaf in graph.leaf_nodes if graph else ():
-        if len(leaf.path) != 1 or not is_material_read(
-            leaf.definition.procedure.implementation
-        ):
+        if not is_material_read(leaf.definition.procedure.implementation):
             continue
         inputs = leaf.step.inputs
         material = inputs.get("material_id")
         version = inputs.get("version_no")
-        if not material or not isinstance(material.binding, CallerValue) or not version:
+        origin = root_binding(leaf.parent_path, material.binding) if material else None
+        if not isinstance(origin, CallerValue) or not material or not version:
             issue(leaf.path, "material_id")
             continue
-        slot = material.binding.name
+        slot = origin.name
         pin = bindings["materials"].get(slot)
         if not pin:
             issue(leaf.path, slot)
@@ -47,7 +60,7 @@ def material_inputs(graph, bindings):
             (material, pin["material_id"]),
             (version, pin["version_no"]),
         ):
-            binding = field.binding
+            binding = root_binding(leaf.parent_path, field.binding)
             if isinstance(binding, CallerValue):
                 actual = values.setdefault(binding.name, value)
             elif isinstance(binding, LiteralValue):

@@ -1,7 +1,7 @@
 """Stable identities for genuine nested formal calls; no authority or dispatch."""
 
 from app.domain.workbench.capabilities import digest
-from app.domain.workbench.formal_execution import expanded_plan, snapshot_for_task
+from app.domain.workbench.formal_execution import expanded_plan, host_snapshot
 
 TREE_ADAPTER = "knowbench/formal-orchestration-tree-host/v1"
 
@@ -19,7 +19,7 @@ def node_artifact(path, *, exports=False):
 
 
 def node_identity(task, node):
-    snapshot = snapshot_for_task(task)
+    snapshot = host_snapshot(task)
     parent_definition = snapshot.draft.definition
     if node.parent_path:
         parent_definition = next(

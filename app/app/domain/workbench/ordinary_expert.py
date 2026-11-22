@@ -44,12 +44,15 @@ class ConsumerPlan(Strict):
     materials: dict[str, MaterialPin] = Field(
         default_factory=dict, exclude_if=lambda pins: not pins
     )
+    scope_hours: int | None = Field(
+        default=None, strict=True, gt=0, exclude_if=lambda value: value is None
+    )
     policies: dict[str, str]
     caller: Literal["host"] = "host"
 
     @model_validator(mode="after")
     def verify_plan(self):
-        from app.domain.workbench.formal_execution import expanded_plan
+        from app.domain.workbench.formal_execution import expanded_plan, plan_slot
         from app.domain.workbench.formal_method_plan_generated import (
             validate_plan_inputs,
         )
@@ -68,14 +71,24 @@ class ConsumerPlan(Strict):
                 for method in self.dependencies
             )
             or len(graph.dependencies) != len(self.dependencies)
-            or any(len(n.path) != 1 or n.kind != "tool" for n in graph.nodes)
             or any(
-                m.draft.source is None
-                or m.draft.source.kind not in ("mcp", "service_function")
-                or m.draft.source.license_basis == "pending"
+                m.draft.allowed_callers != ("host",)
+                or (
+                    isinstance(m.draft.definition.procedure, Orchestration)
+                    and m.draft.definition.procedure.collaboration
+                )
+                or (
+                    m.draft.source is not None
+                    and (
+                        m.draft.source.kind not in ("mcp", "service_function")
+                        or m.draft.source.license_basis == "pending"
+                    )
+                )
                 for m in self.dependencies
             )
-            or set(self.policies) != {n.step.id for n in graph.nodes}
+            or (self.scope_hours is not None) != (graph.depth > 2)
+            or set(self.policies)
+            != {plan_slot(n.path, nested=graph.depth > 2) for n in graph.leaf_nodes}
         ):
             raise ValueError("Unsupported ordinary execution snapshot")
         reads = set()
@@ -88,7 +101,7 @@ class ConsumerPlan(Strict):
                 continue
             if (impl.source, impl.entry) != ("knowbase", "read_method_input"):
                 raise ValueError("Unsupported ordinary service function")
-            reads.add(leaf.step.id)
+            reads.add(plan_slot(leaf.path, nested=graph.depth > 2))
         if self.materials.keys() != reads:
             raise ValueError("Material selections must match the frozen read steps")
         validate_plan_inputs(self.draft.definition, self.arguments)

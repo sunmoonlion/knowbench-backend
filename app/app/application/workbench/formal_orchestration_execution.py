@@ -664,6 +664,7 @@ class FormalOrchestrationExecution:
                     )
                 )["state"]
             index = int(task["current_step"]) + 1
+            exports = None
             if recursive_plan(snapshot):
                 from app.application.workbench.formal_recursive_runtime import (
                     settle_ancestors,
@@ -672,34 +673,19 @@ class FormalOrchestrationExecution:
                 exports = await settle_ancestors(
                     repo, task, snapshot, outcome="succeeded"
                 )
-                if exports is not None:
-                    if index != len(execution_steps(snapshot)):
-                        raise CapabilityError(
-                            "Formal root returned before all leaf attempts"
-                        )
-                    await repo.update_attempt(
-                        attempt_id,
-                        refs={
-                            **refs,
-                            "formal_result": result,
-                            "formal_exports": exports,
-                        },
+                if exports is not None and index != len(execution_steps(snapshot)):
+                    raise CapabilityError(
+                        "Formal root returned before all leaf attempts"
                     )
-                    return (await led.transition(task_id, TaskState.SUCCEEDED))["state"]
             elif index == len(orchestration_plan(snapshot)):
                 accepted, _ = await accepted_outputs(repo, task, snapshot, index)
                 exported = export_outputs(snapshot.draft.definition, accepted)
                 bounded_json(exported)
+                exports = {"outputs": exported, "outputs_digest": digest(exported)}
+            if exports is not None:
                 await repo.update_attempt(
                     attempt_id,
-                    refs={
-                        **refs,
-                        "formal_result": result,
-                        "formal_exports": {
-                            "outputs": exported,
-                            "outputs_digest": digest(exported),
-                        },
-                    },
+                    refs={**refs, "formal_result": result, "formal_exports": exports},
                 )
                 from app.domain.workbench.ordinary_expert import ConsumerPlan
 
@@ -709,7 +695,7 @@ class FormalOrchestrationExecution:
                         attempt_id=attempt_id,
                         name="expert_delivery",
                         kind="handback",
-                        content=exported,
+                        content=exports["outputs"],
                     )
                     return (
                         await led.transition(

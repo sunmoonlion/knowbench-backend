@@ -12,10 +12,10 @@ from test_workbench_ledger_db import OWNER
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-async def ordinary_read(
-    db, monkeypatch, factory, leaf, expert, library, *, changed_receipt
-):
-    versions = {leaf.reference, expert.reference}
+async def ordinary_read(db, monkeypatch, factory, chain, library, *, changed_receipt):
+    material_slot = "source_document" if len(chain) == 3 else "material_id"
+    expert = chain[-1]
+    versions = {method.reference for method in chain}
     async with selected_match(
         db,
         monkeypatch,
@@ -37,7 +37,7 @@ async def ordinary_read(
             "review_digest": selected["review_digest"],
             "budget_limit": "1",
             "values": {},
-            "materials": {"material_id": pin},
+            "materials": {material_slot: pin},
             "accounts": {},
         }
         prep = path + "/preparation"
@@ -67,7 +67,7 @@ async def ordinary_read(
         assert not view["dispatch_gap"] and not view["issues"], view
         assert view["steps"][0]["material"] == pin
         assert view["bindings"]["values"] == {
-            "material_id": pin["material_id"],
+            material_slot: pin["material_id"],
             "version_no": 1,
         }
         submit = {"revision": 2, "preview_digest": view["preview_digest"]}
@@ -87,7 +87,9 @@ async def ordinary_read(
         consent = action + "/knowbase-read"
         request = (await client.get(consent)).json()
         assert request["read"]["path"][0]["version"] == expert.reference.version
-        assert request["read"]["path"][-1]["method_id"] == str(leaf.reference.method_id)
+        assert [node["method_id"] for node in request["read"]["path"]] == [
+            str(method.reference.method_id) for method in reversed(chain)
+        ]
         grant = {
             "subject_digest": request["subject_digest"],
             "expires_at": request["expires_at"],

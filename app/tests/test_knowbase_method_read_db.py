@@ -158,7 +158,7 @@ def suite(args, caller="host"):
     )
 
 
-def wrap(request, frozen):
+def wrap(request, frozen, *, material_slot="material_id"):
     doc = request.model_dump(mode="json", by_alias=True)
     definition = deepcopy(doc["draft"]["definition"])
     interface = frozen.draft.definition.interfaces()
@@ -177,7 +177,10 @@ def wrap(request, frozen):
                 "inputs": {
                     k: {
                         "slot": slot["slot"],
-                        "binding": {"source": "caller", "name": k},
+                        "binding": {
+                            "source": "caller",
+                            "name": material_slot if k == "material_id" else k,
+                        },
                     }
                     for k, slot in interface["inputs"].items()
                 },
@@ -194,6 +197,10 @@ def wrap(request, frozen):
         "max_steps": 3,
         "max_replans": 0,
     }
+    if material_slot != "material_id":
+        inputs = dict(doc["execution"]["suite"]["cases"][0]["input"]["values"])
+        inputs[material_slot] = inputs.pop("material_id")
+        doc["execution"]["suite"] = suite(inputs)
     doc.update(
         method_id=str(uuid4()),
         run_id=str(uuid4()),
@@ -383,7 +390,11 @@ async def run_host_tree(db, ctx, peer):
                 previous, caller="knowlab"
             )
         if depth < 3:
-            ctx.request = wrap(ctx.request, previous)
+            ctx.request = wrap(
+                ctx.request,
+                previous,
+                material_slot="source_document" if depth == 2 else "material_id",
+            )
         if depth == 1:
             await check_two_readers(db, ctx)
     return versions

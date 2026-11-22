@@ -222,11 +222,15 @@ def execution_steps(snapshot: FormalTaskSnapshot | ConsumerPlan):
     return tuple(node.step for node in expanded_plan(snapshot).leaf_nodes)
 
 
+def plan_slot(path, *, nested):
+    from app.domain.workbench.formal_recursive import node_slot
+
+    return node_slot(path) if nested else path[0]
+
+
 def execution_slot(snapshot: FormalTaskSnapshot | ConsumerPlan, index: int) -> str:
     node = expanded_plan(snapshot).leaf_nodes[index]
-    return (
-        "node:" + digest(list(node.path)) if recursive_plan(snapshot) else node.step.id
-    )
+    return plan_slot(node.path, nested=recursive_plan(snapshot))
 
 
 @overload

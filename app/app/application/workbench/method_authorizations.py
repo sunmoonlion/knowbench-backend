@@ -7,6 +7,7 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.method_calls import root_call
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.method_authorization import (
+    METHOD_SCOPE_HOURS,
     MethodAuthorization,
     PermissionGrant,
     check_delegation,
@@ -143,7 +144,7 @@ async def confirm_method_permissions(
     )
     previous = await repo.method_authorization(owner, root["id"], lock=True)
     current = MethodAuthorization.model_validate(previous) if previous else None
-    expiry = datetime.now(UTC) + timedelta(hours=24)
+    expiry = datetime.now(UTC) + timedelta(hours=METHOD_SCOPE_HOURS)
     method_id = scope["step"].step_id
     delegations = delegations or {}
     if not set(delegations) <= access.keys():

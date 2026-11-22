@@ -1,9 +1,9 @@
-"""Ordinary fixed MCP delegations share the host driver and its per-action approvals."""
+"""Ordinary fixed expert delegations share the host driver and its per-action approvals."""
 
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import IdempotencyConflict
-from app.domain.workbench.formal_execution import same_implementation
+from app.domain.workbench.formal_execution import plan_slot, same_implementation
 from app.domain.workbench.formal_method_admission_generated import FormalMethodDraft
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.models import HandoverRequest
@@ -15,11 +15,8 @@ def execution_sources(graph, preview, subject, assets, methods, read_sources):
     if not graph or preview["issues"]:
         return {}, "preview_incomplete"
     if any(
-        len(n.path) != 1
-        or (
-            n.path not in read_sources
-            and n.definition.procedure.implementation.kind != "mcp"
-        )
+        n.path not in read_sources
+        and n.definition.procedure.implementation.kind != "mcp"
         for n in graph.leaf_nodes
     ):
         return {}, "driver_unavailable"
@@ -48,13 +45,12 @@ async def confirm_execution(
     repo, owner, task, selected, definition, graph, preview, sources
 ):
     methods = {}
-    policies = {}
-    for node, step in zip(graph.leaf_nodes, preview["steps"], strict=True):
+    for node in graph.nodes:
         method = ConsumerMethod(
             reference=node.reference,
             draft=FormalMethodDraft(
                 definition=node.definition,
-                source=sources[node.path],
+                source=sources[node.path] if node.kind == "tool" else None,
                 allowed_callers=("host",),
             ),
         )
@@ -63,7 +59,6 @@ async def confirm_execution(
                 "A repeated method requires conflicting account bindings"
             )
         methods[node.reference] = method
-        policies[node.step.id] = step["quote"]["basis"]
     plan = ConsumerPlan(
         match_task_id=task["id"],
         preparation_revision=preview["revision"],
@@ -74,9 +69,15 @@ async def confirm_execution(
         ),
         arguments=preview["bindings"]["values"],
         dependencies=tuple(methods.values()),
-        policies=policies,
+        scope_hours=preview.get("scope_hours"),
+        policies={
+            plan_slot(s["path"], nested=graph.depth > 2): s["quote"]["basis"]
+            for s in preview["steps"]
+        },
         materials={
-            s["path"][0]: s["material"] for s in preview["steps"] if "material" in s
+            plan_slot(s["path"], nested=graph.depth > 2): s["material"]
+            for s in preview["steps"]
+            if "material" in s
         },
     )
     session_id = str(task["session_id"])

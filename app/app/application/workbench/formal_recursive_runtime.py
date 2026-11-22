@@ -46,6 +46,16 @@ def _node(snapshot, path):
 
 
 async def scope_deadline(repo, task, snapshot):
+    from app.domain.workbench.ordinary_expert import ConsumerPlan
+
+    if isinstance(snapshot, ConsumerPlan):
+        if snapshot.scope_hours is None:
+            raise CapabilityError("Missing confirmed recursive scope duration")
+
+        created = task["created_at"]
+        if isinstance(created, str):
+            created = datetime.fromisoformat(created)
+        return created + timedelta(hours=snapshot.scope_hours)
     run = await repo.test_run_for_task(str(task["id"]))
     _require(run is not None, "Formal scope has no accepted test run")
     request = FormalMethodExecutionRequest.model_validate(run["request"])
