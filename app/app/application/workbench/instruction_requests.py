@@ -108,19 +108,38 @@ class InstructionRequests:
             if snap.review is not None:
                 if not self.formal.review_inputs:
                     raise CapabilityError("Review revalidation is unavailable")
+                from app.application.workbench.review_comparison import (
+                    COMPARISON_GUIDANCE,
+                    COMPARISON_STEP,
+                )
+
+                attempt = (
+                    await self.repo.get_attempt(str(task["active_attempt_id"]))
+                    if task.get("active_attempt_id")
+                    else None
+                )
+                comparison = (
+                    attempt is not None and attempt["step_id"] == COMPARISON_STEP
+                )
                 try:
                     option, sandbox, arguments = await self.formal.review_inputs(
-                        self.repo, owner, snap.review
+                        self.repo,
+                        owner,
+                        snap.review,
+                        comparison_task=str(task["id"]) if comparison else None,
                     )
                 except WorkbenchError as exc:
                     raise CapabilityError(
                         "Review confirmation is no longer active"
                     ) from exc
+                if comparison:
+                    content = content + "\n\n" + COMPARISON_GUIDANCE
                 session = await self.repo.get_session(
                     str(snap.session_id), owner_actor_id=owner
                 )
                 if (
-                    str(session["sandbox_id"]) != sandbox
+                    option["rounds"] != snap.review_rounds
+                    or str(session["sandbox_id"]) != sandbox
                     or {
                         **option["quote"],
                         "credential_id": option["pin"]["credential_id"],

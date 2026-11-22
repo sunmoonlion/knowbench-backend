@@ -39,12 +39,14 @@ from app.interfaces.http.internal import instruction_control
         (True, False, False),
         (False, True, False),
         (False, False, True),
+        (False, False, "strict"),
     ],
     ids=[
         "runner-restart",
         "receipt-delay",
         "registered-runner-restart",
         "branch-review-restart",
+        "strict-review-restart",
     ],
 )
 async def test_real_instruction_runner(
@@ -54,16 +56,51 @@ async def test_real_instruction_runner(
     if review:
         from branch_review_support import review_case
 
-        s = await stack(db, setup_case=partial(review_case, monkeypatch=monkeypatch))
+        s = await stack(
+            db,
+            setup_case=partial(
+                review_case, monkeypatch=monkeypatch, strict=review == "strict"
+            ),
+        )
     else:
         s = await stack(db, author_trial=trial.start, registered=registered)
+    for stage in range(1, 3 if review == "strict" else 2):
+        unit_dir = tmp_path / str(stage)
+        unit_dir.mkdir()
+        if stage == 2:
+            # A newer version with the same name must never replace the sealed finding.
+            async with s.host() as service, service.repo.transaction():
+                await service.repo.put_artifact(
+                    task_id=s.task,
+                    attempt_id=None,
+                    name="formal-step:direct",
+                    kind="step",
+                    content={"result": "unsealed replacement"},
+                )
+            s.units.uid, s.units.worker = str(uuid4()), str(uuid4())
+            s.units.bindings.clear()
+        await isolated_round(
+            db,
+            make_client.app,
+            monkeypatch,
+            unit_dir,
+            s,
+            trial,
+            late_receipt,
+            review,
+            stage,
+        )
+
+
+async def isolated_round(
+    db, app, monkeypatch, tmp_path, s, trial, late_receipt, review, stage
+):
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
     monkeypatch.syspath_prepend(str(PROBES))
     gateway = importlib.import_module("instruction_gateway")
     monkeypatch.setattr(gateway, "BINDING", tmp_path)
     fixtures = importlib.import_module("codex_instruction")
-    app = make_client.app
 
     async def formal():
         async with s.host() as svc:
@@ -168,6 +205,8 @@ async def test_real_instruction_runner(
                 provider.ask = False
                 provider.limit_one = False
                 provider.output = {"result" if review else "summary": "ready"}
+                if stage == 2:
+                    provider.output = {"result": "compared both views"}
                 provider.first_request = len(fixtures.captures) + 1
                 initial = len(fixtures.captures)
                 threads = [
@@ -268,24 +307,53 @@ async def test_real_instruction_runner(
                         with pytest.raises(asyncio.CancelledError):
                             await asyncio.wait_for(drive(s), 45)
                         s.driver.finish = commit_result
-                    for _ in range(5):
-                        await s.runner.run_once()
-                        if active := s.runner.driving.get(s.task):
-                            await active
-                        if s.runner.instruction_cleanup:
-                            await s.runner.instruction_cleanup
-                        async with s.host() as svc:
-                            if (await svc.repo.get_task(s.task))["state"] != "RUNNING":
-                                break
-                        await asyncio.sleep(0.2)
+                    if review == "strict":
+                        await drive(s)
+                    else:
+                        for _ in range(5):
+                            await s.runner.run_once()
+                            if active := s.runner.driving.get(s.task):
+                                await active
+                            if s.runner.instruction_cleanup:
+                                await s.runner.instruction_cleanup
+                            async with s.host() as svc:
+                                if (await svc.repo.get_task(s.task))[
+                                    "state"
+                                ] != "RUNNING":
+                                    break
+                            await asyncio.sleep(0.2)
                     async with s.host() as svc:
                         task = await svc.repo.get_task(s.task)
-                        (attempt,) = await svc.repo.list_attempts(s.task)
-                    assert task["state"] == "SUCCEEDED", attempt["refs"].get(
-                        "formal_result"
+                        attempts = await svc.repo.list_attempts(s.task)
+                    attempt = next(
+                        a
+                        for a in attempts
+                        if str(a["id"]) == s.units.bindings[-1]["attempt"]
                     )
-                    assert Decimal(task["budget"]["reserved"]) == 0
-                    assert Decimal(task["budget"]["used"]) == Decimal("0.000006")
+                    assert attempt["status"] == "COMPLETED"
+                    if review == "strict" and stage == 1:
+                        assert task["state"] == "RUNNING" and len(attempts) == 2
+                        second = next(
+                            a for a in attempts if a["step_id"] == "review-comparison"
+                        )
+                        assert (
+                            second["input_artifact_versions"]
+                            == attempt["output_artifacts"]
+                        )
+                        assert second["refs"]["independent_review"][
+                            "attempt_id"
+                        ] == str(attempt["id"])
+                        assert Decimal(task["budget"]["reserved"]) == Decimal(
+                            ROUTE.quote(PRICES)["maximum"]
+                        )
+                    else:
+                        assert task["state"] == "SUCCEEDED", attempt["refs"].get(
+                            "formal_result"
+                        )
+                        assert Decimal(task["budget"]["reserved"]) == 0
+                    assert Decimal(task["budget"]["used"]) == stage * Decimal(
+                        "0.000006"
+                    )
                     assert len(fixtures.captures) == initial + 1
                     assert (
                         attempt["refs"]["formal_result"]["outputs"] == provider.output
@@ -312,12 +380,40 @@ async def test_real_instruction_runner(
                             "Check the approved output independently.",
                             {"receipt": "test@example.test"},
                         )
+                        if stage == 2:
+                            from app.application.workbench.review_comparison import (
+                                COMPARISON_GUIDANCE,
+                            )
+
+                            expected = instruction_input(
+                                "Check the approved output independently."
+                                + "\n\n"
+                                + COMPARISON_GUIDANCE,
+                                {
+                                    "approved_outputs": {
+                                        "receipt": "test@example.test"
+                                    },
+                                    "independent_findings": "ready",
+                                    "author_assessment": {
+                                        "self_assessment": "withheld author opinion"
+                                    },
+                                },
+                            )
+                            first = next(
+                                a for a in attempts if a["step_id"] == "direct"
+                            )
+                            assert (
+                                first["refs"]["instruction_thread"]["thread"]
+                                != attempt["refs"]["instruction_thread"]["thread"]
+                            )
+                            assert len(attempts) == 2
                         assert fixtures.captures[-1] == leaf_responses_body(
                             expected, ROUTE.model, ROUTE.output_tokens
                         )
                     else:
                         await trial.finish(db)
                 finally:
+                    s.units.request = request
                     for v in (relay, provider):
                         await asyncio.to_thread(v.shutdown)
                     for t in threads:

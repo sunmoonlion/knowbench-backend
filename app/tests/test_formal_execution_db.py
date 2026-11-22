@@ -37,7 +37,7 @@ class StructuredRemote(Remote):
         return {**result, "structuredContent": {"receipt": "expected-never-sent"}}
 
 
-async def setup(db, *, cases=None, remote=None, public_review=False):
+async def setup(db, *, cases=None, remote=None, public_review=False, assessment=False):
     admission, asset = await admission_setup(db, licensed=True)
     env, _, _ = await seed(db)
     doc = admission.model_dump(mode="json", by_alias=True)
@@ -45,6 +45,11 @@ async def setup(db, *, cases=None, remote=None, public_review=False):
     doc["draft"]["definition"]["procedure"]["implementation"]["requirement_ids"] = [
         ACCESS["requirement_id"]
     ]
+    if assessment:
+        procedure = doc["draft"]["definition"]["procedure"]
+        procedure["outputs"]["self_assessment"] = deepcopy(
+            procedure["outputs"]["receipt"]
+        )
     record = license_record(
         doc["draft"]["source"], rights={"execute": True, "deliver": public_review}
     )

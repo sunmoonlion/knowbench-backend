@@ -63,6 +63,7 @@ class SourceTask(Strict):
     arguments: dict[str, Any]
     budget_limit: Decimal
     quote: dict[str, Any]
+    review_rounds: Literal[1, 2] = Field(default=1, exclude_if=lambda v: v == 1)
     review: ReviewBinding | None = Field(default=None, exclude_if=lambda v: v is None)
     owner: UUID
     session_id: UUID

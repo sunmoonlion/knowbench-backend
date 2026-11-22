@@ -19,12 +19,20 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 
 class EchoRemote(Remote):
     invalid = False
+    assessment = False
 
     async def call(self, url, token, name, arguments):
         result = await super().call(url, token, name, arguments)
         return {
             **result,
-            "structuredContent": {"receipt": 123 if self.invalid else arguments["to"]},
+            "structuredContent": {
+                "receipt": 123 if self.invalid else arguments["to"],
+                **(
+                    {"self_assessment": "withheld author opinion"}
+                    if self.assessment
+                    else {}
+                ),
+            },
         }
 
 
@@ -45,7 +53,9 @@ def freeze(request, result, *, version=1):
     )
 
 
-async def setup_plan(db, *, accept=True, public_leaf=False, expert_purpose=None):
+async def setup_plan(
+    db, *, accept=True, public_leaf=False, expert_purpose=None, assessment=False
+):
     case = {
         "case_id": "echo",
         "input": {"values": {"to": "test@example.test"}},
@@ -58,8 +68,10 @@ async def setup_plan(db, *, accept=True, public_leaf=False, expert_purpose=None)
             ],
         },
     }
+    echo = EchoRemote()
+    echo.assessment = assessment
     leaf_request, asset, remote, factory, conductor = await direct_setup(
-        db, cases=[case], remote=EchoRemote(), public_review=public_leaf
+        db, cases=[case], remote=echo, public_review=public_leaf, assessment=assessment
     )
     await conductor.advance(str(leaf_request.run_id))
     await approve(db, leaf_request, factory, await status(db, leaf_request, factory))
@@ -120,7 +132,6 @@ def plan_request(
     definition = deepcopy(document["draft"]["definition"])
     if expert_purpose:
         definition["capability_declaration"]["purpose"] = expert_purpose
-    output = definition["procedure"]["outputs"][output_name]
     steps = []
     for name, binding, depends in (
         ("first", {"source": "caller", "name": input_name}, []),
@@ -149,7 +160,7 @@ def plan_request(
                     }
                     for key, input_slot in definition["procedure"]["inputs"].items()
                 },
-                "outputs": {output_name: output},
+                "outputs": definition["procedure"]["outputs"],
                 "on_failure": "fail",
             }
         )

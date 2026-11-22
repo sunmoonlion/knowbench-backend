@@ -28,10 +28,10 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints import workbench_routes
 
 
-async def review_case(db, monkeypatch):
+async def review_case(db, monkeypatch, *, strict=False):
     import app.bootstrap.workbench as bootstrap
 
-    ctx = await setup_plan(db)
+    ctx = await setup_plan(db, assessment=strict)
     case = (await complete(db, ctx))["cases"][0]
     report = case["verified_steps"]
     step = report["steps"][0]
@@ -67,9 +67,13 @@ async def review_case(db, monkeypatch):
             default_url=ROUTE.base_url,
         )
 
-        async def projection(store, owner, binding):
+        async def projection(store, owner, binding, *, comparison_task=None):
             return await review_projection(
-                FormalExecutions(store, ctx.factory(store)), policy, owner, binding
+                FormalExecutions(store, ctx.factory(store)),
+                policy,
+                owner,
+                binding,
+                comparison_task=comparison_task,
             )
 
         svc.formal_sources.review_inputs = projection
@@ -89,6 +93,16 @@ async def review_case(db, monkeypatch):
                 "artifact": step["artifact"],
                 "previous": None,
                 "criteria": {
+                    **(
+                        {
+                            "comparison": {
+                                "assessment_output": "self_assessment",
+                                "max_reworks": 0,
+                            }
+                        }
+                        if strict
+                        else {}
+                    ),
                     "outputs": ["receipt"],
                     "reviewer": "isolated_reviewer",
                     "assertions": [

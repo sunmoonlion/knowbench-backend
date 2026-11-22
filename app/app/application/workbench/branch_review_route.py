@@ -42,16 +42,16 @@ class CheckedReview:
     page: dict
     sandbox_id: str | None
     first_round: dict
+    assessment: dict | None
 
     def projection(self, binding):
         if (
             binding.option_digest != self.page["confirmed"]
             or binding.revision != self.page["revision"]
-            or self.page["rounds"] != 1
             or self.page["requirement"] != "isolated_reviewer"
         ):
             raise StaleStateVersion(
-                "Single-round review confirmation changed or requires stronger isolation"
+                "Review confirmation changed or requires verified model families"
             )
         option = next(
             o for o in self.page["options"] if o["digest"] == binding.option_digest
@@ -175,4 +175,11 @@ async def branch_route(executions, policy, owner, run_id, command):
             page,
             scope["sandbox_id"],
             {name: delivery["outputs"][name] for name in scope["handoff"]},
+            {
+                review["deferred"]["assessment_output"]: delivery["outputs"][
+                    review["deferred"]["assessment_output"]
+                ]
+            }
+            if scope["deferred"]
+            else None,
         )

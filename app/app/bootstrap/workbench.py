@@ -491,7 +491,7 @@ def build_incubation_folders(
     )
 
 
-async def review_inputs(repo, owner, binding):
+async def review_inputs(repo, owner, binding, *, comparison_task=None):
     from app.application.workbench.branch_review_dispatch import review_projection
     from app.application.workbench.formal_test_runs import FormalExecutions
 
@@ -500,6 +500,7 @@ async def review_inputs(repo, owner, binding):
         reviewer_choices(),
         owner,
         binding,
+        comparison_task=comparison_task,
     )
 
 

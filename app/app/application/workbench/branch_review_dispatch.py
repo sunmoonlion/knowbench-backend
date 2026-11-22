@@ -1,4 +1,4 @@
-"""Run a confirmed single-round review through the registered instruction executor."""
+"""Run a confirmed review through the registered instruction executor."""
 
 from decimal import Decimal
 from uuid import UUID
@@ -27,7 +27,9 @@ class DispatchReview(RoutePreviewRequest):
     digest: Digest
 
 
-async def review_projection(executions, policy, owner, binding):
+async def review_projection(
+    executions, policy, owner, binding, *, comparison_task=None
+):
     selector = RoutePreviewRequest.model_validate(
         binding.model_dump(include=set(RoutePreviewRequest.model_fields))
     )
@@ -38,7 +40,16 @@ async def review_projection(executions, policy, owner, binding):
         str(binding.run_id),
         selector,
     )
-    return checked.projection(binding)
+    option, sandbox, inputs = checked.projection(binding)
+    if comparison_task is not None:
+        from app.application.workbench.review_comparison import comparison_arguments
+
+        if checked.assessment is None:
+            raise CapabilityError("The confirmed review has no deferred assessment")
+        inputs = await comparison_arguments(
+            executions.repo, owner, binding, comparison_task, inputs, checked.assessment
+        )
+    return option, sandbox, inputs
 
 
 def session_matches(row, sandbox):
@@ -71,17 +82,27 @@ async def dispatch_choices(executions, owner, checked):
         snap = SourceTask.load(existing)
         if snap.review and snap.review.review_digest == page["review_digest"]:
             session = await repo.get_session(str(snap.session_id), owner_actor_id=owner)
+            findings = None
+            if snap.review_rounds == 2:
+                attempts = await repo.list_attempts(str(existing["id"]))
+                findings = next(
+                    (
+                        a["output_artifacts"][0]
+                        for a in attempts
+                        if a["step_id"] == "direct"
+                        and a["status"] == "COMPLETED"
+                        and len(a["output_artifacts"]) == 1
+                    ),
+                    None,
+                )
             return {
+                "sealed_findings": findings,
                 "project_id": str(session["project_id"]),
                 "task_id": str(existing["id"]),
                 "state": existing["state"],
                 "session_id": str(snap.session_id),
             }
-    if (
-        not page["confirmed"]
-        or page["rounds"] != 1
-        or page["requirement"] != "isolated_reviewer"
-    ):
+    if not page["confirmed"] or page["requirement"] != "isolated_reviewer":
         return None
     sandbox_id = checked.sandbox_id
     option = next(o for o in page["options"] if o["digest"] == page["confirmed"])
@@ -142,7 +163,8 @@ async def dispatch_review(executions, policy, owner, run_id, body):
         snap = SourceTask(
             source=source,
             arguments={},
-            budget_limit=Decimal(quote["maximum"]),
+            budget_limit=Decimal(option["maximum"]),
+            review_rounds=option["rounds"],
             quote=quote,
             owner=owner,
             session_id=body.session_id,

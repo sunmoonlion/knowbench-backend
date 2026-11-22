@@ -1,5 +1,6 @@
 """Drive a retained single-turn instruction trial on its dedicated provisioned unit."""
 
+import logging
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -30,6 +31,8 @@ from app.domain.workbench.states import (
     TaskState,
     WaitingReason,
 )
+
+log = logging.getLogger(__name__)
 
 
 class InstructionRunner:
@@ -163,6 +166,8 @@ class InstructionRunner:
             session = await repo.get_session(
                 str(task["session_id"]), owner_actor_id=owner
             )
+            if refs.get("independent_review", {}).get("gateway") == uid:
+                raise CapabilityError("Comparison requires its own gateway")
             binding = {"uid": uid, "sandbox": str(session["sandbox_id"])}
             if refs.get("instruction_gateway", binding) != binding:
                 raise CapabilityError("Instruction gateway was replaced")
@@ -211,6 +216,9 @@ class InstructionRunner:
                 or refs.get("permission_revocation")
             ):
                 return False
+            first = refs.get("independent_review")
+            if first and (first["worker"] == worker or first["thread"] == thread):
+                raise CapabilityError("Comparison requires its own worker and thread")
             binding = {"worker": worker, "thread": thread}
             if turn is None:
                 if refs.get("instruction_thread"):
@@ -268,12 +276,18 @@ class InstructionRunner:
                             bounded_json,
                         )
 
-                        await active_source(repo, str(task["owner_actor_id"]), task)
+                        source, _ = await active_source(
+                            repo, str(task["owner_actor_id"]), task
+                        )
                         bounded_json(outputs)
                         if (
                             not isinstance(outputs, dict)
                             or set(outputs) != {"result"}
                             or not isinstance(outputs["result"], str)
+                            or (
+                                source.review_rounds == 2
+                                and not outputs["result"].strip()
+                            )
                         ):
                             raise CapabilityError(
                                 "Unexpected registered instruction output"
@@ -359,6 +373,23 @@ class InstructionRunner:
                     retryable=False,
                     output_artifacts=versions,
                 )
+                if (
+                    versions
+                    and task.get("pack_source") == "registry-source"
+                    and attempt["step_id"] == "direct"
+                    and task["pack_snapshot"].get("review_rounds") == 2
+                    and not task.get("cancel_requested_at")
+                ):
+                    from app.application.workbench.review_comparison import (
+                        open_comparison,
+                    )
+
+                    try:
+                        await open_comparison(led, task, attempt, versions)
+                    except BudgetExhausted:
+                        code = "review_comparison_budget_insufficient"
+                    else:
+                        return
             await led.transition(
                 task_id,
                 TaskState.FAILED if code else TaskState.SUCCEEDED,
@@ -611,5 +642,11 @@ class InstructionRunner:
         for row in due:
             try:
                 await self.cleanup(*row)
+            except CapabilityError:
+                # An ambiguous unit stays pending. Other attempts in the claimed batch may still be reclaimed.
+                log.warning(
+                    "Instruction cleanup blocked by a binding mismatch on attempt %s",
+                    row[2],
+                )
             except ProvisionerFailed:
                 continue
