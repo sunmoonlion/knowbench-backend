@@ -122,13 +122,15 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
                     and str(identity.attempt) == binding["attempt"]
                 )
                 async with host() as svc:
+                    attempt = await svc.repo.get_attempt(binding["attempt"])
+                    caller = attempt["refs"]["instruction_quote"]["caller"]
+                    if caller == "formal-expert":
+                        svc.formal = driver.formal(svc.repo)
                     _, outgoing = await svc.claim(
                         OWNER,
                         units.task,
                         binding["attempt"],
-                        caller="registry-source"
-                        if taskrow.get("pack_source") == "registry-source"
-                        else "knowlab",
+                        caller=caller,
                         credential_id=cred["id"],
                         turn_id=turn,
                         body=wire,

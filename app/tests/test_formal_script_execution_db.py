@@ -662,11 +662,10 @@ async def mixed_expert(
                 },
             )
 
-        if registered:
-            return expert, frozen, leaves, factory, conductor
         if shared_connector is not None:
             assert source_read["asset_id"] == source_send["asset_id"]
             return source_send["asset_id"], operations, result["cases"][0]["task_id"]
+        return expert, frozen, leaves, factory, conductor
 
 
 async def test_registered_script_confirmation_requires_same_bytes(db):
@@ -767,23 +766,24 @@ async def test_three_admitted_steps_and_exactly_one_script_charge(db, behavior):
     await mixed_expert(db, behavior)
 
 
+class RecordedExecutor(SkillExecutor):
+    def __init__(self):
+        super().__init__(
+            os.environ["SCRIPT_TEST_PROVISIONER_URL"],
+            os.environ["SCRIPT_TEST_PROVISIONER_TOKEN"],
+        )
+        self.calls = []
+
+    async def start(self, owner, run, body):
+        self.calls.append(run)
+        return await super().start(owner, run, body)
+
+
 @pytest.mark.skipif(
     not os.environ.get("SCRIPT_TEST_PROVISIONER_URL"),
     reason="requires local isolated provisioner",
 )
 async def test_real_container_in_three_step_expert(db):
-    class RecordedExecutor(SkillExecutor):
-        def __init__(self):
-            super().__init__(
-                os.environ["SCRIPT_TEST_PROVISIONER_URL"],
-                os.environ["SCRIPT_TEST_PROVISIONER_TOKEN"],
-            )
-            self.calls = []
-
-        async def start(self, owner, run, body):
-            self.calls.append(run)
-            return await super().start(owner, run, body)
-
     await mixed_expert(db, "success", RecordedExecutor())
 
 

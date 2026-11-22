@@ -10,6 +10,7 @@ from app.application.workbench.formal_orchestration_execution import (
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import (
     dependency_for_step,
+    execution_slot,
     expanded_plan,
     recursive_plan,
     validate_values,
@@ -21,6 +22,7 @@ from app.domain.workbench.method_authorization import (
     check_delegation,
 )
 from app.domain.workbench.method_capabilities import AccessRequirement
+from app.domain.workbench.ordinary_expert import ORDINARY_SOURCE, ConsumerPlan
 from app.domain.workbench.tool_registry import ToolRegistration
 
 
@@ -30,8 +32,10 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
     subject = await repo.subject_of_actor(owner)
     procedure = frozen.draft.definition.procedure
     if (
-        frozen.owner_subject != subject
-        or frozen.visibility != "private"
+        (
+            not isinstance(snapshot, ConsumerPlan)
+            and (frozen.owner_subject != subject or frozen.visibility != "private")
+        )
         or source is None
         or not source.is_instruction
         or source.license_basis == "pending"
@@ -51,7 +55,7 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
         entry,
         validate_values(procedure.inputs, arguments),
     )
-    quote = await svc.route_quote(owner, task, "knowlab")
+    quote = await leaf_quote(svc, owner, task, snapshot)
     if quote != attempt["refs"].get("instruction_quote"):
         raise CapabilityError("Instruction route differs from the reserved tariff")
     registration, requirement, operation = leaf_operation(
@@ -68,6 +72,23 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
         include_empty=True,
     )
     return job, asset, quote, registration, requirement, operation, binding
+
+
+async def leaf_quote(svc, owner, task, snapshot):
+    ordinary = isinstance(snapshot, ConsumerPlan)
+    quote = await svc.route_quote(
+        owner, task, ORDINARY_SOURCE if ordinary else "knowlab"
+    )
+    if ordinary:
+        slot = execution_slot(snapshot, int(task["current_step"]))
+        basis = {
+            k: v for k, v in quote.items() if k not in ("snapshot_digest", "caller")
+        }
+        if digest(basis) != snapshot.policies.get(slot):
+            raise CapabilityError(
+                "Instruction account, route or price changed since confirmation"
+            )
+    return quote
 
 
 def leaf_operation(frozen, arguments, quote, job_digest):
@@ -115,33 +136,41 @@ def leaf_operation(frozen, arguments, quote, job_digest):
     return registration, requirement, operation
 
 
-async def approved_leaf(svc, owner, task, caller):
+async def approved_leaf(svc, owner, task, caller, *, grants=None):
     repo = svc.repo
     attempt = await repo.get_attempt(str(task["active_attempt_id"]), for_update=True)
     refs = attempt["refs"]
     snapshot, _, frozen, arguments = await step_context(repo, task, attempt)
-    from app.domain.workbench.formal_execution import FormalTaskSnapshot
+    ordinary = isinstance(snapshot, ConsumerPlan)
+    if ordinary:
+        from app.application.workbench.ordinary_expert_execution import check_execution
 
-    run = await repo.test_run_for_task(str(task["id"]))
-    if (
-        not isinstance(snapshot, FormalTaskSnapshot)
-        or caller != "knowlab"
-        or not run
-        or run["caller"] != caller
-        or run.get("cancel_requested_at")
-        or run["status"] not in ("accepted", "running", "waiting")
-        or run["digest"] != snapshot.request_digest.removeprefix("sha256:")
-        or str(run["run_id"]) != str(snapshot.run_id)
-    ):
-        raise CapabilityError("Instruction leaf has no active author test")
-    from app.application.workbench.formal_method_catalog import FormalMethodCatalog
+        if caller != ORDINARY_SOURCE:
+            raise CapabilityError("Wrong caller for ordinary instruction")
+        await check_execution(svc.formal, owner, task, snapshot, grants)
+    else:
+        from app.domain.workbench.formal_execution import FormalTaskSnapshot
 
-    catalog = FormalMethodCatalog(repo, svc.formal, svc.formal.operations)
-    if (
-        await catalog.resolve_owned_admission(owner, frozen.reference, resolved={})
-        != frozen
-    ):
-        raise CapabilityError("Instruction dependency qualification changed")
+        run = await repo.test_run_for_task(str(task["id"]))
+        if (
+            not isinstance(snapshot, FormalTaskSnapshot)
+            or caller != "knowlab"
+            or not run
+            or run["caller"] != caller
+            or run.get("cancel_requested_at")
+            or run["status"] not in ("accepted", "running", "waiting")
+            or run["digest"] != snapshot.request_digest.removeprefix("sha256:")
+            or str(run["run_id"]) != str(snapshot.run_id)
+        ):
+            raise CapabilityError("Instruction leaf has no active author test")
+        from app.application.workbench.formal_method_catalog import FormalMethodCatalog
+
+        catalog = FormalMethodCatalog(repo, svc.formal, svc.formal.operations)
+        if (
+            await catalog.resolve_owned_admission(owner, frozen.reference, resolved={})
+            != frozen
+        ):
+            raise CapabilityError("Instruction dependency qualification changed")
     call_id = refs.get("capability_call_id")
     if not call_id:
         raise CapabilityError("Instruction leaf has no approved external call")
@@ -153,14 +182,15 @@ async def approved_leaf(svc, owner, task, caller):
 
         scopes = await execution_scopes(repo, task, snapshot)
         path = tuple(refs["path"])
-        nodes = {node.path: node for node in expanded_plan(snapshot).nodes}
-        for depth in range(1, len(path)):
-            ancestor = dependency_for_step(snapshot, nodes[path[:depth]].step)
-            live, _ = await svc.formal.registry.dependency(
-                owner, ancestor.reference, shared=False
-            )
-            if live != ancestor:
-                raise CapabilityError("Instruction ancestor registration changed")
+        if not ordinary:
+            nodes = {node.path: node for node in expanded_plan(snapshot).nodes}
+            for depth in range(1, len(path)):
+                ancestor = dependency_for_step(snapshot, nodes[path[:depth]].step)
+                live, _ = await svc.formal.registry.dependency(
+                    owner, ancestor.reference, shared=False
+                )
+                if live != ancestor:
+                    raise CapabilityError("Instruction ancestor registration changed")
         grant_parent_id = str(scopes[0].call_id)
         key = node_key(task["id"], refs["path"])
     else:

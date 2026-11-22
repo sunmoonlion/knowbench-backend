@@ -80,7 +80,15 @@ class ConsumerPlan(Strict):
                 or (
                     m.draft.source is not None
                     and (
-                        m.draft.source.kind not in ("mcp", "service_function")
+                        m.draft.source.kind
+                        not in (
+                            "mcp",
+                            "service_function",
+                            "skill_script",
+                            "registered_script",
+                            "skill_instruction",
+                            "registered_instruction",
+                        )
                         or m.draft.source.license_basis == "pending"
                     )
                 )

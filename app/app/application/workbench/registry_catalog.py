@@ -1,5 +1,7 @@
 """Resolve scene candidates from KnowBench registrations and intersect current grants."""
 
+from uuid import UUID
+
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodSource,
@@ -33,6 +35,51 @@ class SceneRegistry:
             entry=row["name"],
             license_basis="owner",
         )
+
+    async def local_tool_source(self, owner, subject, impl):
+        """Bind the frozen script or instruction to this consumer's exact licensed source."""
+        if impl.kind not in (
+            "registered_script",
+            "registered_instruction",
+            "skill_script",
+            "skill_instruction",
+        ):
+            raise CapabilityError("Expected a script or instruction source")
+        if impl.kind.startswith("registered_"):
+            source = FormalMethodSource(
+                **impl.model_dump(
+                    include={"kind", "source", "entry", "version", "digest"}
+                ),
+                asset_id=None,
+                asset_revision=None,
+                license_basis="owner",
+            )
+        else:
+            asset = await self.repo.capability_asset(
+                owner, str(UUID(impl.source.removeprefix("skill:"))), lock=True
+            )
+            if asset["kind"] != "skill":
+                raise CapabilityError("This installed Skill is unavailable")
+            source = next(
+                (
+                    s
+                    for s in self.methods._sources(
+                        asset, subject, now=self.methods.now()
+                    )
+                    if all(
+                        getattr(impl, k) == getattr(s, k)
+                        for k in ("kind", "source", "version", "entry", "digest")
+                    )
+                ),
+                None,
+            )
+            if source is None:
+                raise CapabilityError("The selected Skill entry has changed")
+        if source.license_basis == "pending" or not await self.methods._source(
+            owner, subject, source
+        ):
+            raise CapabilityError("Missing execution license for the selected source")
+        return source
 
     async def check_direct_source(self, owner, source):
         row = await self.repo.direct_revision(

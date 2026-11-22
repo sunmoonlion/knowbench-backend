@@ -10,20 +10,20 @@ from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.ordinary_expert import CONFIRMED, ConsumerMethod, ConsumerPlan
 
 
-def execution_sources(graph, preview, subject, assets, methods, read_sources):
+def execution_sources(graph, preview, subject, assets, methods, local_sources):
     """Resolve the consumer's licensed installation, never the publisher's credentials."""
     if not graph or preview["issues"]:
         return {}, "preview_incomplete"
     if any(
-        n.path not in read_sources
+        n.path not in local_sources
         and n.definition.procedure.implementation.kind != "mcp"
         for n in graph.leaf_nodes
     ):
         return {}, "driver_unavailable"
     by_asset = {a["id"]: a for a in assets}
-    sources = dict(read_sources)
+    sources = dict(local_sources)
     for leaf, step in zip(graph.leaf_nodes, preview["steps"], strict=True):
-        if leaf.path in read_sources:
+        if leaf.path in local_sources:
             continue
         quote = step["quote"]
         impl = leaf.definition.procedure.implementation
@@ -130,8 +130,8 @@ def replay(receipt, submission):
     return receipt
 
 
-async def check_execution(svc, owner, task, plan, grants):
-    repo = svc.repo
+async def check_execution(methods, owner, task, plan, grants):
+    repo = methods.repo
     match = await repo.get_task(str(plan.match_task_id), owner_actor_id=owner)
     receipt = await repo.latest_task_payload(str(plan.match_task_id), CONFIRMED)
     if (
@@ -151,6 +151,6 @@ async def check_execution(svc, owner, task, plan, grants):
     allowed = (grants or {}).get("ordinary_refs", set())
     if set(expected) != allowed:
         raise CapabilityError("Ordinary method use qualification changed")
-    live = await svc.formal_sources.registry.local_definitions(owner, allowed)
+    live = await methods.registry.local_definitions(owner, allowed)
     if live != expected:
         raise CapabilityError("A confirmed method registration changed")

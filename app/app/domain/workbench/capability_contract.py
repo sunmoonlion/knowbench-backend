@@ -214,6 +214,31 @@ class FormalScriptDetail(CommonCallDetail):
     script_quote: dict[str, Any]
 
 
+class DirectScriptDetail(FormalScriptDetail):
+    source_asset_id: None
+    registered_source: FormalMethodSource
+
+
+class InstructionQuote(Strict):
+    provider: str
+    model: str
+    destination: str
+    currency: str
+    maximum: str
+
+
+class FormalInstructionDetail(CommonCallDetail):
+    execution_kind: Literal["formal_instruction"]
+    source_asset_id: UUID
+    connection_id: None
+    instruction_quote: InstructionQuote
+
+
+class DirectInstructionDetail(FormalInstructionDetail):
+    source_asset_id: None
+    registered_source: FormalMethodSource
+
+
 class RegistryScriptDetail(CommonCallDetail):
     execution_kind: Literal["registry_script"]
     source_asset_id: None
@@ -275,6 +300,9 @@ class Call(Strict):
         | RegistryScriptDetail
         | FormalFunctionDetail
         | FormalScriptDetail
+        | DirectScriptDetail
+        | FormalInstructionDetail
+        | DirectInstructionDetail
         | ModelProbeCallDetail
         | RegisteredFunctionProbeDetail
         | FormalModelCallDetail

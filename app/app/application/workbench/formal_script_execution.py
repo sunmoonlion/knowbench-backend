@@ -9,7 +9,7 @@ from app.domain.workbench.errors import WorkbenchError
 from app.domain.workbench.formal_execution import (
     dependency_for_step,
     execution_steps,
-    snapshot_for_task,
+    host_snapshot,
 )
 from app.domain.workbench.script_pricing import rated_usage
 from app.domain.workbench.skill_execution import method_script_input
@@ -21,7 +21,7 @@ async def dispatch(svc, owner, call, intent, asset):
     try:
         await svc._check_before_send(owner, call, intent)
         task = await repo.get_task(host["task_id"], owner_actor_id=owner)
-        snapshot = snapshot_for_task(task)
+        snapshot = host_snapshot(task)
         draft = snapshot.draft
         bound_source = None
         if snapshot.dependencies:

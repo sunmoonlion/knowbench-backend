@@ -20,8 +20,9 @@ from app.application.workbench.provisioning import (
 )
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import BudgetExhausted, IdempotencyConflict, NotFound
-from app.domain.workbench.formal_execution import snapshot_for_task, validate_values
+from app.domain.workbench.formal_execution import host_snapshot, validate_values
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.ordinary_expert import ORDINARY_SOURCE
 from app.domain.workbench.states import (
     ATTEMPT_TERMINAL,
     TASK_TERMINAL,
@@ -278,7 +279,7 @@ class InstructionRunner:
                                 "Unexpected registered instruction output"
                             )
                     else:
-                        snapshot = snapshot_for_task(task)
+                        snapshot = host_snapshot(task)
                         if snapshot.dependencies:
                             from app.application.workbench.formal_orchestration_execution import (
                                 step_context,
@@ -405,6 +406,12 @@ class InstructionRunner:
                     raise CapabilityError(
                         "Instruction worker requested an unexpected tool"
                     )
+                caller = refs["instruction_quote"]["caller"]
+                grants = (
+                    await self.formal(repo).registry.task_grants(task_id, owner=owner)
+                    if caller == ORDINARY_SOURCE
+                    else None
+                )
                 async with repo.transaction():
                     svc = await self.service(repo, owner)
                     task = await repo.get_task(
@@ -415,9 +422,8 @@ class InstructionRunner:
                     quote, job = await svc.authority(
                         owner,
                         task,
-                        "registry-source"
-                        if task.get("pack_source") == "registry-source"
-                        else "knowlab",
+                        caller,
+                        grants=grants,
                     )
                 if quote != refs["instruction_quote"]:
                     raise CapabilityError("Instruction route changed")

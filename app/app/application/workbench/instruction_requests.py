@@ -11,7 +11,7 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.tokens import InstructionGateway
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.errors import Forbidden, IdempotencyConflict
-from app.domain.workbench.formal_execution import snapshot_for_task
+from app.domain.workbench.formal_execution import FormalTaskSnapshot, host_snapshot
 from app.domain.workbench.instruction_requests import (
     InstructionRoute,
     instruction_job,
@@ -19,6 +19,7 @@ from app.domain.workbench.instruction_requests import (
     leaf_responses_body,
     verify_instruction_body,
 )
+from app.domain.workbench.ordinary_expert import ORDINARY_SOURCE
 from app.domain.workbench.pricing import PriceList, Usage
 from app.domain.workbench.provider_url import validate_provider_base_url
 from app.domain.workbench.states import ATTEMPT_TERMINAL, AttemptState, TaskState
@@ -83,7 +84,7 @@ class InstructionRequests:
                     return cls(formal, route, prices, default_base_url=default_url)
         raise CapabilityError("No authorized instruction model route")
 
-    async def authority(self, owner, task, caller):
+    async def authority(self, owner, task, caller, *, grants=None):
         if task.get("pack_source") == "registry-source":
             from app.application.workbench.source_tasks import active_source
             from app.domain.workbench.source_tasks import instruction_input
@@ -104,11 +105,13 @@ class InstructionRequests:
                     "Registered instruction approval or route changed"
                 )
             return quote, instruction_input(content, snap.arguments)
-        snapshot = snapshot_for_task(task)
+        snapshot = host_snapshot(task)
         if snapshot.dependencies:
             from app.application.workbench.instruction_leaf import approved_leaf
 
-            return await approved_leaf(self, owner, task, caller)
+            return await approved_leaf(self, owner, task, caller, grants=grants)
+        if not isinstance(snapshot, FormalTaskSnapshot):
+            raise CapabilityError("Expected an instruction test")
         subject = await self.repo.subject_of_actor(owner)
         request, entry = await self.formal.prepare_instruction_trial(
             subject, snapshot.run_id, snapshot.arguments, caller=caller
@@ -131,13 +134,17 @@ class InstructionRequests:
             task["id"]
         ):
             raise CapabilityError("Instruction task does not control its session")
-        credential = await self.repo.model_request_credential(owner)
-        quote = self.route.quote(self.prices)
+        quote = await self.account_quote(owner, session, task["budget"]["currency"])
         context = (task.get("original_input") or {}).get("client_context") or {}
         if context.get("entry") == "formal-method-execution" and Decimal(
             quote["maximum"]
         ) > Decimal(task["budget"]["limit"]):
             raise CapabilityError("Instruction route exceeds the frozen case budget")
+        return {**quote, "caller": caller, "snapshot_digest": task["pack_digest"]}
+
+    async def account_quote(self, owner, session, currency):
+        credential = await self.repo.model_request_credential(owner)
+        quote = self.route.quote(self.prices)
         base_url = (credential or {}).get("base_url") or self.default_base_url
         if (
             credential is None
@@ -146,7 +153,7 @@ class InstructionRequests:
             and str(credential["sandbox_id"]) != str(session["sandbox_id"])
             or not base_url
             or validate_provider_base_url(base_url) != quote["base_url"]
-            or task["budget"]["currency"] != quote["currency"]
+            or currency != quote["currency"]
         ):
             raise CapabilityError(
                 "No active credential and tariff for this instruction route"
@@ -154,8 +161,6 @@ class InstructionRequests:
         return {
             **quote,
             "credential_id": str(credential["id"]),
-            "caller": caller,
-            "snapshot_digest": task["pack_digest"],
         }
 
     async def open(
@@ -167,7 +172,7 @@ class InstructionRequests:
             )
             if (
                 task.get("pack_source") != "registry-source"
-                and snapshot_for_task(task).dependencies
+                and host_snapshot(task).dependencies
             ):
                 raise CapabilityError(
                     "Only the fixed-plan host may open an instruction leaf"
@@ -218,6 +223,11 @@ class InstructionRequests:
         """The winning gateway receives the exact route and output-limited body once."""
         if not isinstance(turn_id, str) or not 0 < len(turn_id) <= 128:
             raise CapabilityError("Instruction request needs its observed turn")
+        grants = (
+            await self.formal.registry.task_grants(task_id, owner=owner)
+            if caller == ORDINARY_SOURCE
+            else None
+        )
         async with self.repo.transaction(independent=True):
             task = await self.repo.get_task(
                 task_id, owner_actor_id=owner, for_update=True
@@ -232,7 +242,7 @@ class InstructionRequests:
             refs = dict(attempt["refs"])
             if refs.get("instruction_request"):
                 raise IdempotencyConflict("Instruction request already claimed")
-            quote, job = await self.authority(owner, task, caller)
+            quote, job = await self.authority(owner, task, caller, grants=grants)
             verify_instruction_body(body, job)
             if (
                 attempt["status"] != AttemptState.RUNNING

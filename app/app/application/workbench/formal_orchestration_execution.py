@@ -329,7 +329,11 @@ class FormalOrchestrationExecution:
                             svc = await caps.instruction_service(
                                 caps.formal_sources, owner
                             )
-                            quote = await svc.route_quote(owner, task, "knowlab")
+                            from app.application.workbench.instruction_leaf import (
+                                leaf_quote,
+                            )
+
+                            quote = await leaf_quote(svc, owner, task, snapshot)
                             reserve = Decimal(quote["maximum"])
                             if (
                                 reserve

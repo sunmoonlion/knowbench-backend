@@ -115,7 +115,9 @@ class FormalHostCalls:
                     check_execution,
                 )
 
-                await check_execution(self.capabilities, owner, task, snapshot, grants)
+                await check_execution(
+                    self.capabilities.formal_sources, owner, task, snapshot, grants
+                )
             else:
                 bindings = []
                 live = await resolve_plan(

@@ -119,6 +119,8 @@ def find_expert_service(session: AsyncSession):
         repo,
         formal_registry=capabilities.formal_sources.registry,
         material_read_enabled=capabilities.data_function is not None,
+        script_enabled=capabilities.script_executor is not None,
+        instruction_service=capabilities.instruction_service,
         directory=knowmart_catalog(),
         demands=knowmart_demands(),
         incubations=knowlab_incubation_requests(),

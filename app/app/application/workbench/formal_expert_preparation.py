@@ -294,8 +294,8 @@ async def prepare(
             )
 
             subject = await repo.subject_of_actor(owner)
-            preview, read_sources = await execution_preview(
-                task_id,
+            preview, local_sources = await execution_preview(
+                task,
                 revision,
                 selected,
                 review["review_digest"],
@@ -307,14 +307,17 @@ async def prepare(
                 invalid_materials,
                 invalid_accounts,
                 assets,
-                registry.methods,
+                service,
                 owner,
                 subject,
             )
             sources, unavailable = execution_sources(
-                graph, preview, subject, assets, registry.methods, read_sources
+                graph, preview, subject, assets, registry.methods, local_sources
             )
-            if read_sources and not service.material_read_enabled:
+            if (
+                any(s.kind == "service_function" for s in local_sources.values())
+                and not service.material_read_enabled
+            ):
                 unavailable = "driver_unavailable"
             preview["dispatch_gap"] = unavailable
             preview["preview_digest"] = digest(

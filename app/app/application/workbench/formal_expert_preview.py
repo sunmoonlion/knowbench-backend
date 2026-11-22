@@ -133,7 +133,7 @@ def mcp_quote(leaf, root, accounts, assets, operations, values, pending):
 
 
 async def execution_preview(
-    task_id,
+    task,
     revision,
     selected,
     review_digest,
@@ -145,7 +145,7 @@ async def execution_preview(
     invalid_materials,
     invalid_accounts,
     assets,
-    methods,
+    service,
     owner,
     subject,
 ):
@@ -156,8 +156,9 @@ async def execution_preview(
 
     values, pins, issues = material_inputs(graph, bindings)
     bindings = {**bindings, "values": values}
+    methods = service.formal_registry.methods
     operations = methods.operations
-    read_sources = {}
+    local_sources = {}
 
     def issue(code, path=(), slot=None):
         issues.append({"code": code, "path": list(path), "slot": slot})
@@ -207,26 +208,37 @@ async def execution_preview(
                 issue(problem, node.path)
         elif node.path in pins:
             try:
-                read_sources[node.path], quote = await read_source_and_quote(
+                local_sources[node.path], quote = await read_source_and_quote(
                     methods, owner, subject, node, values
                 )
             except CapabilityError:
                 issue("operation_unverified", node.path)
-        elif (
-            kind in ("skill_script", "registered_script")
-            and operations.script_tariff
-            and any(
-                r.data_transfer.destination == operations.script_tariff.destination
-                and r.capability_ref == "isolated-script"
-                for r in node.definition.access_requirements
-            )
+        elif kind in (
+            "skill_script",
+            "registered_script",
+            "skill_instruction",
+            "registered_instruction",
         ):
-            tariff = operations.script_tariff.quote()
-            quote = {
-                "maximum": tariff["maximum"],
-                "currency": tariff["currency"],
-                "basis": tariff["tariff_digest"],
-            }
+            from app.application.workbench.ordinary_local_tools import local_tool_quote
+            from app.domain.workbench.errors import WorkbenchError
+
+            if (kind.endswith("_script") and not service.script_enabled) or (
+                kind.endswith("_instruction") and not service.instruction_service
+            ):
+                issue("driver_unavailable", node.path)
+            else:
+                try:
+                    local_sources[node.path], quote = await local_tool_quote(
+                        service,
+                        owner,
+                        subject,
+                        task,
+                        node,
+                        values,
+                        pending,
+                    )
+                except (WorkbenchError, ValueError):
+                    issue("local_tool_unavailable", node.path)
         else:
             issue("quote_unavailable", node.path)
         if quote:
@@ -268,7 +280,7 @@ async def execution_preview(
             if experts
             else {}
         ),
-        "task_id": task_id,
+        "task_id": str(task["id"]),
         "revision": revision,
         "reference": selected,
         "review_digest": review_digest,
@@ -277,4 +289,4 @@ async def execution_preview(
         "issues": issues,
         "estimated_maximum": format(total, "f") if priced else None,
         "currency": "CNY",
-    }, read_sources
+    }, local_sources

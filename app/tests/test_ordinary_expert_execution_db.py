@@ -298,6 +298,8 @@ async def selected_match(
                 repo,
                 formal_registry=capabilities.formal_sources.registry,
                 material_read_enabled=capabilities.data_function is not None,
+                script_enabled=capabilities.script_executor is not None,
+                instruction_service=capabilities.instruction_service,
             )
 
         monkeypatch.setattr(routes, "find_expert_service", finder)

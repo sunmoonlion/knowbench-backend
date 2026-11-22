@@ -106,6 +106,12 @@ def public_call(call: dict) -> dict:
     copy["detail"]["result"] = public_result(
         copy["detail"].get("result"), str(copy["id"])
     )
+    if copy["detail"].get("execution_kind") == "formal_instruction":
+        quote = copy["detail"]["instruction_quote"]
+        copy["detail"]["instruction_quote"] = {
+            **{key: quote[key] for key in ("provider", "model", "currency", "maximum")},
+            "destination": quote["base_url"] + "/responses",
+        }
     if copy["detail"].get("execution_kind") == "registry_script":
         detail = copy["detail"]
         source = detail["source"]
