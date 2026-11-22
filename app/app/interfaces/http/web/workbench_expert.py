@@ -524,8 +524,11 @@ class FindExpertIn(BaseModel):
     source_session: UUID | None = None
 
 
-class FormalExpertChoice(Strict):
+class FormalExpertReview(Strict):
     review_digest: str = Field(pattern=r"^sha256:[a-f0-9]{64}$")
+
+
+class FormalExpertChoice(FormalExpertReview):
     reference: MethodRef
 
 
@@ -572,6 +575,26 @@ async def start_find_expert(
     if made.get("task_id"):
         await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **made}
+
+
+@router.put("/find-expert/{task_id}/end")
+async def end_unmatched_expert(
+    task_id: UUID,
+    body: FormalExpertReview,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    from app.application.workbench.formal_expert_intake import end_unmatched
+
+    try:
+        return await end_unmatched(
+            find_expert_service(session).repo,
+            _actor(principal),
+            str(task_id),
+            body.review_digest,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.put("/find-expert/{task_id}/selection")

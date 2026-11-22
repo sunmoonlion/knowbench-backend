@@ -372,6 +372,11 @@ class FindExpertService:
                     offset=directory_offset,
                 )
                 if not directory["items"]:
+                    if revises:
+                        async with self.repo.transaction():
+                            await formal_expert_intake.previous_round(
+                                self.repo, owner_actor_id, project_id, revises
+                            )
                     return {"empty": True, "next": directory["next"]}
         async with self.repo.transaction():
             # 同项目的重复请求串行核幂等，再建新会话；会话、委托与派发命令同提交。

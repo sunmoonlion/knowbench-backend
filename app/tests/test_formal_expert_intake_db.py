@@ -216,6 +216,11 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
                 page.status_code == 200 and "no-store" in page.headers["cache-control"]
             )
             assert page.json()["formal"]["scope_preview"]["steps"][0]["id"] == "only"
+            refused = await client.put(
+                f"/api/workbench/find-expert/{tid}/end",
+                json={"review_digest": review["review_digest"]},
+            )
+            assert refused.status_code == 409
             assert len(fake.turn_inputs) == 2
         with pytest.raises(IdempotencyConflict):
             await select(pins[1])
@@ -376,4 +381,83 @@ async def test_web_intake_empty_directory_starts_no_model_and_named_match_reopen
             )
             assert pending.status_code == 409
     finally:
+        await fake.close()
+
+
+async def test_end_verified_no_match_is_durable_and_fences_revisions(db, monkeypatch):
+    registry = Registry()
+    answer = {
+        **proposal(registry),
+        "outcome": "no_match",
+        "picks": [],
+        "explanation": "缺少逐行凭证",
+    }
+    fake = ScriptedAppServer([json.dumps(answer)])
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        project = await _project(db)
+        base = f"/api/workbench/projects/{project}/find-expert"
+        start = {
+            "question": "需要差异表",
+            "idempotency_key": "no-match-history",
+            "match_contract": "knowbench/expert-match/v5",
+        }
+        async with AsyncClient(
+            transport=ASGITransport(app=web_app(db, registry, monkeypatch)),
+            base_url="http://testserver",
+        ) as client:
+            opened = await client.post(base, json=start)
+            tid = opened.json()["task_id"]
+            path = f"/api/workbench/find-expert/{tid}"
+            invalid = {"review_digest": "sha256:" + "0" * 64}
+            assert (await client.put(path + "/end", json=invalid)).status_code == 409
+            await drive(runner)
+            original = (await client.get(path)).json()["formal"]
+            assert original["match"]["outcome"] == "no_match" and not original["ended"]
+            assert (await client.put(path + "/end", json=invalid)).status_code == 409
+            receipt = {"review_digest": original["review_digest"]}
+            from app.application.workbench.formal_expert_intake import end_unmatched
+
+            async with db() as session:
+                with pytest.raises(NotFound):
+                    await end_unmatched(
+                        WorkbenchRepository(session),
+                        str(uuid4()),
+                        tid,
+                        receipt["review_digest"],
+                    )
+            results = await asyncio.gather(
+                *(client.put(path + "/end", json=receipt) for _ in range(2))
+            )
+            assert all(r.status_code == 200 and r.json() == receipt for r in results)
+            assert (await client.get(path)).json()["formal"] == {
+                **original,
+                "ended": True,
+            }
+            assert (await client.post(base, json=start)).json()["task_id"] == tid
+            registry.entries.clear()
+            refused = await client.post(
+                base,
+                json={**start, "revises": tid, "idempotency_key": "stale-revision"},
+            )
+            assert refused.status_code == 409, refused.text
+            async with db() as session:
+                repo = WorkbenchRepository(session)
+                assert (
+                    len(
+                        await repo.list_task_events(
+                            tid, types=("task/formal_expert_ended",)
+                        )
+                    )
+                    == 1
+                )
+                assert (
+                    await session.scalar(text("SELECT count(*) FROM workbench_tasks"))
+                    == 1
+                )
+            assert len(fake.turn_inputs) == 1
+    finally:
+        await close(runner)
         await fake.close()

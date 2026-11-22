@@ -11,6 +11,7 @@ from app.domain.workbench.method_search import PlanningQuery
 DIRECTORY = "task/formal_expert_directory"
 SELECTION = "task/formal_expert_selected"
 REVISION = "task/formal_expert_revised"
+ENDED = "task/formal_expert_ended"
 
 
 async def previous_round(repo, owner, project_id, task_id):
@@ -25,6 +26,8 @@ async def previous_round(repo, owner, project_id, task_id):
         raise StaleStateVersion("Finish or stop the previous matching round first")
     if await repo.list_task_events(task_id, types=(REVISION,)):
         raise StaleStateVersion("A newer revision already exists")
+    if await repo.latest_task_payload(task_id, ENDED):
+        raise StaleStateVersion("This expert request has ended")
     return previous
 
 
@@ -148,7 +151,15 @@ async def review(repo, registry, owner, task, artifact):
     async with repo.transaction():
         if await repo.list_task_events(str(task["id"]), types=(REVISION,)):
             raise StaleStateVersion("The question has been revised")
-    return {**result, "selected": selected, "scope_preview": preview}
+        ended = await repo.latest_task_payload(str(task["id"]), ENDED)
+        if ended is not None and ended.get("review_digest") != result["review_digest"]:
+            raise StaleStateVersion("The closed matching result has changed")
+    return {
+        **result,
+        "selected": selected,
+        "scope_preview": preview,
+        "ended": ended is not None,
+    }
 
 
 async def confirm(repo, registry, owner, task_id, body):
@@ -172,6 +183,8 @@ async def confirm(repo, registry, owner, task_id, body):
         await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
         if await repo.list_task_events(task_id, types=(REVISION,)):
             raise StaleStateVersion("The question has been revised")
+        if await repo.latest_task_payload(task_id, ENDED):
+            raise StaleStateVersion("This expert request has ended")
         latest = await repo.get_artifact(task_id=task_id, name="find_expert")
         if (
             latest is None
@@ -192,3 +205,37 @@ async def confirm(repo, registry, owner, task_id, body):
                 payload=payload,
             )
     return payload
+
+
+async def end_unmatched(repo, owner, task_id, review_digest):
+    """Close only this reviewed no-match request, preserving its matching history."""
+    async with repo.transaction():
+        task = await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
+        if task["profile_id"] != "FIND_EXPERT" or str(task["profile_version"]) != "5":
+            raise NotFound("No such formal expert match")
+        if task["state"] != "SUCCEEDED" or await repo.latest_task_payload(
+            task_id, REVISION
+        ):
+            raise StaleStateVersion("This is not the current completed matching round")
+        artifact = await repo.get_artifact(task_id=task_id, name="find_expert")
+        result = await read_verified(repo, task, artifact)
+        if (
+            result["review_digest"] != review_digest
+            or result["match"]["outcome"] != "no_match"
+        ):
+            raise StaleStateVersion(
+                "This result does not establish the reviewed expert gap"
+            )
+        receipt = {"review_digest": review_digest}
+        previous = await repo.latest_task_payload(task_id, ENDED)
+        if previous is None:
+            await repo.append_event(
+                session_id=str(task["session_id"]),
+                kind="task",
+                event_type=ENDED,
+                task_id=task_id,
+                payload=receipt,
+            )
+        elif previous != receipt:
+            raise StaleStateVersion("The closed matching result has changed")
+        return receipt
