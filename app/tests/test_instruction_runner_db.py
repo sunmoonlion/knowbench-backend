@@ -505,6 +505,41 @@ async def test_strict_review_retains_evidence_and_stops_before_comparison(
     assert (
         Decimal(task["budget"]["reserved"]) == 0 and Decimal(task["budget"]["used"]) > 0
     )
+    from app.application.workbench.review_decisions import OwnerDecision, decision_page
+
+    async with db() as sql:
+        repo = WorkbenchRepository(sql)
+        page = await decision_page(repo, OWNER, s.task)
+        assert (
+            page["task_state"] == "FAILED"
+            and "review-comparison" in page["missing_stages"]
+        )
+        if failure == "empty_finding":
+            assert not page["reports"]
+        else:
+            (report,) = page["reports"]
+            saved = await decision_page(
+                repo,
+                OWNER,
+                s.task,
+                command=OwnerDecision.model_validate(
+                    {
+                        "review_digest": page["review_digest"],
+                        "previous_revision": 0,
+                        "items": [
+                            {
+                                "artifact_id": report["id"],
+                                "quote": "sealed finding",
+                                "decision": "deferred",
+                                "reason": "Comparison still missing.",
+                            }
+                        ],
+                    }
+                ),
+            )
+            assert saved["revision"] == 1 and saved["missing_stages"] == [
+                "review-comparison"
+            ]
     if failure == "empty_finding":
         assert len(attempts) == 1 and not attempts[0]["output_artifacts"]
     else:

@@ -22,6 +22,7 @@ from app.domain.workbench.projects import (
     project_dir,
     split_under_roots,
 )
+from app.domain.workbench.source_tasks import PACK_SOURCE
 from app.domain.workbench.states import TASK_TERMINAL
 from app.domain.workbench.step_view import TERMINAL_WORDS, money
 
@@ -229,6 +230,11 @@ class ProjectService:
                     # 给页面看的是专家的名字和终态的白话，不是代号
                     "expert": _expert_name(t),
                     "state": t["state"],
+                    "has_review_report": (
+                        t["state"] in TASK_TERMINAL
+                        and t.get("pack_source") == PACK_SOURCE
+                        and bool((t.get("pack_snapshot") or {}).get("review"))
+                    ),
                     "state_word": TERMINAL_WORDS.get(t["state"]),
                     "question": _question(t),
                     "budget": t["budget"],

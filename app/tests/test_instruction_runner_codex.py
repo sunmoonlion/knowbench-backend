@@ -91,6 +91,39 @@ async def test_real_instruction_runner(
             stage,
         )
 
+    if review == "strict":
+        from test_workbench_ledger_db import OWNER
+
+        from app.application.workbench.review_decisions import (
+            OwnerDecision,
+            decision_page,
+        )
+
+        async with s.host() as svc:
+            page = await decision_page(svc.repo, OWNER, s.task)
+            first, comparison = page["reports"]
+            assert first["id"] != comparison["id"] and first["version"] == 1
+            assert (
+                first["text"] == "ready"
+            )  # The later same-name artifact was never accepted.
+            receipt = OwnerDecision.model_validate(
+                {
+                    "review_digest": page["review_digest"],
+                    "previous_revision": 0,
+                    "items": [
+                        {
+                            "artifact_id": r["id"],
+                            "quote": r["text"],
+                            "decision": "deferred",
+                            "reason": "Owner needs the signed evidence.",
+                        }
+                        for r in page["reports"]
+                    ],
+                }
+            )
+            saved = await decision_page(svc.repo, OWNER, s.task, command=receipt)
+            assert saved["revision"] == 1 and len(saved["items"]) == 2
+
 
 async def isolated_round(
     db, app, monkeypatch, tmp_path, s, trial, late_receipt, review, stage

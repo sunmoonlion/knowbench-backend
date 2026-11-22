@@ -285,7 +285,7 @@ class InstructionRunner:
                             or set(outputs) != {"result"}
                             or not isinstance(outputs["result"], str)
                             or (
-                                source.review_rounds == 2
+                                source.review is not None
                                 and not outputs["result"].strip()
                             )
                         ):

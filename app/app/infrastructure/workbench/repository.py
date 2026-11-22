@@ -2133,6 +2133,26 @@ class WorkbenchRepository(
         )
         return result.scalar_one_or_none()
 
+    async def review_decision(self, task_id, revision=None):
+        clause = " AND revision=:v" if revision is not None else ""
+        result = await self.session.execute(
+            text(
+                "SELECT revision, receipt, created_at FROM workbench_review_decisions "
+                "WHERE task_id=:t" + clause + " ORDER BY revision DESC LIMIT 1"
+            ),
+            {"t": task_id, "v": revision},
+        )
+        return result.mappings().first()
+
+    async def append_review_decision(self, task_id, revision, receipt):
+        await self.session.execute(
+            text(
+                "INSERT INTO workbench_review_decisions(task_id,revision,receipt) "
+                "VALUES (:t,:v,CAST(:receipt AS jsonb))"
+            ),
+            {"t": task_id, "v": revision, "receipt": _j(receipt)},
+        )
+
     async def latest_review_route(self, run_id, case_id, step):
         result = await self.session.execute(
             text(
