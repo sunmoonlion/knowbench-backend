@@ -27,6 +27,38 @@ class KnowbaseDataV2(KnowbaseClient):
 
     # —— 本人 ——
 
+    async def preparation_shelf(self, user_token):
+        _, entries, _ = await self._send("GET", "/materials", user_token)
+        return [
+            {
+                "material_id": e["material"]["material_id"],
+                "name": e["material"]["name"],
+                "version_no": e["version"]["version_no"],
+                "sha256": e["version"]["sha256"],
+            }
+            for e in entries
+            if not e["material"]["deleted"]
+        ]
+
+    async def preparation_material(self, user_token, material_id, requested_versions):
+        from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+        path = f"/materials/{_segment(material_id)}"
+        try:
+            _, entry, _ = await self._send("GET", path, user_token)
+            info = entry["material"]
+            if info["material_id"] != material_id or info["deleted"]:
+                return None, set()
+            current = entry["version"]
+            versions = [current]
+            if requested_versions != {current["version_no"]}:
+                _, versions, _ = await self._send("GET", path + "/versions", user_token)
+        except KnowbaseRefused as exc:
+            if exc.status == 404 and exc.code == "item_not_found":
+                return None, set()
+            raise
+        return info["name"], {(v["version_no"], v["sha256"]) for v in versions}
+
     async def resolve(
         self,
         user_token: str,

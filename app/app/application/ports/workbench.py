@@ -477,6 +477,10 @@ class WorkbenchStore(Protocol):
         self, call: dict, event_type: str, *, before: int | None = None
     ) -> dict[str, Any] | None: ...
 
+    async def latest_task_payload(
+        self, task_id: str, event_type: str
+    ) -> dict[str, Any] | None: ...
+
     async def list_task_events(
         self, task_id: str, *, types: tuple[str, ...]
     ) -> list[dict[str, Any]]: ...

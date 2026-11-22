@@ -23,11 +23,13 @@ from app.application.workbench.catalog import (
 )
 from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
+from app.application.workbench.formal_expert_preparation import Preparation, prepare
 from app.bootstrap.workbench import (
     delegation_service,
     dynamic_market_owners,
     expert_data,
     find_expert_service,
+    knowbase_v2,
     knowmart_summoner,
 )
 from app.bootstrap.workbench import (
@@ -575,6 +577,49 @@ async def confirm_formal_expert(
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
+
+
+async def _preparation(session, principal, task_id, token, **options):
+    try:
+        return await prepare(
+            find_expert_service(session),
+            _actor(principal),
+            str(task_id),
+            knowbase_v2(),
+            token,
+            **options,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    except Exception as exc:
+        translated = refusal(exc)
+        if translated is None:
+            raise
+        raise _http(translated) from exc
+
+
+@router.get("/find-expert/{task_id}/preparation")
+async def read_preparation(
+    task_id: UUID,
+    response: Response,
+    library: bool = False,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await _preparation(session, principal, task_id, token, browse=library)
+
+
+@router.put("/find-expert/{task_id}/preparation")
+async def save_preparation(
+    task_id: UUID,
+    body: Preparation,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    return await _preparation(session, principal, task_id, token, body=body)
 
 
 @router.get("/find-expert/{task_id}")

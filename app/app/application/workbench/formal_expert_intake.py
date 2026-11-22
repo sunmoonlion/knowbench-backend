@@ -110,6 +110,23 @@ async def check_current(registry, owner, option):
         raise StaleStateVersion("Expert declaration changed")
 
 
+async def selected_definition(registry, owner, result, selections):
+    receipt = selections[0]["payload"]
+    selected = receipt["reference"]
+    options = [o for o in result["options"] if o["reference"] == selected]
+    if (
+        len(selections) != 1
+        or receipt["review_digest"] != result["review_digest"]
+        or len(options) != 1
+    ):
+        raise StaleStateVersion("Invalid selection for this matching result")
+    ref = MethodRef.model_validate(selected)
+    definition = await registry.planning_definition(owner, ref, experts_only=True)
+    if registry.public_declaration(ref, definition) != options[0]:
+        raise StaleStateVersion("Selected declaration changed")
+    return selected, definition, options
+
+
 async def review(repo, registry, owner, task, artifact):
     async with repo.transaction():
         result = await read_verified(repo, task, artifact)
@@ -117,19 +134,9 @@ async def review(repo, registry, owner, task, artifact):
     selected = None
     preview = None
     if selections:
-        receipt = selections[0]["payload"]
-        selected = receipt["reference"]
-        options = [o for o in result["options"] if o["reference"] == selected]
-        if (
-            len(selections) != 1
-            or receipt["review_digest"] != result["review_digest"]
-            or len(options) != 1
-        ):
-            raise StaleStateVersion("Invalid selection for this matching result")
-        ref = MethodRef.model_validate(selected)
-        definition = await registry.planning_definition(owner, ref, experts_only=True)
-        if registry.public_declaration(ref, definition) != options[0]:
-            raise StaleStateVersion("Selected declaration changed")
+        selected, definition, options = await selected_definition(
+            registry, owner, result, selections
+        )
         preview = frozen_scope(definition)
         result["options"] = options
         result["match"]["picks"] = [

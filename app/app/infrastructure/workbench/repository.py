@@ -866,6 +866,15 @@ class WorkbenchRepository(
             text(sql + " order by cursor desc limit 1"), params
         )
 
+    async def latest_task_payload(
+        self, task_id: str, event_type: str
+    ) -> dict[str, Any] | None:
+        return await self.session.scalar(
+            text("""SELECT payload FROM workbench_session_events
+                    WHERE task_id=:task AND event_type=:type ORDER BY cursor DESC LIMIT 1"""),
+            {"task": task_id, "type": event_type},
+        )
+
     async def list_task_events(
         self, task_id: str, *, types: tuple[str, ...]
     ) -> list[dict[str, Any]]:

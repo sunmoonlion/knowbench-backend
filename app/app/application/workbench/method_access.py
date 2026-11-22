@@ -41,6 +41,10 @@ def check_access(grant, policy, arguments=None):
         requirement = AccessRequirement.model_validate(grant.get("requirement"))
     except ValueError as exc:
         raise CapabilityError("Method permission confirmation is invalid") from exc
+    check_requirement(requirement, policy, arguments)
+
+
+def check_requirement(requirement, policy, arguments=None):
     if (
         requirement.capability_ref != policy.capability_ref
         or requirement.version != policy.version
