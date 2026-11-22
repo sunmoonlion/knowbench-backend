@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from app.application.workbench.formal_expert_intake import (
     REVISION,
@@ -16,6 +16,7 @@ from app.application.workbench.method_access import check_requirement
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
+from app.domain.workbench.ordinary_expert import CONFIRMED
 from app.domain.workbench.tool_registry import ToolRegistration, connection_source
 
 PREPARATION = "task/formal_expert_preparation"
@@ -24,6 +25,11 @@ Digest = Annotated[str, Field(pattern=r"^sha256:[a-f0-9]{64}$")]
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class ExecutionConfirmation(Strict):
+    revision: int = Field(strict=True, gt=0)
+    preview_digest: Digest
 
 
 class MaterialPin(Strict):
@@ -43,11 +49,32 @@ class Preparation(Strict):
     expected_revision: int = Field(strict=True, ge=0)
     materials: dict[str, MaterialPin] = Field(max_length=64)
     accounts: dict[str, AccountPin] = Field(max_length=64)
+    values: dict[str, JsonValue] = Field(default_factory=dict, max_length=100)
+
+    @field_validator("values")
+    @classmethod
+    def bounded_values(cls, values):
+        from app.domain.workbench.formal_method_execution_generated import bounded_json
+
+        bounded_json(values)
+        pending = [values]
+        while pending:
+            item = pending.pop()
+            if isinstance(item, dict):
+                pending.extend(item.keys())
+                pending.extend(item.values())
+            elif isinstance(item, list):
+                pending.extend(item)
+            elif isinstance(item, str) and chr(0) in item:
+                raise ValueError("Method inputs cannot contain NUL")
+        return values
+
     # Explicit null carries the user's existing uncapped-budget choice.
     budget_limit: Annotated[Decimal, Field(gt=0, le=100000, decimal_places=2)] | None
 
     def bindings(self):
         return {
+            "values": self.values,
             "materials": {
                 k: v.model_dump(mode="json") for k, v in self.materials.items()
             },
@@ -123,12 +150,38 @@ async def check_materials(library, token, materials):
     return names, unavailable
 
 
-async def prepare(service, owner, task_id, library, token, *, browse=False, body=None):
+async def prepare(
+    service,
+    owner,
+    task_id,
+    library,
+    token,
+    *,
+    browse=False,
+    body=None,
+    preview_revision=None,
+    submission=None,
+):
+    from app.application.workbench.ordinary_expert_execution import (
+        confirm_execution,
+        execution_sources,
+        replay,
+    )
+
     repo = service.repo
+    if submission:
+        preview_revision = submission.revision
     async with repo.transaction():
         task = await repo.get_task(task_id, owner_actor_id=owner)
         if task["profile_id"] != "FIND_EXPERT" or str(task["profile_version"]) != "5":
             raise NotFound("No such formal match")
+        receipt = await repo.latest_task_payload(task_id, CONFIRMED)
+        if receipt and submission:
+            return replay(receipt, submission)
+        if receipt and body:
+            raise StaleStateVersion(
+                "This preparation already has a confirmed execution"
+            )
         selection = await repo.list_task_events(task_id, types=(SELECTION,))
         if (
             task["state"] != "SUCCEEDED"
@@ -144,7 +197,17 @@ async def prepare(service, owner, task_id, library, token, *, browse=False, body
         registry, owner, review, selection
     )
     inputs = definition.interfaces()["inputs"]
+    from app.domain.workbench.formal_method_generated import MethodRef, ValueSlot
+
+    slots = {
+        name: ValueSlot.model_validate(item["slot"]) for name, item in inputs.items()
+    }
     if body:
+        if any(
+            name not in slots or not slots[name].accepts(value)
+            for name, value in body.values.items()
+        ):
+            raise StaleStateVersion("An input differs from its frozen slot contract")
         if (
             body.review_digest != review["review_digest"]
             or not body.materials.keys() <= inputs.keys()
@@ -159,6 +222,14 @@ async def prepare(service, owner, task_id, library, token, *, browse=False, body
             if saved
             else {"materials": {}, "accounts": {}, "budget": None}
         )
+    if "values" not in bindings:
+        bindings = {**bindings, "values": {}}
+    if preview_revision is not None:
+        if not saved or saved["revision"] != preview_revision:
+            raise StaleStateVersion("Save and review the current preparation first")
+        from app.application.workbench.formal_expert_preview import fixed_graph
+
+        graph, graph_issue = await fixed_graph(registry, owner, selected, definition)
     materials = bindings["materials"]
     user_token = await token() if materials or browse else None
     shelf = await library.preparation_shelf(user_token) if browse else []
@@ -167,15 +238,25 @@ async def prepare(service, owner, task_id, library, token, *, browse=False, body
         await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
         if await repo.list_task_events(task_id, types=(REVISION,)):
             raise StaleStateVersion("The question has been revised")
+        receipt = await repo.latest_task_payload(task_id, CONFIRMED)
+        if receipt and submission:
+            return replay(receipt, submission)
+        if receipt and body:
+            raise StaleStateVersion(
+                "This preparation already has a confirmed execution"
+            )
         current = await repo.latest_task_payload(task_id, PREPARATION)
         revision = current["revision"] if current else 0
         # Lock only assets the user is saving. Other owners' installations never enter the choices.
-        if body:
-            for asset_id in sorted({str(p.asset_id) for p in body.accounts.values()}):
+        if body or submission:
+            for asset_id in sorted(
+                {p["asset_id"] for p in bindings["accounts"].values()}
+            ):
                 await repo.capability_asset(owner, asset_id, lock=True)
+        assets = await repo.capability_assets(owner)
         options = connection_options(
             definition.access_requirements,
-            await repo.capability_assets(owner),
+            assets,
             registry.methods.operations,
         )
         invalid_accounts = [
@@ -213,7 +294,57 @@ async def prepare(service, owner, task_id, library, token, *, browse=False, body
             raise StaleStateVersion(
                 "Preparation changed while its bindings were being checked"
             )
+        if preview_revision is not None:
+            from app.application.workbench.formal_expert_preview import (
+                execution_preview,
+            )
+
+            preview = execution_preview(
+                task_id,
+                revision,
+                selected,
+                review["review_digest"],
+                definition,
+                slots,
+                bindings,
+                graph,
+                graph_issue,
+                invalid_materials,
+                invalid_accounts,
+                assets,
+                registry.methods.operations,
+            )
+            subject = await repo.subject_of_actor(owner)
+            sources, unavailable = execution_sources(
+                graph, preview, subject, assets, registry.methods
+            )
+            preview["dispatch_gap"] = unavailable
+            preview["preview_digest"] = digest(
+                [preview, [s.fingerprint() for s in sources.values()]]
+            )
+            if submission:
+                if (
+                    graph is None
+                    or unavailable
+                    or submission.preview_digest != preview["preview_digest"]
+                ):
+                    raise StaleStateVersion("Execution scope changed or is incomplete")
+                expected = {node.reference: node.definition for node in graph.nodes}
+                expected[MethodRef.model_validate(selected)] = definition
+                if await registry.local_definitions(owner, set(expected)) != expected:
+                    raise StaleStateVersion("Method registration changed since preview")
+                return await confirm_execution(
+                    repo, owner, task, selected, definition, graph, preview, sources
+                )
+            return preview
     return {
+        "execution": receipt,
+        "input_types": {
+            name: slot.schema_.get("type")
+            if isinstance(slot.schema_.get("type"), str)
+            else "json"
+            for name, slot in slots.items()
+        },
         "revision": revision,
         "bindings": bindings,
         "account_options": options,

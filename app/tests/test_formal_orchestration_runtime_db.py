@@ -113,7 +113,8 @@ async def test_parallel_drivers_keep_one_call_per_slot_and_cumulative_exact_gran
         asyncio.gather(drive(), drive(), return_exceptions=True), 15
     )
     assert not [r for r in results if isinstance(r, BaseException)], results
-    assert (await advance(db, ctx))["status"] == "passed"
+    result = await advance(db, ctx)
+    assert result["status"] == "passed", result["cases"]
     assert len(ctx.remote.calls) == 2
     async with db() as session:
         repo = WorkbenchRepository(session)

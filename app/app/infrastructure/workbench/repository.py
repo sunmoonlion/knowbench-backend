@@ -3131,7 +3131,7 @@ class WorkbenchRepository(
                        and c.kind='tool' and c.origin='managed'
                        and c.detail->>'execution_kind'='formal_method')
                      and not exists (select 1 from workbench_tasks t where t.id=i.task_id
-                       and (t.pack_source='formal-test'
+                       and (t.pack_source IN ('formal-test','formal-expert')
                          or t.pack_snapshot->>'runtime_contract'='knowlab/formal-method-execution/v1'))
                    returning i.id, i.session_id, i.task_id"""
             ),

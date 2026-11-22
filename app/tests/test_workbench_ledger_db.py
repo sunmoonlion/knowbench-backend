@@ -448,3 +448,28 @@ async def test_restart_can_rebuild_nonterminal_state(db):
         )
         assert (await repo.get_session(sid))["wheel"] == "advisor"
         assert len(await repo.list_interactions(session_id=sid, status="pending")) == 1
+
+
+async def test_resumed_attempt_is_created_after_its_predecessor_ends(db):
+    _, _, sid = await seed(db)
+    async with db() as first, db() as next_driver:
+        led = Ledger(WorkbenchRepository(first))
+        task = (await led.handover(handover(sid), owner_actor_id=OWNER))["task_id"]
+        await led.transition(task, TaskState.VALIDATING)
+        await led.transition(task, TaskState.QUEUED)
+        previous = (await led.open_attempt(task, step_id="first", step_version="v1"))[
+            "attempt_id"
+        ]
+        await led.attempt_transition(previous, AttemptState.RUNNING)
+        repo = WorkbenchRepository(next_driver)
+        async with repo.transaction():
+            # A driver can enter its transaction before its predecessor releases the task.
+            await next_driver.scalar(text("select now()"))
+            await led.attempt_transition(previous, AttemptState.COMPLETED)
+            await led.transition(task, TaskState.QUEUED)
+            following = (
+                await Ledger(repo).open_attempt(task, step_id="next", step_version="v1")
+            )["attempt_id"]
+            assert (await repo.get_attempt(previous))["ended_at"] <= (
+                await repo.get_attempt(following)
+            )["created_at"]

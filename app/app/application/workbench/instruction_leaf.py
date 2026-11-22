@@ -120,9 +120,12 @@ async def approved_leaf(svc, owner, task, caller):
     attempt = await repo.get_attempt(str(task["active_attempt_id"]), for_update=True)
     refs = attempt["refs"]
     snapshot, _, frozen, arguments = await step_context(repo, task, attempt)
+    from app.domain.workbench.formal_execution import FormalTaskSnapshot
+
     run = await repo.test_run_for_task(str(task["id"]))
     if (
-        caller != "knowlab"
+        not isinstance(snapshot, FormalTaskSnapshot)
+        or caller != "knowlab"
         or not run
         or run["caller"] != caller
         or run.get("cancel_requested_at")

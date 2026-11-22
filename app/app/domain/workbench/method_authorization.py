@@ -205,7 +205,15 @@ def covers(
         or (parent.method_ids and method_id not in parent.method_ids)
         or (parent.method_ids and not set(child.method_ids) <= set(parent.method_ids))
         or (parent.method_ids and not child.method_ids)
-        or a.capability_ref != b.capability_ref
+    ):
+        return False
+    return covers_requirement(a, b)
+
+
+def covers_requirement(a: AccessRequirement, b: AccessRequirement) -> bool:
+    """Compare declared scopes independently of a live account grant."""
+    if (
+        a.capability_ref != b.capability_ref
         or a.version != b.version
         or not set(b.operations) <= set(a.operations)
         or a.data_transfer.destination != b.data_transfer.destination

@@ -27,7 +27,8 @@ class Registry:
     def __init__(self):
         self.entries = {}
         self.definitions = {}
-        root, _, _, _ = shape()
+        root, _, _, deps = shape()
+        self.dependencies = {d.reference: d.draft.definition for d in deps.values()}
         for label in ("逐笔", "汇总"):
             data = root.draft.definition.document()
             data["capability_declaration"].update(
@@ -44,6 +45,10 @@ class Registry:
             self.entries[ref] = self.public_declaration(ref, definition)
 
     public_declaration = staticmethod(SceneRegistry.public_declaration)
+
+    async def planning_definitions(self, owner, references):
+        assert owner == OWNER
+        return {r: self.dependencies[r] for r in references if r in self.dependencies}
 
     async def planning_definition(self, owner, reference, *, experts_only):
         await self.planning_declaration(owner, reference, experts_only=experts_only)

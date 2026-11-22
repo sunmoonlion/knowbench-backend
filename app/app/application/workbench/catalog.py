@@ -97,7 +97,12 @@ def expert_name(row: dict[str, Any]) -> str:
             .get("capability_declaration", {})
             .get("title")
         )
-        return str(title or row.get("pack_name") or "正式方法测试")
+        from app.domain.workbench.ordinary_expert import ORDINARY_SOURCE
+
+        fallback = (
+            "正式专家" if row.get("pack_source") == ORDINARY_SOURCE else "正式方法测试"
+        )
+        return str(title or row.get("pack_name") or fallback)
     if row.get("pack_source") in SNAPSHOT_SOURCES:
         if row.get("pack_name"):
             return str(row["pack_name"])

@@ -145,7 +145,10 @@ async def check_formal_dispatch(svc, owner, call, intent, *, grants=None):
         task = await repo.get_task(host["task_id"], owner_actor_id=owner)
         if (
             not registered_function
-            and (task.get("pack_snapshot") or {}).get("bindings")
+            and (
+                task.get("pack_source") == "formal-expert"
+                or (task.get("pack_snapshot") or {}).get("bindings")
+            )
             and intent.get("execution_kind") != "formal_script"
         ):
             from app.application.workbench.formal_host_calls import FormalHostCalls

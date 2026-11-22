@@ -452,7 +452,31 @@ class FindExpertService:
             "state": state.value,
         }
         if str(task["profile_version"]) == "5":
+            from app.domain.workbench.ordinary_expert import CONFIRMED
+
             base["session_id"] = str(task["session_id"])
+            execution = await self.repo.latest_task_payload(task_id, CONFIRMED)
+            if execution:
+                delegated = await self.repo.get_task(
+                    execution["task_id"], owner_actor_id=owner_actor_id
+                )
+                delivery = None
+                if delegated["state"] == TaskState.SUCCEEDED:
+                    output = await self.repo.get_artifact(
+                        task_id=execution["task_id"], name="expert_delivery", version=1
+                    )
+                    if output is None or str(output["id"]) != str(
+                        delegated["terminal_result_ref"]
+                    ):
+                        raise FindExpertRefused(
+                            "The confirmed expert delivery could not be verified"
+                        )
+                    delivery = output["content"]
+                return base | {
+                    "execution": execution,
+                    "execution_state": delegated["state"],
+                    "delivery": delivery,
+                }
             revised = await self.repo.list_task_events(
                 task_id, types=(formal_expert_intake.REVISION,)
             )

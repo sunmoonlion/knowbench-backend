@@ -12,9 +12,9 @@ from app.domain.workbench.formal_execution import (
     execution_steps,
     expanded_plan,
     fixed_step_outputs,
+    host_snapshot,
     orchestration_plan,
     recursive_plan,
-    snapshot_for_task,
 )
 from app.domain.workbench.formal_host import validate_host_call
 from app.domain.workbench.formal_method_execution_generated import bounded_json
@@ -38,7 +38,7 @@ def step_call_key(task_id, slot):
 
 
 def step_identity(task, step, index):
-    snapshot = snapshot_for_task(task)
+    snapshot = host_snapshot(task)
     if recursive_plan(snapshot):
         from app.domain.workbench.formal_recursive import node_identity
 
@@ -133,7 +133,7 @@ async def accepted_outputs(repo, task, snapshot, before):
 
 async def step_context(repo, task, attempt):
     """Resolve the active leaf from the frozen root, not from caller-controlled refs."""
-    snapshot = snapshot_for_task(task)
+    snapshot = host_snapshot(task)
     steps = execution_steps(snapshot)
     index = int(task["current_step"])
     if not 0 <= index < len(steps):
@@ -188,7 +188,7 @@ class FormalOrchestrationExecution:
                 led = Ledger(repo)
                 if task["state"] in TASK_TERMINAL:
                     if task["state"] in (TaskState.FAILED, TaskState.CANCELLED):
-                        snapshot = snapshot_for_task(task)
+                        snapshot = host_snapshot(task)
                         if recursive_plan(snapshot):
                             await settle_ancestors(
                                 repo,
@@ -211,7 +211,7 @@ class FormalOrchestrationExecution:
                     .get("queued_behind")
                 ):
                     return task["state"]
-                snapshot = snapshot_for_task(task)
+                snapshot = host_snapshot(task)
                 steps = execution_steps(snapshot)
                 if task["state"] == TaskState.RECEIVED:
                     await led.transition(task_id, TaskState.VALIDATING)
@@ -701,6 +701,23 @@ class FormalOrchestrationExecution:
                         },
                     },
                 )
+                from app.domain.workbench.ordinary_expert import ConsumerPlan
+
+                if isinstance(snapshot, ConsumerPlan):
+                    final = await repo.put_artifact(
+                        task_id=task_id,
+                        attempt_id=attempt_id,
+                        name="expert_delivery",
+                        kind="handback",
+                        content=exported,
+                    )
+                    return (
+                        await led.transition(
+                            task_id,
+                            TaskState.SUCCEEDED,
+                            terminal_result_ref=final["id"],
+                        )
+                    )["state"]
                 return (await led.transition(task_id, TaskState.SUCCEEDED))["state"]
             await repo.cas_task(
                 task_id, expected_version=task["state_version"], current_step=index

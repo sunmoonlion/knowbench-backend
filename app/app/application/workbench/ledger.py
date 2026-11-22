@@ -42,6 +42,7 @@ from app.domain.workbench.knowbots import is_knowbot
 from app.domain.workbench.method_catalog import CapabilityMethodCatalog
 from app.domain.workbench.method_plan import AnyMethodPlan
 from app.domain.workbench.models import Budget, HandoverRequest, InteractionPrompt
+from app.domain.workbench.ordinary_expert import ORDINARY_SOURCE, ConsumerPlan
 from app.domain.workbench.packs import current_pack_version
 from app.domain.workbench.scheduling import ProjectLane, lane_of
 from app.domain.workbench.source_tasks import PACK_SOURCE, SourceTask
@@ -167,6 +168,7 @@ class Ledger:
         expert_pack_version: str | None = None,
         snapshot: PinnedPack
         | PinnedTestCatalog
+        | ConsumerPlan
         | PinnedFormalMethod
         | SourceTask
         | None = None,
@@ -191,7 +193,9 @@ class Ledger:
                 idempotency_key=req.idempotency_key,
             )
             if prior is not None:
-                if isinstance(snapshot, (PinnedFormalMethod, SourceTask)) and (
+                if isinstance(
+                    snapshot, (PinnedFormalMethod, SourceTask, ConsumerPlan)
+                ) and (
                     prior.get("pack_digest") != snapshot.task_columns()["pack_digest"]
                     or prior.get("pack_source")
                     != snapshot.task_columns()["pack_source"]
@@ -325,7 +329,9 @@ class Ledger:
                     "request_digest": digest,
                     "profile_id": req.profile_id,
                     "profile_version": pinned.version
-                    if isinstance(pinned, (PinnedFormalMethod, SourceTask))
+                    if isinstance(
+                        pinned, (PinnedFormalMethod, SourceTask, ConsumerPlan)
+                    )
                     else pinned.pack.version
                     if pinned
                     else (
@@ -1154,9 +1160,14 @@ class Ledger:
                     available=str(budget.available),
                 )
             attempt_id = str(uuid.uuid4())
+            # The transaction may have started while a previous driver still held
+            # the task lock. Use the same clock as started_at/ended_at after admission.
+            created_at = datetime.now(UTC)
             await self.repo.insert_attempt(
                 {
                     "id": attempt_id,
+                    "created_at": created_at,
+                    "updated_at": created_at,
                     "task_id": task_id,
                     "session_id": str(task["session_id"]),
                     "thread_id": task["thread_id"],
@@ -1665,6 +1676,8 @@ class Ledger:
     # ---------------- 查询 ----------------
     async def task_view(self, task_id: str, *, owner_actor_id: str) -> dict[str, Any]:
         task = await self.repo.get_task(task_id, owner_actor_id=owner_actor_id)
+        if task.get("pack_source") == ORDINARY_SOURCE:
+            task = {k: v for k, v in task.items() if k != "pack_snapshot"}
         attempts = await self.repo.list_attempts(task_id)
         artifacts = await self.repo.list_artifacts(task_id)
         for d in (task, *attempts, *artifacts):

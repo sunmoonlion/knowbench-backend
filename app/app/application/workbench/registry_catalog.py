@@ -190,32 +190,60 @@ class SceneRegistry:
             next_page = start + window
         return {"items": visible[:limit], "next": next_page}
 
-    async def planning_definition(self, owner, reference, *, experts_only=False):
-        from app.domain.workbench.errors import NotFound
-
+    async def planning_definitions(self, owner, references, *, experts_only=False):
+        """Exact consumer pins for one graph frontier; resolve market rights outside SQL."""
+        requested = set(references)
+        if not requested:
+            return {}
         async with self.repo.transaction(independent=True):
             subject = await self.repo.subject_of_actor(owner)
         if not subject or self.market is None:
             raise CapabilityError("Formal method use qualification is unavailable")
-        if reference not in await self.market.planning_formal_refs(
-            subject, [reference.model_dump(mode="json")]
-        ):
-            raise NotFound("No available method with this reference")
+        allowed = requested.intersection(
+            await self.market.planning_formal_refs(
+                subject, [r.model_dump(mode="json") for r in requested]
+            )
+        )
+        return await self.local_definitions(owner, allowed, experts_only=experts_only)
+
+    async def local_definitions(self, owner, allowed, *, experts_only=False):
+        """Caller supplies exact pins that have already passed consumer authorization."""
+        if not allowed:
+            return {}
         async with self.repo.transaction():
             rows = await self.repo.registry_method_candidates(
-                owner, 1, 0, public=True, reference=reference, experts_only=experts_only
+                owner,
+                len(allowed),
+                0,
+                public=True,
+                experts_only=experts_only,
+                definitions=True,
+                identities_only=True,
+                eligible=[r.model_dump(mode="json") for r in allowed],
             )
-        if not rows:
+        result = {}
+        for row in rows:
+            ref = MethodRef.model_validate(self.reference(row))
+            try:
+                definition = FormalMethodDefinition.model_validate(row["definition"])
+            except ValueError as exc:
+                raise CapabilityError("Invalid registered method definition") from exc
+            if ref not in allowed or definition.digest() != ref.digest:
+                raise CapabilityError(
+                    "Registered definition differs from its qualified version"
+                )
+            result[ref] = definition
+        return result
+
+    async def planning_definition(self, owner, reference, *, experts_only=False):
+        from app.domain.workbench.errors import NotFound
+
+        result = await self.planning_definitions(
+            owner, [reference], experts_only=experts_only
+        )
+        if reference not in result:
             raise NotFound("No available method with this reference")
-        try:
-            definition = FormalMethodDefinition.model_validate(rows[0]["definition"])
-        except ValueError as exc:
-            raise CapabilityError("Invalid registered method definition") from exc
-        if definition.digest() != reference.digest:
-            raise CapabilityError(
-                "Registered declaration differs from the requested version"
-            )
-        return definition
+        return result[reference]
 
     async def planning_declaration(self, owner, reference, *, experts_only=False):
         definition = await self.planning_definition(
@@ -312,16 +340,32 @@ class SceneRegistry:
             return {}
         async with self.repo.transaction(independent=True):
             task = await self.repo.get_task(task_id, owner_actor_id=owner)
-            if not (task.get("pack_snapshot") or {}).get("bindings"):
+            if task.get("pack_source") == "formal-expert":
+                from app.domain.workbench.ordinary_expert import ConsumerPlan
+
+                plan = ConsumerPlan.model_validate(task["pack_snapshot"])
+                refs = [plan.reference, *(d.reference for d in plan.dependencies)]
+                subject = await self.repo.subject_of_actor(str(task["owner_actor_id"]))
+            else:
+                refs = []
+            if not refs and not (task.get("pack_snapshot") or {}).get("bindings"):
                 return {}
-            if replay_attempt:
-                attempt = await self.repo.get_attempt(replay_attempt)
-                if str(attempt["task_id"]) == str(task_id) and (
-                    attempt.get("refs") or {}
-                ).get("capability_call_id"):
-                    return {}
-            snapshot = snapshot_for_task(task)
-            subject = await self.repo.subject_of_actor(str(task["owner_actor_id"]))
+            if not refs:
+                if replay_attempt:
+                    attempt = await self.repo.get_attempt(replay_attempt)
+                    if str(attempt["task_id"]) == str(task_id) and (
+                        attempt.get("refs") or {}
+                    ).get("capability_call_id"):
+                        return {}
+                snapshot = snapshot_for_task(task)
+                subject = await self.repo.subject_of_actor(str(task["owner_actor_id"]))
+        if refs:
+            if not subject:
+                return {}
+            eligible = await self.market.planning_formal_refs(
+                subject, [r.model_dump(mode="json") for r in refs]
+            )
+            return {"ordinary_refs": eligible}
         return await self._read_grants(
             subject, (binding.reference for binding in snapshot.bindings)
         )

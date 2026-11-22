@@ -5,7 +5,7 @@ tool's arguments. The snapshot grants no permission and carries no credentials.
 """
 
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, overload
 from uuid import UUID
 
 from pydantic import Field, model_validator
@@ -22,6 +22,11 @@ from app.domain.workbench.formal_method_generated import (
     Orchestration,
     Strict,
     ToolProcedure,
+)
+from app.domain.workbench.ordinary_expert import (
+    ORDINARY_SOURCE,
+    ConsumerMethod,
+    ConsumerPlan,
 )
 
 FORMAL_RUNTIME = "knowlab/formal-method-execution/v1"
@@ -127,7 +132,7 @@ class FormalTaskSnapshot(Strict):
 
 
 def is_formal(task: dict) -> bool:
-    return task.get("pack_source") == FORMAL_SOURCE or (
+    return task.get("pack_source") in (FORMAL_SOURCE, ORDINARY_SOURCE) or (
         isinstance(task.get("pack_snapshot"), dict)
         and task["pack_snapshot"].get("runtime_contract") == FORMAL_RUNTIME
     )
@@ -147,14 +152,14 @@ def uses_host_driver(task: dict) -> bool:
     return task.get("pack_source") == "registry-source" or is_formal_host(task)
 
 
-def recursive_plan(snapshot: FormalTaskSnapshot) -> bool:
+def recursive_plan(snapshot: FormalTaskSnapshot | ConsumerPlan) -> bool:
     return any(
         isinstance(f.draft.definition.procedure, Orchestration)
         for f in snapshot.dependencies
     )
 
 
-def expanded_plan(snapshot: FormalTaskSnapshot):
+def expanded_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
     from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
     from app.domain.workbench.formal_method_plan_generated import expand_unique_plan
 
@@ -170,10 +175,12 @@ def expanded_plan(snapshot: FormalTaskSnapshot):
     )
 
 
-def orchestration_plan(snapshot: FormalTaskSnapshot):
+def orchestration_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
     """Validate the complete pinned closure; execution expands only reached nodes."""
     from app.domain.workbench.formal_method_plan_generated import unique_plan
 
+    if isinstance(snapshot, ConsumerPlan):
+        return unique_plan(snapshot.draft.definition)
     if snapshot.caller != "host" or snapshot.draft.allowed_callers != ("host",):
         raise ValueError("Formal orchestration currently supports the host caller only")
     refs = [
@@ -211,18 +218,26 @@ def orchestration_plan(snapshot: FormalTaskSnapshot):
     return unique_plan(snapshot.draft.definition)
 
 
-def execution_steps(snapshot: FormalTaskSnapshot):
+def execution_steps(snapshot: FormalTaskSnapshot | ConsumerPlan):
     return tuple(node.step for node in expanded_plan(snapshot).leaf_nodes)
 
 
-def execution_slot(snapshot: FormalTaskSnapshot, index: int) -> str:
+def execution_slot(snapshot: FormalTaskSnapshot | ConsumerPlan, index: int) -> str:
     node = expanded_plan(snapshot).leaf_nodes[index]
     return (
         "node:" + digest(list(node.path)) if recursive_plan(snapshot) else node.step.id
     )
 
 
-def dependency_for_step(snapshot: FormalTaskSnapshot, step):
+@overload
+def dependency_for_step(snapshot: FormalTaskSnapshot, step) -> FrozenFormalMethod: ...
+
+
+@overload
+def dependency_for_step(snapshot: ConsumerPlan, step) -> ConsumerMethod: ...
+
+
+def dependency_for_step(snapshot: FormalTaskSnapshot | ConsumerPlan, step):
     return next(f for f in snapshot.dependencies if f.reference == step.candidates[0])
 
 
@@ -232,6 +247,15 @@ def snapshot_for_task(task: dict) -> FormalTaskSnapshot:
     snapshot = FormalTaskSnapshot.model_validate(task.get("pack_snapshot"))
     if task.get("pack_digest") != digest(snapshot.document()):
         raise ValueError("Formal task snapshot changed")
+    return snapshot
+
+
+def host_snapshot(task):
+    if task.get("pack_source") != ORDINARY_SOURCE:
+        return snapshot_for_task(task)
+    snapshot = ConsumerPlan.model_validate(task.get("pack_snapshot"))
+    if task["pack_digest"] != snapshot.task_columns()["pack_digest"]:
+        raise ValueError("Ordinary execution snapshot changed")
     return snapshot
 
 

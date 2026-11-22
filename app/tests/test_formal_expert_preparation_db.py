@@ -165,9 +165,47 @@ async def test_prepare_from_browser_rechecks_version_connection_budget_and_revis
             assert (
                 await client.put(prep, json={**body, "budget_limit": "20"})
             ).status_code == 409
-            edited = {**body, "expected_revision": 1, "budget_limit": None}
+            url = path + "/execution-preview?revision=1"
+            before = (await client.get(url)).json()
+            assert before["issues"] == [
+                {"code": "input_required", "slot": "to", "path": []}
+            ]
+            assert before["estimated_maximum"] == "0" and before["steps"][0][
+                "path"
+            ] == ["only"]
+            assert (await client.get(url)).json() == before
+            assert (
+                await client.put(
+                    prep, json={**body, "values": {"to": 3}, "expected_revision": 1}
+                )
+            ).status_code == 409
+            assert (
+                await client.put(prep, json={**body, "values": {"to": chr(0)}})
+            ).status_code == 422
+            edited = {
+                **body,
+                "values": {"to": "test@example.test"},
+                "expected_revision": 1,
+                "budget_limit": None,
+            }
             assert (await client.put(prep, json=edited)).json()["revision"] == 2
             assert (await save()).status_code == 409
+            assert (await client.get(url)).status_code == 409
+            url = path + "/execution-preview?revision=2"
+            complete = (await client.get(url)).json()
+            assert (
+                complete["issues"] == []
+                and complete["bindings"]["values"] == edited["values"]
+            )
+            assert complete["preview_digest"] != before["preview_digest"]
+            deps = registry.dependencies.copy()
+            registry.dependencies.clear()
+            revoked = (await client.get(url)).json()
+            assert (
+                revoked["issues"][0]["code"] == "dependency_unavailable"
+                and revoked["estimated_maximum"] is None
+            )
+            registry.dependencies.update(deps)
             held = False
             async with db() as session:
                 await session.execute(

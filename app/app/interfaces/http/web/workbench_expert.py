@@ -23,7 +23,11 @@ from app.application.workbench.catalog import (
 )
 from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
-from app.application.workbench.formal_expert_preparation import Preparation, prepare
+from app.application.workbench.formal_expert_preparation import (
+    ExecutionConfirmation,
+    Preparation,
+    prepare,
+)
 from app.bootstrap.workbench import (
     delegation_service,
     dynamic_market_owners,
@@ -620,6 +624,34 @@ async def save_preparation(
     token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
 ):
     return await _preparation(session, principal, task_id, token, body=body)
+
+
+@router.get("/find-expert/{task_id}/execution-preview")
+async def read_execution_preview(
+    task_id: UUID,
+    response: Response,
+    revision: int = Query(ge=1),
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await _preparation(
+        session, principal, task_id, token, preview_revision=revision
+    )
+
+
+@router.put("/find-expert/{task_id}/execution")
+async def confirm_ordinary_execution(
+    task_id: UUID,
+    body: ExecutionConfirmation,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    receipt = await _preparation(session, principal, task_id, token, submission=body)
+    await publish_commands_wakeup()
+    return receipt
 
 
 @router.get("/find-expert/{task_id}")

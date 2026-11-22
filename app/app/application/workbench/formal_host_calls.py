@@ -21,8 +21,8 @@ from app.domain.workbench.formal_execution import (
     direct_procedure,
     execution_slot,
     expanded_plan,
+    host_snapshot,
     recursive_plan,
-    snapshot_for_task,
     validate_values,
 )
 from app.domain.workbench.formal_host import (
@@ -46,6 +46,7 @@ from app.domain.workbench.method_authorization import (
 )
 from app.domain.workbench.method_capabilities import AccessRequirement
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.ordinary_expert import ConsumerPlan
 from app.domain.workbench.skill_execution import public_call
 from app.domain.workbench.states import AttemptState, TaskState, WaitingReason
 
@@ -86,7 +87,7 @@ class FormalHostCalls:
         """Caller owns a transaction; lock the authoritative Task before its work."""
         task = await self.repo.get_task(task_id, owner_actor_id=owner, for_update=True)
         try:
-            snapshot = snapshot_for_task(task)
+            snapshot = host_snapshot(task)
         except ValueError as exc:
             raise CapabilityError("Formal execution snapshot is invalid") from exc
         if snapshot.caller != caller:
@@ -109,17 +110,27 @@ class FormalHostCalls:
             if caller != "host":
                 raise CapabilityError("Formal orchestration cannot use a model probe")
             _, step, frozen, arguments = await step_context(self.repo, task, attempt)
-            bindings = []
-            live = await resolve_plan(
-                self.capabilities,
-                owner,
-                snapshot.draft,
-                snapshot.method_id,
-                bindings=bindings,
-                grants=grants,
-            )
-            if live != snapshot.dependencies or tuple(bindings) != snapshot.bindings:
-                raise CapabilityError("Formal dependency admission changed")
+            if isinstance(snapshot, ConsumerPlan):
+                from app.application.workbench.ordinary_expert_execution import (
+                    check_execution,
+                )
+
+                await check_execution(self.capabilities, owner, task, snapshot, grants)
+            else:
+                bindings = []
+                live = await resolve_plan(
+                    self.capabilities,
+                    owner,
+                    snapshot.draft,
+                    snapshot.method_id,
+                    bindings=bindings,
+                    grants=grants,
+                )
+                if (
+                    live != snapshot.dependencies
+                    or tuple(bindings) != snapshot.bindings
+                ):
+                    raise CapabilityError("Formal dependency admission changed")
             draft, slot = (
                 frozen.draft,
                 execution_slot(snapshot, int(task["current_step"])),
@@ -171,65 +182,23 @@ class FormalHostCalls:
             or session["wheel"] != "advisor"
         ):
             raise CapabilityError("Formal execution no longer owns this session")
-        run = await self.repo.test_run_for_task(task_id)
-        if (
-            run is None
-            or str(run["run_id"]) != str(snapshot.run_id)
-            or run.get("caller") != "knowlab"
-            or run.get("status")
-            in ("passed", "failed", "error", "timeout", "cancelled")
-            or run.get("cancel_requested_at")
-        ):
-            raise CapabilityError("Formal Task has no active test execution")
-        try:
-            request = FormalMethodExecutionRequest.model_validate(run["request"])
-        except ValueError as exc:
-            raise CapabilityError("Formal execution request is invalid") from exc
-        if (
-            request.fingerprint() != snapshot.request_digest
-            or run["digest"] != snapshot.request_digest.removeprefix("sha256:")
-            or str(request.run_id) != str(snapshot.run_id)
-            or request.method_id != snapshot.method_id
-            or request.draft != snapshot.draft
-            or request.owner_subject != run["owner_subject"]
-            or await self.repo.actor_for_subject(request.owner_subject) != owner
-        ):
-            raise CapabilityError("Formal snapshot differs from its accepted request")
-        validation = await self.repo.formal_validation(owner, str(snapshot.run_id))
-        if (
-            validation is None
-            or validation["caller"] != run["caller"]
-            or FormalMethodValidationRequest.model_validate(validation["request"])
-            != request.admission_request()
-            or validation["request_digest"]
-            != digest(
-                request.admission_request().model_dump(mode="json", by_alias=True)
-            )
-            or validation["result"].get("status") != "pending"
-        ):
-            raise CapabilityError("Formal execution lacks its exact pending admission")
-        cases = await self.repo.list_test_cases(str(snapshot.run_id))
-        persisted = [
-            c
-            for c in cases
-            if c["case_id"] == case_key(snapshot.case_id, snapshot.repetition)
-            and str(c.get("task_id")) == task_id
-            and str(c.get("session_id")) == session_id
-            and not c.get("result")
-        ]
-        case = next(
-            (c for c in request.execution.suite.cases if c.case_id == snapshot.case_id),
-            None,
-        )
-        if (
-            len(persisted) != 1
-            or case is None
-            or case.caller != snapshot.caller
-            or case.input.model_prompt != snapshot.model_prompt
-            or not 1 <= snapshot.repetition <= case.repetitions
-            or digest(case.input.values) != digest(snapshot.arguments)
-        ):
-            raise CapabilityError("Formal Task is not its persisted case repetition")
+        if isinstance(snapshot, ConsumerPlan):
+            origin = snapshot.identity()
+            if frozen is None or caller != "host":
+                raise CapabilityError(
+                    "Ordinary execution requires a confirmed host leaf"
+                )
+            probe = None
+            subject = await self.repo.subject_of_actor(owner)
+        else:
+            request = await self._test_authority(owner, task_id, session_id, snapshot)
+            subject = request.owner_subject
+            probe = request.execution.model_probe
+            origin = {
+                "run_id": str(snapshot.run_id),
+                "case_id": snapshot.case_id,
+                "repetition": snapshot.repetition,
+            }
         source = snapshot.execution_source(frozen) if frozen else draft.source
         if source is None:
             raise CapabilityError("Formal action has no licensed source")
@@ -241,9 +210,7 @@ class FormalHostCalls:
             "method_id": str(frozen.reference.method_id)
             if frozen
             else str(snapshot.method_id),
-            "run_id": str(snapshot.run_id),
-            "case_id": snapshot.case_id,
-            "repetition": snapshot.repetition,
+            **origin,
             "source_digest": source.fingerprint(),
         }
         if frozen is not None and child is not None:
@@ -328,6 +295,8 @@ class FormalHostCalls:
                 raise CapabilityError(
                     "Formal leaves require one exact operation permission"
                 )
+        elif isinstance(snapshot, ConsumerPlan):
+            raise CapabilityError("Ordinary tasks require a frozen method step")
         elif caller == "host":
             check_host_inputs(snapshot)
         else:
@@ -338,14 +307,12 @@ class FormalHostCalls:
             )
             if (
                 len(snapshot.draft.definition.access_requirements) != 1
-                or request.execution.model_probe != snapshot.model_probe
+                or probe != snapshot.model_probe
             ):
                 raise CapabilityError(
                     "Model probe limits or permissions differ from its test"
                 )
-        if not await self.capabilities.formal_sources._source(
-            owner, request.owner_subject, source
-        ):
+        if not await self.capabilities.formal_sources._source(owner, subject, source):
             raise CapabilityError("Source execution rights have not been verified")
         asset = await self.capabilities.formal_sources.registry.execution_asset(
             owner, source
@@ -357,6 +324,13 @@ class FormalHostCalls:
             and self.capabilities.script_executor is None
         ):
             raise CapabilityError("Isolated script execution is unavailable")
+        if (
+            isinstance(snapshot, ConsumerPlan)
+            and snapshot.policies.get(slot) != policy.policy_digest
+        ):
+            raise CapabilityError(
+                "Operation policy changed since the owner confirmed this plan"
+            )
         tool = registration.descriptor()
         access = {
             "requirement": draft.definition.access_requirements[0].model_dump(
@@ -500,6 +474,68 @@ class FormalHostCalls:
             artifact_read,
         )
 
+    async def _test_authority(self, owner, task_id, session_id, snapshot):
+        run = await self.repo.test_run_for_task(task_id)
+        if (
+            run is None
+            or str(run["run_id"]) != str(snapshot.run_id)
+            or run.get("caller") != "knowlab"
+            or run.get("status")
+            in ("passed", "failed", "error", "timeout", "cancelled")
+            or run.get("cancel_requested_at")
+        ):
+            raise CapabilityError("Formal Task has no active test execution")
+        try:
+            request = FormalMethodExecutionRequest.model_validate(run["request"])
+        except ValueError as exc:
+            raise CapabilityError("Formal execution request is invalid") from exc
+        if (
+            request.fingerprint() != snapshot.request_digest
+            or run["digest"] != snapshot.request_digest.removeprefix("sha256:")
+            or str(request.run_id) != str(snapshot.run_id)
+            or request.method_id != snapshot.method_id
+            or request.draft != snapshot.draft
+            or request.owner_subject != run["owner_subject"]
+            or await self.repo.actor_for_subject(request.owner_subject) != owner
+        ):
+            raise CapabilityError("Formal snapshot differs from its accepted request")
+        validation = await self.repo.formal_validation(owner, str(snapshot.run_id))
+        if (
+            validation is None
+            or validation["caller"] != run["caller"]
+            or FormalMethodValidationRequest.model_validate(validation["request"])
+            != request.admission_request()
+            or validation["request_digest"]
+            != digest(
+                request.admission_request().model_dump(mode="json", by_alias=True)
+            )
+            or validation["result"].get("status") != "pending"
+        ):
+            raise CapabilityError("Formal execution lacks its exact pending admission")
+        cases = await self.repo.list_test_cases(str(snapshot.run_id))
+        persisted = [
+            c
+            for c in cases
+            if c["case_id"] == case_key(snapshot.case_id, snapshot.repetition)
+            and str(c.get("task_id")) == task_id
+            and str(c.get("session_id")) == session_id
+            and not c.get("result")
+        ]
+        case = next(
+            (c for c in request.execution.suite.cases if c.case_id == snapshot.case_id),
+            None,
+        )
+        if (
+            len(persisted) != 1
+            or case is None
+            or case.caller != snapshot.caller
+            or case.input.model_prompt != snapshot.model_prompt
+            or not 1 <= snapshot.repetition <= case.repetitions
+            or digest(case.input.values) != digest(snapshot.arguments)
+        ):
+            raise CapabilityError("Formal Task is not its persisted case repetition")
+        return request
+
     async def request(self, owner, task_id, attempt_id, *, model=None):
         grants = (
             {}
@@ -513,7 +549,7 @@ class FormalHostCalls:
                 task_id, owner_actor_id=owner, for_update=True
             )
             attempt = await self.repo.get_attempt(attempt_id, for_update=True)
-            snapshot = snapshot_for_task(task)
+            snapshot = host_snapshot(task)
             caller = "model" if model is not None else "host"
             if snapshot.caller != caller:
                 raise CapabilityError("This test requires its own caller entry")
@@ -550,7 +586,7 @@ class FormalHostCalls:
                 # It must never create another operation after source revocation,
                 # expiry, an uncertain dispatch, or an Attempt replacement.
                 try:
-                    snapshot_for_task(task)
+                    host_snapshot(task)
                 except ValueError as exc:
                     raise CapabilityError("Formal execution snapshot changed") from exc
                 host = (
@@ -1001,7 +1037,7 @@ class FormalHostCalls:
                 execution_scopes,
             )
 
-            snapshot = snapshot_for_task(context.task)
+            snapshot = host_snapshot(context.task)
             scopes = await execution_scopes(self.repo, context.task, snapshot)
             scope_evidence = {
                 "scope_authorizations": [s.model_dump(mode="json") for s in scopes],

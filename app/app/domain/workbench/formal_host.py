@@ -53,9 +53,9 @@ def host_intent_digest(intent: dict) -> str:
 
 
 def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
-    from app.domain.workbench.formal_execution import snapshot_for_task
+    from app.domain.workbench.formal_execution import host_snapshot
 
-    snapshot = snapshot_for_task(task)
+    snapshot = host_snapshot(task)
     host = call["detail"].get("formal_host") or {}
     source = snapshot.draft.source
     refs = attempt.get("refs") or {}
@@ -116,6 +116,17 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
             ):
                 raise CapabilityError("Formal recursive call path changed")
 
+    from app.domain.workbench.ordinary_expert import ConsumerPlan
+
+    origin = (
+        snapshot.identity()
+        if isinstance(snapshot, ConsumerPlan)
+        else {
+            "run_id": str(snapshot.run_id),
+            "case_id": snapshot.case_id,
+            "repetition": snapshot.repetition,
+        }
+    )
     if (
         snapshot.caller != "host"
         or call.get("kind") != "tool"
@@ -131,10 +142,8 @@ def validate_host_call(task: dict, attempt: dict, call: dict) -> None:
         or host.get("attempt_id") != str(attempt["id"])
         or host.get("snapshot_digest") != task["pack_digest"]
         or host.get("slot") != slot
-        or host.get("run_id") != str(snapshot.run_id)
+        or any(host.get(k) != v for k, v in origin.items())
         or host.get("method_id") != method_id
-        or host.get("case_id") != snapshot.case_id
-        or host.get("repetition") != snapshot.repetition
         or source is None
         or host.get("source_digest") != source.fingerprint()
         or digest(call["detail"].get("arguments")) != arguments_digest
