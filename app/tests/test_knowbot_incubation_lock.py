@@ -108,6 +108,29 @@ def test_every_pinned_schema_matches_the_provider() -> None:
         assert hashlib.sha256(path.read_bytes()).hexdigest() == pinned["sha256"], name
 
 
+@pytest.mark.parametrize("length", [48, 64])
+def test_formal_collaboration_identifiers_pass_through_at_provider_limit(
+    length: int,
+) -> None:
+    """The opaque author workdraft preserves the provider's longer formal IDs."""
+    jsonschema = pytest.importorskip("jsonschema")
+    schema = _schema(_lock(), "incubation-request.schema.json")
+    producer = "source_" + "x" * (length - len("source_"))
+    body = request(action="revise").model_dump(mode="json")
+    roles = {
+        producer: {"isolation_group": producer},
+        "review": {
+            "isolation_group": "review",
+            "handoff_from": [producer],
+            "review_requirements": {producer: "isolated_reviewer"},
+        },
+    }
+    body["workdraft"]["body"]["collaboration"] = roles
+    jsonschema.validate(body, schema)
+    parsed = IncubationRequest.model_validate(body)
+    assert material(parsed)["workdraft"]["body"]["collaboration"] == roles
+
+
 async def test_requests_we_accept_and_results_we_return_fit_the_contract() -> None:
     lock = _lock()
     jsonschema = pytest.importorskip("jsonschema")
