@@ -58,6 +58,41 @@ class ExpandedPlan:
         return tuple(node for node in self.nodes if node.kind == "tool")
 
 
+def single_review_edge(
+    procedure: Orchestration | ToolProcedure,
+) -> tuple[str, str] | None:
+    """A fixed producer and one independent reviewer of its named outputs."""
+    if not isinstance(procedure, Orchestration) or len(procedure.steps) != 2:
+        return None
+    roles = procedure.collaboration or {}
+    for reviewer in procedure.steps:
+        role = roles.get(reviewer.id)
+        if not role or role.comparison or len(role.review_requirements) != 1:
+            continue
+        producer, requirement = next(iter(role.review_requirements.items()))
+        source_role = roles.get(producer)
+        if (
+            requirement == "isolated_reviewer"
+            and set(reviewer.depends_on) == {producer}
+            and set(role.handoff_from) <= {producer}
+            and (
+                not source_role
+                or not (
+                    source_role.review_requirements
+                    or source_role.handoff_from
+                    or source_role.comparison
+                )
+            )
+            and reviewer.inputs
+            and all(
+                isinstance(i.binding, StepValue) and i.binding.step == producer
+                for i in reviewer.inputs.values()
+            )
+        ):
+            return producer, reviewer.id
+    return None
+
+
 def expand_unique_plan(
     root_method_id: UUID,
     definition: FormalMethodDefinition,
@@ -124,6 +159,19 @@ def expand_unique_plan(
             expansions += child_expansions
             steps += child_steps
         p = current.procedure
+        if p.collaboration and (
+            path
+            or not single_review_edge(p)
+            or any(
+                not isinstance(n.definition.procedure, ToolProcedure)
+                or n.definition.procedure.implementation.kind
+                not in ("registered_instruction", "skill_instruction")
+                for n in nodes
+            )
+        ):
+            raise ValueError(
+                "Independent review requires a fixed pair of isolated instruction steps"
+            )
         if (
             depth > p.max_depth
             or expansions > p.max_expansions

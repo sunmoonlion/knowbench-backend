@@ -17,15 +17,37 @@ from test_formal_script_execution_db import (
 from test_ordinary_expert_execution_db import selected_match
 from test_workbench_advisor_db import drive
 from test_workbench_ledger_db import db as db
+from test_workbench_routes import make_client as make_client
 
 from app.application.workbench.instruction_requests import InstructionRequests
 from app.domain.workbench.capabilities import CapabilityError
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
-@pytest.mark.parametrize("kind", ["script", "instruction"])
-@pytest.mark.parametrize("registered", [True, False])
-async def test_confirmed_metered_leaf(db, monkeypatch, kind, registered):
+@pytest.mark.parametrize(
+    ("kind", "registered", "review_case"),
+    [
+        ("script", True, None),
+        ("script", False, None),
+        ("instruction", True, None),
+        ("instruction", False, None),
+        ("instruction", True, "pass"),
+        pytest.param(
+            "instruction",
+            True,
+            "live",
+            marks=pytest.mark.skipif(
+                os.getenv("RUN_CODEX_INSTRUCTION_PROBE") != "1",
+                reason="requires pinned local Codex and Docker",
+            ),
+        ),
+        ("instruction", True, "invalid_output"),
+        ("instruction", True, "reused_thread"),
+    ],
+)
+async def test_confirmed_metered_leaf(
+    db, monkeypatch, kind, registered, review_case, tmp_path, make_client
+):
     instruction = kind == "instruction"
     executor = (
         RecordedExecutor()
@@ -34,7 +56,7 @@ async def test_confirmed_metered_leaf(db, monkeypatch, kind, registered):
     )
     if instruction:
         stack, factory, _, leaf, expert, _ = await fixed_instruction_plan(
-            db, "complete", registered=registered
+            db, "complete", registered=registered, independent=bool(review_case)
         )
         leaves = [leaf]
         values = {"status": "awaiting review"}
@@ -98,6 +120,34 @@ async def test_confirmed_metered_leaf(db, monkeypatch, kind, registered):
             )
         else:
             assert Decimal(quote["per_container_second"]) == Decimal("0.01")
+        if review_case:
+            review = view["steps"][1]
+            assert review["independent_review_of"] == "first"
+            assert review["from_outputs"] == {
+                "status": {"step": ["first"], "output": "summary"}
+            }
+        if review_case == "pass":
+            async with db() as session, session.begin():
+                await WorkbenchRepository(session).save_reviewer_preference(
+                    OWNER,
+                    {
+                        "provider": quote["provider"],
+                        "model": "unloaded-model",
+                        "credential_id": str(stack.cred["id"]),
+                    },
+                )
+            unavailable = (
+                await client.get(path + "/execution-preview?revision=2")
+            ).json()
+            assert any(issue["path"] == ["second"] for issue in unavailable["issues"])
+            assert (
+                await client.put(
+                    path + "/execution",
+                    json={"revision": 2, "preview_digest": view["preview_digest"]},
+                )
+            ).status_code == 409
+            async with db() as session, session.begin():
+                await WorkbenchRepository(session).save_reviewer_preference(OWNER, None)
         body = {"revision": 2, "preview_digest": view["preview_digest"]}
         enabled = False
         disabled = (await client.get(path + "/execution-preview?revision=2")).json()
@@ -138,6 +188,14 @@ async def test_confirmed_metered_leaf(db, monkeypatch, kind, registered):
                 job["arguments"] = call["detail"]["arguments"]
                 message["text"] = json.dumps(job)
                 stack.units.uid, stack.units.worker = str(uuid4()), str(uuid4())
+                if review_case:
+                    stack.units.thread = (
+                        "shared"
+                        if review_case == "reused_thread"
+                        else "ordinary-" + str(i)
+                    )
+                    if review_case == "invalid_output":
+                        stack.units.result = {"summary": 42}
             result = await client.post(
                 f"/api/workbench/capability-calls/{call['id']}/decision",
                 json=approval(call).model_dump(mode="json"),
@@ -172,8 +230,79 @@ async def test_confirmed_metered_leaf(db, monkeypatch, kind, registered):
                         checked = await svc.repo.get_attempt(str(attempt["id"]))
                         assert "instruction_request" not in checked["refs"]
                     refs.add(leaf.reference)
-                await drive(runner)
-                await drive(runner)
+                if review_case == "live":
+                    from test_instruction_runner_codex import real_ordinary_round
+
+                    capture = await real_ordinary_round(
+                        db,
+                        make_client.app,
+                        monkeypatch,
+                        tmp_path / str(i),
+                        stack,
+                        scoped_factory,
+                        task,
+                        i + 1,
+                    )
+                    stack.provider_requests.append(capture)
+                else:
+                    await drive(runner)
+                    await drive(runner)
+                if review_case == "reused_thread" and i == 1:
+                    await drive(runner)
+                    async with db() as session:
+                        repo = WorkbenchRepository(session)
+                        failed = await repo.get_task(task)
+                        assert failed["state"] == "FAILED"
+                        producer, reviewer = await repo.list_attempts(task)
+                        assert "instruction_request" not in reviewer["refs"]
+                        assert Decimal(failed["budget"]["reserved"]) == 0
+                        assert Decimal(failed["budget"]["used"]) == Decimal(
+                            producer["refs"]["instruction_usage"]["amount"]
+                        )
+                    assert len(stack.provider_requests) == already_sent + 1
+                    return
+                if review_case == "invalid_output":
+                    await drive(runner)
+                    async with db() as session:
+                        repo = WorkbenchRepository(session)
+                        failed = await repo.get_task(task)
+                        assert failed["state"] == "FAILED"
+                        (producer,) = await repo.list_attempts(task)
+                        assert producer["step_id"] == "first"
+                        assert Decimal(failed["budget"]["reserved"]) == 0
+                        assert Decimal(failed["budget"]["used"]) == Decimal(
+                            producer["refs"]["instruction_usage"]["amount"]
+                        )
+                    assert len(stack.provider_requests) == already_sent + 1
+                    return
+                if review_case in ("pass", "live") and i == 1:
+                    from app.domain.workbench.instruction_requests import (
+                        leaf_responses_body,
+                    )
+
+                    outgoing = stack.provider_requests[-1]
+                    assert outgoing == leaf_responses_body(
+                        {
+                            "input": job,
+                            "output_schema": stack.wire["text"]["format"]["schema"],
+                        },
+                        quote["model"],
+                        outgoing["max_output_tokens"],
+                    )
+                    assert json.loads(outgoing["input"][-1]["content"][0]["text"])[
+                        "arguments"
+                    ] == {"status": "ready"}
+                    async with db() as session:
+                        first, second = await WorkbenchRepository(
+                            session
+                        ).list_attempts(task)
+                        assert second["refs"]["independent_review"][
+                            "attempt_id"
+                        ] == str(first["id"])
+                        assert (
+                            second["refs"]["input_bindings"][0]["id"]
+                            == first["output_artifacts"][0]["id"]
+                        )
             elif step["kind"].endswith("_script"):
                 await collect_script(db, scoped_factory)
                 assert executor.calls == [call["id"]]

@@ -29,6 +29,7 @@ from app.domain.workbench.formal_method_plan_generated import (
     bind_step_inputs,
     expand_unique_plan,
     export_outputs,
+    single_review_edge,
     unique_plan,
     validate_plan_inputs,
     validate_step_outputs,
@@ -495,6 +496,19 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                     request.execution.budget.currency,
                     metering_ids,
                 )
+        edge = single_review_edge(frozen.draft.definition.procedure)
+        if edge:
+            proofs = {
+                step["slot"]: step["governance"]["instruction"]
+                for step in case_evidence["steps"]
+            }
+            producer, reviewer = (proofs[slot] for slot in edge)
+            require(
+                producer["gateway"]["uid"] != reviewer["gateway"]["uid"]
+                and producer["thread"]["worker"] != reviewer["thread"]["worker"]
+                and producer["thread"]["thread"] != reviewer["thread"]["thread"],
+                "Sealed reviewer shares the producer execution identity",
+            )
         if evidence["adapter"] == TREE_ADAPTER:
             require(
                 Decimal(case_evidence["task"]["budget"]["used"])

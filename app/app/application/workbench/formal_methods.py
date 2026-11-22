@@ -31,6 +31,7 @@ from app.domain.workbench.formal_method_execution_generated import (
     fingerprint,
 )
 from app.domain.workbench.formal_method_generated import Orchestration
+from app.domain.workbench.formal_method_plan_generated import single_review_edge
 from app.domain.workbench.skill_package import (
     delivery_files,
     skill_manifest_digest,
@@ -72,7 +73,11 @@ class FormalMethods:
             raise RuntimeCapabilityGap("Runner lacks conditional candidate selection")
         if isinstance(graph, Orchestration) and graph.object_batch:
             raise RuntimeCapabilityGap("Runner lacks bounded object fanout")
-        if isinstance(graph, Orchestration) and graph.collaboration:
+        if (
+            isinstance(graph, Orchestration)
+            and graph.collaboration
+            and not single_review_edge(graph)
+        ):
             raise RuntimeCapabilityGap("Runner lacks isolated collaboration execution")
 
     def business_review(self, subject, method_id, draft, suite_digest):

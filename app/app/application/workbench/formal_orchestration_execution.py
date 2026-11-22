@@ -21,6 +21,7 @@ from app.domain.workbench.formal_method_execution_generated import bounded_json
 from app.domain.workbench.formal_method_plan_generated import (
     bind_step_inputs,
     export_outputs,
+    single_review_edge,
     validate_plan_inputs,
     validate_step_outputs,
 )
@@ -131,6 +132,23 @@ async def accepted_outputs(repo, task, snapshot, before):
     return outputs, artifacts
 
 
+def producer_isolation(attempts, slot):
+    producers = [
+        a
+        for a in attempts
+        if a["step_id"] == slot and a["status"] == AttemptState.COMPLETED
+    ]
+    if len(producers) != 1:
+        raise CapabilityError("Review requires one completed producer")
+    producer = producers[0]
+    refs = producer["refs"]
+    thread = refs.get("instruction_thread") or {}
+    gateway = (refs.get("instruction_gateway") or {}).get("uid")
+    if not (thread.get("worker") and thread.get("thread") and gateway):
+        raise CapabilityError("Missing isolated producer identity")
+    return {"attempt_id": str(producer["id"]), "gateway": gateway, **thread}
+
+
 async def step_context(repo, task, attempt):
     """Resolve the active leaf from the frozen root, not from caller-controlled refs."""
     snapshot = host_snapshot(task)
@@ -165,6 +183,19 @@ async def step_context(repo, task, attempt):
         outputs, artifacts = await accepted_outputs(repo, task, snapshot, index)
         inputs = bind_step_inputs(step, snapshot.arguments, outputs)
         bindings = [a for a in artifacts if a["step_id"] in step.depends_on]
+    edge = single_review_edge(snapshot.draft.definition.procedure)
+    if edge and edge[1] == slot:
+        prior = producer_isolation(await repo.list_attempts(str(task["id"])), edge[0])
+        worker = refs.get("instruction_thread") or {}
+        if (
+            refs.get("independent_review") != prior
+            or (refs.get("instruction_gateway") or {}).get("uid") == prior["gateway"]
+            or worker.get("worker") == prior["worker"]
+            or worker.get("thread") == prior["thread"]
+        ):
+            raise CapabilityError(
+                "Review execution no longer matches its isolated handoff"
+            )
     if refs.get("input_bindings") != bindings or refs.get("arguments_digest") != digest(
         inputs
     ):
@@ -279,12 +310,31 @@ class FormalOrchestrationExecution:
                                 )
                             )["state"]
                     else:
-                        previous_outputs, artifacts = await accepted_outputs(
-                            repo, task, snapshot, index
-                        )
-                        arguments = bind_step_inputs(
-                            step, snapshot.arguments, previous_outputs
-                        )
+                        try:
+                            previous_outputs, artifacts = await accepted_outputs(
+                                repo, task, snapshot, index
+                            )
+                            arguments = bind_step_inputs(
+                                step, snapshot.arguments, previous_outputs
+                            )
+                            edge = single_review_edge(
+                                snapshot.draft.definition.procedure
+                            )
+                            if edge and edge[1] == slot:
+                                extra["independent_review"] = producer_isolation(
+                                    attempts, edge[0]
+                                )
+                        except (ValueError, CapabilityError) as exc:
+                            return (
+                                await led.transition(
+                                    task_id,
+                                    TaskState.FAILED,
+                                    reason={
+                                        "code": "invalid_predecessor",
+                                        "message": str(exc),
+                                    },
+                                )
+                            )["state"]
                         bindings = [
                             a for a in artifacts if a["step_id"] in step.depends_on
                         ]

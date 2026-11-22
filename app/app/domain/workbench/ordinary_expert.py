@@ -65,7 +65,6 @@ class ConsumerPlan(Strict):
         graph = expanded_plan(self)
         if (
             self.draft.allowed_callers != ("host",)
-            or self.draft.definition.procedure.collaboration
             or any(
                 method.reference not in graph.dependencies
                 for method in self.dependencies

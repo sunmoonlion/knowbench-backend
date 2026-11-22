@@ -314,7 +314,7 @@ async def test_fixed_instruction_plan_approves_and_hands_off_exact_artifact(
     )
 
 
-async def fixed_instruction_plan(db, decision, *, registered=False):
+async def fixed_instruction_plan(db, decision, *, registered=False, independent=False):
     import json
     from decimal import Decimal
 
@@ -367,6 +367,17 @@ async def fixed_instruction_plan(db, decision, *, registered=False):
         input_name="status",
         output_name="summary",
     )
+    if independent:
+        document = request.model_dump(mode="json", by_alias=True)
+        document["draft"]["definition"]["procedure"]["collaboration"] = {
+            "first": {"isolation_group": "author"},
+            "second": {
+                "isolation_group": "reviewer",
+                "handoff_from": ["first"],
+                "review_requirements": {"first": "isolated_reviewer"},
+            },
+        }
+        request = type(request).model_validate(document)
     async with s.host() as svc:
         await FormalExecutions(svc.repo, factory(svc.repo)).accept(
             request, caller="knowlab"
@@ -474,6 +485,8 @@ async def fixed_instruction_plan(db, decision, *, registered=False):
         job = json.loads(message["text"])
         job["arguments"] = subject["arguments"]
         message["text"] = json.dumps(job)
+        if independent:
+            s.units.thread = "author-trial-" + str(index)
         s.units.uid, s.units.worker = str(uuid4()), str(uuid4())
         await graph.drive(task)
         await graph.drive(task)
@@ -570,6 +583,20 @@ async def fixed_instruction_plan(db, decision, *, registered=False):
             verify_sealed_plan,
         )
 
+        if independent:
+            altered = deepcopy(row["execution_evidence"])
+            producer, reviewer = altered["cases"][0]["steps"]
+            prior = producer["governance"]["instruction"]["thread"]
+            reviewer["governance"]["instruction"]["thread"]["thread"] = prior["thread"]
+            with pytest.raises(CapabilityError, match="shares the producer"):
+                verify_sealed_plan(
+                    OWNER,
+                    version,
+                    request,
+                    altered,
+                    {(leaf.reference.method_id, leaf.reference.version): leaf},
+                    operations=caps.operations,
+                )
         altered = deepcopy(row["execution_evidence"])
         observed = altered["cases"][0]["steps"][1]["governance"]["artifact_read"][
             "binding"

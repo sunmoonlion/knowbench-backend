@@ -126,7 +126,17 @@ async def test_real_instruction_runner(
 
 
 async def isolated_round(
-    db, app, monkeypatch, tmp_path, s, trial, late_receipt, review, stage
+    db,
+    app,
+    monkeypatch,
+    tmp_path,
+    s,
+    trial,
+    late_receipt,
+    review,
+    stage,
+    *,
+    ordinary_round=None,
 ):
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
@@ -137,9 +147,9 @@ async def isolated_round(
 
     async def formal():
         async with s.host() as svc:
-            yield svc.formal
+            yield s.driver.formal(svc.repo) if ordinary_round else svc.formal
 
-    if review:
+    if review or ordinary_round:
         from app.infrastructure.storage.postgres import get_db_session
 
         async def sessions():
@@ -147,7 +157,7 @@ async def isolated_round(
                 yield session
 
         app.dependency_overrides[get_db_session] = sessions
-    else:
+    if not review or ordinary_round:
         app.dependency_overrides[formal_methods] = formal
     app.dependency_overrides[token_issuer] = lambda: s.driver.issuer
     monkeypatch.setattr(
@@ -238,7 +248,7 @@ async def isolated_round(
                 provider.ask = False
                 provider.limit_one = False
                 provider.output = {"result" if review else "summary": "ready"}
-                if stage == 2:
+                if review and stage == 2:
                     provider.output = {"result": "compared both views"}
                 provider.first_request = len(fixtures.captures) + 1
                 initial = len(fixtures.captures)
@@ -305,6 +315,10 @@ async def isolated_round(
 
                     s.units.request = unit
                     s.units.ready = True
+                    if ordinary_round:
+                        await ordinary_round()
+                        assert len(fixtures.captures) == initial + 1
+                        return fixtures.captures[-1]
                     # Lose the runner after Codex has finished but just before the
                     # final ledger transaction. The next drive has only persisted IDs.
                     commit_result = s.driver.finish
@@ -456,3 +470,54 @@ async def isolated_round(
             subprocess.run, ["docker", "rm", "--force", name], capture_output=True
         )
         await docker("network", "rm", name)
+
+
+async def real_ordinary_round(
+    db, app, monkeypatch, directory, stack, scoped_factory, task, stage
+):
+    from app.application.workbench.formal_execution import (
+        FormalExecution,
+    )
+    from app.infrastructure.workbench.repository import (
+        SqlWorkbenchStores,
+    )
+
+    host = FormalExecution(
+        SqlWorkbenchStores(db),
+        scoped_factory,
+        instructions=stack.driver,
+    )
+
+    async def resume_after_interruption():
+
+        async def interrupt(*args, **kwargs):
+            if kwargs.get("outputs") is not None:
+                raise asyncio.CancelledError
+            raise AssertionError(("ordinary instruction failed", kwargs.get("code")))
+
+        with monkeypatch.context() as interrupted:
+            interrupted.setattr(stack.driver, "finish", interrupt)
+            with pytest.raises(asyncio.CancelledError):
+                async with asyncio.timeout(45):
+                    while True:
+                        state = await host.drive(task)
+                        assert state == "RUNNING", state
+                        await asyncio.sleep(0.15)
+        await asyncio.wait_for(host.drive(task), 45)
+
+    directory.mkdir()
+    stack.units.bindings.clear()
+    stack.units.deliver = None
+    stack.units.deleted = stack.units.reclaimed = False
+    return await isolated_round(
+        db,
+        app,
+        monkeypatch,
+        directory,
+        stack,
+        None,
+        False,
+        False,
+        stage,
+        ordinary_round=resume_after_interruption,
+    )

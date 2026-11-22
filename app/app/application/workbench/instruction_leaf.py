@@ -81,6 +81,18 @@ async def leaf_quote(svc, owner, task, snapshot):
     )
     if ordinary:
         slot = execution_slot(snapshot, int(task["current_step"]))
+        procedure = snapshot.draft.definition.procedure
+        if procedure.kind == "orchestration" and procedure.collaboration:
+            from app.application.workbench.ordinary_local_tools import (
+                check_reviewer_route,
+            )
+            from app.domain.workbench.formal_method_plan_generated import (
+                single_review_edge,
+            )
+
+            edge = single_review_edge(procedure)
+            if edge and slot == edge[1]:
+                await check_reviewer_route(svc.repo, owner, quote)
         basis = {
             k: v for k, v in quote.items() if k not in ("snapshot_digest", "caller")
         }

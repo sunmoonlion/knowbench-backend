@@ -14,6 +14,7 @@ from app.domain.workbench.formal_method_generated import (
 )
 from app.domain.workbench.formal_method_plan_generated import (
     expand_unique_plan,
+    single_review_edge,
     unique_plan,
 )
 from app.domain.workbench.method_authorization import (
@@ -33,7 +34,9 @@ async def fixed_graph(registry, owner, selected, definition):
             needed = set()
             for current in frontier:
                 if isinstance(current.procedure, Orchestration):
-                    if current.procedure.collaboration:
+                    if current.procedure.collaboration and not single_review_edge(
+                        current.procedure
+                    ):
                         return None, "collaboration"
                     for step in unique_plan(current):
                         needed.add(step.candidates[0])
@@ -179,6 +182,11 @@ async def execution_preview(
     steps, experts = [], []
     assets_by_id = {a["id"]: a for a in assets}
     contexts = {(): (bindings["values"], {})}
+    review_edge = (
+        single_review_edge(definition.procedure)
+        if isinstance(definition.procedure, Orchestration)
+        else None
+    )
     for node in graph.nodes if graph else ():
         values, pending = project_arguments(node, *contexts[node.parent_path])
         if node.kind != "tool":
@@ -236,6 +244,7 @@ async def execution_preview(
                         node,
                         values,
                         pending,
+                        reviewer=bool(review_edge and node.path == (review_edge[1],)),
                     )
                 except (WorkbenchError, ValueError):
                     issue("local_tool_unavailable", node.path)
@@ -267,6 +276,11 @@ async def execution_preview(
                     for r in node.definition.access_requirements
                 ],
                 **({"material": pins[node.path]} if node.path in pins else {}),
+                **(
+                    {"independent_review_of": review_edge[0]}
+                    if review_edge and node.path == (review_edge[1],)
+                    else {}
+                ),
                 "from_outputs": pending,
                 "quote": quote,
             }

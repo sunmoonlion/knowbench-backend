@@ -80,6 +80,8 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
 
     units = Units()
     units.task = task
+    units.thread = "thread-a"
+    units.result = result
     issuer = TokenIssuer(generate_private_key_pem())
     turns = []
     provider_requests = []
@@ -106,7 +108,7 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
                 )
                 return {
                     **params,
-                    "thread": {"id": "thread-a"},
+                    "thread": {"id": units.thread},
                     "sandbox": {"type": "readOnly"},
                 }
             assert method == "turn/start" and json.loads(
@@ -155,12 +157,14 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
                 await self.notice(
                     "item/completed",
                     {
-                        "threadId": "thread-a",
+                        "threadId": units.thread,
                         "turnId": turn,
                         "item": {
                             "type": "agentMessage",
                             "text": json.dumps(
-                                result if result is not None else {"summary": "ready"}
+                                units.result
+                                if units.result is not None
+                                else {"summary": "ready"}
                             ),
                         },
                     },
@@ -168,7 +172,7 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
                 await self.notice(
                     "turn/completed",
                     {
-                        "threadId": "thread-a",
+                        "threadId": units.thread,
                         "turn": {"id": turn, "status": "completed"},
                     },
                 )

@@ -8,7 +8,17 @@ from app.domain.workbench.formal_method_admission_generated import (
 )
 
 
-async def local_tool_quote(service, owner, subject, task, node, values, pending):
+async def check_reviewer_route(repo, owner, route):
+    selected = await repo.reviewer_preference(owner)
+    if selected and selected != {
+        k: route[k] for k in ("credential_id", "provider", "model")
+    }:
+        raise CapabilityError("Selected reviewer route is not loaded")
+
+
+async def local_tool_quote(
+    service, owner, subject, task, node, values, pending, *, reviewer=False
+):
     methods = service.formal_registry.methods
     proc = node.definition.procedure
     impl = proc.implementation
@@ -28,6 +38,8 @@ async def local_tool_quote(service, owner, subject, task, node, values, pending)
             str(task["session_id"]), owner_actor_id=owner
         )
         route = await svc.account_quote(owner, session, "CNY")
+        if reviewer:
+            await check_reviewer_route(methods.repo, owner, route)
         return source, {
             "currency": route["currency"],
             "maximum": route["maximum"],
