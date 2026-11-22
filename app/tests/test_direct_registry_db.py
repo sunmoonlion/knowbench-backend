@@ -85,3 +85,24 @@ async def test_author_registers_without_skill_or_incubation(
         client.cookies.set(auth._web_profile.session_cookie_name, "other")
         assert (await client.get(base)).json() == []
         assert (await client.get(path, params={"digest": digest})).status_code == 404
+
+        latest = f"{base}/{sid}/2"
+        pin = {
+            "digest": "sha256:" + hashlib.sha256(edit["content"].encode()).hexdigest()
+        }
+        assert (
+            await client.delete(latest, params=pin, headers=headers)
+        ).status_code == 404
+        client.cookies.set(auth._web_profile.session_cookie_name, "author")
+        assert (await client.delete(latest, params=pin)).status_code == 403
+        assert (
+            await client.delete(path, params={"digest": digest}, headers=headers)
+        ).status_code == 409
+        results = await asyncio.gather(
+            *(client.delete(latest, params=pin, headers=headers) for _ in range(2))
+        )
+        assert all(
+            r.status_code == 200 and r.json() == {"withdrawn": True} for r in results
+        )
+        assert (await client.get(base)).json() == []
+        assert (await client.put(path, json=draft, headers=headers)).status_code == 409

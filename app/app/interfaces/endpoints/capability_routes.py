@@ -157,6 +157,24 @@ async def register_direct_source(
         raise _http(exc) from exc
 
 
+@router.delete("/workbench/method-skill-center/sources/{source_id}/{version}")
+async def withdraw_direct_source(
+    source_id: UUID,
+    version: int = Path(ge=1, le=2147483647),
+    digest: str = Query(pattern=r"^sha256:[a-f0-9]{64}$"),
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    try:
+        async with svc.repo.transaction():
+            await svc.repo.withdraw_direct_source(
+                _actor(user), source_id, version, digest
+            )
+        return {"withdrawn": True}
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.get(
     "/workbench/method-skill-center/sources/{source_id}/{version}",
     response_model=SourceRevision,

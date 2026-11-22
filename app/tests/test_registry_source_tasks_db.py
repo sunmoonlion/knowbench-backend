@@ -13,7 +13,7 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.source_tasks import drive_script, preview, submit
 from app.bootstrap.workbench import capability_service
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.errors import IdempotencyConflict, NotFound
+from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 from app.domain.workbench.registry_sources import SourceDraft
 from app.domain.workbench.source_tasks import SourceTaskConfirmation, SourceTaskInput
 from app.infrastructure.workbench.repository import WorkbenchRepository
@@ -136,7 +136,10 @@ async def test_script_uses_confirmed_version_and_recovers_receipt(db):
         assert json.loads(response.content) == {"receipt": "office"}
 
 
-async def test_instruction_uses_registered_text_and_revocation_blocks_claim(db):
+@pytest.mark.parametrize("withdraw_source", [False, True])
+async def test_instruction_uses_registered_text_and_revocation_blocks_claim(
+    db, withdraw_source
+):
     sid, req, service, _ = await setup(db, "instruction")
     async with db() as session:
         repo = WorkbenchRepository(session)
@@ -153,8 +156,14 @@ async def test_instruction_uses_registered_text_and_revocation_blocks_claim(db):
             "instructions": "把本次参数概括为一句话。",
             "arguments": {"to": "office"},
         }
-        await ledger.request_cancel(tid, owner_actor_id=OWNER)
-        with pytest.raises(CapabilityError):
+        if withdraw_source:
+            async with repo.transaction():
+                await repo.withdraw_direct_source(
+                    OWNER, req.source_id, req.version, req.digest
+                )
+        else:
+            await ledger.request_cancel(tid, owner_actor_id=OWNER)
+        with pytest.raises(NotFound if withdraw_source else CapabilityError):
             await model.claim(
                 OWNER,
                 tid,
@@ -342,6 +351,10 @@ async def test_uncertain_script_is_never_resent_and_late_usage_settles_once(db):
         await drive_script(svc, tid)
         assert (await repo.get_task(tid))["state"] == "FAILED"
         assert (await repo.capability_call(OWNER, cid))["status"] == "unknown"
+        async with repo.transaction():
+            await repo.withdraw_direct_source(
+                OWNER, req.source_id, req.version, req.digest
+            )
         executor.receipts[cid] = receipt
         await svc.reconcile_scripts()
         await svc.reconcile_scripts()
@@ -439,3 +452,46 @@ def test_direct_service_evidence_requires_null_asset_and_connection():
     assert call_matches_source({"source_asset_id": None, "connection_id": None}, source)
     for field in ("source_asset_id", "connection_id"):
         assert not call_matches_source({field: "None"}, source)
+
+
+@pytest.mark.parametrize("kind", ["script", "instruction"])
+async def test_withdraw_source_blocks_all_revisions_and_stale_confirmations(db, kind):
+    sid, req, service, _ = await setup(db, kind)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        svc = service(repo)
+        await preview(svc, OWNER, sid, req)
+        tid = await confirm(svc, sid, req)
+        edit = SourceDraft(kind=kind, name="revised", content="second")
+        async with repo.transaction():
+            second = await repo.register_direct_revision(OWNER, req.source_id, 2, edit)
+        with pytest.raises(NotFound):
+            async with repo.transaction():
+                await repo.withdraw_direct_source(
+                    str(uuid4()), req.source_id, 2, second["digest"]
+                )
+        with pytest.raises(StaleStateVersion):
+            async with repo.transaction():
+                await repo.withdraw_direct_source(OWNER, req.source_id, 1, req.digest)
+        for _ in range(2):
+            async with repo.transaction():
+                await repo.withdraw_direct_source(
+                    OWNER, req.source_id, 2, second["digest"]
+                )
+        async with repo.transaction():
+            assert not await repo.direct_registrations(OWNER)
+            assert await repo.get_task(tid, owner_actor_id=OWNER)
+        for version, digest in [(1, req.digest), (2, second["digest"])]:
+            with pytest.raises(NotFound):
+                async with repo.transaction():
+                    await repo.direct_revision(OWNER, req.source_id, version, digest)
+        with pytest.raises(StaleStateVersion):
+            async with repo.transaction():
+                await repo.register_direct_revision(OWNER, req.source_id, 3, edit)
+        with pytest.raises(NotFound):
+            await preview(svc, OWNER, sid, req)
+        if kind == "script":
+            await drive_script(svc, tid)
+            task = await repo.get_task(tid)
+            assert task["state"] in ("REJECTED", "FAILED")
+            assert not task["active_attempt_id"]

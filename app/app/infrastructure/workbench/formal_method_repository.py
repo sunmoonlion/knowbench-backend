@@ -89,7 +89,7 @@ class FormalMethodRepositoryMixin:
         rows = await self.session.execute(
             text("""
             SELECT source_id,version,kind,name,digest FROM workbench_registry_sources
-            WHERE owner_actor_id=:owner ORDER BY name, source_id, version DESC
+            WHERE owner_actor_id=:owner AND withdrawn_at IS NULL ORDER BY name, source_id, version DESC
         """),
             {"owner": owner},
         )
@@ -101,7 +101,7 @@ class FormalMethodRepositoryMixin:
                 await self.session.execute(
                     text("""
             SELECT source_id,version,kind,name,digest,content FROM workbench_registry_sources
-            WHERE owner_actor_id=:owner AND source_id=:id AND version=:version AND digest=:digest
+            WHERE owner_actor_id=:owner AND source_id=:id AND version=:version AND digest=:digest AND withdrawn_at IS NULL FOR SHARE
         """),
                     {
                         "owner": owner,
@@ -118,6 +118,41 @@ class FormalMethodRepositoryMixin:
             raise NotFound("Registered source revision not found")
         return row
 
+    async def lock_direct_source(self, owner, source_id):
+        await self.session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 71))"),
+            {"key": f"{owner}:{source_id}"},
+        )
+
+    async def withdraw_direct_source(self, owner, source_id, version, digest):
+        await self.lock_direct_source(owner, source_id)
+        params = {"owner": owner, "id": source_id}
+        latest = (
+            (
+                await self.session.execute(
+                    text("""
+            SELECT version,digest,withdrawn_at FROM workbench_registry_sources
+            WHERE owner_actor_id=:owner AND source_id=:id ORDER BY version DESC LIMIT 1
+        """),
+                    params,
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if not latest:
+            raise NotFound("Registered source not found")
+        if latest["version"] != version or latest["digest"] != digest:
+            raise StaleStateVersion("Registered source changed before withdrawal")
+        if latest["withdrawn_at"] is None:
+            await self.session.execute(
+                text("""
+                UPDATE workbench_registry_sources SET withdrawn_at=now()
+                WHERE owner_actor_id=:owner AND source_id=:id AND withdrawn_at IS NULL
+            """),
+                params,
+            )
+
     async def register_direct_revision(self, owner, source_id, version, draft):
         params = {
             "owner": owner,
@@ -126,16 +161,13 @@ class FormalMethodRepositoryMixin:
             **draft.model_dump(),
             "digest": draft.content_digest(),
         }
-        await self.session.execute(
-            text("SELECT pg_advisory_xact_lock(hashtextextended(:key, 71))"),
-            {"key": f"{owner}:{source_id}"},
-        )
+        await self.lock_direct_source(owner, source_id)
         # A retry of any committed revision succeeds even after a newer edit.
         previous = (
             (
                 await self.session.execute(
                     text("""
-            SELECT source_id,version,kind,name,digest FROM workbench_registry_sources
+            SELECT source_id,version,kind,name,digest,withdrawn_at FROM workbench_registry_sources
             WHERE owner_actor_id=:owner AND source_id=:id AND version<=:version
             ORDER BY version DESC LIMIT 1
         """),
@@ -145,12 +177,17 @@ class FormalMethodRepositoryMixin:
             .mappings()
             .first()
         )
+        if previous and previous["withdrawn_at"] is not None:
+            raise StaleStateVersion("Registered source was withdrawn")
         if previous and previous["version"] == version:
             if any(previous[k] != params[k] for k in ("name", "kind", "digest")):
                 raise IdempotencyConflict(
                     "This source version already has different content"
                 )
-            return previous
+            return {
+                k: previous[k]
+                for k in ("source_id", "version", "kind", "name", "digest")
+            }
         expected = previous["version"] + 1 if previous else 1
         if version != expected or (previous and previous["kind"] != draft.kind):
             raise StaleStateVersion(
