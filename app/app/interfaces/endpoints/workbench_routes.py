@@ -11,6 +11,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any, Literal
+from uuid import UUID
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -35,6 +36,11 @@ from app.application.workbench.agent_service import (
     AgentServiceUnconfigured,
     validate_path,
 )
+from app.application.workbench.branch_review_route import (
+    RouteConfirmation,
+    RoutePreviewRequest,
+    branch_route,
+)
 from app.application.workbench.expert_data import ensure_data_session
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.interactions import cancel_task as stop_task
@@ -54,6 +60,7 @@ from app.bootstrap.workbench import (
     delegation_service,
     expert_data,
     knowbase_v2,
+    reviewer_choices,
 )
 from app.bootstrap.workbench import (
     web_workbench_store as workbench_store,
@@ -66,6 +73,7 @@ from app.domain.workbench.provider_url import (
     normalize_mcp_sources,
     validate_provider_base_url,
 )
+from app.domain.workbench.review_routes import ReviewConnection
 from app.infrastructure.storage.postgres import get_db_session, get_postgres
 from app.infrastructure.storage.redis import get_redis
 from app.interfaces.endpoints.commands_wakeup import publish_commands_wakeup
@@ -1208,7 +1216,81 @@ async def deprovision_sandbox(
     return {"contract_version": CONTRACT_VERSION, **result}
 
 
+# ---------------- review of a received trial artifact ----------------
+async def _branch_route(session, principal, run_id, body):
+    from app.application.workbench.formal_test_runs import FormalExecutions
+    from app.bootstrap.workbench import capability_service
+
+    repo = workbench_store(session)
+    try:
+        return await branch_route(
+            FormalExecutions(repo, capability_service(repo)),
+            reviewer_choices(),
+            _actor(principal),
+            str(run_id),
+            body,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/reviews/{run_id}/route-preview")
+async def preview_branch_route(
+    run_id: UUID,
+    body: RoutePreviewRequest,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await _branch_route(session, principal, run_id, body)
+
+
+@router.put("/reviews/{run_id}/route")
+async def confirm_branch_route(
+    run_id: UUID,
+    body: RouteConfirmation,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return await _branch_route(session, principal, run_id, body)
+
+
 # ---------------- settings: prefs & credentials ----------------
+class ReviewerPreference(Strict):
+    reviewer: ReviewConnection | None
+
+
+@router.get("/prefs/reviewer")
+async def get_reviewer_preference(
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    repo = workbench_store(session)
+    async with repo.transaction():
+        return await reviewer_choices().choices(repo, _actor(principal))
+
+
+@router.put("/prefs/reviewer")
+async def save_reviewer_preference(
+    body: ReviewerPreference,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await reviewer_choices().save(
+            workbench_store(session), _actor(principal), body.reviewer
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.get("/prefs")
 async def get_prefs(
     principal: Principal = Depends(get_web_current_user),

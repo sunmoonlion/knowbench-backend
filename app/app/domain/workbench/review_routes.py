@@ -1,10 +1,12 @@
 """Deployment-level route discovery. User grants and observed execution belong to the attempt."""
 
 from typing import Annotated, Literal
+from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.domain.workbench.pricing import PriceList
+from app.domain.workbench.provider_url import validate_provider_base_url
 
 Identifier = Annotated[
     str, Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
@@ -15,6 +17,21 @@ class RouteKey(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     provider: Identifier
     model: Identifier
+
+
+class ReviewConnection(RouteKey):
+    credential_id: UUID
+
+
+class ReviewGrant(ReviewConnection):
+    """Operator-verified model entitlement for this exact BYOK account and endpoint."""
+
+    base_url: str
+
+    @field_validator("base_url")
+    @classmethod
+    def endpoint(cls, value):
+        return validate_provider_base_url(value)
 
 
 class ReviewRoute(RouteKey):

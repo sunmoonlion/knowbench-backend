@@ -109,6 +109,21 @@ def knowlab_incubation_requests():
     return KnowlabIncubationRequests()
 
 
+def reviewer_choices():
+    from app.application.workbench.reviewer_choices import ReviewerChoices
+
+    settings = get_settings()
+    return ReviewerChoices(
+        settings.workbench_review_routes,
+        settings.workbench_review_model_grants,
+        settings.workbench_instruction_routes,
+        settings.workbench_model_prices(),
+        settings.workbench_sandbox_model_provider,
+        settings.workbench_sandbox_model,
+        settings.workbench_sandbox_provider_base_url,
+    )
+
+
 def find_expert_service(session: AsyncSession):
     """AI 请专家（请专家方案设计第 4.9 节）：找专家那一轮、取结果、挂需求、孵化请求。"""
     from app.application.workbench.find_expert import FindExpertService

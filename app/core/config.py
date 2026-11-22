@@ -27,7 +27,7 @@ from app.domain.workbench.resource_delegation import (
     ResourceDelegation,
     ResourceDelegationCatalog,
 )
-from app.domain.workbench.review_routes import ReviewRoute
+from app.domain.workbench.review_routes import ReviewGrant, ReviewRoute
 from app.domain.workbench.script_pricing import ScriptTariff
 from app.domain.workbench.source_licenses import (
     BusinessCoverageReview,
@@ -375,6 +375,10 @@ class Settings(BaseSettings):
         if len(keys) != len(routes):
             raise ValueError("Duplicate instruction provider/model/endpoint route")
         return routes
+
+    workbench_review_model_grants: tuple[ReviewGrant, ...] = Field(
+        default=(), max_length=4096
+    )
 
     workbench_review_routes: tuple[ReviewRoute, ...] = Field(
         default=(), max_length=128, validation_alias="WORKBENCH_REVIEW_ROUTES"

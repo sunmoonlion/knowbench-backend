@@ -2133,6 +2133,25 @@ class WorkbenchRepository(
         )
         return result.scalar_one_or_none()
 
+    async def latest_review_route(self, run_id, case_id, step):
+        result = await self.session.execute(
+            text(
+                "select revision, scope from workbench_review_route_confirmations "
+                "where run_id=:r and case_id=:c and step=:s order by revision desc limit 1"
+            ),
+            {"r": run_id, "c": case_id, "s": step},
+        )
+        return result.mappings().first()
+
+    async def record_review_route(self, run_id, case_id, step, revision, scope):
+        await self.session.execute(
+            text(
+                "insert into workbench_review_route_confirmations(run_id,case_id,step,revision,scope) "
+                "values (:r,:c,:s,:v,cast(:scope as jsonb))"
+            ),
+            {"r": run_id, "c": case_id, "s": step, "v": revision, "scope": _j(scope)},
+        )
+
     async def save_branch_review(self, run_id, case_id, step, review):
         # The caller holds the run lock and has compared the previous draft digest.
         await self.session.execute(
@@ -2361,6 +2380,21 @@ class WorkbenchRepository(
         )
 
     # ---------- user prefs / credentials（设置面） ----------
+    async def reviewer_preference(self, owner: str):
+        return await self.session.scalar(
+            text("select reviewer from workbench_user_prefs where owner_actor_id=:o"),
+            {"o": owner},
+        )
+
+    async def save_reviewer_preference(self, owner: str, reviewer: dict | None):
+        await self.session.execute(
+            text("""insert into workbench_user_prefs(owner_actor_id, reviewer)
+                    values (:o, cast(:reviewer as jsonb))
+                    on conflict(owner_actor_id) do update set reviewer=excluded.reviewer,
+                    updated_at=now()"""),
+            {"o": owner, "reviewer": _j(reviewer) if reviewer else None},
+        )
+
     async def get_prefs(self, owner_actor_id: str) -> dict[str, Any]:
         r = await self.session.execute(
             text(
@@ -2521,6 +2555,17 @@ class WorkbenchRepository(
             {"o": owner_actor_id},
         )
         return [dict(m) for m in r.mappings().all()]
+
+    async def lock_active_credential(
+        self, owner_actor_id: str, credential_id: str
+    ) -> bool:
+        value = await self.session.scalar(
+            text(
+                "select id from workbench_credentials where owner_actor_id = :owner and id = :id and status = 'active' for share"
+            ),
+            {"owner": owner_actor_id, "id": credential_id},
+        )
+        return value is not None
 
     async def revoke_credential(
         self, credential_id: str, *, owner_actor_id: str

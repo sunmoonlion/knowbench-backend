@@ -345,7 +345,9 @@ class FormalExecutions:
             )
         ).model_dump(mode="json", by_alias=True)
 
-    async def receive_branch(self, subject, run_id, command, *, caller):
+    async def receive_branch(
+        self, subject, run_id, command, *, caller, received_only=False
+    ):
         async with self.repo.transaction():
             owner, run, request = await self.load(subject, run_id, caller, lock=True)
             if command.request_id != request.request_id or run["status"] in ACTIVE:
@@ -387,7 +389,7 @@ class FormalExecutions:
             if outputs is None:
                 raise Forbidden("Verified artifact content is unavailable")
             preparing = isinstance(command, PrepareBranchReview)
-            if preparing and not saved["received_at"]:
+            if (preparing or received_only) and not saved["received_at"]:
                 raise Forbidden(
                     "Receive the verified branch before preparing its review"
                 )
