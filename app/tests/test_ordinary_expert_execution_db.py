@@ -224,6 +224,7 @@ async def selected_match(
     subject="author",
     token=None,
     library=None,
+    from_work=False,
 ):
     class Market:
         async def planning_formal_refs(self, subject, refs):
@@ -291,6 +292,14 @@ async def selected_match(
                     path="ordinary",
                     title="Ordinary",
                 )
+            origin = {}
+            if from_work:
+                from app.application.workbench.session_service import SessionService
+
+                source = await SessionService(repo).start(
+                    owner_actor_id=owner, project_id=project, kind="work"
+                )
+                origin = {"source_session": source["session_id"]}
         from test_workbench_routes import principal
 
         from app.interfaces.http.middleware.auth import get_web_current_user
@@ -331,6 +340,7 @@ async def selected_match(
                     "reference": ref,
                     "question": "Please return a receipt",
                     "idempotency_key": "normal-expert-match",
+                    **origin,
                     "match_contract": "knowbench/expert-match/v5",
                 },
             )

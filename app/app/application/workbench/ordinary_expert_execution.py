@@ -108,6 +108,22 @@ async def confirm_execution(
         event_type=CONFIRMED,
         payload=receipt,
     )
+    source_id = task["original_input"]["input"].get("source_session")
+    if source_id:
+        source = await repo.get_session(source_id, owner_actor_id=owner)
+        if source["kind"] == "work" and str(source["project_id"]) == str(
+            task["project_id"]
+        ):
+            await repo.append_event(
+                session_id=source_id,
+                kind="session",
+                event_type="expert/delegation",
+                payload={
+                    "match_task_id": str(task["id"]),
+                    "project_id": str(task["project_id"]),
+                    "question": task["original_input"]["input"]["text"],
+                },
+            )
     if result["created"] and not result.get("queued_behind"):
         session = await repo.get_session(session_id, owner_actor_id=owner)
         await repo.enqueue_command(
