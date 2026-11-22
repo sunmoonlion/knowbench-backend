@@ -7,6 +7,7 @@ not fabricated tasks or permission delegates. All mutations require the Task loc
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from app.application.workbench.delegation_receipts import assign, return_subtree
 from app.application.workbench.method_calls import root_call
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import (
@@ -329,6 +330,18 @@ async def resolve_leaf(repo, task, snapshot, *, create=False):
                     "detail": {**identity, **bound},
                 }
             )
+            if node.kind != "tool":
+                await assign(
+                    repo,
+                    task,
+                    call,
+                    None,
+                    node.step,
+                    node.reference,
+                    node.definition,
+                    arguments,
+                    bindings,
+                )
             await repo.append_event(
                 session_id=session,
                 task_id=str(task["id"]),
@@ -468,6 +481,14 @@ async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
                         "result": {"outcome": outcome, "detail": detail[:2000]},
                     },
                 )
+                if call["detail"].get("path") and _node(snapshot, path).kind != "tool":
+                    await return_subtree(
+                        repo,
+                        task,
+                        call,
+                        "CANCELLED" if outcome == "cancelled" else "FAILED",
+                        failure=detail[:500],
+                    )
             continue
         node = _node(snapshot, path) if path else None
         definition = node.definition if node else invocation_definition(snapshot)
@@ -508,6 +529,7 @@ async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
                 "execution_attempt_id": None,
             },
         )
+        await return_subtree(repo, task, call, "COMPLETED", (artifact,))
         await repo.append_event(
             session_id=session,
             task_id=str(task["id"]),

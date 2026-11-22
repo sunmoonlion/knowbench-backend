@@ -21,6 +21,11 @@ from app.application.workbench.catalog import (
     pin_knowbot,
     viewable_expert,
 )
+from app.application.workbench.delegation_receipts import (
+    HandoffClosure,
+    handoff_evidence,
+    handoffs,
+)
 from app.application.workbench.expert_data import refusal
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.formal_expert_preparation import (
@@ -656,6 +661,57 @@ async def confirm_ordinary_execution(
     receipt = await _preparation(session, principal, task_id, token, submission=body)
     await publish_commands_wakeup()
     return receipt
+
+
+@router.get("/tasks/{task_id}/handoffs")
+async def read_child_handoffs(
+    task_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await handoffs(workbench_store(session), _actor(principal), str(task_id))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/tasks/{task_id}/handoffs/{child_id}/artifacts/{artifact_id}")
+async def read_child_evidence(
+    task_id: UUID,
+    child_id: UUID,
+    artifact_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await handoff_evidence(
+            workbench_store(session),
+            _actor(principal),
+            str(task_id),
+            str(child_id),
+            str(artifact_id),
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/tasks/{task_id}/handoffs")
+async def close_child_handoffs(
+    task_id: UUID,
+    body: HandoffClosure,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await handoffs(
+            workbench_store(session), _actor(principal), str(task_id), body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.get("/tasks/{task_id}/partial-delivery")

@@ -448,7 +448,20 @@ class FormalOrchestrationExecution:
                             **instruction_meta,
                         },
                     )
+                    from app.application.workbench.delegation_receipts import assign
+
                     active = opened["attempt_id"]
+                    await assign(
+                        repo,
+                        task,
+                        child,
+                        str(active),
+                        step,
+                        frozen.reference,
+                        frozen.draft.definition,
+                        arguments,
+                        bindings,
+                    )
                     await led.attempt_transition(str(active), AttemptState.RUNNING)
                     task = await repo.get_task(task_id)
                 attempt = await repo.get_attempt(str(active), for_update=True)

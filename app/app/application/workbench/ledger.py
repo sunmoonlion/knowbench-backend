@@ -1384,6 +1384,19 @@ class Ledger:
                 task_id=str(task["id"]),
                 attempt_id=attempt_id,
             )
+            if refs.get("kind") == "formal_orchestration_step":
+                from app.application.workbench.delegation_receipts import record_state
+
+                await record_state(
+                    self.repo,
+                    task,
+                    attempt,
+                    target,
+                    output_artifacts,
+                    failure_code,
+                    consumed,
+                    usage_pending,
+                )
             # 预算硬停：Attempt 超限 → Task WAITING(RESOURCE)，追加须用户批准（C-A10、AT-12）
             if target is AttemptState.BUDGET_EXCEEDED:
                 await self.repo.flush()

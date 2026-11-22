@@ -2397,6 +2397,24 @@ class Capabilities:
         async with self.repo.transaction():
             await self._locked_call_session(owner, call)
             current = await self.repo.capability_call(owner, call_id, lock=True)
+            if call.get("task_id") and call.get("attempt_id"):
+                from app.application.workbench.delegation_receipts import record_late
+                from app.domain.workbench.states import ATTEMPT_TERMINAL, TASK_TERMINAL
+
+                settled_task = await self.repo.get_task(call["task_id"])
+                settled_attempt = await self.repo.get_attempt(call["attempt_id"])
+                if (
+                    settled_task["state"] in TASK_TERMINAL
+                    or settled_attempt["status"] in ATTEMPT_TERMINAL
+                ):
+                    await record_late(
+                        self.repo,
+                        settled_task,
+                        settled_attempt,
+                        call_id,
+                        status,
+                        intent["result"],
+                    )
             if current["status"] != "dispatching":
                 return public_call(current)
             await self.repo.update_call(owner, call_id, status, intent)
