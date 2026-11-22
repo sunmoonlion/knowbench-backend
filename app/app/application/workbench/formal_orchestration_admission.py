@@ -1021,6 +1021,39 @@ def _tree_case(
         return export_outputs(definition, accepted)
 
     outputs = visit(snapshot.draft.definition, snapshot.arguments, (), root_id)
+    confirmations = sorted(
+        (leaf["governance"]["confirmation_event"] for leaf in leaves),
+        key=lambda e: e["cursor"],
+    )
+    for path, initial in initial_scopes.items():
+        if not path:
+            continue
+        created = scopes[path]["created"]
+        parent_fact = scopes[path[:-1]]
+        parent_created = parent_fact["created"]
+        parent = initial_scopes[path[:-1]]
+        require(
+            parent_created["cursor"] < created["cursor"]
+            and datetime.fromisoformat(parent_created["created_at"])
+            <= datetime.fromisoformat(created["created_at"])
+            and not any(
+                event["cursor"] < created["cursor"]
+                for event in parent_fact["revocations"]
+            ),
+            "Sealed scope was created before its parent or after parent revocation",
+        )
+        for confirmation in confirmations:
+            if confirmation["cursor"] >= created["cursor"]:
+                break
+            document = confirmation["payload"]["parent_authorization"]
+            if document["call_id"] == str(parent.call_id):
+                parent = MethodAuthorization.model_validate(document)
+        require(
+            initial.parent_revision == parent.revision
+            and not parent.revoked
+            and datetime.fromisoformat(created["created_at"]) < parent.expires_at,
+            "Sealed scope parent revision was not effective at creation",
+        )
     for path, current in currents.items():
         versions = histories[path]
         prior = next(

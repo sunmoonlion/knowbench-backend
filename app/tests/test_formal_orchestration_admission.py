@@ -683,6 +683,36 @@ def test_retained_tree_recomputes_scope_and_leaf_proofs():
     )
 
 
+@pytest.mark.parametrize("changed", ["future_revision", "parent_created_later"])
+def test_retained_tree_requires_parent_authority_at_scope_creation(changed):
+    root, request, evidence, resolved = tree_shape()
+    item = evidence["cases"][0]
+    middle, leaf = item["nodes"]
+    if changed == "future_revision":
+        # Keep every redundant projection consistent. Root revision 2 only
+        # exists at the leaf approval, after this middle scope was created.
+        middle["scope_authorization"]["parent_revision"] = 2
+        middle["scope_facts"]["authorization"]["parent_revision"] = 2
+        middle["scope_facts"]["created"]["payload"]["authorization"][
+            "parent_revision"
+        ] = 2
+        leaf["governance"]["scope_authorizations"][1]["parent_revision"] = 2
+        error = "parent revision was not effective"
+    else:
+        item["root_scope_facts"]["created"]["cursor"] = 2
+        middle["scope_facts"]["created"]["cursor"] = 1
+        error = "created before its parent"
+    with pytest.raises(CapabilityError, match=error):
+        verify_sealed_plan(
+            OWNER,
+            root,
+            request,
+            evidence,
+            resolved,
+            operations=OperationCatalog((FORMAL_OPERATION,)),
+        )
+
+
 @pytest.mark.parametrize(
     "changed",
     [
