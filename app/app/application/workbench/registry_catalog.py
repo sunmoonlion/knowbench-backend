@@ -202,7 +202,9 @@ class SceneRegistry:
             terms=search_terms(*positive_fields(declaration)) if declaration else [],
         )
 
-    async def planning_versions(self, owner, limit, offset, *, query=None):
+    async def planning_versions(
+        self, owner, limit, offset, *, query=None, locked=False
+    ):
         terms = search_terms(query.question) if query and query.question else []
         experts_only = bool(query and query.stage == "expert")
         # Bound both the authorization request and the in-memory ranking window.
@@ -210,7 +212,7 @@ class SceneRegistry:
         window = (100 // limit) * limit
         start, within = divmod(offset, window)
         start *= window
-        async with self.repo.transaction(independent=True):
+        async with self.repo.transaction(independent=not locked):
             subject = await self.repo.subject_of_actor(owner)
             if not subject or self.market is None:
                 raise CapabilityError("Formal method use qualification is unavailable")
@@ -237,12 +239,14 @@ class SceneRegistry:
             next_page = start + window
         return {"items": visible[:limit], "next": next_page}
 
-    async def planning_definitions(self, owner, references, *, experts_only=False):
+    async def planning_definitions(
+        self, owner, references, *, experts_only=False, locked=False
+    ):
         """Exact consumer pins for one graph frontier; resolve market rights outside SQL."""
         requested = set(references)
         if not requested:
             return {}
-        async with self.repo.transaction(independent=True):
+        async with self.repo.transaction(independent=not locked):
             subject = await self.repo.subject_of_actor(owner)
         if not subject or self.market is None:
             raise CapabilityError("Formal method use qualification is unavailable")
@@ -391,7 +395,9 @@ class SceneRegistry:
                 from app.domain.workbench.ordinary_expert import ConsumerPlan
 
                 plan = ConsumerPlan.model_validate(task["pack_snapshot"])
-                refs = [plan.reference, *(d.reference for d in plan.dependencies)]
+                refs = [d.reference for d in plan.dependencies]
+                if not plan.temporary:
+                    refs.append(plan.reference)
                 subject = await self.repo.subject_of_actor(str(task["owner_actor_id"]))
             else:
                 refs = []

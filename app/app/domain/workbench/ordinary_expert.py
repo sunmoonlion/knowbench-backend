@@ -34,6 +34,7 @@ class ConsumerPlan(Strict):
     runtime_contract: Literal["knowbench/formal-expert/v1"] = (
         "knowbench/formal-expert/v1"
     )
+    temporary: bool = Field(default=False, exclude_if=lambda value: not value)
     match_task_id: UUID
     preparation_revision: int = Field(gt=0)
     preview_digest: Digest

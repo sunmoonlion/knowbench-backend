@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator
 
 from app.application.workbench.formal_expert_intake import (
+    ENDED,
     REVISION,
     SELECTION,
     read_verified,
@@ -161,6 +162,8 @@ async def prepare(
         execution_sources,
         replay,
     )
+    from app.application.workbench.temporary_planning import PLAN
+    from app.domain.workbench.formal_method_generated import FormalMethodDefinition
 
     repo = service.repo
     if submission:
@@ -177,9 +180,11 @@ async def prepare(
                 "This preparation already has a confirmed execution"
             )
         selection = await repo.list_task_events(task_id, types=(SELECTION,))
+        temporary = await repo.latest_task_payload(task_id, PLAN)
         if (
             task["state"] != "SUCCEEDED"
-            or not selection
+            or not (selection or temporary)
+            or await repo.latest_task_payload(task_id, ENDED)
             or await repo.list_task_events(task_id, types=(REVISION,))
         ):
             raise StaleStateVersion("Select an expert in the current question first")
@@ -187,9 +192,24 @@ async def prepare(
         review = await read_verified(repo, task, artifact)
         saved = await repo.latest_task_payload(task_id, PREPARATION)
     registry = service.formal_registry
-    selected, definition, _ = await selected_definition(
-        registry, owner, review, selection
-    )
+    if temporary:
+        from app.domain.workbench.planning_capabilities import capabilities
+
+        if temporary["runtime"] != capabilities(service):
+            raise StaleStateVersion(
+                "Runner capabilities changed; rebuild this temporary sketch"
+            )
+        selected = temporary["reference"]
+        definition = FormalMethodDefinition.model_validate(temporary["definition"])
+        if (
+            definition.digest() != selected["digest"]
+            or temporary["approval"]["review_digest"] != review["review_digest"]
+        ):
+            raise StaleStateVersion("Temporary root differs from its reviewed problem")
+    else:
+        selected, definition, _ = await selected_definition(
+            registry, owner, review, selection
+        )
     inputs = definition.interfaces()["inputs"]
     from app.domain.workbench.formal_method_generated import MethodRef, ValueSlot
 
@@ -232,7 +252,7 @@ async def prepare(
     names, invalid_materials = await check_materials(library, user_token, materials)
     async with repo.transaction():
         await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
-        if await repo.list_task_events(task_id, types=(REVISION,)):
+        if await repo.list_task_events(task_id, types=(REVISION, ENDED)):
             raise StaleStateVersion("The question has been revised")
         receipt = await repo.latest_task_payload(task_id, CONFIRMED)
         if receipt and submission:
@@ -333,11 +353,20 @@ async def prepare(
                 ):
                     raise StaleStateVersion("Execution scope changed or is incomplete")
                 expected = {node.reference: node.definition for node in graph.nodes}
-                expected[MethodRef.model_validate(selected)] = definition
+                if not temporary or not temporary["local_root"]:
+                    expected[MethodRef.model_validate(selected)] = definition
                 if await registry.local_definitions(owner, set(expected)) != expected:
                     raise StaleStateVersion("Method registration changed since preview")
                 return await confirm_execution(
-                    repo, owner, task, selected, definition, graph, preview, sources
+                    repo,
+                    owner,
+                    task,
+                    selected,
+                    definition,
+                    graph,
+                    preview,
+                    sources,
+                    temporary=bool(temporary and temporary["local_root"]),
                 )
             return preview
     return {

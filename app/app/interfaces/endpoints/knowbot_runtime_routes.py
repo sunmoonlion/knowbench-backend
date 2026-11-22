@@ -373,6 +373,16 @@ async def method_skill_center_incubation_methods(
         raise _http(exc) from exc
 
 
+@router.get("/planning-capabilities")
+async def planning_capabilities(
+    _: FormalCaller, session: Annotated[AsyncSession, Depends(get_db_session)]
+):
+    from app.bootstrap.workbench import find_expert_service
+    from app.domain.workbench.planning_capabilities import capabilities
+
+    return _out(capabilities(find_expert_service(session)))
+
+
 @router.get("/users/{subject}/formal-method-sources")
 async def formal_sources(_: FormalCaller, subject: str, svc: FormalService):
     try:

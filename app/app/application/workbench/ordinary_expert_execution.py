@@ -42,7 +42,7 @@ def execution_sources(graph, preview, subject, assets, methods, local_sources):
 
 
 async def confirm_execution(
-    repo, owner, task, selected, definition, graph, preview, sources
+    repo, owner, task, selected, definition, graph, preview, sources, *, temporary=False
 ):
     methods = {}
     for node in graph.nodes:
@@ -60,6 +60,7 @@ async def confirm_execution(
             )
         methods[node.reference] = method
     plan = ConsumerPlan(
+        temporary=temporary,
         match_task_id=task["id"],
         preparation_revision=preview["revision"],
         preview_digest=preview["preview_digest"],
@@ -163,7 +164,27 @@ async def check_execution(methods, owner, task, plan, grants):
     ):
         raise CapabilityError("Missing matching owner confirmation for this execution")
     expected = {d.reference: d.draft.definition for d in plan.dependencies}
-    expected[plan.reference] = plan.draft.definition
+    from app.application.workbench.temporary_planning import PLAN
+
+    adopted = await repo.latest_task_payload(str(plan.match_task_id), PLAN)
+    if adopted and (
+        not methods.planning_runtime or adopted["runtime"] != methods.planning_runtime()
+    ):
+        raise CapabilityError(
+            "The runner changed after the temporary plan was approved"
+        )
+    if plan.temporary:
+        if (
+            not adopted
+            or not adopted["local_root"]
+            or adopted["reference"] != plan.reference.model_dump(mode="json")
+            or adopted["definition"] != plan.draft.definition.document()
+        ):
+            raise CapabilityError(
+                "The confirmed temporary root does not match the owner’s sketch"
+            )
+    else:
+        expected[plan.reference] = plan.draft.definition
     allowed = (grants or {}).get("ordinary_refs", set())
     if set(expected) != allowed:
         raise CapabilityError("Ordinary method use qualification changed")

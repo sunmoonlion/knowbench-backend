@@ -53,9 +53,11 @@ class FormalMethods:
         source_licenses=(),
         review_inputs=None,
         review_policy=None,
+        planning_runtime=None,
         business_reviews=(),
         now: Callable[[], datetime] | None = None,
     ):
+        self.planning_runtime = planning_runtime
         self.review_inputs = review_inputs
         self.review_policy = review_policy
         self.repo = repo

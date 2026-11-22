@@ -301,6 +301,12 @@ class Settings(BaseSettings):
         max_length=100,
         validation_alias="KNOWBOT_DYNAMIC_TEST_OWNERS",
     )
+    expert_unified_entry_enabled: bool = Field(
+        default=False, validation_alias="EXPERT_UNIFIED_ENTRY_ENABLED"
+    )
+    expert_planning_owners: tuple[str, ...] = Field(
+        default=(), max_length=100, validation_alias="EXPERT_PLANNING_OWNERS"
+    )
     knowbot_dynamic_market_owners: tuple[str, ...] = Field(
         default=(),
         max_length=100,
@@ -527,6 +533,7 @@ class Settings(BaseSettings):
     @field_validator(
         "knowbot_dynamic_test_owners",
         "knowbot_dynamic_market_owners",
+        "expert_planning_owners",
         "workbench_fixed_as_plan_owners",
     )
     @classmethod

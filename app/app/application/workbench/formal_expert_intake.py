@@ -1,17 +1,41 @@
 """Scoped directory evidence, verified proposals and user selection on the match task."""
 
 import json
+from uuid import uuid4
 
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_expert_match import frozen_scope, verify_options
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_search import PlanningQuery
+from app.domain.workbench.models import Budget
 
 DIRECTORY = "task/formal_expert_directory"
 SELECTION = "task/formal_expert_selected"
 REVISION = "task/formal_expert_revised"
 ENDED = "task/formal_expert_ended"
+
+
+async def check_handoff(repo, task_id):
+    from app.application.workbench.formal_handoff import INTENT, RECEIPT
+
+    if await repo.latest_task_payload(
+        task_id, INTENT
+    ) and not await repo.latest_task_payload(task_id, RECEIPT):
+        raise StaleStateVersion("Recover the pending KnowLab receipt first")
+
+
+async def cancel_planner(repo, owner, task_id):
+    from app.application.workbench.ledger import Ledger
+    from app.application.workbench.temporary_planning import ROUND
+
+    planning = await repo.latest_task_payload(task_id, ROUND)
+    if planning and planning["planning_task"]:
+        child = await repo.get_task(planning["planning_task"], owner_actor_id=owner)
+        if child["state"] not in ("FAILED", "SUCCEEDED", "REJECTED", "CANCELLED"):
+            await Ledger(repo).request_cancel(
+                planning["planning_task"], owner_actor_id=owner
+            )
 
 
 async def previous_round(repo, owner, project_id, task_id):
@@ -28,6 +52,11 @@ async def previous_round(repo, owner, project_id, task_id):
         raise StaleStateVersion("A newer revision already exists")
     if await repo.latest_task_payload(task_id, ENDED):
         raise StaleStateVersion("This expert request has ended")
+    from app.domain.workbench.ordinary_expert import CONFIRMED
+
+    if await repo.latest_task_payload(task_id, CONFIRMED):
+        raise StaleStateVersion("A confirmed execution retains its original question")
+    await check_handoff(repo, task_id)
     return previous
 
 
@@ -96,7 +125,66 @@ async def verified_result(repo, task, artifact):
     }
 
 
+async def record_empty(repo, owner, session, request):
+    """Persist a host directory observation without a model turn or dispatch budget."""
+    task_id = str(uuid4())
+    await repo.insert_task(
+        {
+            "id": task_id,
+            "owner_actor_id": owner,
+            "session_id": str(session["id"]),
+            "environment_id": str(session["environment_id"]),
+            "project_root": session["project_root"],
+            "project_id": str(session["project_id"]),
+            "tenant": "default",
+            "profile_id": request.profile_id,
+            "profile_version": request.profile_version,
+            "idempotency_key": request.idempotency_key,
+            "request_digest": request.digest(),
+            "original_input": {
+                "input": request.original_input,
+                "attachments": [],
+                "client_context": {"entry": "empty-expert-directory"},
+            },
+            "state": "SUCCEEDED",
+            "budget": Budget().as_json(),
+        }
+    )
+    await repo.append_event(
+        session_id=str(session["id"]),
+        kind="task",
+        task_id=task_id,
+        event_type="task/state",
+        payload={"to": "SUCCEEDED", "reason": {"code": "empty_expert_directory"}},
+    )
+    return {"task_id": task_id}
+
+
 async def read_verified(repo, task, artifact):
+    if (
+        task["original_input"].get("client_context", {}).get("entry")
+        == "empty-expert-directory"
+    ):
+        directory = await snapshot(repo, task)
+        if directory != {"items": [], "next": None} or artifact is not None:
+            raise StaleStateVersion("Invalid empty expert directory receipt")
+        question = task["original_input"]["input"]["text"]
+        return {
+            "question": question,
+            "more": False,
+            "options": [],
+            "review_digest": digest(
+                [str(task["id"]), task["original_input"], directory]
+            ),
+            "source": "empty_directory",
+            "match": {
+                "outcome": "no_match",
+                "picks": [],
+                "requirements": [],
+                "clarification": None,
+                "explanation": "",
+            },
+        }
     if artifact is None:
         raise StaleStateVersion("Missing matching result")
     try:
@@ -151,6 +239,9 @@ async def review(repo, registry, owner, task, artifact):
     async with repo.transaction():
         if await repo.list_task_events(str(task["id"]), types=(REVISION,)):
             raise StaleStateVersion("The question has been revised")
+        from app.application.workbench.formal_handoff import context
+
+        result.update(await context(repo, task, result["review_digest"]))
         ended = await repo.latest_task_payload(str(task["id"]), ENDED)
         if ended is not None and ended.get("review_digest") != result["review_digest"]:
             raise StaleStateVersion("The closed matching result has changed")
@@ -226,6 +317,14 @@ async def end_unmatched(repo, owner, task_id, review_digest):
             raise StaleStateVersion(
                 "This result does not establish the reviewed expert gap"
             )
+        from app.domain.workbench.ordinary_expert import CONFIRMED
+
+        if await repo.latest_task_payload(task_id, CONFIRMED):
+            raise StaleStateVersion(
+                "An execution is already confirmed; manage it in the original project"
+            )
+        await cancel_planner(repo, owner, task_id)
+        await check_handoff(repo, task_id)
         receipt = {"review_digest": review_digest}
         previous = await repo.latest_task_payload(task_id, ENDED)
         if previous is None:

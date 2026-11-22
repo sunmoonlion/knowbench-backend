@@ -133,6 +133,8 @@ def find_expert_service(session: AsyncSession):
     return FindExpertService(
         repo,
         formal_registry=capabilities.formal_sources.registry,
+        unified_entry_enabled=get_settings().expert_unified_entry_enabled,
+        planning_owners=frozenset(get_settings().expert_planning_owners),
         material_read_enabled=capabilities.data_function is not None,
         script_enabled=capabilities.script_executor is not None,
         instruction_service=capabilities.instruction_service,

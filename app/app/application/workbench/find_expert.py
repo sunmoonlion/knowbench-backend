@@ -120,10 +120,9 @@ async def find_expert(
     repo: WorkbenchStore, directory: ExpertDirectory | None, working: dict[str, Any]
 ) -> dict[str, Any]:
     """工具 `find_expert`：这个用户请得动的专家的公开信息（不排序，按名称）。"""
-    if (
-        working.get("profile_id") == FIND_EXPERT.profile_id
-        and str(working.get("profile_version")) == "5"
-    ):
+    if working.get("profile_id") == FIND_EXPERT.profile_id and str(
+        working.get("profile_version")
+    ) in {"5", "6"}:
         raise FindExpertRefused("This match already has its scoped declarations")
     if working.get("profile_id") == FIND_EXPERT.profile_id and str(
         working.get("profile_version")
@@ -243,6 +242,8 @@ class FindExpertService:
         *,
         directory: ExpertDirectory | None = None,
         formal_registry=None,
+        unified_entry_enabled: bool = False,
+        planning_owners: frozenset[str] = frozenset(),
         material_read_enabled: bool = False,
         script_enabled: bool = False,
         instruction_service=None,
@@ -252,6 +253,8 @@ class FindExpertService:
     ) -> None:
         self.repo = repo
         self.directory = directory
+        self.unified_entry_enabled = unified_entry_enabled
+        self.planning_owners = planning_owners
         self.formal_registry = formal_registry
         self.material_read_enabled = material_read_enabled
         self.script_enabled = script_enabled
@@ -259,6 +262,11 @@ class FindExpertService:
         self.demands = demands
         self.incubations = incubations
         self.now = now
+
+    def planning_enabled(self, subject):
+        return bool(
+            subject and (self.unified_entry_enabled or subject in self.planning_owners)
+        )
 
     async def start(
         self,
@@ -278,6 +286,7 @@ class FindExpertService:
         expert: str | None = None,
         reference: MethodRef | None = None,
         directory_offset: int = 0,
+        retain_empty: bool = False,
         revises: str | None = None,
         source_session: str | None = None,
     ) -> dict[str, Any]:
@@ -304,6 +313,10 @@ class FindExpertService:
             reference is not None or revises is not None or source_session is not None
         ) and not formal:
             raise FindExpertRefused("A formal method needs an exact-version match")
+        if retain_empty and not formal:
+            raise FindExpertRefused(
+                "Retaining an empty result requires a formal expert search"
+            )
         if directory_offset and (not formal or reference is not None):
             raise FindExpertRefused(
                 "Pagination requires an unnamed formal expert search"
@@ -322,6 +335,7 @@ class FindExpertService:
                 ),
                 original_input={
                     "text": text,
+                    **({"retain_empty": True} if retain_empty else {}),
                     **(
                         {"directory_offset": directory_offset}
                         if directory_offset
@@ -371,7 +385,9 @@ class FindExpertService:
                     reference,
                     offset=directory_offset,
                 )
-                if not directory["items"]:
+                if not directory["items"] and (
+                    not retain_empty or directory["next"] is not None
+                ):
                     if revises:
                         async with self.repo.transaction():
                             await formal_expert_intake.previous_round(
@@ -416,10 +432,20 @@ class FindExpertService:
                 project_id=project_id,
                 title=f"找专家：{text}"[:200],
             )
-            made = await Ledger(self.repo).handover(
-                request(started["session_id"]), owner_actor_id=owner_actor_id
-            )
+            session = await self.repo.get_session(started["session_id"])
+            host_result = directory is not None and not directory["items"]
+            if host_result:
+                made = await formal_expert_intake.record_empty(
+                    self.repo, owner_actor_id, session, request(started["session_id"])
+                )
+            else:
+                made = await Ledger(self.repo).handover(
+                    request(started["session_id"]), owner_actor_id=owner_actor_id
+                )
             if previous is not None:
+                await formal_expert_intake.cancel_planner(
+                    self.repo, owner_actor_id, str(previous["id"])
+                )
                 await self.repo.append_event(
                     session_id=str(previous["session_id"]),
                     kind="task",
@@ -435,8 +461,7 @@ class FindExpertService:
                     event_type=formal_expert_intake.DIRECTORY,
                     payload=directory,
                 )
-            session = await self.repo.get_session(started["session_id"])
-            if not made.get("queued_behind"):
+            if not host_result and not made.get("queued_behind"):
                 await self.repo.enqueue_command(
                     session_id=started["session_id"],
                     sandbox_id=str(session["sandbox_id"]),
@@ -483,7 +508,21 @@ class FindExpertService:
                             "The confirmed expert delivery could not be verified"
                         )
                     delivery = output["content"]
+                from app.application.workbench.formal_handoff import context
+
+                evidence = await self.repo.get_artifact(
+                    task_id=task_id, name="find_expert"
+                )
+                review = await formal_expert_intake.read_verified(
+                    self.repo, task, evidence
+                )
                 return base | {
+                    "temporary_delivery": bool(
+                        await self.repo.latest_task_payload(
+                            task_id, "task/temporary_plan_adopted"
+                        )
+                    ),
+                    "feedback": await context(self.repo, task, review["review_digest"]),
                     "execution": execution,
                     "execution_state": delegated["state"],
                     "delivery": delivery,
@@ -511,11 +550,13 @@ class FindExpertService:
             task_id=str(task["id"]), name=step.output_artifact
         )
         if str(task.get("profile_version")) == "5":
-            return base | {
-                "formal": await formal_expert_intake.review(
-                    self.repo, self.formal_registry, owner_actor_id, task, found
-                )
-            }
+            reviewed = await formal_expert_intake.review(
+                self.repo, self.formal_registry, owner_actor_id, task, found
+            )
+            reviewed["planning_available"] = self.planning_enabled(
+                await self.repo.subject_of_actor(owner_actor_id)
+            )
+            return base | {"formal": reviewed}
         if str(task.get("profile_version")) in {"2", "3", "4"}:
             if found is None:
                 return base | {"error": "matching result is missing"}

@@ -145,10 +145,16 @@ class Capabilities:
 
         self.resource_delegations = ResourceDelegationCatalog(resource_delegations)
         from app.application.workbench.formal_methods import FormalMethods
+        from app.domain.workbench.planning_capabilities import host_capabilities
 
         self.formal_sources = FormalMethods(
             repo,
             market=formal_market,
+            planning_runtime=lambda: host_capabilities(
+                self.instruction_service is not None,
+                self.script_executor is not None,
+                self.data_function is not None,
+            ),
             operations=operations,
             script_tariff=script_tariff,
             source_licenses=source_licenses,

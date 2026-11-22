@@ -225,8 +225,14 @@ async def selected_match(
     token=None,
     library=None,
     from_work=False,
+    planning_choice=None,
+    incubations=None,
 ):
     class Market:
+        async def planning_window(self, subject, offset, limit):
+            assert planning_choice is not None and offset == 0
+            return list(qualified)[:limit], False
+
         async def planning_formal_refs(self, subject, refs):
             assert subject == "author"
             return qualified.intersection(MethodRef.model_validate(r) for r in refs)
@@ -265,7 +271,10 @@ async def selected_match(
         "explanation": "One candidate",
         "clarification": None,
     }
-    model = ScriptedAppServer([json.dumps(proposal)])
+    replies = [json.dumps(proposal)]
+    if planning_choice is not None:
+        replies = [json.dumps(planning_choice)]
+    model = ScriptedAppServer(replies)
     await model.start()
     runner = runner_for(db)
     runner.capabilities = factory
@@ -315,6 +324,10 @@ async def selected_match(
             return FindExpertService(
                 repo,
                 formal_registry=capabilities.formal_sources.registry,
+                incubations=incubations,
+                planning_owners=frozenset({subject})
+                if planning_choice
+                else frozenset(),
                 material_read_enabled=capabilities.data_function is not None,
                 script_enabled=capabilities.script_executor is not None,
                 instruction_service=capabilities.instruction_service,
@@ -337,7 +350,11 @@ async def selected_match(
             response = await client.post(
                 f"/api/workbench/projects/{project}/find-expert",
                 json={
-                    "reference": ref,
+                    **(
+                        {"retain_empty": True}
+                        if planning_choice
+                        else {"reference": ref}
+                    ),
                     "question": "Please return a receipt",
                     "idempotency_key": "normal-expert-match",
                     **origin,
@@ -354,9 +371,12 @@ async def selected_match(
                 "reference": ref,
                 "review_digest": result["formal"]["review_digest"],
             }
-            assert (
-                await client.put(path + "/selection", json=selected)
-            ).status_code == 200
+            if planning_choice is None:
+                assert (
+                    await client.put(path + "/selection", json=selected)
+                ).status_code == 200
+            else:
+                assert result["formal"]["source"] == "empty_directory"
             yield client, path, selected, runner, factory, model
     finally:
         await close(runner)

@@ -16,6 +16,7 @@ from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.application.workbench import planning_probe, temporary_planning
 from app.application.workbench.catalog import (
     my_knowbots,
     pin_knowbot,
@@ -33,10 +34,12 @@ from app.application.workbench.formal_expert_preparation import (
     Preparation,
     prepare,
 )
+from app.application.workbench.formal_handoff import Handoff, transfer
 from app.application.workbench.ordinary_partial_delivery import (
     BranchReceipt,
     partial_delivery,
 )
+from app.application.workbench.temporary_planning import Adoption, PlanningRequest
 from app.bootstrap.workbench import (
     delegation_service,
     dynamic_market_owners,
@@ -461,6 +464,16 @@ async def project_board(
     return {"contract_version": CONTRACT_VERSION, **view}
 
 
+@router.get("/expert/entry")
+async def expert_entry(
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    return {"unified": find_expert_service(session).planning_enabled(principal.subject)}
+
+
 @router.get("/expert/overview")
 async def expert_overview(
     principal: Principal = Depends(get_web_current_user),
@@ -519,6 +532,7 @@ class FindExpertIn(BaseModel):
     ] = "knowbench/expert-match/v1"
     expert: str | None = Field(default=None, max_length=128)
     reference: MethodRef | None = None
+    retain_empty: bool = Field(default=False, strict=True)
     directory_offset: int = Field(default=0, strict=True, ge=0, le=2147483647)
     revises: UUID | None = None
     source_session: UUID | None = None
@@ -567,6 +581,7 @@ async def start_find_expert(
             expert=body.expert,
             reference=body.reference,
             directory_offset=body.directory_offset,
+            retain_empty=body.retain_empty,
             revises=str(body.revises) if body.revises else None,
             source_session=str(body.source_session) if body.source_session else None,
         )
@@ -575,6 +590,170 @@ async def start_find_expert(
     if made.get("task_id"):
         await publish_commands_wakeup()
     return {"contract_version": CONTRACT_VERSION, **made}
+
+
+@router.get("/find-expert/{task_id}/temporary-plan/audit")
+async def planning_audit(
+    task_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await temporary_planning.audit(
+            find_expert_service(session), _actor(principal), str(task_id)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/find-expert/{task_id}/temporary-plan/materials")
+async def planning_materials(
+    task_id: UUID,
+    review_digest: str,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    service = find_expert_service(session)
+    owner = _actor(principal)
+    try:
+        async with service.repo.transaction():
+            await temporary_planning.current(
+                service.repo, owner, str(task_id), review_digest
+            )
+            if not service.planning_enabled(await service.repo.subject_of_actor(owner)):
+                raise temporary_planning.NotFound("Planning is unavailable")
+        return {"materials": await knowbase_v2().preparation_shelf(await token())}
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    except Exception as exc:
+        translated = refusal(exc)
+        if translated is None:
+            raise
+        raise _http(translated) from exc
+
+
+@router.put("/find-expert/{task_id}/temporary-plan/probe")
+async def inspect_planning_column(
+    task_id: UUID,
+    body: planning_probe.Probe,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    try:
+        return await planning_probe.run(
+            find_expert_service(session),
+            _actor(principal),
+            str(task_id),
+            body,
+            knowbase_v2(),
+            token,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    except Exception as exc:
+        translated = refusal(exc)
+        if translated is None:
+            raise
+        raise _http(translated) from exc
+
+
+@router.put("/find-expert/{task_id}/temporary-plan")
+async def start_temporary_plan(
+    task_id: UUID,
+    body: PlanningRequest,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+    token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
+):
+    try:
+        result = await temporary_planning.start(
+            find_expert_service(session),
+            _actor(principal),
+            str(task_id),
+            body,
+            library=knowbase_v2(),
+            token=token,
+        )
+        if result["planning_task"]:
+            await publish_commands_wakeup()
+        return result
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    except Exception as exc:
+        translated = refusal(exc)
+        if translated is None:
+            raise
+        raise _http(translated) from exc
+
+
+@router.get("/find-expert/{task_id}/temporary-plan")
+async def read_temporary_plan(
+    task_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await temporary_planning.sketch(
+            find_expert_service(session), _actor(principal), str(task_id)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/temporary-plan/adoption")
+async def adopt_temporary_plan(
+    task_id: UUID,
+    body: Adoption,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await temporary_planning.adopt(
+            find_expert_service(session), _actor(principal), str(task_id), body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/temporary-plan/saved")
+async def save_temporary_plan(
+    task_id: UUID,
+    body: FormalExpertReview,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await temporary_planning.save(
+            find_expert_service(session).repo,
+            _actor(principal),
+            str(task_id),
+            body.review_digest,
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/handoff")
+async def transfer_formal_expert(
+    task_id: UUID,
+    body: Handoff,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await transfer(
+            find_expert_service(session), _actor(principal), str(task_id), body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
 
 
 @router.put("/find-expert/{task_id}/end")

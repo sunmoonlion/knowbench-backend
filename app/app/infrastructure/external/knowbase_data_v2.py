@@ -40,6 +40,16 @@ class KnowbaseDataV2(KnowbaseClient):
             if not e["material"]["deleted"]
         ]
 
+    async def check_planning_column(self, user_token, body):
+        path = f"/materials/{_segment(body['material_id'])}/versions/{body['version_no']}/column-check"
+        _, result, _ = await self._send(
+            "POST",
+            path,
+            user_token,
+            json={"sheet": body["sheet"], "column": body["column"]},
+        )
+        return result
+
     async def preparation_material(self, user_token, material_id, requested_versions):
         from app.infrastructure.external.knowbase_client import KnowbaseRefused
 

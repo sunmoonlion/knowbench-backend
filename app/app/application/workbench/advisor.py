@@ -503,9 +503,13 @@ class Advisor:
                 intake=intake,
             )
 
-        result = await self.driver.run_turn(
-            thread_id, text, timeout=STEP_TIMEOUT_SECONDS
-        )
+        timeout = STEP_TIMEOUT_SECONDS
+        if (
+            task["profile_id"] == "FIND_EXPERT"
+            and str(task.get("profile_version")) == "6"
+        ):
+            timeout = min(timeout or 150, 150)
+        result = await self.driver.run_turn(thread_id, text, timeout=timeout)
 
         try:
             assessment = await self._assess_step(
@@ -566,11 +570,30 @@ class Advisor:
             if (
                 verdict.ok
                 and task["profile_id"] == FIND_EXPERT.profile_id
-                and str(task.get("profile_version")) in {"2", "5"}
+                and str(task.get("profile_version")) in {"2", "5", "6"}
             ):
                 detail = ""
                 try:
-                    if str(task["profile_version"]) == "5":
+                    if str(task["profile_version"]) == "6":
+                        from app.domain.workbench.formal_method_generated import (
+                            MethodRef,
+                        )
+                        from app.domain.workbench.temporary_plan import Choice
+
+                        proposal = Choice.model_validate(verdict.parsed)
+                        entries = task["original_input"]["input"]["catalog"]["entries"]
+                        if any(
+                            ref
+                            not in [
+                                MethodRef.model_validate(e["reference"])
+                                for e in entries
+                            ]
+                            for ref in proposal.steps
+                        ):
+                            raise ValueError(
+                                "The planner selected a method outside the approved catalog"
+                            )
+                    elif str(task["profile_version"]) == "5":
                         from app.application.workbench.formal_expert_intake import (
                             snapshot,
                         )
