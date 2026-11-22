@@ -440,7 +440,7 @@ class SceneRegistry:
                 frozen.owner_subject != grant.owner_subject
                 or frozen.visibility != "public"
                 or frozen.draft.source is None
-                or frozen.draft.source.kind not in ("mcp", "skill_script")
+                or frozen.draft.source.kind not in ("mcp", "a2a", "skill_script")
                 or "host" not in frozen.draft.allowed_callers
             )
         ):

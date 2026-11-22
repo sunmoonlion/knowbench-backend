@@ -1990,6 +1990,7 @@ class Capabilities:
         if peek["detail"].get("execution_kind") in (
             "formal_function",
             "formal_mcp",
+            "formal_a2a",
             "formal_script",
             "formal_instruction",
             "formal_probe",
@@ -2185,6 +2186,7 @@ class Capabilities:
             if intent.get("execution_kind") in (
                 "formal_function",
                 "formal_mcp",
+                "formal_a2a",
                 "formal_script",
                 "formal_probe",
                 "formal_method",
@@ -2361,7 +2363,7 @@ class Capabilities:
                     result = await read_approved(self.repo, owner, call, intent)
                 elif connection["detail"].get("auth") == "oauth":
                     result = await self.oauth.call(
-                        owner, connection, intent, before_send=before_send
+                        owner, connection, intent, call=call, before_send=before_send
                     )
                 else:
                     if connection["detail"]["url"] in self.oauth.urls:

@@ -263,7 +263,17 @@ class OperationCatalog:
             raise CapabilityError(
                 "Registered service functions have a dedicated dispatch path"
             )
-        return self.require_source(tool.service, tool.name, tool.descriptor_digest)
+        policy = self.require_source(tool.service, tool.name, tool.descriptor_digest)
+        if tool.source == "a2a" and policy.effect != {
+            "a2a_get_task": "read",
+            "a2a_reconcile_task": "read",
+            "a2a_submit_task": "send",
+            "a2a_cancel_task": "write",
+        }.get(tool.name):
+            raise CapabilityError(
+                "The reviewed policy differs from the A2A operation effect"
+            )
+        return policy
 
     def require_source(
         self, service_url: str, tool_name: str, descriptor_digest: str

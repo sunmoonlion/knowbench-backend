@@ -774,6 +774,8 @@ class FormalExecutions:
             if isinstance(request.draft.definition.procedure, Orchestration)
             else function_evidence_adapter(request.draft)
             if request.draft.source and request.draft.source.kind == "service_function"
+            else "knowbench/formal-a2a-host/v1"
+            if request.draft.source and request.draft.source.kind == "a2a"
             else "knowbench/formal-mcp-caller-probe/v1"
             if "model" in request.draft.allowed_callers
             else "knowbench/formal-script-host/v1"

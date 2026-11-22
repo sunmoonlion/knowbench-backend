@@ -11,6 +11,7 @@ from app.domain.workbench.tool_registry import (
 # require a reviewed host adapter before they can be dispatched as a method.
 DIRECT_HOST_ADAPTERS = {
     "mcp": "formal_mcp",
+    "a2a": "formal_a2a",
     "service_function": "formal_function",
     "skill_script": "formal_script",
     "registered_script": "formal_script",
@@ -69,12 +70,12 @@ def retained_registration(draft, tool):
         if tool != registration.descriptor():
             raise CapabilityError("Script interface or frozen entry changed")
         return registration
-    registration = ToolRegistration.discover("mcp", source.source, tool)
+    registration = ToolRegistration.discover(source.kind, source.source, tool)
     if (
         registration.name != source.entry
         or source.digest != "sha256:" + registration.descriptor_digest
     ):
-        raise CapabilityError("MCP interface differs from its frozen source")
+        raise CapabilityError("Connection interface differs from its frozen source")
     return registration
 
 
@@ -90,14 +91,16 @@ def live_registration(draft, asset):
         # The licensed manifest and exact asset revision are verified by FormalMethods._source.
         return script_registration(draft)
     if (
-        source.kind == "mcp"
+        source.kind in ("mcp", "a2a")
         and asset["kind"] == "connection"
         and asset["detail"]["url"] == source.source
     ):
-        if connection_source(asset) == "mcp":
+        if connection_source(asset) == source.kind:
             registration = connection_registration(asset, source.entry)
             if source.digest != "sha256:" + registration.descriptor_digest:
-                raise CapabilityError("MCP interface differs from its frozen source")
+                raise CapabilityError(
+                    "Connection interface differs from its frozen source"
+                )
             return registration
     raise CapabilityError("The registered formal implementation is unavailable")
 
@@ -115,4 +118,4 @@ def call_matches_source(call, source):
         return False
     if source.kind in ("skill_script", "skill_instruction"):
         return connection is None
-    return source.kind == "mcp" and str(connection) == str(source.asset_id)
+    return source.kind in ("mcp", "a2a") and str(connection) == str(source.asset_id)

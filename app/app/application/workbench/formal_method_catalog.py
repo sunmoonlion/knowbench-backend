@@ -664,6 +664,8 @@ class FormalMethodCatalog:
                     else function_evidence_adapter(frozen.draft)
                     if frozen.draft.source
                     and frozen.draft.source.kind == "service_function"
+                    else "knowbench/formal-a2a-host/v1"
+                    if frozen.draft.source and frozen.draft.source.kind == "a2a"
                     else "knowbench/formal-mcp-caller-probe/v1"
                     if "model" in frozen.draft.allowed_callers
                     else "knowbench/formal-script-host/v1"
@@ -754,7 +756,7 @@ class FormalMethodCatalog:
                     and source.kind == "service_function"
                 )
                 or source.kind == "registered_script"
-                or source.kind in ("mcp", "skill_script")
+                or source.kind in ("mcp", "a2a", "skill_script")
                 and source.asset_id is not None
             ),
             "Formal method has no pinned executable source",

@@ -3489,6 +3489,7 @@
             "enum": [
               "platform",
               "mcp",
+              "a2a",
               "skill_instruction",
               "skill_script",
               "service_function",
@@ -3788,6 +3789,7 @@
           "execution_kind": {
             "enum": [
               "formal_mcp",
+              "formal_a2a",
               "formal_method"
             ],
             "title": "Execution Kind",
@@ -5144,6 +5146,7 @@
             "enum": [
               "platform",
               "mcp",
+              "a2a",
               "skill_instruction",
               "skill_script",
               "service_function",
@@ -5443,6 +5446,7 @@
           "execution_kind": {
             "enum": [
               "formal_mcp",
+              "formal_a2a",
               "formal_method"
             ],
             "title": "Execution Kind",
@@ -7144,6 +7148,7 @@
             "enum": [
               "platform",
               "mcp",
+              "a2a",
               "skill_instruction",
               "skill_script",
               "service_function",
@@ -7443,6 +7448,7 @@
           "execution_kind": {
             "enum": [
               "formal_mcp",
+              "formal_a2a",
               "formal_method"
             ],
             "title": "Execution Kind",
@@ -8806,6 +8812,7 @@
             "enum": [
               "platform",
               "mcp",
+              "a2a",
               "skill_instruction",
               "skill_script",
               "service_function",
@@ -9105,6 +9112,7 @@
           "execution_kind": {
             "enum": [
               "formal_mcp",
+              "formal_a2a",
               "formal_method"
             ],
             "title": "Execution Kind",

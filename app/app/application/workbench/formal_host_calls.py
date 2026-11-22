@@ -617,6 +617,7 @@ class FormalHostCalls:
                         else (
                             "formal_function",
                             "formal_mcp",
+                            "formal_a2a",
                             "formal_script",
                             "formal_instruction",
                         )
@@ -805,6 +806,7 @@ class FormalHostCalls:
             not in (
                 "formal_function",
                 "formal_mcp",
+                "formal_a2a",
                 "formal_script",
                 "formal_instruction",
                 "formal_probe",

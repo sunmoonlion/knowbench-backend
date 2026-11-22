@@ -816,6 +816,7 @@ async def decide_call(
             call = await trial_svc.repo.capability_call(owner, str(call_id))
             if call["detail"].get("execution_kind") not in (
                 "formal_mcp",
+                "formal_a2a",
                 "formal_probe",
                 "formal_function",
                 "formal_script",

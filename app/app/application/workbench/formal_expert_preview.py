@@ -125,7 +125,7 @@ def mcp_quote(leaf, root, accounts, assets, operations, values, pending):
     try:
         registration = connection_registration(asset, impl.entry)
         if (
-            registration.source != "mcp"
+            registration.source != impl.kind
             or registration.service != impl.source
             or "sha256:" + registration.descriptor_digest != impl.digest
         ):
@@ -224,7 +224,7 @@ async def execution_preview(
         proc = node.definition.procedure
         kind = proc.implementation.kind
         quote = None
-        if kind == "mcp":
+        if kind in ("mcp", "a2a"):
             accounts = {
                 k: p
                 for k, p in bindings["accounts"].items()

@@ -23,7 +23,7 @@ class LicenseRecord(BaseModel):
 
 
 class SourceIdentity(LicenseRecord):
-    kind: Literal["mcp", "skill_instruction", "skill_script", "service_function"]
+    kind: Literal["mcp", "a2a", "skill_instruction", "skill_script", "service_function"]
     source: Text
     version: Text
     digest: Digest

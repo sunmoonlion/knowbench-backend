@@ -123,7 +123,13 @@ def expand_unique_plan(
             if not (
                 (
                     implementation
-                    in ("mcp", "skill_script", "registered_script", "service_function")
+                    in (
+                        "mcp",
+                        "a2a",
+                        "skill_script",
+                        "registered_script",
+                        "service_function",
+                    )
                     and turns == 0
                 )
                 or (

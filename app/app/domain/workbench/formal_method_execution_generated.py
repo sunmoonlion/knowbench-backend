@@ -355,10 +355,16 @@ class FormalMethodExecutionRequest(Strict):
                     )
             elif (
                 p.implementation.kind
-                not in ("mcp", "skill_script", "registered_script", "service_function")
+                not in (
+                    "mcp",
+                    "a2a",
+                    "skill_script",
+                    "registered_script",
+                    "service_function",
+                )
                 or (
                     p.implementation.kind
-                    in ("skill_script", "registered_script", "service_function")
+                    in ("a2a", "skill_script", "registered_script", "service_function")
                     and not (
                         p.implementation.kind == "service_function"
                         and p.implementation.source == "knowbase"

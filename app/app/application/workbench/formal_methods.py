@@ -122,11 +122,10 @@ class FormalMethods:
             "license_basis": "pending",
         }
         if asset["kind"] == "connection":
-            if connection_source(asset) != "mcp":
-                return []
+            protocol = connection_source(asset)
             result = []
             catalog = ToolRegistry.snapshot(
-                "mcp", detail["url"], detail.get("tools", [])
+                protocol, detail["url"], detail.get("tools", [])
             )
             for registered in catalog.registrations():
                 try:
@@ -136,7 +135,7 @@ class FormalMethods:
                 result.append(
                     FormalMethodSource(
                         **common,
-                        kind="mcp",
+                        kind=protocol,
                         source=detail["url"],
                         version=policy.version,
                         digest="sha256:" + registered.descriptor_digest,
@@ -750,6 +749,19 @@ class FormalMethods:
             ):
                 raise Forbidden(
                     "Registered script methods require verified script execution"
+                )
+            if (
+                frozen.draft.source
+                and frozen.draft.source.kind == "a2a"
+                and (
+                    frozen.draft.allowed_callers != ("host",)
+                    or frozen.validation.execution is None
+                    or (run.get("execution_evidence") or {}).get("adapter")
+                    != "knowbench/formal-a2a-host/v1"
+                )
+            ):
+                raise Forbidden(
+                    "An A2A method requires approved host execution evidence"
                 )
             if frozen.draft.source and frozen.draft.source.kind == "service_function":
                 if (

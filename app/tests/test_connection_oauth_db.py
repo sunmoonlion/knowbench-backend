@@ -58,6 +58,7 @@ class Provider:
         self.grants = []
         self.revoked = []
         self.tasks = []
+        self.operations = (OPERATION, AGENT_OP)
         self.requests = {}
         self.started = asyncio.Event()
         self.resume = asyncio.Event()
@@ -167,7 +168,7 @@ class Provider:
             oauth_transport=self.transport,
             web_origin=ORIGIN,
             runtime_url="http://test/api/mcp/capabilities",
-            operations=(OPERATION, AGENT_OP),
+            operations=self.operations,
         )
         svc.oauth.now = lambda: self.now
         return svc
@@ -727,3 +728,144 @@ async def test_provider_revocation_unconfirmed_still_disables_account_and_old_pr
                 OWNER, asset["id"], AssetAction(revision=1, action="disconnect")
             )
         ) == removed
+
+
+@pytest.mark.parametrize("lost_reply", [True, False])
+async def test_a2a_dispatch_and_recover_without_duplicate_send(
+    db, monkeypatch, lost_reply
+):
+    from app.domain.workbench.connection_oauth import A2A_TOOLS
+
+    p = Provider(db, monkeypatch)
+    p.providers[0] = p.providers[0].model_copy(
+        update={"tool_scopes": {n: ("use",) for n in A2A_TOOLS}}
+    )
+    p.operations = tuple(
+        AGENT_OP.model_copy(
+            update={
+                "tool_name": name,
+                "operation": name,
+                "effect": {"a2a_submit_task": "send", "a2a_cancel_task": "write"}.get(
+                    name, "read"
+                ),
+                "descriptor_digest": ToolRegistration.discover(
+                    "a2a", A2A, descriptor
+                ).descriptor_digest,
+            }
+        )
+        for name, descriptor in A2A_TOOLS.items()
+    )
+    events = []
+    task = {
+        "id": "remote-id",
+        "status": {"state": "TASK_STATE_WORKING"},
+        "artifacts": ["private"],
+    }
+
+    async def respond(req):
+        if req.url.path != "/rpc":
+            return await p.respond(req)
+        call = json.loads(req.content)
+        assert req.headers["A2A-Version"] == "1.0"
+        method, params = call["method"], call["params"]
+        events.append(method)
+        result = task
+        if method == "SendMessage":
+            message = params["message"]
+            assert message["parts"] == [{"text": "Summarize the meeting"}]
+            task.update(contextId=message["contextId"], history=[message])
+            if lost_reply:
+                raise httpx.ReadTimeout("Lost after acceptance")
+            result = {"task": task}
+        elif method == "ListTasks":
+            assert params["contextId"] == task["contextId"]
+            result = {"tasks": [task], "totalSize": 1}
+        elif method == "CancelTask":
+            assert params == {"id": task["id"]}
+            task["status"]["state"] = "TASK_STATE_CANCELED"
+        else:
+            assert method == "GetTask" and params == {
+                "id": task["id"],
+                "historyLength": 0,
+            }
+        return httpx.Response(
+            200, json={"jsonrpc": "2.0", "id": call["id"], "result": result}
+        )
+
+    p.transport = adapter.OAuthTransport(transport=httpx.MockTransport(respond))
+    _, _, sid = await seed(db)
+    asset = await p.connect()
+    from app.application.workbench.formal_methods import FormalMethods
+    from app.domain.workbench.formal_adapter import (
+        host_kind,
+        live_registration,
+        retained_registration,
+    )
+    from test_formal_method_admission_db import validation_request
+
+    async with db() as session:
+        svc = p.service(session)
+        methods = FormalMethods(svc.repo, operations=p.operations)
+        sources = methods._sources(asset, "author", now=p.now)
+        assert {s.entry for s in sources} == set(A2A_TOOLS)
+        for source in sources:
+            assert source.kind == "a2a" and host_kind(source) == "formal_a2a"
+            draft = validation_request(source.model_dump(mode="json")).draft
+            assert live_registration(draft, asset) == retained_registration(
+                draft, A2A_TOOLS[source.entry]
+            )
+    keys = {n: tool_key(asset["id"], n) for n in A2A_TOOLS}
+    async with db() as s:
+        svc = p.service(s)
+        current = await svc.selection(OWNER, sid)
+        await svc.save_selection(
+            OWNER,
+            sid,
+            SelectionPut(
+                revision=current["revision"],
+                tools=list(keys.values()),
+                purpose="External meeting task",
+            ),
+        )
+        runtime = await svc.prepare(OWNER, sid)
+        token = runtime["config"]["mcp_servers.sunmoon_capabilities"]["http_headers"][
+            "Authorization"
+        ].split()[1]
+
+    async def approve(name, args):
+        async with db() as s:
+            svc = p.service(s)
+            req = await request_call(svc, sid, token, keys[name], args)
+            call = await svc.repo.capability_call(OWNER, req["call_id"])
+            done = await svc.decide(OWNER, call["id"], approval(call))
+            replay = await svc.decide(OWNER, call["id"], approval(call))
+            assert replay["status"] == done["status"]
+            return await svc.repo.capability_call(OWNER, call["id"])
+
+    sent = await approve("a2a_submit_task", {"text": "Summarize the meeting"})
+    assert sent["status"] == ("unknown" if lost_reply else "succeeded"), sent[
+        "detail"
+    ].get("result")
+    if lost_reply:
+        found = await approve("a2a_reconcile_task", {"call_id": sent["id"]})
+        assert found["status"] == "succeeded", found["detail"].get("result")
+        assert (
+            found["detail"]["result"]["structuredContent"]["submission_call_id"]
+            == sent["id"]
+        )
+    read = await approve("a2a_get_task", {"id": "remote-id"})
+    assert read["detail"]["result"]["structuredContent"] == {
+        "id": "remote-id",
+        "state": "TASK_STATE_WORKING",
+    }
+    canceled = await approve("a2a_cancel_task", {"id": "remote-id"})
+    assert (
+        canceled["detail"]["result"]["structuredContent"]["state"]
+        == "TASK_STATE_CANCELED"
+    )
+    assert events == [
+        "SendMessage",
+        *(["ListTasks"] if lost_reply else []),
+        "GetTask",
+        "CancelTask",
+    ]

@@ -43,14 +43,14 @@ def same_implementation(original, local):
     # An installed Skill's source URI contains the account-local asset ID.
     return (
         original.kind == local.kind
-        and original.kind in ("mcp", "skill_script")
+        and original.kind in ("mcp", "a2a", "skill_script")
         and original.version == local.version
         and original.digest == local.digest
         and original.entry == local.entry
         and local.asset_id is not None
         and (
             original.source == local.source
-            if original.kind == "mcp"
+            if original.kind in ("mcp", "a2a")
             else local.source == "skill:" + str(local.asset_id)
         )
     )
@@ -288,7 +288,7 @@ def direct_tool_procedure(draft: FormalMethodDraft) -> ToolProcedure:
     if (
         not isinstance(procedure, ToolProcedure)
         or procedure.implementation.kind
-        not in ("mcp", "skill_script", "registered_script", "service_function")
+        not in ("mcp", "a2a", "skill_script", "registered_script", "service_function")
         or procedure.max_model_turns != 0
     ):
         raise ValueError(
@@ -304,6 +304,7 @@ def direct_procedure(
     if (
         procedure.implementation.kind
         in (
+            "a2a",
             "skill_script",
             "registered_script",
             "service_function",

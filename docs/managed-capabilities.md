@@ -501,7 +501,7 @@ KnowBench 在“设置 → 连接与工具”发起授权。回调取回当前�
 | `account_field`、`label_field` | 受保护的账号接口返回的顶层字符串字段，默认分别为 `sub`、`name`。身份校验使用前者 |
 | `resource_indicator` | 默认向授权端和令牌端传递精确资源 URL。MCP 必须启用，A2A 按供应商支持配置 |
 
-授权码流程使用 PKCE S256。当前配置要求供应商返回 Bearer 令牌及正整数秒数 `expires_in`，可选轮换刷新令牌。MCP 通过原有调用网关执行。A2A 当前支持 JSON-RPC `GetTask`，登记工具名 `a2a_get_task`，只向调用方交付指定任务的 ID 和状态。每个服务、账号持有自己的凭据。第三方任务发送、消息订阅和常驻职责另有实现范围。[OAuth 安全最佳实践](https://www.rfc-editor.org/rfc/rfc9700.html)；[A2A 协议规范](https://a2a-protocol.org/latest/specification/)
+授权码流程使用 PKCE S256。当前配置要求供应商返回 Bearer 令牌及正整数秒数 `expires_in`，可选轮换刷新令牌。MCP 通过原有调用网关执行。A2A v1.0 按获准操作分别登记。原只读配置仍只列出 `a2a_get_task`。启用 `a2a_submit_task` 需登记 send 策略，启用 `a2a_cancel_task` 需登记 write 策略，按外部任务编号查询和按原调用编号核对均需 read 策略。每次调用使用本人同一连接及该操作的审批。提交传一段已确认文本，按原调用生成 contextId 和 messageId，异步服务须返回带该 contextId 的 Task。提交回包不确定时保留原调用；在原会话以 `a2a_reconcile_task` 批准一次 ListTasks 查询。只有同一连接修订、唯一任务及匹配的用户消息才能形成核对回执。服务缺少对应历史、返回多个任务或不支持按上下文查询时，原结果仍未知。取消结果不确定时按外部编号查询。以上操作只交付任务编号、状态及关联调用，外部产物和历史正文不会写入回执。[A2A v1.0 规范](https://a2a-protocol.org/v1.0.0/specification/)
 
 **到期与撤权。** 刷新前先在数据库提交唯一占用，再向服务商请求。成功后核对连接修订、稳定账号和 scope，一次普通刷新保留原修订。刷新结果不明、远端拒绝或账号变化时需要用户重新授权。断开先在本地禁止调用并清除活动凭据，再向服务商请求撤销。设置页显示撤销是否得到确认。已经进入远端的操作仍看原调用回执。
 

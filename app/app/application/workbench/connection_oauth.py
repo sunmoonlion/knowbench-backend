@@ -20,17 +20,8 @@ from app.domain.workbench.capabilities import (
     digest,
     public_asset,
 )
-
-A2A_TASK = {
-    "name": "a2a_get_task",
-    "description": "Read the status of a specified external A2A task",
-    "inputSchema": {
-        "type": "object",
-        "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 512}},
-        "required": ["id"],
-        "additionalProperties": False,
-    },
-}
+from app.domain.workbench.connection_oauth import A2A_TASK as A2A_TASK
+from app.domain.workbench.connection_oauth import A2A_TOOLS
 
 
 class ConnectionOAuth:
@@ -182,7 +173,7 @@ class ConnectionOAuth:
 
     async def tools(self, p, access, scopes):
         tools = (
-            [A2A_TASK]
+            list(A2A_TOOLS.values())
             if p.protocol == "a2a"
             else await self.remote.discover(p.service_url, access)
         )
@@ -490,16 +481,40 @@ class ConnectionOAuth:
                 )
             )
 
-    async def call(self, owner, connection, intent, *, before_send=None):
+    async def call(self, owner, connection, intent, *, call=None, before_send=None):
         name = intent["tool"]["name"]
         p, token, sealed = await self.credential(
             owner, connection["id"], intent["revision"], name
         )
         try:
             if p.protocol == "a2a":
+                arguments = intent["arguments"]
+                submission = None
+                if name in ("a2a_submit_task", "a2a_reconcile_task"):
+                    if call is None:
+                        raise CapabilityError("A2A submission requires a recorded call")
+                    submission = call["id"]
+                    if name == "a2a_reconcile_task":
+                        original = await self.repo.capability_call(
+                            owner, arguments["call_id"]
+                        )
+                        if (
+                            original["session_id"] != call["session_id"]
+                            or original["connection_id"] != connection["id"]
+                            or original["detail"].get("revision") != intent["revision"]
+                            or original["detail"].get("tool", {}).get("name")
+                            != "a2a_submit_task"
+                            or original["status"] not in ("dispatching", "unknown")
+                        ):
+                            raise CapabilityError(
+                                "No matching uncertain A2A submission"
+                            )
+                        submission = original["id"]
                 if before_send is not None:
                     await before_send()
-                return await self.transport.get_task(p, token, intent["arguments"])
+                return await self.transport.a2a_task(
+                    p, token, name, arguments, submission
+                )
             return await send_mcp(
                 self.remote,
                 p.service_url,

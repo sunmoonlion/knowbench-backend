@@ -11,6 +11,60 @@ from app.domain.workbench.capabilities import Strict, digest
 Scope = Annotated[str, Field(pattern=r"^[\x21\x23-\x5B\x5D-\x7E]{1,128}$")]
 
 
+A2A_TASK = {
+    "name": "a2a_get_task",
+    "description": "Read the status of a specified external A2A task",
+    "inputSchema": {
+        "type": "object",
+        "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 512}},
+        "required": ["id"],
+        "additionalProperties": False,
+    },
+}
+
+
+def _a2a_tool(name, description, field, schema):
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": {
+            "type": "object",
+            "properties": {field: schema},
+            "required": [field],
+            "additionalProperties": False,
+        },
+    }
+
+
+A2A_TOOLS = {
+    tool["name"]: tool
+    for tool in (
+        A2A_TASK,
+        _a2a_tool(
+            "a2a_submit_task",
+            "Submit one text task to the connected A2A service",
+            "text",
+            {"type": "string", "minLength": 1, "maxLength": 16384},
+        ),
+        _a2a_tool(
+            "a2a_cancel_task",
+            "Request cancellation of the specified external A2A task",
+            "id",
+            A2A_TASK["inputSchema"]["properties"]["id"],
+        ),
+        _a2a_tool(
+            "a2a_reconcile_task",
+            "Look up the external task for an uncertain submission in this session",
+            "call_id",
+            {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$",
+            },
+        ),
+    )
+}
+
+
 class OAuthProvider(Strict):
     provider_id: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     protocol: Literal["mcp", "a2a"]
@@ -64,8 +118,8 @@ class OAuthProvider(Strict):
             not set(scopes) <= set(self.scopes) for scopes in self.tool_scopes.values()
         ):
             raise ValueError("Tool scopes exceed the provider scope")
-        if self.protocol == "a2a" and set(self.tool_scopes) != {"a2a_get_task"}:
-            raise ValueError("The A2A connection profile supports GetTask")
+        if self.protocol == "a2a" and not set(self.tool_scopes) <= A2A_TOOLS.keys():
+            raise ValueError("Unknown operation in the A2A connection profile")
         return self
 
     def binding(self):

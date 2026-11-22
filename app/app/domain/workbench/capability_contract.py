@@ -192,7 +192,7 @@ class CallDetail(CommonCallDetail):
 
 
 class HostCallDetail(CommonCallDetail):
-    execution_kind: Literal["formal_mcp", "formal_method"]
+    execution_kind: Literal["formal_mcp", "formal_a2a", "formal_method"]
     source_asset_id: UUID
     connection_id: UUID
 

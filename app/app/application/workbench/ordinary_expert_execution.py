@@ -16,7 +16,7 @@ def execution_sources(graph, preview, subject, assets, methods, local_sources):
         return {}, "preview_incomplete"
     if any(
         n.path not in local_sources
-        and n.definition.procedure.implementation.kind != "mcp"
+        and n.definition.procedure.implementation.kind not in ("mcp", "a2a")
         for n in graph.leaf_nodes
     ):
         return {}, "driver_unavailable"

@@ -2,11 +2,15 @@
 
 import asyncio
 import json
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import httpx
 
-from app.domain.workbench.capabilities import CapabilityError, CapabilityReauthRequired
+from app.domain.workbench.capabilities import (
+    CapabilityError,
+    CapabilityOutcomeUnknown,
+    CapabilityReauthRequired,
+)
 from app.infrastructure.workbench.capability_mcp import MAX_BYTES, public_address
 
 
@@ -109,31 +113,108 @@ class OAuthTransport:
         )
         return True
 
-    async def get_task(self, provider, access, arguments):
+    async def a2a_task(self, provider, access, name, arguments, submission):
         rpc_id = str(uuid4())
-        response = await self.request(
-            "POST",
-            provider.service_url,
-            headers={"Authorization": "Bearer " + access, "A2A-Version": "1.0"},
-            body={
-                "jsonrpc": "2.0",
-                "id": rpc_id,
-                "method": "GetTask",
-                "params": {"id": arguments["id"], "historyLength": 0},
-            },
-        )
-        task = response.get("result")
-        if (
-            response.get("id") != rpc_id
-            or response.get("jsonrpc") != "2.0"
-            or "error" in response
-            or not isinstance(task, dict)
-            or task.get("id") != arguments["id"]
-            or not isinstance(task.get("status"), dict)
-            or not isinstance(task["status"].get("state"), str)
-        ):
-            raise CapabilityError("The A2A service returned no matching task status")
+        context = str(uuid5(NAMESPACE_URL, f"knowbench:a2a:context:{submission}"))
+        message = str(uuid5(NAMESPACE_URL, f"knowbench:a2a:message:{submission}"))
+        expected_id = arguments.get("id")
+        if name == "a2a_get_task":
+            method, params = "GetTask", {"id": expected_id, "historyLength": 0}
+        elif name == "a2a_cancel_task":
+            method, params = "CancelTask", {"id": expected_id}
+        elif name == "a2a_submit_task":
+            method, params = (
+                "SendMessage",
+                {
+                    "message": {
+                        "role": "ROLE_USER",
+                        "contextId": context,
+                        "messageId": message,
+                        "parts": [{"text": arguments["text"]}],
+                    },
+                    "configuration": {
+                        "returnImmediately": True,
+                        "acceptedOutputModes": ["text/plain"],
+                    },
+                },
+            )
+        elif name == "a2a_reconcile_task":
+            method, params = (
+                "ListTasks",
+                {"contextId": context, "pageSize": 2, "historyLength": 100},
+            )
+        else:
+            raise CapabilityError("Unknown A2A operation")
+        try:
+            response = await self.request(
+                "POST",
+                provider.service_url,
+                headers={"Authorization": "Bearer " + access, "A2A-Version": "1.0"},
+                body={
+                    "jsonrpc": "2.0",
+                    "id": rpc_id,
+                    "method": method,
+                    "params": params,
+                },
+            )
+            if (
+                response.get("id") != rpc_id
+                or response.get("jsonrpc") != "2.0"
+                or "error" in response
+                or not isinstance(response.get("result"), dict)
+            ):
+                raise CapabilityError("The A2A service returned no matching receipt")
+            task = response["result"]
+            if method == "SendMessage":
+                task = task.get("task")
+            elif method == "ListTasks":
+                tasks = task.get("tasks")
+                if (
+                    not isinstance(tasks, list)
+                    or len(tasks) != 1
+                    or task.get("nextPageToken")
+                    or task.get("totalSize", 1) != 1
+                ):
+                    raise CapabilityError(
+                        "An exact A2A submission could not be confirmed"
+                    )
+                task = tasks[0]
+            if (
+                not isinstance(task, dict)
+                or not isinstance(task.get("id"), str)
+                or not 1 <= len(task["id"]) <= 512
+                or expected_id is not None
+                and expected_id != task["id"]
+                or method in ("SendMessage", "ListTasks")
+                and task.get("contextId") != context
+                or not isinstance(task.get("status"), dict)
+                or not isinstance(task["status"].get("state"), str)
+                or not 1 <= len(task["status"]["state"]) <= 128
+            ):
+                raise CapabilityError(
+                    "The A2A service returned no matching task status"
+                )
+            if method == "ListTasks" and not any(
+                isinstance(entry, dict)
+                and entry.get("messageId") == message
+                and entry.get("role") == "ROLE_USER"
+                and entry.get("contextId", context) == context
+                for entry in (task.get("history") or [])
+            ):
+                raise CapabilityError(
+                    "The A2A task has no matching submission evidence"
+                )
+        except CapabilityReauthRequired:
+            raise
+        except CapabilityError as exc:
+            if method in ("SendMessage", "CancelTask"):
+                raise CapabilityOutcomeUnknown(
+                    "The A2A action outcome is unknown. Check the original task."
+                ) from exc
+            raise
         result = {"id": task["id"], "state": task["status"]["state"]}
+        if submission is not None:
+            result["submission_call_id"] = submission
         return {
             "content": [{"type": "text", "text": json.dumps(result)}],
             "structuredContent": result,

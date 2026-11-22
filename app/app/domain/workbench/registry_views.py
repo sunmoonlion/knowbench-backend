@@ -54,6 +54,7 @@ class FormalRegistration(Strict):
             "service_function",
             "platform",
             "mcp",
+            "a2a",
             "skill_instruction",
             "skill_script",
             "registered_script",

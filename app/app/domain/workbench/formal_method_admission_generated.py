@@ -61,6 +61,7 @@ class FormalMethodSource(Strict):
     kind: Literal[
         "platform",
         "mcp",
+        "a2a",
         "skill_instruction",
         "skill_script",
         "service_function",
