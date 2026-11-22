@@ -1,11 +1,17 @@
 """Evidence for matching one question to published, exact expert declarations."""
 
+from graphlib import TopologicalSorter
 from typing import Literal
 
 from pydantic import Field, model_validator
 
 from app.domain.workbench.expert_match import Requirement, Text
-from app.domain.workbench.formal_method_generated import MethodRef, Strict
+from app.domain.workbench.formal_method_generated import (
+    FormalMethodDefinition,
+    MethodRef,
+    Orchestration,
+    Strict,
+)
 
 
 class PromiseCoverage(Strict):
@@ -76,3 +82,66 @@ def verify_options(question, directory, content):
                     "Evidence must quote a published promise with validated outputs"
                 )
     return match
+
+
+def frozen_scope(definition: FormalMethodDefinition):
+    """Project the root contract for its buyer without opening private child definitions."""
+    graph = definition.procedure
+    if not isinstance(graph, Orchestration):
+        raise ValueError("Expected an expert orchestration")
+    steps = {step.id: step for step in graph.steps}
+    order = TopologicalSorter(
+        {key: sorted(steps[key].depends_on) for key in sorted(steps)}
+    )
+    interfaces = definition.interfaces()
+    return {
+        "steps": [
+            {
+                "id": key,
+                "depends_on": steps[key].depends_on,
+                "required_when": None
+                if steps[key].always_required
+                else steps[key].required_when,
+                "candidate_count": len(steps[key].candidates),
+            }
+            for key in order.static_order()
+        ],
+        "inputs": [
+            {
+                "name": name,
+                "description": value["slot"]["description"],
+                "required_by": value["required_by"],
+                "used_by": value["used_by"],
+            }
+            for name, value in interfaces["inputs"].items()
+        ],
+        "outputs": [
+            {
+                "name": name,
+                "description": value["slot"]["description"],
+                "step": graph.exports[name].step,
+            }
+            for name, value in interfaces["outputs"].items()
+        ],
+        "requirements": [
+            {
+                "id": req.requirement_id,
+                "capability": req.capability_ref,
+                "version": req.version,
+                "operations": req.operations,
+                "resource_roles": [r.resource_role for r in req.resources],
+                "destination": req.data_transfer.destination,
+                "fields": req.data_transfer.argument_fields,
+                "purpose": req.data_transfer.purpose,
+            }
+            for req in definition.access_requirements
+        ],
+        "approvals": [
+            {
+                "requirement_id": rule.requirement_id,
+                "operations": rule.operations,
+                "when": rule.when,
+            }
+            for rule in definition.what_requires_approval
+        ],
+    }

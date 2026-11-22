@@ -5,7 +5,10 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from test_find_expert_db import _project
+from test_formal_orchestration_admission import shape
 from test_knowbot_test_runs_db import runner_for, setup_test_computer
 from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_ledger_db import OWNER
@@ -13,6 +16,7 @@ from test_workbench_ledger_db import db as db
 
 from app.application.workbench.find_expert import FindExpertService
 from app.application.workbench.formal_expert_intake import confirm
+from app.application.workbench.registry_catalog import SceneRegistry
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 from app.domain.workbench.formal_expert_match import verify_options
 from app.domain.workbench.formal_method_generated import MethodRef
@@ -22,20 +26,28 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 class Registry:
     def __init__(self):
         self.entries = {}
+        self.definitions = {}
+        root, _, _, _ = shape()
         for label in ("逐笔", "汇总"):
-            ref = MethodRef(method_id=uuid4(), version=2, digest="sha256:" + "1" * 64)
-            self.entries[ref] = {
-                "reference": ref.model_dump(mode="json"),
-                "declaration": {
-                    "title": label,
-                    "purpose": "核对交易",
-                    "applies_when": ["交易明细"],
-                    "excludes": ["现金盘点"],
-                    "conditions": {},
-                    "promises": {"result": label + "差异表"},
-                },
-                "promise_outputs": {"result": ["report"]},
-            }
+            data = root.draft.definition.document()
+            data["capability_declaration"].update(
+                title=label,
+                purpose="核对交易",
+                applies_when=["交易明细"],
+                excludes=["现金盘点"],
+                promises={"result": label + "差异表"},
+            )
+            data["how_to_validate"][0]["promise_id"] = "result"
+            definition = type(root.draft.definition).model_validate(data)
+            ref = MethodRef(method_id=uuid4(), version=2, digest=definition.digest())
+            self.definitions[ref] = definition
+            self.entries[ref] = self.public_declaration(ref, definition)
+
+    public_declaration = staticmethod(SceneRegistry.public_declaration)
+
+    async def planning_definition(self, owner, reference, *, experts_only):
+        await self.planning_declaration(owner, reference, experts_only=experts_only)
+        return self.definitions[reference]
 
     async def planning_versions(self, owner, limit, offset, *, query):
         assert owner == OWNER and query.stage == "expert"
@@ -80,7 +92,31 @@ def proposal(registry):
     }
 
 
-async def test_project_match_compares_pins_and_confirms_once(db):
+def web_app(db, registry, monkeypatch):
+    from test_formal_method_use_routes_db import application
+
+    from app.interfaces.http.web import workbench_expert as routes
+
+    app = application(db, lambda repo: None)
+
+    async def session():
+        async with db() as s:
+            yield s
+
+    async def wake():
+        pass
+
+    app.dependency_overrides[routes.get_db_session] = session
+    monkeypatch.setattr(
+        routes,
+        "find_expert_service",
+        lambda s: FindExpertService(WorkbenchRepository(s), formal_registry=registry),
+    )
+    monkeypatch.setattr(routes, "publish_commands_wakeup", wake)
+    return app
+
+
+async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
     registry = Registry()
     result = proposal(registry)
     bad = deepcopy(result)
@@ -138,6 +174,44 @@ async def test_project_match_compares_pins_and_confirms_once(db):
             await select(pins[0], "sha256:" + "0" * 64)
         selected, replay = await asyncio.gather(select(pins[0]), select(pins[0]))
         assert selected == replay
+        async with db() as session:
+            finder = FindExpertService(
+                WorkbenchRepository(session), formal_registry=registry
+            )
+            counts = text(
+                "SELECT (SELECT count(*) FROM workbench_tasks), "
+                "(SELECT count(*) FROM workbench_calls), "
+                "(SELECT count(*) FROM workbench_artifacts)"
+            )
+            before = (await session.execute(counts)).one()
+            other = registry.entries.pop(pins[1])
+            result = (await finder.result(OWNER, tid))["formal"]
+            assert (
+                result["selected"] == selected["reference"]
+                and len(result["options"]) == 1
+            )
+            preview = result["scope_preview"]
+            assert [s["id"] for s in preview["steps"]] == ["only"]
+            assert preview["inputs"][0]["required_by"] == ["only"]
+            assert preview["requirements"][0]["resource_roles"] == ["recipient"]
+            assert preview["outputs"][0]["step"] == "only"
+            assert "test@example.test" not in json.dumps(preview)
+            assert (
+                preview == (await finder.result(OWNER, tid))["formal"]["scope_preview"]
+            )
+            assert len(fake.turn_inputs) == 2
+            assert (await session.execute(counts)).one() == before
+            registry.entries[pins[1]] = other
+        app = web_app(db, registry, monkeypatch)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            page = await client.get(f"/api/workbench/find-expert/{tid}")
+            assert (
+                page.status_code == 200 and "no-store" in page.headers["cache-control"]
+            )
+            assert page.json()["formal"]["scope_preview"]["steps"][0]["id"] == "only"
+            assert len(fake.turn_inputs) == 2
         with pytest.raises(IdempotencyConflict):
             await select(pins[1])
         async with db() as session:
@@ -155,6 +229,11 @@ async def test_project_match_compares_pins_and_confirms_once(db):
                     str(uuid4()), tid
                 )
         removed = registry.entries.pop(pins[0])
+        async with db() as session:
+            with pytest.raises(NotFound):
+                await FindExpertService(
+                    WorkbenchRepository(session), formal_registry=registry
+                ).result(OWNER, tid)
         with pytest.raises(NotFound):
             await select(pins[0])
         assert await start() == made
@@ -209,12 +288,6 @@ def test_every_mandatory_delivery_needs_a_real_promise_and_output():
 async def test_web_intake_empty_directory_starts_no_model_and_named_match_reopens(
     db, monkeypatch
 ):
-    from httpx import ASGITransport, AsyncClient
-    from sqlalchemy import text
-    from test_formal_method_use_routes_db import application
-
-    from app.interfaces.http.web import workbench_expert as routes
-
     registry = Registry()
     entries = registry.entries.copy()
     registry.entries.clear()
@@ -223,24 +296,7 @@ async def test_web_intake_empty_directory_starts_no_model_and_named_match_reopen
     try:
         await setup_test_computer(db, fake)
         project = await _project(db)
-        app = application(db, lambda repo: None)
-
-        async def session():
-            async with db() as s:
-                yield s
-
-        async def wake():
-            pass
-
-        app.dependency_overrides[routes.get_db_session] = session
-        monkeypatch.setattr(
-            routes,
-            "find_expert_service",
-            lambda s: FindExpertService(
-                WorkbenchRepository(s), formal_registry=registry
-            ),
-        )
-        monkeypatch.setattr(routes, "publish_commands_wakeup", wake)
+        app = web_app(db, registry, monkeypatch)
         async with AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         ) as client:

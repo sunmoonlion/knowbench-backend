@@ -14,6 +14,7 @@ from test_workbench_ledger_db import db as db
 
 from app.application.workbench.formal_expert_intake import directory_for
 from app.application.workbench.registry_catalog import SceneRegistry
+from app.domain.workbench.formal_expert_match import frozen_scope
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_search import PlanningQuery, search_terms
 from app.infrastructure.workbench.repository import WorkbenchRepository
@@ -146,6 +147,14 @@ async def test_authorized_top_eight_before_and_after_catalog_growth(db):
         assert [item["reference"] for item in second["items"]] == [
             expert.model_dump(mode="json")
         ]
+        definition = await registry.planning_definition(
+            OWNER, expert, experts_only=True
+        )
+        preview = frozen_scope(definition)
+        assert definition.digest() == expert.digest
+        assert [s["id"] for s in preview["steps"]] == ["first", "second"]
+        assert preview["steps"][1]["depends_on"] == ("first",)
+        assert preview["outputs"][0]["step"] == "second"
         authorized.remove(expert)
         assert await directory_for(registry, OWNER, "整理单据", None, offset=96) == {
             "items": [],

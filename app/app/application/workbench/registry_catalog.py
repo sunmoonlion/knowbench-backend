@@ -190,7 +190,7 @@ class SceneRegistry:
             next_page = start + window
         return {"items": visible[:limit], "next": next_page}
 
-    async def planning_declaration(self, owner, reference, *, experts_only=False):
+    async def planning_definition(self, owner, reference, *, experts_only=False):
         from app.domain.workbench.errors import NotFound
 
         async with self.repo.transaction(independent=True):
@@ -215,11 +215,21 @@ class SceneRegistry:
             raise CapabilityError(
                 "Registered declaration differs from the requested version"
             )
+        return definition
+
+    async def planning_declaration(self, owner, reference, *, experts_only=False):
+        definition = await self.planning_definition(
+            owner, reference, experts_only=experts_only
+        )
+        return self.public_declaration(reference, definition)
+
+    @staticmethod
+    def public_declaration(reference, definition):
         outputs = {}
         for rule in definition.how_to_validate:
             outputs.setdefault(rule.promise_id, {}).update(dict.fromkeys(rule.outputs))
         return {
-            "reference": self.reference(rows[0]),
+            "reference": reference.model_dump(mode="json"),
             "promise_outputs": {
                 promise: list(names) for promise, names in outputs.items()
             },

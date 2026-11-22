@@ -4,7 +4,7 @@ import json
 
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
-from app.domain.workbench.formal_expert_match import verify_options
+from app.domain.workbench.formal_expert_match import frozen_scope, verify_options
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_search import PlanningQuery
 
@@ -113,18 +113,35 @@ async def check_current(registry, owner, option):
 async def review(repo, registry, owner, task, artifact):
     async with repo.transaction():
         result = await read_verified(repo, task, artifact)
-    for option in result["options"]:
-        await check_current(registry, owner, option)
-    selections = await repo.list_task_events(str(task["id"]), types=(SELECTION,))
-    if (
-        selections
-        and selections[0]["payload"]["review_digest"] != result["review_digest"]
-    ):
-        raise StaleStateVersion("Selection belongs to an earlier matching result")
-    return {
-        **result,
-        "selected": selections[0]["payload"]["reference"] if selections else None,
-    }
+        selections = await repo.list_task_events(str(task["id"]), types=(SELECTION,))
+    selected = None
+    preview = None
+    if selections:
+        receipt = selections[0]["payload"]
+        selected = receipt["reference"]
+        options = [o for o in result["options"] if o["reference"] == selected]
+        if (
+            len(selections) != 1
+            or receipt["review_digest"] != result["review_digest"]
+            or len(options) != 1
+        ):
+            raise StaleStateVersion("Invalid selection for this matching result")
+        ref = MethodRef.model_validate(selected)
+        definition = await registry.planning_definition(owner, ref, experts_only=True)
+        if registry.public_declaration(ref, definition) != options[0]:
+            raise StaleStateVersion("Selected declaration changed")
+        preview = frozen_scope(definition)
+        result["options"] = options
+        result["match"]["picks"] = [
+            p for p in result["match"]["picks"] if p["reference"] == selected
+        ]
+    else:
+        for option in result["options"]:
+            await check_current(registry, owner, option)
+    async with repo.transaction():
+        if await repo.list_task_events(str(task["id"]), types=(REVISION,)):
+            raise StaleStateVersion("The question has been revised")
+    return {**result, "selected": selected, "scope_preview": preview}
 
 
 async def confirm(repo, registry, owner, task_id, body):
