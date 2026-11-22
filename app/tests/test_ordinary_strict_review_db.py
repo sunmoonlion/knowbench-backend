@@ -337,24 +337,23 @@ async def test_author_strict_then_ordinary_cross_family(
                     for e in events
                     if e["payload"]["interaction_id"] == iid
                 )
-                view = await client.get(f"/api/workbench/interactions/{iid}")
-                assert view.status_code == 200, view.text
-                assert (
-                    view.json()["interaction"]["subject"]["digest"]
-                    == it["subject_digest"]
-                )
-                url = f"/api/workbench/interactions/{iid}/respond"
-                payload = {
-                    "decision": choice,
-                    "token": token,
-                    "subject_digest": it["subject_digest"],
-                }
-                assert (
-                    await client.post(url, json={**payload, "subject_digest": "0" * 64})
-                ).status_code == 409
-                response = await client.post(url, json=payload)
-                assert response.status_code == 200, response.text
-                assert (await client.post(url, json=payload)).status_code == 409
+            view = await client.get(f"/api/workbench/interactions/{iid}")
+            assert view.status_code == 200, view.text
+            assert (
+                view.json()["interaction"]["subject"]["digest"] == it["subject_digest"]
+            )
+            url = f"/api/workbench/interactions/{iid}/respond"
+            payload = {
+                "decision": choice,
+                "token": token,
+                "subject_digest": it["subject_digest"],
+            }
+            assert (
+                await client.post(url, json={**payload, "subject_digest": "0" * 64})
+            ).status_code == 409
+            response = await client.post(url, json=payload)
+            assert response.status_code == 200, response.text
+            assert (await client.post(url, json=payload)).status_code == 409
 
         for index, phase in enumerate(phases):
             await drive(runner)

@@ -158,7 +158,10 @@ class InstructionRunner:
                 pod = await request(
                     owner, task_id, "POST", "prepare", params={"proof_uid": proof_uid}
                 )
-        uid = str(UUID(pod["uid"]))
+        return await self.remember_gateway(owner, task_id, attempt_id, pod["uid"])
+
+    async def remember_gateway(self, owner, task_id, attempt_id, uid):
+        uid = str(UUID(uid))
         async with self.stores() as repo, repo.transaction():
             task = await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
             attempt = await repo.get_attempt(attempt_id, for_update=True)
@@ -662,12 +665,39 @@ class InstructionRunner:
                 "instruction_unit"
             ].get("pending"):
                 return
-        uid = await self.gateway(owner, task_id, attempt_id)
-        if uid is None:
+        request = self.units.for_attempt(attempt)
+        uid = (refs.get("instruction_gateway") or {}).get("uid")
+        if not uid:
             if not refs["instruction_unit"].get("prepare_requested"):
                 await self.update_unit(task_id, attempt_id, pending=False)
-            return
-        request = self.units.for_attempt(attempt)
+                return
+            reservation = await request(
+                owner, task_id, "GET", "reservation", absent=True
+            )
+            if not reservation:
+                if refs["instruction_unit"].get("cleanup_proof_uid"):
+                    await self.update_unit(task_id, attempt_id, pending=False)
+                # Otherwise a timed-out prepare might still arrive.
+                return
+            if reservation.get("state") == "pvc_only":
+                if refs.get("instruction_request") or refs.get("usage_pending"):
+                    raise CapabilityError(
+                        "Gateway proof missing on a started instruction"
+                    )
+                proof_uid = str(UUID(reservation["proof_uid"]))
+                await self.update_unit(task_id, attempt_id, cleanup_proof_uid=proof_uid)
+                await request(
+                    owner,
+                    task_id,
+                    "DELETE",
+                    "reservation",
+                    params={"proof_uid": proof_uid},
+                )
+                # Foreground deletion may still be waiting for dependent resources.
+                return
+            uid = await self.remember_gateway(
+                owner, task_id, attempt_id, reservation["uid"]
+            )
         settled = {"settled_attempt": attempt_id}
         pod = await request(owner, task_id, "GET", uid, absent=True)
         if pod is not None:

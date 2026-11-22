@@ -130,6 +130,20 @@ async def test_authorized_top_eight_before_and_after_catalog_growth(db):
                 await insert(i, "单证归档", "整理归档发票的原始单证")
         assert await measure() == (15, 15, 1)
 
+        # Include every public distractor in the buyer's rights. A strong
+        # match past the first authorization window must precede weaker experts.
+        async with repo.transaction():
+            for i in range(520, 620):
+                authorized.add(await insert(i, "通用专家", "常规说明"))
+        # Move the unique target beyond a full window in market ordering.
+        async with repo.transaction():
+            target = await insert(2000, "专项验收报表", "专项验收报表")
+        authorized.add(target)
+        page = await registry.planning_versions(
+            OWNER, 8, 0, query=PlanningQuery(stage="expert", question="专项验收报表")
+        )
+        assert page["items"][0]["method_id"] == target.method_id
+
         # 96 qualified tool versions fill the first window of an 8-candidate query.
         authorized.clear()
         async with repo.transaction():
@@ -140,11 +154,8 @@ async def test_authorized_top_eight_before_and_after_catalog_growth(db):
             expert = await insert(217, "归档专家", "整理单据并核对")
             authorized.add(expert)
         first = await directory_for(registry, OWNER, "整理单据", None)
-        assert first == {"items": [], "next": 96}
-        second = await directory_for(
-            registry, OWNER, "整理单据", None, offset=first["next"]
-        )
-        assert [item["reference"] for item in second["items"]] == [
+        assert first["more"] is False
+        assert [item["reference"] for item in first["items"]] == [
             expert.model_dump(mode="json")
         ]
         definition = await registry.planning_definition(

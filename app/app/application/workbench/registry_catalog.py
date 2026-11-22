@@ -210,14 +210,19 @@ class SceneRegistry:
         # Bound both the authorization request and the in-memory ranking window.
         # KnowMart pages only this actor's usable pins. Ranking stays local.
         window = (100 // limit) * limit
-        start, within = divmod(offset, window)
-        start *= window
+        block = window * (4 if terms or experts_only else 1)
+        start, within = divmod(offset, block)
+        start *= block
         async with self.repo.transaction(independent=not locked):
             subject = await self.repo.subject_of_actor(owner)
             if not subject or self.market is None:
                 raise CapabilityError("Formal method use qualification is unavailable")
-        refs, more = await self.market.planning_window(subject, start, window)
-        eligible = [ref.model_dump(mode="json") for ref in refs]
+        eligible = []
+        for cursor in range(start, start + block, window):
+            refs, more = await self.market.planning_window(subject, cursor, window)
+            eligible.extend(ref.model_dump(mode="json") for ref in refs)
+            if not more:
+                break
         async with self.repo.transaction():
             visible = (
                 await self.repo.registry_method_candidates(
@@ -234,9 +239,9 @@ class SceneRegistry:
             )
         next_page = None
         if len(visible) > limit:
-            next_page = offset + limit
+            next_page = start + within + limit
         elif more:
-            next_page = start + window
+            next_page = start + block
         return {"items": visible[:limit], "next": next_page}
 
     async def planning_definitions(

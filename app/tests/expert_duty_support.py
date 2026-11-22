@@ -19,6 +19,7 @@ async def verify_period(
 ):
     class Area:
         live = True
+        hold = False
 
         def __init__(self):
             self.writes = []
@@ -26,6 +27,9 @@ async def verify_period(
 
         async def write_output(self, **args):
             self.writes.append(args)
+            if self.hold:
+                started.set()
+                await resume.wait()
             assert args["content"] == result["delivery"][output].encode()
             self.pin = self.pin or {
                 "material_id": str(uuid4()),
@@ -47,6 +51,7 @@ async def verify_period(
             assert all(self.writes[0][key] == value for key, value in args.items())
             return self.pin if self.live else {}
 
+    started, resume = asyncio.Event(), asyncio.Event()
     area = Area()
     patch.setattr(routes, "knowbase_v2", lambda: area)
     patch.setattr(
@@ -77,6 +82,19 @@ async def verify_period(
     wrong = await client.put(path + "/duty/output", json={"execution_id": str(uuid4())})
     assert wrong.status_code == 409 and not area.writes
     release = {"execution_id": result["execution"]["task_id"]}
+    area.hold = True
+    pending = asyncio.create_task(client.put(path + "/duty/output", json=release))
+    try:
+        async with asyncio.timeout(8):
+            await started.wait()
+            withdrawn = await client.put(path + "/duty/withdrawal", json=release)
+            withdrawn.raise_for_status()
+    finally:
+        area.hold = False
+        resume.set()
+        superseded = await pending
+    assert superseded.status_code == 409
+    area.writes.clear()
     a, b = await asyncio.gather(
         *(client.put(path + "/duty/output", json=release) for _ in range(2))
     )

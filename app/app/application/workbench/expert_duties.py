@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import Field
 
+from app.application.workbench.external_claim import ExternalClaim
 from app.application.workbench.find_expert import QUESTION_CHARS
 from app.application.workbench.outputs import _basis_echoed, task_ref
 from app.domain.workbench.errors import NotFound, StaleStateVersion
@@ -114,46 +115,61 @@ async def configure(service, owner, origin, body):
 
 async def release(service, owner, origin, execution_id, library):
     repo = service.repo
-    async with repo.transaction():
-        await repo.get_task(origin, owner_actor_id=owner)
-        row = await repo.duty(origin, lock=True)
-        if not row or row["paused"]:
-            raise StaleStateVersion("An active duty is required")
-        task, plan, artifact = await current_delivery(
-            repo, owner, str(row["current_match"])
-        )
-        config = row["config"]
-        if (
-            str(task["id"]) != execution_id
-            or plan.reference.model_dump(mode="json") != config["reference"]
-        ):
-            raise StaleStateVersion("Review the current delivery first")
-        if row["approved"]:
-            return view(row)
-        field = config["output"]
-        if field not in artifact["content"]:
-            raise StaleStateVersion("The designated output was not delivered")
-        value = artifact["content"][field]
-        content = (
-            value
-            if isinstance(value, str)
-            else json.dumps(value, sort_keys=True, ensure_ascii=False, allow_nan=False)
-        ).encode()
-        if not content:
-            raise StaleStateVersion("An empty delivery cannot be released")
-        subject = await repo.subject_of_actor(owner)
-        if not subject:
-            raise NotFound("No such owner")
-        where = {
-            "beneficiary": subject,
-            "task_ref": task_ref(execution_id),
-            "run_ref": str(artifact["id"]),
-            "name": field + ".txt",
-        }
-        started, finished = (
-            task["created_at"].isoformat(),
-            task["updated_at"].isoformat(),
-        )
+    initial_revision = None
+    claim = ExternalClaim("task/expert_duty_release_claim")
+    while True:
+        async with repo.transaction():
+            origin_task = await repo.get_task(
+                origin, owner_actor_id=owner, for_update=True
+            )
+            row = await repo.duty(origin, lock=True)
+            if not row or row["paused"]:
+                raise StaleStateVersion("An active duty is required")
+            task, plan, artifact = await current_delivery(
+                repo, owner, str(row["current_match"])
+            )
+            config = row["config"]
+            if (
+                str(task["id"]) != execution_id
+                or plan.reference.model_dump(mode="json") != config["reference"]
+            ):
+                raise StaleStateVersion("Review the current delivery first")
+            if row["approved"]:
+                return view(row)
+            field = config["output"]
+            if field not in artifact["content"]:
+                raise StaleStateVersion("The designated output was not delivered")
+            value = artifact["content"][field]
+            content = (
+                value
+                if isinstance(value, str)
+                else json.dumps(
+                    value, sort_keys=True, ensure_ascii=False, allow_nan=False
+                )
+            ).encode()
+            if not content:
+                raise StaleStateVersion("An empty delivery cannot be released")
+            subject = await repo.subject_of_actor(owner)
+            if not subject:
+                raise NotFound("No such owner")
+            where = {
+                "beneficiary": subject,
+                "task_ref": task_ref(execution_id),
+                "run_ref": str(artifact["id"]),
+                "name": field + ".txt",
+            }
+            started, finished = (
+                task["created_at"].isoformat(),
+                task["updated_at"].isoformat(),
+            )
+            if initial_revision is None:
+                initial_revision = row["state_revision"]
+            if row["state_revision"] != initial_revision:
+                raise StaleStateVersion("The duty changed during output release")
+            if await claim.acquire(repo, origin_task, initial_revision):
+                break
+        await claim.wait()
+    try:
         written = await library.write_output(
             **where,
             content=content,
@@ -169,6 +185,23 @@ async def release(service, owner, origin, execution_id, library):
             written, None, started, finished
         ):
             raise StaleStateVersion("KnowBase did not attest the approved output")
+    except Exception:
+        await claim.failed(repo, owner, origin, initial_revision)
+        raise
+    async with repo.transaction():
+        await repo.get_task(origin, owner_actor_id=owner, for_update=True)
+        latest = await repo.duty(origin, lock=True)
+        if not latest or latest["state_revision"] != row["state_revision"]:
+            if (
+                latest
+                and latest["current_match"] == row["current_match"]
+                and latest["approved"]
+                and not latest["paused"]
+            ):
+                return view(latest)
+            raise StaleStateVersion("The duty changed during output release")
+        if not await claim.owns(repo, origin):
+            raise StaleStateVersion("Another attempt reclaimed the output release")
         await repo.approve_duty_output(
             origin,
             {
@@ -236,15 +269,20 @@ async def wake(service, owner, origin, period, library):
         config, prior = row["config"], row["approved"]
         ref = MethodRef.model_validate(config["reference"])
         subject = await repo.subject_of_actor(owner)
-        await check_released_output(library, subject, prior)
-        definitions = await service.formal_registry.planning_definitions(
-            owner, [ref], experts_only=True, locked=True
+    await check_released_output(library, subject, prior)
+    definitions = await service.formal_registry.planning_definitions(
+        owner, [ref], experts_only=True
+    )
+    if ref not in definitions:
+        raise StaleStateVersion("Use of this duty's expert version has been revoked")
+    declaration = service.formal_registry.public_declaration(ref, definitions[ref])
+    async with repo.transaction():
+        await repo.get_project(
+            str(task["project_id"]), owner_actor_id=owner, for_update=True
         )
-        if ref not in definitions:
-            raise StaleStateVersion(
-                "Use of this duty's expert version has been revoked"
-            )
-        declaration = service.formal_registry.public_declaration(ref, definitions[ref])
+        latest = await repo.duty(origin, lock=True)
+        if not latest or latest["state_revision"] != row["state_revision"]:
+            return None
         made = await service.start(
             owner_actor_id=owner,
             project_id=str(task["project_id"]),

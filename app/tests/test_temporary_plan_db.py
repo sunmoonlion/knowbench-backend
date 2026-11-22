@@ -12,6 +12,7 @@ from test_ordinary_expert_execution_db import selected_match
 from test_workbench_advisor_db import drive
 from test_workbench_ledger_db import db as db
 
+from app.domain.workbench.errors import StaleStateVersion
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
@@ -191,6 +192,17 @@ async def test_clarification_requires_separately_authorized_pinned_probe(
         assert (await client.put(p + "/probe", json=cmd)).status_code == 409
         await drive(runner)
         library.check_planning_column.assert_not_awaited()
+        # A failed read commits the permission and allows only an identical retry.
+        library.check_planning_column.side_effect = StaleStateVersion(
+            "source unavailable"
+        )
+        assert (await client.put(p + "/probe", json=cmd)).status_code == 409
+        assert (
+            await client.put(p + "/probe", json={**cmd, "column": "extra"})
+        ).status_code == 409
+        library.check_planning_column.assert_awaited_once()
+        library.check_planning_column.side_effect = None
+        library.check_planning_column.reset_mock()
         first, second = await asyncio.gather(
             *(client.put(p + "/probe", json=cmd) for _ in range(2))
         )

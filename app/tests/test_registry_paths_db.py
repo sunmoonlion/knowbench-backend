@@ -653,5 +653,20 @@ async def test_sparse_planning_window_advances_without_scanning_the_entire_marke
             break
         page = await registry.planning_versions(OWNER, 30, page["next"], query=query)
     assert ids == list(range(101, 233))
-    assert market.planning_window.await_count == 5
+    # Two 90-pin qualification windows are ranked together for each output page.
+    assert market.planning_window.await_count == 10
     assert all(call.args[2] == 90 for call in market.planning_window.await_args_list)
+
+    # An entirely filtered block must retain a continuation and respect the
+    # same per-request cap, however many more licensed pins exist.
+    missing = [
+        allowed[0].model_copy(update={"method_id": UUID(int=n)})
+        for n in range(1000, 1450)
+    ]
+    allowed[:0] = missing
+    market.planning_window.reset_mock()
+    limited = await registry.planning_versions(OWNER, 30, 0, query=query)
+    assert limited == {"items": [], "next": 360}
+    assert market.planning_window.await_count == 4
+    resumed = await registry.planning_versions(OWNER, 30, limited["next"], query=query)
+    assert len(resumed["items"]) == 30

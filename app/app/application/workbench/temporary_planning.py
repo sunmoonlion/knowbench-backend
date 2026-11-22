@@ -82,7 +82,7 @@ def page_refs(registry, page):
 
 
 async def describe(registry, owner, pins, *, brief=False):
-    definitions = await registry.planning_definitions(owner, pins, locked=True)
+    definitions = await registry.planning_definitions(owner, pins)
     entries = []
     for ref in pins:
         if ref not in definitions:
@@ -110,7 +110,7 @@ async def catalog(
     trace = list(previous["trace"]) if previous else []
     if not previous:
         page = await registry.planning_versions(
-            owner, limit, 0, locked=True, query=PlanningQuery(stage="directory")
+            owner, limit, 0, query=PlanningQuery(stage="directory")
         )
         trace.append({"by": "host", "stage": "directory", "next": page["next"]})
         if page["next"] is None and mode != "goal":
@@ -136,7 +136,6 @@ async def catalog(
         owner,
         limit,
         0,
-        locked=True,
         query=PlanningQuery(stage="composition", question=query),
     )
     pins = page_refs(registry, page)
@@ -248,45 +247,55 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                 | set(prior["original_input"]["input"].get("required_capabilities", []))
             )
         missing = [k for k in needed if not runtime["patterns"].get(k, False)]
-        if probe:
-            result = probe["result"]
-            if not library or not token:
-                raise StaleStateVersion("Cannot verify access to the probed material")
-            _, versions = await library.preparation_material(
-                await token(), result["material_id"], {result["version_no"]}
+    if probe:
+        result = probe["result"]
+        if not library or not token:
+            raise StaleStateVersion("Cannot verify access to the probed material")
+        _, versions = await library.preparation_material(
+            await token(), result["material_id"], {result["version_no"]}
+        )
+        if (result["version_no"], result["sha256"]) not in versions:
+            raise StaleStateVersion(
+                "The approved material version is no longer available"
             )
-            if (result["version_no"], result["sha256"]) not in versions:
-                raise StaleStateVersion(
-                    "The approved material version is no longer available"
-                )
-        if missing:
-            directory = {"entries": [], "queries": 0}
-        elif not events:
-            directory = await catalog(
-                service.formal_registry, owner, question, 8, mode=command.catalog_mode
-            )
-        elif goal:
-            directory = await catalog(
-                service.formal_registry,
-                owner,
-                question,
-                8,
-                previous=directory,
-                goal=goal,
-            )
-        else:
-            refs = [
-                MethodRef.model_validate(entry["reference"])
-                for entry in directory["entries"]
-            ]
-            entries = await describe(service.formal_registry, owner, refs)
-            while entries and encoded_size(entries) > 16000:
-                entries.pop()
-            directory = {
-                **directory,
-                "entries": entries,
-                "partial": directory["partial"] or len(entries) < len(refs),
-            }
+    if missing:
+        directory = {"entries": [], "queries": 0}
+    elif not events:
+        directory = await catalog(
+            service.formal_registry, owner, question, 8, mode=command.catalog_mode
+        )
+    elif goal:
+        directory = await catalog(
+            service.formal_registry,
+            owner,
+            question,
+            8,
+            previous=directory,
+            goal=goal,
+        )
+    else:
+        refs = [
+            MethodRef.model_validate(entry["reference"])
+            for entry in directory["entries"]
+        ]
+        entries = await describe(service.formal_registry, owner, refs)
+        while entries and encoded_size(entries) > 16000:
+            entries.pop()
+        directory = {
+            **directory,
+            "entries": entries,
+            "partial": directory["partial"] or len(entries) < len(refs),
+        }
+
+    async with repo.transaction():
+        task, _ = await current(repo, owner, task_id, command.review_digest, lock=True)
+        latest = await repo.latest_task_payload(task_id, ROUND)
+        if latest and latest["key"] == key:
+            return latest
+        if latest != (
+            events[-1]["payload"] if events else None
+        ) or await repo.latest_task_payload(task_id, PLAN):
+            raise StaleStateVersion("Planning round changed")
         if not directory["entries"]:
             receipt = {
                 "key": key,

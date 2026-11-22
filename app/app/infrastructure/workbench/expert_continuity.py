@@ -10,7 +10,10 @@ class ExpertContinuityRepositoryMixin:
     async def duty(self, origin, *, lock=False):
         suffix = " FOR UPDATE" if lock else ""
         result = await self.session.execute(
-            text("SELECT * FROM workbench_expert_duties WHERE origin=:origin" + suffix),
+            text(
+                "SELECT *, xmin::text AS state_revision FROM workbench_expert_duties WHERE origin=:origin"
+                + suffix
+            ),
             {"origin": origin},
         )
         return result.mappings().first()

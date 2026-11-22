@@ -381,6 +381,10 @@ async def test_lost_prepare_reply_recovers_without_second_allocation(
 
     async def lose_reply(owner, task, method, path, **kwargs):
         result = await request(owner, task, method, path, **kwargs)
+        if partial and path == "reservation" and method == "DELETE":
+            assert kwargs["params"] == {"proof_uid": proof_uid}
+            s.units.deleted = True
+            return {"removed": True}
         if partial and path == "reservation":
             return {"state": "pvc_only", "proof_uid": proof_uid}
         if path == "prepare" and kwargs.get("params") == {"proof_uid": proof_uid}:
@@ -402,7 +406,8 @@ async def test_lost_prepare_reply_recovers_without_second_allocation(
         await drive(s)
         assert s.units.bindings
     assert (
-        s.units.ops.count(("POST", "prepare")) == (2 if partial else 1)
+        s.units.ops.count(("POST", "prepare"))
+        == (2 if partial and not cancelled else 1)
         and ("GET", "reservation") in s.units.ops
     )
 
