@@ -289,6 +289,8 @@ class FindExpertService:
         retain_empty: bool = False,
         revises: str | None = None,
         source_session: str | None = None,
+        followup: dict | None = None,
+        checked_directory: dict | None = None,
     ) -> dict[str, Any]:
         """开「找专家」那一轮：用户项目里一段专家对话、一件内部委托，排上去跑。"""
         text = question.strip()
@@ -313,6 +315,18 @@ class FindExpertService:
             reference is not None or revises is not None or source_session is not None
         ) and not formal:
             raise FindExpertRefused("A formal method needs an exact-version match")
+        if followup is not None or checked_directory is not None:
+            if (
+                not formal
+                or not reference
+                or not followup
+                or not checked_directory
+                or [e["reference"] for e in checked_directory["items"]]
+                != [reference.model_dump(mode="json")]
+            ):
+                raise FindExpertRefused(
+                    "A linked request requires one checked expert version"
+                )
         if retain_empty and not formal:
             raise FindExpertRefused(
                 "Retaining an empty result requires a formal expert search"
@@ -335,6 +349,7 @@ class FindExpertService:
                 ),
                 original_input={
                     "text": text,
+                    **({"followup": followup} if followup else {}),
                     **({"retain_empty": True} if retain_empty else {}),
                     **(
                         {"directory_offset": directory_offset}
@@ -378,12 +393,15 @@ class FindExpertService:
                     raise ExpertDirectoryUnavailable(
                         "Formal expert directory unavailable"
                     )
-                directory = await formal_expert_intake.directory_for(
-                    self.formal_registry,
-                    owner_actor_id,
-                    text,
-                    reference,
-                    offset=directory_offset,
+                directory = (
+                    checked_directory
+                    or await formal_expert_intake.directory_for(
+                        self.formal_registry,
+                        owner_actor_id,
+                        text,
+                        reference,
+                        offset=directory_offset,
+                    )
                 )
                 if not directory["items"] and (
                     not retain_empty or directory["next"] is not None
@@ -491,6 +509,8 @@ class FindExpertService:
             from app.domain.workbench.ordinary_expert import CONFIRMED
 
             base["session_id"] = str(task["session_id"])
+            if followup := task["original_input"]["input"].get("followup"):
+                base["followup"] = followup
             execution = await self.repo.latest_task_payload(task_id, CONFIRMED)
             if execution:
                 delegated = await self.repo.get_task(
@@ -516,7 +536,15 @@ class FindExpertService:
                 review = await formal_expert_intake.read_verified(
                     self.repo, task, evidence
                 )
+                from app.application.workbench.formal_expert_preparation import (
+                    PREPARATION,
+                )
+
+                preparation = await self.repo.latest_task_payload(task_id, PREPARATION)
                 return base | {
+                    "duty_material_slots": sorted(preparation["bindings"]["materials"])
+                    if preparation
+                    else [],
                     "temporary_delivery": bool(
                         await self.repo.latest_task_payload(
                             task_id, "task/temporary_plan_adopted"

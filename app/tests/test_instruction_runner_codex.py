@@ -137,6 +137,8 @@ async def isolated_round(
     stage,
     *,
     ordinary_round=None,
+    peers=None,
+    cleanup=None,
 ):
     image_dir = sandbox_relay().parent
     monkeypatch.syspath_prepend(str(image_dir))
@@ -192,6 +194,15 @@ async def isolated_round(
 
     name = "instruction-runner-" + uuid4().hex[:12]
     await docker("network", "create", "--internal", name)
+
+    async def remove_worker():
+        await asyncio.to_thread(
+            subprocess.run, ["docker", "rm", "--force", name], capture_output=True
+        )
+        await docker("network", "rm", name)
+
+    if cleanup is not None:
+        cleanup.push_async_callback(remove_worker)
     try:
         net = json.loads(await docker("network", "inspect", name))[0]
         host_ip = net["IPAM"]["Config"][0]["Gateway"]
@@ -316,7 +327,33 @@ async def isolated_round(
                     s.units.request = unit
                     s.units.ready = True
                     if ordinary_round:
+
+                        async def check_private_files():
+                            for paths in (peers or {}).values():
+                                for path in paths:
+                                    await docker("exec", name, "test", "!", "-e", path)
+
+                        await check_private_files()
+                        marker = "/tmp/private-work-" + uuid4().hex
+                        await docker("exec", name, "touch", marker)
                         await ordinary_round()
+                        await check_private_files()
+                        if peers is not None:
+                            history = await docker(
+                                "exec",
+                                name,
+                                "find",
+                                "/tmp/codex/sessions",
+                                "-name",
+                                "*.jsonl",
+                            )
+                            assert history
+                            paths = [marker, *history.splitlines()]
+                            for peer in peers:
+                                for path in paths:
+                                    await docker("exec", peer, "test", "!", "-e", path)
+                            peers[name] = paths
+
                         assert len(fixtures.captures) == initial + 1
                         return fixtures.captures[-1]
                     # Lose the runner after Codex has finished but just before the
@@ -466,14 +503,21 @@ async def isolated_round(
                     for t in threads:
                         t.join()
     finally:
-        await asyncio.to_thread(
-            subprocess.run, ["docker", "rm", "--force", name], capture_output=True
-        )
-        await docker("network", "rm", name)
+        if cleanup is None:
+            await remove_worker()
 
 
 async def real_ordinary_round(
-    db, app, monkeypatch, directory, stack, scoped_factory, task, stage
+    db,
+    app,
+    monkeypatch,
+    directory,
+    stack,
+    scoped_factory,
+    task,
+    stage,
+    peers=None,
+    cleanup=None,
 ):
     from app.application.workbench.formal_execution import (
         FormalExecution,
@@ -520,4 +564,6 @@ async def real_ordinary_round(
         False,
         stage,
         ordinary_round=resume_after_interruption,
+        peers=peers,
+        cleanup=cleanup,
     )

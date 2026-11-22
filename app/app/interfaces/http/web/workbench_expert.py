@@ -16,7 +16,12 @@ from fastapi import APIRouter, Depends, Path, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.application.workbench import planning_probe, temporary_planning
+from app.application.workbench import (
+    expert_duties,
+    handoff_adoption,
+    planning_probe,
+    temporary_planning,
+)
 from app.application.workbench.catalog import (
     my_knowbots,
     pin_knowbot,
@@ -52,7 +57,7 @@ from app.bootstrap.workbench import (
     web_workbench_store as workbench_store,
 )
 from app.domain.security import Principal
-from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.errors import StaleStateVersion, WorkbenchError
 from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.pack_view import pack_view
@@ -71,6 +76,7 @@ from app.interfaces.http.middleware.auth import (
     get_web_current_user,
     get_web_knowbase_token_provider,
 )
+from core.config import get_settings
 
 router = APIRouter(
     prefix="/workbench",
@@ -999,3 +1005,132 @@ async def ask_find_expert_incubation(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **found}
+
+
+class DutyState(Strict):
+    paused: bool
+
+
+@router.get("/find-expert/{task_id}/duty")
+async def read_duty(
+    task_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    repo = workbench_store(session)
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        await repo.get_task(str(task_id), owner_actor_id=_actor(principal))
+        return expert_duties.view(await repo.duty(str(task_id)))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/duty")
+async def create_duty(
+    task_id: UUID,
+    body: expert_duties.DutyConfig,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        if not get_settings().workbench_output_write_enabled:
+            raise StaleStateVersion("KnowBase output writing is disabled")
+        return await expert_duties.configure(
+            find_expert_service(session), _actor(principal), str(task_id), body
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/duty/output")
+async def approve_duty_output(
+    task_id: UUID,
+    body: expert_duties.ReleaseOutput,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        if not get_settings().workbench_output_write_enabled:
+            raise StaleStateVersion("KnowBase output writing is disabled")
+        return await expert_duties.release(
+            find_expert_service(session),
+            _actor(principal),
+            str(task_id),
+            str(body.execution_id),
+            knowbase_v2(),
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    except Exception as exc:
+        translated = refusal(exc)
+        if translated is None:
+            raise
+        raise _http(translated) from exc
+
+
+@router.put("/find-expert/{task_id}/duty/withdrawal")
+async def withdraw_duty_output(
+    task_id: UUID,
+    body: expert_duties.ReleaseOutput,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await expert_duties.withdraw(
+            find_expert_service(session),
+            _actor(principal),
+            str(task_id),
+            str(body.execution_id),
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/duty/state")
+async def pause_expert_duty(
+    task_id: UUID,
+    body: DutyState,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        return await expert_duties.set_paused(
+            find_expert_service(session), _actor(principal), str(task_id), body.paused
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.get("/find-expert/{task_id}/handoff/versions")
+async def handoff_versions(
+    task_id: UUID,
+    response: Response,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        return await handoff_adoption.available(
+            find_expert_service(session), _actor(principal), str(task_id)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.put("/find-expert/{task_id}/handoff/versions")
+async def adopt_handoff_version(
+    task_id: UUID,
+    body: handoff_adoption.AdoptVersion,
+    principal: Principal = Depends(get_web_current_user),
+    session: AsyncSession = Depends(get_db_session),
+):
+    try:
+        saved = await handoff_adoption.adopt(
+            find_expert_service(session), _actor(principal), str(task_id), body
+        )
+        await publish_commands_wakeup()
+        return saved
+    except WorkbenchError as exc:
+        raise _http(exc) from exc

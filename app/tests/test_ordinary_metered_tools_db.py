@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import AsyncExitStack
 from decimal import Decimal
 from uuid import uuid4
 
@@ -75,9 +76,10 @@ async def test_confirmed_metered_leaf(
             service.instruction_service = None
         return service
 
-    async with selected_match(
-        db, monkeypatch, expert, refs, OWNER, capabilities
-    ) as match:
+    async with (
+        AsyncExitStack() as workers,
+        selected_match(db, monkeypatch, expert, refs, OWNER, capabilities) as match,
+    ):
         client, path, selected, runner, scoped_factory, _ = match
         if instruction:
             stack.driver.formal = lambda repo: scoped_factory(repo).formal_sources
@@ -172,6 +174,7 @@ async def test_confirmed_metered_leaf(
             stack.units.task = task
             already_sent = len(stack.provider_requests)
         executor.calls.clear()
+        private_files = {}
         for i, step in enumerate(view["steps"]):
             await drive(runner)
             async with db() as session:
@@ -242,6 +245,8 @@ async def test_confirmed_metered_leaf(
                         scoped_factory,
                         task,
                         i + 1,
+                        peers=private_files,
+                        cleanup=workers,
                     )
                     stack.provider_requests.append(capture)
                 else:
@@ -312,6 +317,12 @@ async def test_confirmed_metered_leaf(
         assert list(delivery["delivery"].values()) == [
             "ready" if instruction else "test@example.test"
         ]
+        if review_case == "live":
+            from expert_duty_support import verify_period
+
+            await verify_period(
+                db, monkeypatch, client, path, delivery, expert.reference, refs
+            )
         async with db() as session:
             repo = WorkbenchRepository(session)
             budget = (await repo.get_task(task))["budget"]

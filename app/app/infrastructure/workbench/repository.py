@@ -48,6 +48,9 @@ from app.infrastructure.workbench.capability_repository import (
     INSTRUCTION_CLEANUP,
     CapabilityRepositoryMixin,
 )
+from app.infrastructure.workbench.expert_continuity import (
+    ExpertContinuityRepositoryMixin,
+)
 from app.infrastructure.workbench.formal_method_repository import (
     FormalMethodRepositoryMixin,
 )
@@ -118,6 +121,7 @@ def _test_session(alias: str) -> str:
 
 
 class WorkbenchRepository(
+    ExpertContinuityRepositoryMixin,
     CapabilityRepositoryMixin,
     CallRepositoryMixin,
     AuthorizationRepositoryMixin,

@@ -242,3 +242,24 @@ async def test_the_web_dependency_trades_this_sessions_token_when_used(monkeypat
     with pytest.raises(ServiceUnavailableError) as caught:
         await provide()
     assert caught.value.code == "knowbase_unconfigured"
+
+
+async def test_duty_inputs_require_the_owner_conversion_of_the_exact_released_output():
+    source = {"material_id": "source", "version_no": 1, "sha256": "a" * 64}
+    selected = {**source, "material_id": "copy"}
+    data = {
+        "material_id": "copy",
+        "mine": True,
+        "deleted": False,
+        "content_origin": "output",
+        "provenance": {"converted_from": "source", "converted_version": 1},
+    }
+    api, seen, _ = client(lambda req: httpx.Response(200, json={"material": data}))
+    assert await api.is_converted_output("user-token", selected, source)
+    assert seen[-1].url.path.endswith("/materials/copy")
+    assert seen[-1].headers["authorization"] == "Bearer user-token"
+    data["provenance"]["converted_from"] = "same-hash-different-source"
+    assert not await api.is_converted_output("user-token", selected, source)
+    assert not await api.is_converted_output(
+        "user-token", {**selected, "version_no": 2}, source
+    )

@@ -10,6 +10,7 @@ import asyncio
 import logging
 import signal
 
+from app.bootstrap.expert_duties import poll as poll_expert_duties
 from app.bootstrap.workbench import (
     build_data_waiter,
     build_deliverable_check,
@@ -97,6 +98,13 @@ async def main() -> None:
     # 委托交付的成稿替用户写进 knowbase 产出区（SDD 0043 第 2.6 节）
     outputs = build_output_writer(get_postgres().session_factory, settings)
     writing = asyncio.create_task(outputs.run_forever(stopping)) if outputs else None
+    duties = (
+        asyncio.create_task(
+            poll_expert_duties(get_postgres().session_factory, stopping)
+        )
+        if settings.workbench_output_write_enabled
+        else None
+    )
     if writing is None:
         logger.warning(
             "output writer is off: WORKBENCH_OUTPUT_WRITE_ENABLED is off,"
@@ -106,6 +114,8 @@ async def main() -> None:
         await runner.run_forever()
     finally:
         stopping.set()
+        if duties is not None:
+            await duties
         await releasing
         await waiting
         if writing is not None:

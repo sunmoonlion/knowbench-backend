@@ -50,6 +50,23 @@ class KnowbaseDataV2(KnowbaseClient):
         )
         return result
 
+    async def is_converted_output(self, user_token, selected, released):
+        if selected["version_no"] != 1 or selected["sha256"] != released["sha256"]:
+            return False
+        _, entry, _ = await self._send(
+            "GET", f"/materials/{_segment(selected['material_id'])}", user_token
+        )
+        info = entry["material"]
+        provenance = info.get("provenance") or {}
+        return (
+            info["material_id"] == selected["material_id"]
+            and not info["deleted"]
+            and info["mine"]
+            and info["content_origin"] == "output"
+            and provenance.get("converted_from") == released["material_id"]
+            and provenance.get("converted_version") == released["version_no"]
+        )
+
     async def preparation_material(self, user_token, material_id, requested_versions):
         from app.infrastructure.external.knowbase_client import KnowbaseRefused
 
@@ -316,13 +333,19 @@ class KnowbaseDataV2(KnowbaseClient):
         return body
 
     async def find_output(
-        self, *, beneficiary: str, task_ref: str, run_ref: str, name: str
+        self,
+        *,
+        beneficiary: str,
+        task_ref: str,
+        run_ref: str,
+        name: str,
+        require_available: bool = False,
     ) -> dict[str, Any]:
         """这次运行同名已经写过的那份（写的时候回了 409 `output_exists`，查回来记成已写）：
         {material_id, version_no, sha256}。"""
         _, body, _ = await self._send(
             "GET",
-            "/outputs/lookup",
+            "/outputs/available" if require_available else "/outputs/lookup",
             await self._service_token(OUTPUT),
             params={
                 "beneficiary": beneficiary,

@@ -279,8 +279,9 @@ async def test_author_strict_then_ordinary_cross_family(
         await factory(WorkbenchRepository(session)).formal_sources.register(
             expert, caller="knowlab"
         )
+    qualified = {expert.reference, leaf.reference}
     async with selected_match(
-        db, monkeypatch, expert, {expert.reference, leaf.reference}, OWNER, factory
+        db, monkeypatch, expert, qualified, OWNER, factory
     ) as match:
         client, path, selected, runner, scoped, _ = match
         runner.instructions = s.driver
@@ -467,6 +468,12 @@ async def test_author_strict_then_ordinary_cross_family(
         assert delivery["execution_state"] == "SUCCEEDED" and list(
             delivery["delivery"].values()
         ) == ["ready"]
+        if scenario == "two_sources":
+            from expert_duty_support import verify_period
+
+            await verify_period(
+                db, monkeypatch, client, path, delivery, expert.reference, qualified
+            )
         assert len(s.provider_requests) == initial + len(phases)
 
 

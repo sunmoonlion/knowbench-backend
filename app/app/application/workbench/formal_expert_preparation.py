@@ -249,6 +249,26 @@ async def prepare(
     materials = bindings["materials"]
     user_token = await token() if materials or browse else None
     shelf = await library.preparation_shelf(user_token) if browse else []
+    followup = task["original_input"]["input"].get("followup") or {}
+    if (
+        followup.get("kind") == "duty"
+        and (slot := followup.get("material_slot"))
+        and (body or saved)
+    ):
+        # KnowBase output-zone objects become executable inputs only after the
+        # owner converts one to data. Verify the immutable conversion provenance.
+        from app.application.workbench.expert_duties import check_released_output
+
+        async with repo.transaction():
+            subject = await repo.subject_of_actor(owner)
+        await check_released_output(library, subject, followup["released"])
+        selected_pin = materials.get(slot)
+        if not selected_pin or not await library.is_converted_output(
+            user_token, selected_pin, followup["released"]["material"]
+        ):
+            raise StaleStateVersion(
+                "Choose the first data version converted from the released output"
+            )
     names, invalid_materials = await check_materials(library, user_token, materials)
     async with repo.transaction():
         await repo.get_task(task_id, owner_actor_id=owner, for_update=True)
