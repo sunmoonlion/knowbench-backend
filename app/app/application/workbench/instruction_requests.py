@@ -68,20 +68,27 @@ class InstructionRequests:
         self.formal, self.repo = formal, formal.repo
         self.route, self.prices = route, prices
         self.default_base_url = default_base_url
+        self.credential_id: str | None = None
 
     @classmethod
     async def for_account(cls, formal, owner, *, routes, model, prices, default_url):
-        credential = await formal.repo.model_request_credential(owner) or {}
-        url = credential.get("base_url") or default_url
-        if url:
-            url = validate_provider_base_url(url)
+        for credential in await formal.repo.list_credentials(owner):
+            if credential["status"] != "active":
+                continue
+            url = credential.get("base_url") or default_url
+            try:
+                endpoint = validate_provider_base_url(url) if url else None
+            except ValueError:
+                continue
             for route in routes:
                 if (route.provider, route.model, route.base_url) == (
-                    credential.get("provider"),
+                    credential["provider"],
                     model,
-                    url,
+                    endpoint,
                 ):
-                    return cls(formal, route, prices, default_base_url=default_url)
+                    service = cls(formal, route, prices, default_base_url=default_url)
+                    service.credential_id = str(credential["id"])
+                    return service
         raise CapabilityError("No authorized instruction model route")
 
     async def authority(self, owner, task, caller, *, grants=None):
@@ -94,7 +101,8 @@ class InstructionRequests:
             if (
                 caller != "registry-source"
                 or snap.source.kind != "instruction"
-                or {
+                or snap.review is None
+                and {
                     k: v
                     for k, v in quote.items()
                     if k not in ("caller", "snapshot_digest")
@@ -137,18 +145,29 @@ class InstructionRequests:
                 session = await self.repo.get_session(
                     str(snap.session_id), owner_actor_id=owner
                 )
+                from app.application.workbench.branch_review_dispatch import (
+                    selected_quote,
+                )
+
+                base = {
+                    k: v
+                    for k, v in quote.items()
+                    if k not in ("caller", "snapshot_digest")
+                }
+                planned = selected_quote(option, base)
                 if (
                     option["rounds"] != snap.review_rounds
                     or str(session["sandbox_id"]) != sandbox
-                    or {
-                        **option["quote"],
-                        "credential_id": option["pin"]["credential_id"],
-                    }
-                    != snap.quote
+                    or planned != snap.quote
                 ):
                     raise CapabilityError(
                         "Review budget, destination or connection changed"
                     )
+                quote = {
+                    **planned,
+                    "caller": caller,
+                    "snapshot_digest": task["pack_digest"],
+                }
             return quote, instruction_input(content, arguments)
         snapshot = host_snapshot(task)
         if snapshot.dependencies:
@@ -188,7 +207,7 @@ class InstructionRequests:
         return {**quote, "caller": caller, "snapshot_digest": task["pack_digest"]}
 
     async def account_quote(self, owner, session, currency):
-        credential = await self.repo.model_request_credential(owner)
+        credential = await self.repo.model_request_credential(owner, self.credential_id)
         quote = self.route.quote(self.prices)
         base_url = (credential or {}).get("base_url") or self.default_base_url
         if (
@@ -255,8 +274,8 @@ class InstructionRequests:
                     ),
                     "instruction_quote": quote,
                     "instruction_output_version": 1,
-                    "model": self.route.model,
-                    "model_provider": self.route.provider,
+                    "model": quote["model"],
+                    "model_provider": quote["provider"],
                 },
             )
             await ledger.attempt_transition(opened["attempt_id"], AttemptState.RUNNING)
@@ -300,19 +319,19 @@ class InstructionRequests:
                 or refs.get("runtime_turn_id") not in (None, turn_id)
                 or refs.get("instruction_quote") != quote
                 or credential_id != quote["credential_id"]
-                or body.get("model") != self.route.model
+                or body.get("model") != quote["model"]
                 or Decimal(attempt["budget_allocated"]["amount"])
                 != Decimal(quote["maximum"])
             ):
                 raise CapabilityError(
                     "Instruction request differs from its reserved route"
                 )
-            limit = body.get("max_output_tokens", self.route.output_tokens)
-            if type(limit) is not int or not 0 < limit <= self.route.output_tokens:
+            limit = body.get("max_output_tokens", quote["output_tokens"])
+            if type(limit) is not int or not 0 < limit <= quote["output_tokens"]:
                 raise CapabilityError("Instruction output exceeds its reserved limit")
             leaf = refs.get("kind") == "formal_orchestration_step"
             outgoing = (
-                leaf_responses_body(job, self.route.model, limit)
+                leaf_responses_body(job, quote["model"], limit)
                 if leaf or task.get("pack_source") == "registry-source"
                 else {**body, "max_output_tokens": limit}
             )
@@ -332,7 +351,15 @@ class InstructionRequests:
         return quote["base_url"] + "/responses", outgoing
 
     async def receipt(
-        self, owner, task_id, attempt_id, *, turn_id, response_id, usage: Usage
+        self,
+        owner,
+        task_id,
+        attempt_id,
+        *,
+        turn_id,
+        response_id,
+        usage: Usage,
+        reported_model=None,
     ):
         await record_instruction_receipt(
             self.repo,
@@ -342,11 +369,20 @@ class InstructionRequests:
             turn_id=turn_id,
             response_id=response_id,
             usage=usage,
+            reported_model=reported_model,
         )
 
 
 async def record_instruction_receipt(
-    repo, owner, task_id, attempt_id, *, turn_id, response_id, usage: Usage
+    repo,
+    owner,
+    task_id,
+    attempt_id,
+    *,
+    turn_id,
+    response_id,
+    usage: Usage,
+    reported_model=None,
 ):
     """Called only with complete provider usage. A lost response leaves the hold intact."""
     async with repo.transaction():
@@ -370,6 +406,7 @@ async def record_instruction_receipt(
             "turn_id": turn_id,
             "tokens": tokens,
             "amount": str(amount),
+            **({"model": reported_model} if reported_model else {}),
         }
         previous = refs.get("instruction_usage")
         if previous is not None:

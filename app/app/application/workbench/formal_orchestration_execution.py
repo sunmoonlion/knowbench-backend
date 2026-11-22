@@ -19,10 +19,12 @@ from app.domain.workbench.formal_execution import (
 )
 from app.domain.workbench.formal_host import validate_host_call
 from app.domain.workbench.formal_method_execution_generated import bounded_json
+from app.domain.workbench.formal_method_generated import ReviewPhaseStep
 from app.domain.workbench.formal_method_plan_generated import (
     bind_step_inputs,
     export_outputs,
-    single_review_edge,
+    review_group,
+    review_stage_id,
     validate_plan_inputs,
     validate_step_outputs,
 )
@@ -131,8 +133,22 @@ async def accepted_outputs(repo, task, snapshot, before):
         matches = [a for a in attempts if (a.get("refs") or {}).get("slot") == step.id]
         value, version = await accepted_step(repo, task, snapshot, index, step, matches)
         outputs[step.id] = value
-        artifacts.append({"step_id": step.id, **version})
+        artifact = {"step_id": step.id, **version}
+        artifacts.append(artifact)
+        if isinstance(step, ReviewPhaseStep) and step.phase == "comparison":
+            rounds = getattr(snapshot, "_review_rounds", ())
+            if step.iteration < len(rounds) and (
+                rounds[step.iteration]["comparison"] != artifact
+                or value.get("needs_rework") is not True
+            ):
+                raise CapabilityError(
+                    "Rework decision differs from its sealed comparison"
+                )
     return outputs, artifacts
+
+
+def isolation_sources(edge, earlier):
+    return tuple(s.id for s in earlier) if edge else ()
 
 
 def producer_isolation(attempts, slot):
@@ -186,15 +202,21 @@ async def step_context(repo, task, attempt):
         outputs, artifacts = await accepted_outputs(repo, task, snapshot, index)
         inputs = bind_step_inputs(step, snapshot.arguments, outputs)
         bindings = [a for a in artifacts if a["step_id"] in step.depends_on]
-    edge = single_review_edge(snapshot.draft.definition.procedure)
-    if edge and edge[1] == slot:
-        prior = producer_isolation(await repo.list_attempts(str(task["id"])), edge[0])
+    edge = review_group(snapshot.draft.definition.procedure)
+    predecessors = isolation_sources(edge, steps[:index])
+    if predecessors:
+        attempts = await repo.list_attempts(str(task["id"]))
+        priors = [producer_isolation(attempts, name) for name in predecessors]
+        identities = [
+            refs.get("independent_review"),
+            *refs.get("additional_isolation", []),
+        ]
         worker = refs.get("instruction_thread") or {}
-        if (
-            refs.get("independent_review") != prior
-            or (refs.get("instruction_gateway") or {}).get("uid") == prior["gateway"]
+        if identities != priors or any(
+            (refs.get("instruction_gateway") or {}).get("uid") == prior["gateway"]
             or worker.get("worker") == prior["worker"]
             or worker.get("thread") == prior["thread"]
+            for prior in priors
         ):
             raise CapabilityError(
                 "Review execution no longer matches its isolated handoff"
@@ -245,6 +267,19 @@ class FormalOrchestrationExecution:
                     .get("queued_behind")
                 ):
                     return task["state"]
+                if task["state"] == TaskState.WAITING and task.get(
+                    "active_interaction_id"
+                ):
+                    from app.application.workbench.formal_review_rework import (
+                        ADJUDICATE,
+                        CHANGE_ROUTE,
+                    )
+
+                    waiting = await repo.get_interaction(
+                        str(task["active_interaction_id"])
+                    )
+                    if waiting["kind"] in (ADJUDICATE, CHANGE_ROUTE):
+                        return task["state"]
                 snapshot = host_snapshot(task)
                 steps = execution_steps(snapshot)
                 if task["state"] == TaskState.RECEIVED:
@@ -320,13 +355,15 @@ class FormalOrchestrationExecution:
                             arguments = bind_step_inputs(
                                 step, snapshot.arguments, previous_outputs
                             )
-                            edge = single_review_edge(
-                                snapshot.draft.definition.procedure
-                            )
-                            if edge and edge[1] == slot:
-                                extra["independent_review"] = producer_isolation(
-                                    attempts, edge[0]
-                                )
+                            edge = review_group(snapshot.draft.definition.procedure)
+                            priors = [
+                                producer_isolation(attempts, name)
+                                for name in isolation_sources(edge, steps[:index])
+                            ]
+                            if priors:
+                                extra["independent_review"] = priors[0]
+                                if len(priors) > 1:
+                                    extra["additional_isolation"] = priors[1:]
                         except (ValueError, CapabilityError) as exc:
                             return (
                                 await led.transition(
@@ -429,6 +466,21 @@ class FormalOrchestrationExecution:
                                     },
                                 )
                             )["state"]
+                    if isinstance(step, ReviewPhaseStep):
+                        extra["logical_role"] = [step.role]
+                        first = await repo.call_by_key(
+                            str(task["owner_actor_id"]),
+                            str(task["session_id"]),
+                            step_call_key(
+                                task_id,
+                                step.role
+                                if step.phase == "revision"
+                                else review_stage_id(step.role, "blind"),
+                            ),
+                        )
+                        if not first:
+                            raise CapabilityError("Original role assignment is missing")
+                        extra["logical_child_call_id"] = first["id"]
                     opened = await led.open_attempt(
                         task_id,
                         step_id=slot,
@@ -461,6 +513,7 @@ class FormalOrchestrationExecution:
                         frozen.draft.definition,
                         arguments,
                         bindings,
+                        role_call=extra,
                     )
                     await led.attempt_transition(str(active), AttemptState.RUNNING)
                     task = await repo.get_task(task_id)
@@ -734,6 +787,16 @@ class FormalOrchestrationExecution:
                     )
                 )["state"]
             index = int(task["current_step"]) + 1
+            if isinstance(step, ReviewPhaseStep) and step.phase == "comparison":
+                from app.application.workbench.formal_review_rework import (
+                    after_comparison,
+                )
+
+                decision = await after_comparison(
+                    repo, led, task, snapshot, step, outputs, self.capabilities
+                )
+                if decision is not None:
+                    return decision
             exports = None
             if recursive_plan(snapshot):
                 from app.application.workbench.formal_recursive_runtime import (

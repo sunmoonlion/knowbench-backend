@@ -2133,6 +2133,35 @@ class WorkbenchRepository(
         )
         return result.scalar_one_or_none()
 
+    async def sealed_artifact_model(self, owner, run, case, repetition, step, artifact):
+        # Only schema-checked, sealed instruction evidence for this very artifact.
+        row = await self.session.execute(
+            text("""
+            SELECT item#>>'{governance,instruction,quote,provider}' AS provider,
+                   item#>>'{governance,instruction,usage,model}' AS model
+            FROM workbench_formal_validations v
+            CROSS JOIN LATERAL jsonb_array_elements(v.execution_evidence->'cases') c
+            CROSS JOIN LATERAL jsonb_array_elements(c->'steps') item
+            WHERE v.owner_actor_id=:owner AND v.run_id=:run AND c->>'validated'='true'
+              AND c#>>'{result,case_id}'=:case AND c#>>'{result,repetition}'=:rep
+              AND item->>'slot'=:step AND item#>>'{artifact,id}'=:artifact
+              AND item#>>'{artifact,version}'=:version AND item#>>'{artifact,digest}'=:digest
+              AND item#>>'{governance,instruction,usage,model}'=item#>>'{governance,instruction,quote,model}'
+        """),
+            {
+                "owner": owner,
+                "run": run,
+                "case": case,
+                "rep": str(repetition),
+                "step": step,
+                "artifact": str(artifact["id"]),
+                "version": str(artifact["version"]),
+                "digest": artifact["digest"],
+            },
+        )
+        model = row.mappings().one_or_none()
+        return dict(model) if model else None
+
     async def review_decision(self, task_id, revision=None):
         clause = " AND revision=:v" if revision is not None else ""
         result = await self.session.execute(
@@ -2919,14 +2948,29 @@ class WorkbenchRepository(
             {"s": status, "id": sandbox_id},
         )
 
-    async def model_request_credential(self, owner: str) -> dict[str, Any] | None:
+    async def instruction_credential(self, owner, credential_id, sandbox_id):
+        row = await self.session.execute(
+            text("""
+            SELECT id, provider, base_url, ciphertext FROM workbench_credentials
+            WHERE id=:id AND owner_actor_id=:owner AND status='active'
+              AND (sandbox_id IS NULL OR sandbox_id=:sandbox) FOR SHARE
+            """),
+            {"id": credential_id, "owner": owner, "sandbox": sandbox_id},
+        )
+        credential = row.mappings().first()
+        return dict(credential) if credential else None
+
+    async def model_request_credential(
+        self, owner: str, credential_id: str | None = None
+    ) -> dict[str, Any] | None:
         # Lock against revocation until the request claim commits. Model secrets
         # stay in the sandbox and are never needed for a metering decision.
         result = await self.session.execute(
             text("""select id, provider, sandbox_id, base_url from workbench_credentials
                     where owner_actor_id=:owner and status='active'
+                    and (cast(:cid as uuid) is null or id=cast(:cid as uuid))
                     order by created_at desc, id desc limit 1 for share"""),
-            {"owner": owner},
+            {"owner": owner, "cid": credential_id},
         )
         row = result.mappings().first()
         return dict(row) if row else None

@@ -48,7 +48,9 @@ class InstructionRunner:
         model,
         prices,
         default_url,
+        credential_cipher=None,
     ):
+        self.credential_cipher = credential_cipher
         self.stores, self.formal, self.units, self.connector, self.issuer = (
             stores,
             formal,
@@ -166,7 +168,13 @@ class InstructionRunner:
             session = await repo.get_session(
                 str(task["session_id"]), owner_actor_id=owner
             )
-            if refs.get("independent_review", {}).get("gateway") == uid:
+            if any(
+                p.get("gateway") == uid
+                for p in [
+                    refs.get("independent_review", {}),
+                    *refs.get("additional_isolation", []),
+                ]
+            ):
                 raise CapabilityError("Comparison requires its own gateway")
             binding = {"uid": uid, "sandbox": str(session["sandbox_id"])}
             if refs.get("instruction_gateway", binding) != binding:
@@ -190,7 +198,38 @@ class InstructionRunner:
             attempt = await repo.get_attempt(attempt_id)
             request = self.units.for_attempt(attempt)
             refs = attempt["refs"]
-            model = refs["instruction_quote"]["model"]
+            quote = refs["instruction_quote"]
+            model = quote["model"]
+            route_binding = {}
+            if quote.get("review_connection") or quote.get("family"):
+                from app.domain.workbench.provider_url import validate_provider_base_url
+
+                credential = await repo.instruction_credential(
+                    owner,
+                    quote["credential_id"],
+                    refs["instruction_gateway"]["sandbox"],
+                )
+                if (
+                    not self.credential_cipher
+                    or not credential
+                    or credential["provider"] != quote["provider"]
+                    or validate_provider_base_url(
+                        credential["base_url"] or self.default_url
+                    )
+                    != quote["base_url"]
+                ):
+                    raise CapabilityError(
+                        "The approved reviewer connection cannot be loaded"
+                    )
+                route_binding["review_provider"] = {
+                    "credential_id": quote["credential_id"],
+                    "provider": quote["provider"],
+                    "model": model,
+                    "base_url": quote["base_url"],
+                    "key": self.credential_cipher.decrypt(
+                        credential["ciphertext"].encode()
+                    ).decode(),
+                }
         await request(
             owner,
             task_id,
@@ -201,6 +240,7 @@ class InstructionRunner:
                 "model": model,
                 "ticket": ticket.token,
                 "turn": turn,
+                **route_binding,
             },
         )
 
@@ -216,8 +256,13 @@ class InstructionRunner:
                 or refs.get("permission_revocation")
             ):
                 return False
-            first = refs.get("independent_review")
-            if first and (first["worker"] == worker or first["thread"] == thread):
+            if any(
+                p.get("worker") == worker or p.get("thread") == thread
+                for p in [
+                    refs.get("independent_review", {}),
+                    *refs.get("additional_isolation", []),
+                ]
+            ):
                 raise CapabilityError("Comparison requires its own worker and thread")
             binding = {"worker": worker, "thread": thread}
             if turn is None:
@@ -313,6 +358,13 @@ class InstructionRunner:
                         # The gateway may still be delivering its durable receipt.
                         # Re-read this same worker turn on the next runner poll.
                         return
+                    if (
+                        refs["instruction_quote"].get("producer_family")
+                        and bill.get("model") != refs["instruction_quote"]["model"]
+                    ):
+                        raise CapabilityError(
+                            "Supplier receipt does not attest the approved reviewer model"
+                        )
                     if bill["turn_id"] != turn:
                         raise CapabilityError(
                             "Usage belongs to another instruction turn"

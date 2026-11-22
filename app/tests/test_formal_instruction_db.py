@@ -39,7 +39,7 @@ def test_instruction_cannot_reuse_an_mcp_dispatch_or_its_evidence():
         retained_registration(req.draft, {"name": "SKILL.md", "inputSchema": {}})
 
 
-async def install(db, *, registered=False):
+async def install(db, *, registered=False, review_fixture=False):
     await setup(db)
     async with db() as session:
         repo = WorkbenchRepository(session)
@@ -92,6 +92,20 @@ async def install(db, *, registered=False):
         step["inputs"] = {
             "status": {**step["outputs"]["summary"], "description": "Input status"}
         }
+        if review_fixture:
+            from copy import deepcopy
+
+            optional = {
+                **deepcopy(step["inputs"]["status"]),
+                "required": False,
+                "on_missing": "omit",
+            }
+            step["inputs"]["assessment"] = optional
+            step["outputs"]["assessment"] = optional
+            step["outputs"]["needs_rework"] = {
+                **optional,
+                "schema": {"type": "boolean"},
+            }
         req = FormalMethodValidationRequest.model_validate(doc)
         pending = await svc.validate(req, caller="knowlab")
         assert pending["status"] == "pending" and pending["receipt"] is None

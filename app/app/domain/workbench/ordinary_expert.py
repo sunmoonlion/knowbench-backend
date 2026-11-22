@@ -3,7 +3,7 @@
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.formal_method_admission_generated import FormalMethodDraft
@@ -47,6 +47,7 @@ class ConsumerPlan(Strict):
     scope_hours: int | None = Field(
         default=None, strict=True, gt=0, exclude_if=lambda value: value is None
     )
+    _review_rounds: tuple[dict, ...] = PrivateAttr(default=())
     policies: dict[str, str]
     caller: Literal["host"] = "host"
 
@@ -86,6 +87,7 @@ class ConsumerPlan(Strict):
                         m.draft.source.kind
                         not in (
                             "mcp",
+                            "a2a",
                             "service_function",
                             "skill_script",
                             "registered_script",

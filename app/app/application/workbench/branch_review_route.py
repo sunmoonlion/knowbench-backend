@@ -12,6 +12,7 @@ from app.domain.workbench.formal_method_execution_generated import (
     ReceiveBranch,
     fingerprint,
 )
+from app.domain.workbench.review_routes import RouteKey
 from app.domain.workbench.source_tasks import REVIEW_KEY_PREFIX
 
 
@@ -48,7 +49,10 @@ class CheckedReview:
         if (
             binding.option_digest != self.page["confirmed"]
             or binding.revision != self.page["revision"]
-            or self.page["requirement"] != "isolated_reviewer"
+            or (
+                self.page["requirement"] == "different_model_family"
+                and not self.page.get("verified_producer")
+            )
         ):
             raise StaleStateVersion(
                 "Review confirmation changed or requires verified model families"
@@ -90,6 +94,16 @@ async def branch_route(executions, policy, owner, run_id, command):
             "requirement": review["criteria"]["reviewer"],
             "sandbox_id": str(sandbox["id"]) if sandbox else None,
         }
+        verified = None
+        if scope["requirement"] == "different_model_family":
+            verified = await repo.sealed_artifact_model(
+                owner,
+                run_id,
+                command.case_id,
+                command.repetition,
+                command.step,
+                delivery["artifact"],
+            )
         rounds = 2 if scope["deferred"] else 1
         options = []
         gap = None
@@ -101,7 +115,11 @@ async def branch_route(executions, policy, owner, run_id, command):
             gap = "sandbox_unavailable"
         else:
             view = await policy.choices(
-                repo, owner, scope["requirement"], sandbox=scope["sandbox_id"]
+                repo,
+                owner,
+                scope["requirement"],
+                sandbox=scope["sandbox_id"],
+                producer_route=RouteKey(**verified) if verified else None,
             )
             preference, producer, gap = (
                 view["preference"],
@@ -114,6 +132,11 @@ async def branch_route(executions, policy, owner, run_id, command):
                     continue
                 candidate = {
                     **option,
+                    **(
+                        {"verified_producer": producer}
+                        if verified and producer and producer.get("family")
+                        else {}
+                    ),
                     "planned_producer": producer,
                     "rounds": rounds,
                     "maximum": str(Decimal(quote["maximum"]) * rounds),
@@ -157,6 +180,11 @@ async def branch_route(executions, policy, owner, run_id, command):
             recommended = None
             gap = gap or "selection_changed"
         page = {
+            **(
+                {"verified_producer": producer}
+                if verified and producer and producer.get("family")
+                else {}
+            ),
             "artifact": scope["artifact"],
             "version": scope["version"],
             "review_digest": review["digest"],

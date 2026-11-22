@@ -271,6 +271,18 @@ class MethodStep(Strict):
         return self
 
 
+class ReviewPhaseStep(MethodStep):
+    """Host-derived inputs for one isolated phase of a frozen review."""
+
+    phase: Literal["blind", "comparison", "revision"]
+    iteration: int = Field(default=0, ge=0, le=2)
+    template: Name
+    declared_inputs: dict[Name, StepInput] = Field(exclude=True)
+    role: Name
+    producer: Name
+    predecessors: tuple[Name, ...]
+
+
 class Export(Strict):
     step: Name
     output: Name

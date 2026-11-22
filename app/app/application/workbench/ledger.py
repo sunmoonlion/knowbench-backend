@@ -1594,6 +1594,15 @@ class Ledger:
                     },
                     task_id=str(task["id"]),
                 )
+                from app.application.workbench.formal_review_rework import (
+                    ADJUDICATE,
+                    CHANGE_ROUTE,
+                    resolve_decision,
+                )
+
+                if it["kind"] in (ADJUDICATE, CHANGE_ROUTE):
+                    result.update(await resolve_decision(self, task, it, response))
+                    return result
                 if it["kind"] == "resource":
                     if response.get("decision") == "topup" and response.get("amount"):
                         budget = _budget(task)

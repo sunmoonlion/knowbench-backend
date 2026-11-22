@@ -182,7 +182,7 @@ def verified_case_delivery(request, evidence):
         or evidence.get("adapter") == TREE_ADAPTER
     ):
         return None
-    if graph.object_batch:
+    if graph.object_batch or graph.collaboration:
         from app.domain.workbench.formal_method_plan_generated import select_plan
 
         values = next(

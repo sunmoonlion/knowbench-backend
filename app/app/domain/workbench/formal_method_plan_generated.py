@@ -31,6 +31,8 @@ from app.domain.workbench.formal_method_generated import (
     ObjectRows,
     Orchestration,
     ResourceValue,
+    ReviewPhaseStep,
+    StepInput,
     StepValue,
     ToolProcedure,
     ValueSlot,
@@ -65,17 +67,22 @@ def single_review_edge(
     procedure: Orchestration | ToolProcedure,
 ) -> tuple[str, str] | None:
     """A fixed producer and one independent reviewer of its named outputs."""
-    if not isinstance(procedure, Orchestration) or len(procedure.steps) != 2:
+    if not isinstance(procedure, Orchestration):
+        return None
+    for step in procedure.steps:
+        if isinstance(step, ReviewPhaseStep) and step.phase == "comparison":
+            return step.producer, step.role
+    if len(procedure.steps) != 2:
         return None
     roles = procedure.collaboration or {}
     for reviewer in procedure.steps:
         role = roles.get(reviewer.id)
-        if not role or role.comparison or len(role.review_requirements) != 1:
+        if not role or len(role.review_requirements) != 1:
             continue
         producer, requirement = next(iter(role.review_requirements.items()))
         source_role = roles.get(producer)
         if (
-            requirement == "isolated_reviewer"
+            requirement in ("isolated_reviewer", "different_model_family")
             and set(reviewer.depends_on) == {producer}
             and set(role.handoff_from) <= {producer}
             and (
@@ -94,6 +101,66 @@ def single_review_edge(
         ):
             return producer, reviewer.id
     return None
+
+
+@dataclass(frozen=True)
+class ReviewGroup:
+    producers: tuple[str, ...]
+    reviewer: str
+    different_family_from: tuple[str, ...]
+
+    @property
+    def requirement(self):
+        return (
+            "different_model_family"
+            if self.different_family_from
+            else "isolated_reviewer"
+        )
+
+
+def review_group(procedure: Orchestration | ToolProcedure) -> ReviewGroup | None:
+    if not isinstance(procedure, Orchestration) or not procedure.collaboration:
+        return None
+    roles = procedure.collaboration
+    pair = single_review_edge(procedure)
+    if pair:
+        producer, reviewer = pair
+        producers = (producer,)
+    else:
+        if len(procedure.steps) != 3 or set(roles) != {s.id for s in procedure.steps}:
+            return None
+        groups = {role.isolation_group for role in roles.values()}
+        if None in groups or len(groups) != 3:
+            return None
+        reviewers = [s for s in procedure.steps if roles[s.id].review_requirements]
+        if len(reviewers) != 1:
+            return None
+        step = reviewers[0]
+        reviewer = step.id
+        producers = tuple(sorted(s.id for s in procedure.steps if s.id != reviewer))
+        expected = set(producers)
+        if (
+            roles[reviewer].comparison
+            or set(step.depends_on) != expected
+            or set(roles[reviewer].handoff_from) != expected
+            or set(roles[reviewer].review_requirements) != expected
+            or any(
+                not isinstance(i.binding, StepValue) or i.binding.step not in expected
+                for i in step.inputs.values()
+            )
+            or any(
+                s.depends_on or roles[s.id].handoff_from
+                for s in procedure.steps
+                if s.id in expected
+            )
+        ):
+            return None
+    strong = tuple(
+        p
+        for p in producers
+        if roles[reviewer].review_requirements[p] == "different_model_family"
+    )
+    return ReviewGroup(producers, reviewer, strong)
 
 
 def expand_unique_plan(
@@ -170,7 +237,7 @@ def expand_unique_plan(
         p = current.procedure
         if p.collaboration and (
             path
-            or not single_review_edge(p)
+            or not review_group(p)
             or any(
                 not isinstance(n.definition.procedure, ToolProcedure)
                 or n.definition.procedure.implementation.kind
@@ -179,7 +246,7 @@ def expand_unique_plan(
             )
         ):
             raise ValueError(
-                "Independent review requires a fixed pair of isolated instruction steps"
+                "Independent review requires fixed isolated instruction steps"
             )
         if (
             depth > p.max_depth
@@ -287,11 +354,144 @@ def expand_batch(
     )
 
 
+def review_stage_id(role, phase):
+    return "review_" + hashlib.sha256(f"{phase}:{role}".encode()).hexdigest()[:24]
+
+
+def strict_plan(definition, graph, edge, revisions=0):
+    producer, role = edge
+    policy = graph.collaboration[role].comparison
+    if not 0 <= revisions <= policy.max_reworks:
+        raise ValueError("Review revisions exceed the frozen comparison policy")
+    reviewer = next(s for s in graph.steps if s.id == role)
+    source = next(s for s in graph.steps if s.id == producer)
+    blind_template = review_stage_id(role, "blind")
+    phases = [source]
+    previous = None
+    prior_submission = source
+
+    def phase(template, logical_role, id_, kind, inputs, deps, producer_id, iteration):
+        raw = logical_role.model_dump(by_alias=True)
+        raw.update(
+            id=id_,
+            phase=kind,
+            iteration=iteration,
+            template=template,
+            declared_inputs=logical_role.inputs,
+            role=logical_role.id,
+            producer=producer_id,
+            predecessors=deps,
+            depends_on=deps,
+            inputs=inputs,
+        )
+        return ReviewPhaseStep.model_validate(raw)
+
+    def add_outputs(inputs, prior, prefix):
+        for name, slot in prior.outputs.items():
+            key = (
+                prefix + name
+                if len(prefix + name) <= 64
+                else review_stage_id(name, prefix)
+            )
+            if key in inputs:
+                raise ValueError("Review handoff collides with a declared input")
+            inputs[key] = StepInput(
+                slot=slot, binding=StepValue(source="step", step=prior.id, output=name)
+            )
+
+    for iteration in range(revisions + 1):
+        producer_id = producer
+        if previous is not None:
+            producer_id = review_stage_id(producer, f"revision{iteration}")
+            inputs = dict(source.inputs)
+            add_outputs(inputs, prior_submission, "prior_")
+            add_outputs(inputs, previous, "feedback_")
+            prior_submission = phase(
+                producer,
+                source,
+                producer_id,
+                "revision",
+                inputs,
+                (prior_submission.id, previous.id),
+                producer_id,
+                iteration,
+            )
+            phases.append(prior_submission)
+        inputs = {
+            name: item.model_copy(
+                update={
+                    "binding": item.binding.model_copy(update={"step": producer_id})
+                }
+            )
+            for name, item in reviewer.inputs.items()
+        }
+        blind_inputs = {
+            k: v
+            for k, v in inputs.items()
+            if v.binding.output != policy.assessment_output
+        }
+        if not blind_inputs:
+            raise ValueError("Strict review needs distinct approved outputs")
+        blind_id = (
+            blind_template
+            if not iteration
+            else review_stage_id(role, f"blind{iteration}")
+        )
+        blind = phase(
+            blind_template,
+            reviewer,
+            blind_id,
+            "blind",
+            blind_inputs,
+            (producer_id,),
+            producer_id,
+            iteration,
+        )
+        phases.append(blind)
+        add_outputs(inputs, blind, "finding_")
+        comparison_id = (
+            role if not iteration else review_stage_id(role, f"comparison{iteration}")
+        )
+        previous = phase(
+            role,
+            reviewer,
+            comparison_id,
+            "comparison",
+            inputs,
+            (producer_id, blind_id),
+            producer_id,
+            iteration,
+        )
+        phases.append(previous)
+    if len({s.id for s in phases}) != len(phases):
+        raise ValueError("Strict review step identity collision")
+    latest = {producer: producer_id, role: comparison_id}
+    exports = {
+        k: ref.model_copy(update={"step": latest[ref.step]})
+        for k, ref in graph.exports.items()
+    }
+    return definition.model_copy(
+        update={
+            "procedure": graph.model_copy(
+                update={"steps": tuple(phases), "exports": exports}
+            )
+        }
+    )
+
+
 def select_plan(
-    definition: FormalMethodDefinition, values: dict
+    definition: FormalMethodDefinition, values: dict, *, revisions: int = 0
 ) -> FormalMethodDefinition:
     """Derive a fixed invocation graph from the immutable rule and caller inputs."""
     graph = definition.procedure
+    if isinstance(graph, Orchestration) and graph.collaboration:
+        edge = single_review_edge(graph)
+        if (
+            edge
+            and graph.collaboration[edge[1]].comparison
+            and not any(isinstance(s, ReviewPhaseStep) for s in graph.steps)
+        ):
+            return strict_plan(definition, graph, edge, revisions)
     if isinstance(graph, Orchestration) and graph.object_batch:
         return expand_batch(definition, graph, values)
     if not isinstance(graph, Orchestration) or not graph.has_candidate_choice:

@@ -63,15 +63,7 @@ async def preview(svc, owner, session_id, body):
         if svc.instruction_service is None:
             raise CapabilityError("Dedicated instruction execution is unavailable")
         service = await svc.instruction_service(svc.formal_sources, owner)
-        quote = service.route.quote(service.prices)
-        cred = await repo.model_request_credential(owner)
-        if (
-            not cred
-            or cred["sandbox_id"]
-            and str(cred["sandbox_id"]) != str(session["sandbox_id"])
-        ):
-            raise CapabilityError("Model credential belongs to a different sandbox")
-        quote["credential_id"] = str(cred["id"])
+        quote = await service.account_quote(owner, session, "CNY")
     if Decimal(quote["maximum"]) > body.budget_limit:
         raise CapabilityError("The maximum execution cost exceeds the task budget")
     return SourceTask(

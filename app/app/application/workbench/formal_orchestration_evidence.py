@@ -63,6 +63,7 @@ async def _approval(
     events,
     *,
     authorization_deadline=None,
+    step=None,
 ):
     intent = call["detail"]
     interaction = await repo.get_interaction(str(call["interaction_id"]))
@@ -117,7 +118,11 @@ async def _approval(
 
         quote = attempt["refs"]["instruction_quote"]
         _, declared, expected_operation = leaf_operation(
-            leaf, inputs, quote, attempt["refs"]["instruction_request"]["job_digest"]
+            leaf,
+            inputs,
+            quote,
+            attempt["refs"]["instruction_request"]["job_digest"],
+            step=step,
         )
         _require(
             intent["operation"] == expected_operation
@@ -309,7 +314,7 @@ async def _approval(
     }
 
 
-def step_registration(leaf, inputs, refs, intent):
+def step_registration(leaf, inputs, refs, intent, *, step=None):
     if leaf.draft.source.is_instruction:
         from app.application.workbench.instruction_leaf import leaf_operation
 
@@ -318,6 +323,7 @@ def step_registration(leaf, inputs, refs, intent):
             inputs,
             refs["instruction_quote"],
             refs["instruction_request"]["job_digest"],
+            step=step,
         )
         _require(
             intent["tool"] == registration.descriptor(),
@@ -472,7 +478,7 @@ async def verify_step_evidence(
         "method_call_id": str(child["id"]),
         "inputs_digest": digest(inputs),
     }
-    registration = step_registration(leaf, inputs, refs, intent)
+    registration = step_registration(leaf, inputs, refs, intent, step=step)
     _require(
         str(call["id"]) == refs["capability_call_id"]
         and call["kind"] == "tool"
@@ -496,7 +502,7 @@ async def verify_step_evidence(
         "step_tool_call_mismatch",
     )
     item["governance"] = await _approval(
-        repo, owner, task, attempt, child, call, leaf, inputs, root, events
+        repo, owner, task, attempt, child, call, leaf, inputs, root, events, step=step
     )
     outputs = validate_step_outputs(
         step,

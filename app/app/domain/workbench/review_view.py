@@ -39,6 +39,12 @@ def consequence(
             return "专家按你本次明确接受的范围继续，未承接部分仍会说明；不会因此获得新的方法或数据权限。费用实时显示"
         if option == "stop":
             return "委托取消，不再花钱。这个问题可以直接在对话里问"
+    if kind in ("review_route_confirmation", "review_adjudication"):
+        return {
+            "confirm_route": "启用本轮报价，各次外发仍须逐一审批。",
+            "accept_delivery": "按本轮已封存成果交付，保留复核分歧和实耗。",
+            "stop": "结束委托，保留各版本和费用。",
+        }[option]
     finished = "做完的部分" if done is None else f"做完的 {done} 步"
     if kind == "resource":
         if option == "topup":
@@ -149,6 +155,7 @@ def review_view(
         "where": where,
         "why": prompt.get("question", "")
         if subject.get("planning_failure")
+        or kind in ("review_adjudication", "review_route_confirmation")
         else why(
             kind,
             step,

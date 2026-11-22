@@ -70,8 +70,17 @@ async def current_quote(executions, owner, sandbox):
     return await service.account_quote(owner, {"sandbox_id": sandbox}, "CNY")
 
 
-def selected_quote(option):
-    return {**option["quote"], "credential_id": option["pin"]["credential_id"]}
+def selected_quote(option, base):
+    quote = {**option["quote"], "credential_id": option["pin"]["credential_id"]}
+    if quote != base:
+        quote["review_connection"] = True
+    if producer := option.get("verified_producer"):
+        if not option.get("family") or producer["family"] == option["family"]:
+            raise CapabilityError(
+                "Verified reviewer family must differ from the producer"
+            )
+        quote.update(family=option["family"], producer_family=producer["family"])
+    return quote
 
 
 async def dispatch_choices(executions, owner, checked):
@@ -102,13 +111,15 @@ async def dispatch_choices(executions, owner, checked):
                 "state": existing["state"],
                 "session_id": str(snap.session_id),
             }
-    if not page["confirmed"] or page["requirement"] != "isolated_reviewer":
+    if not page["confirmed"] or (
+        page["requirement"] == "different_model_family"
+        and not page.get("verified_producer")
+    ):
         return None
     sandbox_id = checked.sandbox_id
     option = next(o for o in page["options"] if o["digest"] == page["confirmed"])
     try:
-        if await current_quote(executions, owner, sandbox_id) != selected_quote(option):
-            return {"unavailable": "routeNotLoaded"}
+        selected_quote(option, await current_quote(executions, owner, sandbox_id))
     except CapabilityError:
         return {"unavailable": "executorUnavailable"}
     sessions = await repo.list_sessions(owner_actor_id=owner)
@@ -151,12 +162,8 @@ async def dispatch_review(executions, policy, owner, run_id, body):
                 "Choose an expert project session on the confirmed sandbox"
             )
         source, _ = await resolve(repo, owner, body)
-        quote = await current_quote(executions, owner, sandbox)
-        if (
-            source.kind != "instruction"
-            or quote != selected_quote(option)
-            or Decimal(quote["maximum"]) <= 0
-        ):
+        quote = selected_quote(option, await current_quote(executions, owner, sandbox))
+        if source.kind != "instruction" or Decimal(quote["maximum"]) <= 0:
             raise CapabilityError(
                 "The registered instruction or loaded route is unavailable"
             )

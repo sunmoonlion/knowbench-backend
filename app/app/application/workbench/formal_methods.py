@@ -31,7 +31,7 @@ from app.domain.workbench.formal_method_execution_generated import (
     fingerprint,
 )
 from app.domain.workbench.formal_method_generated import Orchestration
-from app.domain.workbench.formal_method_plan_generated import single_review_edge
+from app.domain.workbench.formal_method_plan_generated import review_group
 from app.domain.workbench.skill_package import (
     delivery_files,
     skill_manifest_digest,
@@ -52,10 +52,12 @@ class FormalMethods:
         script_tariff=None,
         source_licenses=(),
         review_inputs=None,
+        review_policy=None,
         business_reviews=(),
         now: Callable[[], datetime] | None = None,
     ):
         self.review_inputs = review_inputs
+        self.review_policy = review_policy
         self.repo = repo
         self.registry = SceneRegistry(self, repo)
         self.market = market
@@ -72,7 +74,7 @@ class FormalMethods:
         if (
             isinstance(graph, Orchestration)
             and graph.collaboration
-            and not single_review_edge(graph)
+            and not review_group(graph)
         ):
             raise RuntimeCapabilityGap("Runner lacks isolated collaboration execution")
 

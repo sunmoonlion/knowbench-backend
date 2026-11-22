@@ -283,6 +283,8 @@ def build_runner(
         issuer = TokenIssuer(
             settings.workbench_token_signing_key, issuer=settings.workbench_token_issuer
         )
+    from cryptography.fernet import Fernet
+
     instructions = InstructionRunner(
         stores,
         lambda repo: capability_service(repo).formal_sources,
@@ -293,6 +295,9 @@ def build_runner(
         model=settings.workbench_sandbox_model,
         prices=prices or settings.workbench_model_prices(),
         default_url=settings.workbench_sandbox_provider_base_url,
+        credential_cipher=Fernet(settings.workbench_credential_key.encode())
+        if settings.workbench_credential_key
+        else None,
     )
     return Runner(
         stores,
@@ -580,6 +585,7 @@ def capability_service(repo):
         ),
         cipher,
         review_inputs=review_inputs,
+        review_policy=reviewer_choices(),
         formal_market=knowmart_summoner(),
         oauth_providers=settings.workbench_connection_oauth_providers,
         oauth_transport=OAuthTransport(),

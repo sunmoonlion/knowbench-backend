@@ -9,7 +9,7 @@ from pydantic import Field
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
 from app.domain.workbench.formal_execution import expanded_plan, host_snapshot
-from app.domain.workbench.formal_method_generated import Strict
+from app.domain.workbench.formal_method_generated import ReviewPhaseStep, Strict
 from app.domain.workbench.states import TASK_TERMINAL
 
 ASSIGNED = "method/delegationAssigned"
@@ -34,13 +34,25 @@ class HandoffClosure(Strict):
 
 
 async def assign(
-    repo, task, child, attempt_id, step, reference, decl, arguments, bindings
+    repo,
+    task,
+    child,
+    attempt_id,
+    step,
+    reference,
+    decl,
+    arguments,
+    bindings,
+    *,
+    role_call=None,
 ):
+    refs = role_call or {}
     payload = {
         "task_id": str(task["id"]),
         "parent_call_id": child["parent_call_id"],
-        "child_call_id": child["id"],
-        "role": child["detail"].get("path") or [step.id],
+        "child_call_id": refs.get("logical_child_call_id", child["id"]),
+        "execution_call_id": child["id"],
+        "role": refs.get("logical_role") or child["detail"].get("path") or [step.id],
         "attempt_id": attempt_id,
         "reference": reference.model_dump(mode="json"),
         "plan_digest": task["pack_digest"],
@@ -58,7 +70,7 @@ async def assign(
         kind="task",
         event_type=ASSIGNED,
         payload=payload,
-        same={"attempt_id": attempt_id, "child_call_id": child["id"]},
+        same={"attempt_id": attempt_id, "child_call_id": payload["child_call_id"]},
     )
 
 
@@ -99,9 +111,10 @@ async def record_state(
     # private report is copied to the parent's handoff view.
     quote = refs.get("instruction_quote") or {}
     payload = {
-        "child_call_id": refs["method_call_id"],
+        "child_call_id": refs.get("logical_child_call_id", refs["method_call_id"]),
+        "execution_call_id": refs["method_call_id"],
         "attempt_id": str(attempt["id"]),
-        "role": refs.get("path") or [refs["slot"]],
+        "role": refs.get("logical_role") or refs.get("path") or [refs["slot"]],
         "state": str(target),
         "plan_digest": refs["snapshot_digest"],
         "input_digest": refs.get("arguments_digest"),
@@ -141,7 +154,8 @@ async def record_late(repo, task, attempt, operation_id, status, result):
     ):
         return
     identity = {
-        "child_call_id": refs["method_call_id"],
+        "child_call_id": refs.get("logical_child_call_id", refs["method_call_id"]),
+        "execution_call_id": refs["method_call_id"],
         "attempt_id": str(attempt["id"]),
         "operation_call_id": operation_id,
         "result_digest": digest(result),
@@ -212,12 +226,22 @@ async def handoffs(repo, owner, task_id, command=None):
                 )
             parent_path = tuple(by_id[parent]["detail"].get("path", []))
             expected = (
-                [list(n.path) for n in plan.nodes if n.parent_path == parent_path]
+                [
+                    [n.step.role]
+                    if isinstance(n.step, ReviewPhaseStep)
+                    else list(n.path)
+                    for n in plan.nodes
+                    if n.parent_path == parent_path
+                ]
                 if plan
                 else []
             )
             actual = [rounds[0]["role"] for rounds in children.values()]
-            missing = [role for role in expected if role not in actual]
+            missing = [
+                list(role)
+                for role in dict.fromkeys(map(tuple, expected))
+                if list(role) not in actual
+            ]
             parent_state = (
                 by_id[parent]["status"].upper() if parent_path else str(task["state"])
             )

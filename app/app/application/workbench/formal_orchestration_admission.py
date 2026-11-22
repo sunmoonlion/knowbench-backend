@@ -28,13 +28,16 @@ from app.domain.workbench.formal_method_execution_generated import (
     evaluate_assertions,
     fingerprint,
 )
-from app.domain.workbench.formal_method_generated import Orchestration, ToolProcedure
+from app.domain.workbench.formal_method_generated import (
+    Orchestration,
+    ToolProcedure,
+)
 from app.domain.workbench.formal_method_plan_generated import (
     bind_step_inputs,
     expand_unique_plan,
     export_outputs,
+    review_group,
     select_plan,
-    single_review_edge,
     unique_plan,
     validate_plan_inputs,
     validate_step_outputs,
@@ -124,7 +127,7 @@ def verify_leaf_authority(
             "Instruction result or approved job changed",
         )
         registration, declared, operation = leaf_operation(
-            leaf, inputs, proof["quote"], claim["job_digest"]
+            leaf, inputs, proof["quote"], claim["job_digest"], step=step
         )
         registration_id, descriptor_digest = (
             registration.tool_id,
@@ -318,7 +321,9 @@ def _old_case(
         )
         assert isinstance(procedure, ToolProcedure)
         inputs = bind_step_inputs(step, snapshot.arguments, accepted)
-        validate_values(procedure.inputs, inputs)
+        from app.application.workbench.instruction_leaf import phase_inputs
+
+        validate_values(phase_inputs(leaf, step), inputs)
         bindings = [v for v in versions if v["step_id"] in step.depends_on]
         require(
             recorded["slot"] == step.id
@@ -446,7 +451,7 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
     )
     proc = frozen.draft.definition.procedure
     if isinstance(proc, Orchestration) and (
-        proc.has_candidate_choice or proc.object_batch
+        proc.has_candidate_choice or proc.object_batch or proc.collaboration
     ):
         plans = [
             expand_unique_plan(
@@ -530,19 +535,39 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
                     request.execution.budget.currency,
                     metering_ids,
                 )
-        edge = single_review_edge(frozen.draft.definition.procedure)
+        edge = review_group(frozen.draft.definition.procedure)
         if edge:
             proofs = {
                 step["slot"]: step["governance"]["instruction"]
                 for step in case_evidence["steps"]
             }
-            producer, reviewer = (proofs[slot] for slot in edge)
-            require(
-                producer["gateway"]["uid"] != reviewer["gateway"]["uid"]
-                and producer["thread"]["worker"] != reviewer["thread"]["worker"]
-                and producer["thread"]["thread"] != reviewer["thread"]["thread"],
-                "Sealed reviewer shares the producer execution identity",
-            )
+            for keys in (
+                ("gateway", "uid"),
+                ("thread", "worker"),
+                ("thread", "thread"),
+            ):
+                section, field = keys
+                identities = [proof[section][field] for proof in proofs.values()]
+                require(
+                    all(identities) and len(set(identities)) == len(identities),
+                    "Sealed reviewer shares the producer or a prior phase execution identity",
+                )
+            for producer in edge.different_family_from:
+                prior = proofs[producer]
+                p = prior["quote"]
+                for slot, proof in proofs.items():
+                    if slot in edge.producers:
+                        continue
+                    r = proof["quote"]
+                    require(
+                        p.get("family")
+                        and r.get("family")
+                        and r.get("producer_family") == p["family"]
+                        and p["family"] != r["family"]
+                        and prior["usage"].get("model") == p["model"]
+                        and proof["usage"].get("model") == r["model"],
+                        "No independently attested model family pair",
+                    )
         if case_evidence.get("adapter") == TREE_ADAPTER:
             require(
                 Decimal(case_evidence["task"]["budget"]["used"])

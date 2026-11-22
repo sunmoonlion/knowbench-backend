@@ -162,7 +162,13 @@ def recursive_plan(snapshot: FormalTaskSnapshot | ConsumerPlan) -> bool:
 def invocation_definition(snapshot: FormalTaskSnapshot | ConsumerPlan):
     from app.domain.workbench.formal_method_plan_generated import select_plan
 
-    return select_plan(snapshot.draft.definition, snapshot.arguments)
+    return select_plan(
+        snapshot.draft.definition,
+        snapshot.arguments,
+        revisions=len(snapshot._review_rounds)
+        if isinstance(snapshot, ConsumerPlan)
+        else 0,
+    )
 
 
 def expanded_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
@@ -266,6 +272,9 @@ def host_snapshot(task):
     snapshot = ConsumerPlan.model_validate(task.get("pack_snapshot"))
     if task["pack_digest"] != snapshot.task_columns()["pack_digest"]:
         raise ValueError("Ordinary execution snapshot changed")
+    snapshot._review_rounds = tuple(
+        (task.get("execution_policy") or {}).get("formal_review_rounds", ())
+    )
     return snapshot
 
 

@@ -50,8 +50,11 @@ async def setup(
     prices=PRICES,
     author_trial=None,
     registered=False,
+    review_fixture=False,
 ):
-    license, req, asset = await install(db, registered=registered)
+    license, req, asset = await install(
+        db, registered=registered, review_fixture=review_fixture
+    )
     env, sandbox, sid = await seed(db)
     snapshot = FormalTaskSnapshot(
         runtime_contract=FORMAL_RUNTIME,

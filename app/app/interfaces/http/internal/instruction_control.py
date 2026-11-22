@@ -64,6 +64,7 @@ class Receipt(BaseModel):
     turn_id: str = Field(min_length=1, max_length=128)
     response_id: str = Field(min_length=1, max_length=256)
     usage: dict[str, Any]
+    model: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 Binding = Annotated[InstructionGateway, Depends(identity)]
@@ -106,6 +107,17 @@ async def claim(binding: Binding, form: Claim, formal: FormalService):
             settings.workbench_model_prices(),
             default_base_url=settings.workbench_sandbox_provider_base_url,
         )
+        if quote.get("review_connection") or quote.get("family"):
+            svc = await InstructionRequests.for_account(
+                formal,
+                str(binding.owner),
+                routes=settings.workbench_instruction_routes,
+                model=settings.workbench_sandbox_model,
+                prices=settings.workbench_model_prices(),
+                default_url=settings.workbench_sandbox_provider_base_url,
+            )
+        else:
+            svc.credential_id = str(binding.credential)
         url, body = await svc.claim(
             str(binding.owner),
             str(binding.task),
@@ -140,6 +152,7 @@ async def receipt(
             turn_id=form.turn_id,
             response_id=form.response_id,
             usage=usage,
+            reported_model=form.model,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc

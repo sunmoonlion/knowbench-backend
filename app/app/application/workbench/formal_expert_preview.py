@@ -10,6 +10,7 @@ from app.domain.workbench.formal_method_generated import (
     LiteralValue,
     MethodRef,
     Orchestration,
+    ReviewPhaseStep,
     StepValue,
 )
 from app.domain.workbench.formal_method_plan_generated import (
@@ -18,8 +19,8 @@ from app.domain.workbench.formal_method_plan_generated import (
     InvalidObjectList,
     UnmatchedCandidate,
     expand_unique_plan,
+    review_group,
     select_plan,
-    single_review_edge,
     unique_plan,
 )
 from app.domain.workbench.method_authorization import (
@@ -45,7 +46,7 @@ async def fixed_graph(registry, owner, selected, definition, values):
             needed = set()
             for current in frontier:
                 if isinstance(current.procedure, Orchestration):
-                    if current.procedure.collaboration and not single_review_edge(
+                    if current.procedure.collaboration and not review_group(
                         current.procedure
                     ):
                         return None, "collaboration"
@@ -204,7 +205,7 @@ async def execution_preview(
     assets_by_id = {a["id"]: a for a in assets}
     contexts = {(): (bindings["values"], {})}
     review_edge = (
-        single_review_edge(definition.procedure)
+        review_group(definition.procedure)
         if isinstance(definition.procedure, Orchestration)
         else None
     )
@@ -222,6 +223,10 @@ async def execution_preview(
             contexts[node.path] = values, pending
             continue
         proc = node.definition.procedure
+        role = (
+            node.step.role if isinstance(node.step, ReviewPhaseStep) else node.step.id
+        )
+        reviewing = bool(review_edge and role == review_edge.reviewer)
         kind = proc.implementation.kind
         quote = None
         if kind in ("mcp", "a2a"):
@@ -265,7 +270,11 @@ async def execution_preview(
                         node,
                         values,
                         pending,
-                        reviewer=bool(review_edge and node.path == (review_edge[1],)),
+                        reviewer=reviewing,
+                        requirement=review_edge.requirement
+                        if reviewing and review_edge
+                        else None,
+                        producer=bool(review_edge and role in review_edge.producers),
                     )
                 except (WorkbenchError, ValueError):
                     issue("local_tool_unavailable", node.path)
@@ -298,8 +307,13 @@ async def execution_preview(
                 ],
                 **({"material": pins[node.path]} if node.path in pins else {}),
                 **(
-                    {"independent_review_of": review_edge[0]}
-                    if review_edge and node.path == (review_edge[1],)
+                    {"independent_review_of": " / ".join(review_edge.producers)}
+                    if review_edge and reviewing
+                    else {}
+                ),
+                **(
+                    {"review_phase": node.step.phase}
+                    if isinstance(node.step, ReviewPhaseStep)
                     else {}
                 ),
                 "from_outputs": pending,
@@ -330,7 +344,24 @@ async def execution_preview(
                             ),
                         }
                     )
+    review_budget = None
+    if review_edge and graph and isinstance(definition.procedure, Orchestration):
+        proc = definition.procedure
+        comparison = (proc.collaboration or {})[review_edge.reviewer].comparison
+        if comparison:
+            reworks = min(
+                comparison.max_reworks,
+                proc.max_steps // 3 - 1,
+                (proc.max_expansions - 1) // 3 - 1,
+            )
+            review_budget = {
+                "max_reworks": reworks,
+                "maximum_with_reworks": format(total * (1 + reworks), "f")
+                if priced
+                else None,
+            }
     return {
+        **({"review_budget": review_budget} if review_budget else {}),
         **({"choices": choices} if choices else {}),
         **(
             {

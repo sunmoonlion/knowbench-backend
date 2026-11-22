@@ -122,6 +122,12 @@ def compile_method(
 
 
 def _step_interface(step, interface):
+    from app.domain.workbench.formal_method_generated import ReviewPhaseStep
+
+    if isinstance(step, ReviewPhaseStep):
+        # Compile the frozen child interface. The phase's actual data transfer is
+        # derived by the host from accepted named outputs and checked at dispatch.
+        step = step.model_copy(update={"inputs": step.declared_inputs})
     inputs, outputs = interface["inputs"], interface["outputs"]
     required = {key for key, value in inputs.items() if value["required_by"]}
     if not required <= step.inputs.keys() or not step.inputs.keys() <= inputs.keys():

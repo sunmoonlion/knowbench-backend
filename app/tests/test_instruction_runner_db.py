@@ -13,6 +13,7 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
 from app.application.workbench.formal_methods import FormalMethods
+from app.application.workbench.instruction_requests import InstructionRequests
 from app.application.workbench.instruction_runner import InstructionRunner
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.runner import Runner
@@ -128,14 +129,27 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
                 async with host() as svc:
                     attempt = await svc.repo.get_attempt(binding["attempt"])
                     caller = attempt["refs"]["instruction_quote"]["caller"]
-                    if caller == "formal-expert":
+                    if caller == "formal-expert" or getattr(
+                        units, "review_fixture", False
+                    ):
                         svc.formal = driver.formal(svc.repo)
+                        if getattr(units, "review_fixture", False):
+                            svc = await InstructionRequests.for_account(
+                                svc.formal,
+                                OWNER,
+                                routes=(ROUTE,),
+                                model=ROUTE.model,
+                                prices=PRICES,
+                                default_url=ROUTE.base_url,
+                            )
                     _, outgoing = await svc.claim(
                         OWNER,
                         units.task,
                         binding["attempt"],
                         caller=caller,
-                        credential_id=cred["id"],
+                        credential_id=binding.get("review_provider", {}).get(
+                            "credential_id", cred["id"]
+                        ),
                         turn_id=turn,
                         body=wire,
                     )
@@ -153,6 +167,7 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
                             else "receipt-" + binding["attempt"]
                         ),
                         usage=BILL,
+                        reported_model=getattr(units, "reported_model", None),
                     )
                 await self.notice(
                     "item/completed",
@@ -182,14 +197,29 @@ async def stack(db, *, setup_case=setup, result=None, **kwargs):
 
     stores = SqlWorkbenchStores(db)
 
+    allocations = {}
+
     async def provision(req):
         assert req.headers["Authorization"] == "Bearer service-only"
-        root = f"/v1/instruction-executions/{OWNER}/{units.task}/"
+        root = f"/v1/instruction-executions/{OWNER}/"
         assert req.url.path.startswith(root)
-        path = req.url.path[len(root) :]
+        task_id, path = req.url.path[len(root) :].split("/", 1)
         scope = None
         if path.startswith("attempts/"):
             _, scope, path = path.split("/", 2)
+        if getattr(units, "review_fixture", False):
+            key = (task_id, scope)
+            if path.endswith("/binding"):
+                allocations[key] = (units.uid, json.loads(req.content)["attempt"])
+            if req.method == "DELETE" and key in allocations:
+                uid, attempt = allocations[key]
+                assert (
+                    path.split("/")[0] == uid
+                    and req.url.params["settled_attempt"] == attempt
+                )
+                return httpx.Response(200, json={})
+        else:
+            assert task_id == units.task
         units.scopes.append(scope)
         result = await units.request(
             OWNER,

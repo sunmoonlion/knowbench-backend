@@ -16,6 +16,7 @@ from app.domain.workbench.formal_execution import (
     validate_values,
 )
 from app.domain.workbench.formal_host import validate_host_call
+from app.domain.workbench.formal_method_generated import ReviewPhaseStep
 from app.domain.workbench.instruction_requests import instruction_job
 from app.domain.workbench.method_authorization import (
     MethodAuthorization,
@@ -50,16 +51,25 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
             "A fixed instruction step needs an owned, licensed single-turn method"
         )
     asset, entry = await formal.instruction_source(owner, subject, source)
+    active_step = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])].step
+    slots = phase_inputs(frozen, active_step)
     job = instruction_job(
         frozen,
         entry,
-        validate_values(procedure.inputs, arguments),
+        validate_values(slots, arguments),
     )
+    if isinstance(active_step, ReviewPhaseStep):
+        job["input"]["phase"] = active_step.phase
+        job["input"]["handoff"] = {
+            "blind": "Record independent findings using only the received outputs.",
+            "comparison": "Compare each sealed finding with the author assessment and the approved outputs.",
+            "revision": "Revise the original submission using the sealed review findings.",
+        }[active_step.phase]
     quote = await leaf_quote(svc, owner, task, snapshot)
     if quote != attempt["refs"].get("instruction_quote"):
         raise CapabilityError("Instruction route differs from the reserved tariff")
     registration, requirement, operation = leaf_operation(
-        frozen, arguments, quote, digest(job)
+        frozen, arguments, quote, digest(job), step=active_step
     )
     binding = await planned_read(
         repo,
@@ -76,35 +86,96 @@ async def leaf_input(svc, owner, task, attempt, snapshot, frozen, child, argumen
 
 async def leaf_quote(svc, owner, task, snapshot):
     ordinary = isinstance(snapshot, ConsumerPlan)
-    quote = await svc.route_quote(
-        owner, task, ORDINARY_SOURCE if ordinary else "knowlab"
-    )
-    if ordinary:
-        slot = execution_slot(snapshot, int(task["current_step"]))
-        procedure = snapshot.draft.definition.procedure
-        if procedure.kind == "orchestration" and procedure.collaboration:
-            from app.application.workbench.ordinary_local_tools import (
-                check_reviewer_route,
-            )
-            from app.domain.workbench.formal_method_plan_generated import (
-                single_review_edge,
-            )
+    from app.application.workbench.ordinary_local_tools import graph_route
+    from app.domain.workbench.formal_method_plan_generated import review_group
 
-            edge = single_review_edge(procedure)
-            if edge and slot == edge[1]:
-                await check_reviewer_route(svc.repo, owner, quote)
+    slot = execution_slot(snapshot, int(task["current_step"]))
+    procedure = snapshot.draft.definition.procedure
+    edge = review_group(procedure)
+    active_step = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])].step
+    role = active_step.role if isinstance(active_step, ReviewPhaseStep) else slot
+    caller = ORDINARY_SOURCE if ordinary else "knowlab"
+    quote = await svc.route_quote(owner, task, caller)
+    if edge and procedure.kind == "orchestration" and procedure.collaboration:
+        session = await svc.repo.get_session(
+            str(task["session_id"]), owner_actor_id=owner
+        )
+        requirement = edge.requirement if role == edge.reviewer else None
+        route = await graph_route(
+            svc,
+            owner,
+            session,
+            task["budget"]["currency"],
+            requirement=requirement,
+            producer=role in edge.producers,
+        )
+        if (
+            ordinary
+            and isinstance(active_step, ReviewPhaseStep)
+            and active_step.phase == "revision"
+        ):
+            reviewer = await graph_route(
+                svc,
+                owner,
+                session,
+                task["budget"]["currency"],
+                requirement=edge.requirement,
+            )
+            policies = snapshot._review_rounds[active_step.iteration - 1]["policies"]
+            if policies.get(edge.reviewer) != digest(reviewer):
+                raise CapabilityError(
+                    "The next review route changed before the revision was sent"
+                )
+        if requirement == "different_model_family":
+            required = (
+                (active_step.producer,)
+                if isinstance(active_step, ReviewPhaseStep)
+                else edge.different_family_from
+            )
+            attempts = await svc.repo.list_attempts(str(task["id"]))
+            for producer in required:
+                completed = [
+                    a
+                    for a in attempts
+                    if a["step_id"] == producer and a["status"] == "COMPLETED"
+                ]
+                if len(completed) != 1:
+                    raise CapabilityError("No sealed producer identity")
+                refs = completed[0]["refs"]
+                prior = refs["instruction_quote"]
+                if (
+                    prior.get("family") != route.get("producer_family")
+                    or (refs.get("instruction_usage") or {}).get("model")
+                    != prior["model"]
+                ):
+                    raise CapabilityError(
+                        "The producer model family has no matching supplier receipt"
+                    )
+        quote = {**route, "caller": caller, "snapshot_digest": task["pack_digest"]}
+    if ordinary:
         basis = {
             k: v for k, v in quote.items() if k not in ("snapshot_digest", "caller")
         }
-        if digest(basis) != snapshot.policies.get(slot):
+        expected = snapshot.policies.get(slot)
+        if isinstance(active_step, ReviewPhaseStep) and active_step.iteration:
+            expected = snapshot._review_rounds[active_step.iteration - 1][
+                "policies"
+            ].get(active_step.template)
+        if digest(basis) != expected:
             raise CapabilityError(
                 "Instruction account, route or price changed since confirmation"
             )
     return quote
 
 
-def leaf_operation(frozen, arguments, quote, job_digest):
-    procedure = frozen.draft.definition.procedure
+def phase_inputs(frozen, step):
+    if isinstance(step, ReviewPhaseStep):
+        return {k: port.slot for k, port in step.inputs.items()}
+    return frozen.draft.definition.procedure.inputs
+
+
+def leaf_operation(frozen, arguments, quote, job_digest, *, step=None):
+    slots = phase_inputs(frozen, step)
     source = frozen.draft.source
     requirement = AccessRequirement.model_validate(
         {
@@ -130,7 +201,7 @@ def leaf_operation(frozen, arguments, quote, job_digest):
             "description": "Single scoped model request",
             "inputSchema": {
                 "type": "object",
-                "properties": {k: v.schema_ for k, v in procedure.inputs.items()},
+                "properties": {k: v.schema_ for k, v in slots.items()},
                 "additionalProperties": False,
             },
         },

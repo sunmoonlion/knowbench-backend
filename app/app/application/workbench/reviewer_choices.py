@@ -37,6 +37,7 @@ class ReviewerChoices:
         ] = "isolated_reviewer",
         *,
         sandbox=None,
+        producer_route=None,
     ):
         prefs = await repo.get_prefs(owner)
         preference = await repo.reviewer_preference(owner)
@@ -47,6 +48,8 @@ class ReviewerChoices:
             )
         except ValidationError:
             default = producer = None
+        if producer_route is not None:
+            producer = producer_route
         preview = preview_routes(
             ReviewRouteQuery(requirement=requirement, producer=producer),
             self.routes,
