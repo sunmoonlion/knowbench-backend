@@ -12,6 +12,7 @@ from app.domain.workbench.formal_execution import (
 )
 from app.domain.workbench.formal_method_execution_generated import fingerprint
 from app.domain.workbench.formal_method_generated import Digest, Orchestration, Strict
+from app.domain.workbench.formal_method_plan_generated import BatchItem
 from app.domain.workbench.ordinary_expert import ORDINARY_SOURCE
 from app.domain.workbench.states import TaskState
 
@@ -40,7 +41,11 @@ async def partial_delivery(repo, owner, task_id, command=None):
         if (
             not isinstance(graph, Orchestration)
             or recursive_plan(snapshot)
-            or not any(len(s.depends_on) >= 2 for s in graph.steps)
+            or (
+                graph.object_batch.on_missing != "request_partial"
+                if graph.object_batch
+                else not any(len(s.depends_on) >= 2 for s in graph.steps)
+            )
         ):
             if command:
                 raise StaleStateVersion("No branches to receive")
@@ -66,6 +71,12 @@ async def partial_delivery(repo, owner, task_id, command=None):
                 continue
             candidates[step.id] = {"step_id": step.id, **pin}
             values[step.id] = output
+        objects = {
+            s.id: item.binding.object_id
+            for s in orchestration_plan(snapshot)
+            for item in s.inputs.values()
+            if isinstance(item.binding, BatchItem)
+        }
         promises = {}
         for rule in definition.how_to_validate:
             promises.setdefault(rule.promise_id, set()).update(rule.outputs)
@@ -79,6 +90,7 @@ async def partial_delivery(repo, owner, task_id, command=None):
             options.append(
                 {
                     "artifact": pin,
+                    **({"object_id": objects[step]} if step in objects else {}),
                     "output_names": sorted(values[step]),
                     "applicable_promises": [
                         name
@@ -118,6 +130,7 @@ async def partial_delivery(repo, owner, task_id, command=None):
                 "scope_digest": scope,
                 "options": options,
                 "missing_steps": missing,
+                "missing_objects": [objects[s] for s in missing if s in objects],
                 "promises": definition.capability_declaration.promises,
                 "received": [
                     dict(r, outputs=values[step])

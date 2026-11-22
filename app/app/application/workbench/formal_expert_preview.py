@@ -13,6 +13,9 @@ from app.domain.workbench.formal_method_generated import (
     StepValue,
 )
 from app.domain.workbench.formal_method_plan_generated import (
+    BatchItem,
+    BatchRows,
+    InvalidObjectList,
     UnmatchedCandidate,
     expand_unique_plan,
     select_plan,
@@ -29,6 +32,8 @@ from app.domain.workbench.tool_registry import connection_registration
 async def fixed_graph(registry, owner, selected, definition, values):
     try:
         definition = select_plan(definition, values)
+    except InvalidObjectList:
+        return None, "invalid_object_list"
     except UnmatchedCandidate:
         return None, "candidate_unmatched"
     """Resolve only a deterministic graph, one qualified frontier at a time."""
@@ -75,7 +80,17 @@ def project_arguments(node, parent_values, parent_pending):
     values, pending = {}, {}
     for key, item in node.step.inputs.items():
         binding = item.binding
-        if isinstance(binding, LiteralValue):
+        if isinstance(binding, BatchItem):
+            values[key] = binding.object_id
+        elif isinstance(binding, BatchRows):
+            pending[key] = {
+                "step": [*node.parent_path, binding.step],
+                "output": binding.output,
+                "objects": [
+                    {"step": k, "object_id": obj} for k, obj in binding.members
+                ],
+            }
+        elif isinstance(binding, LiteralValue):
             values[key] = binding.value
         elif isinstance(binding, CallerValue):
             if binding.name in parent_values:
@@ -317,6 +332,25 @@ async def execution_preview(
                     )
     return {
         **({"choices": choices} if choices else {}),
+        **(
+            {
+                "object_batch": {
+                    "maximum": definition.procedure.object_batch.max_objects,
+                    "on_missing": definition.procedure.object_batch.on_missing,
+                    "members": [
+                        {"step": n.step.id, "object_id": port.binding.object_id}
+                        for n in graph.nodes
+                        if not n.parent_path
+                        for port in n.step.inputs.values()
+                        if isinstance(port.binding, BatchItem)
+                    ],
+                }
+            }
+            if graph
+            and isinstance(definition.procedure, Orchestration)
+            and definition.procedure.object_batch
+            else {}
+        ),
         **(
             {"subexperts": experts, "scope_hours": METHOD_SCOPE_HOURS}
             if experts

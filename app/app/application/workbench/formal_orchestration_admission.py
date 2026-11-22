@@ -445,7 +445,9 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
         frozen.reference.method_id, frozen.draft.definition, definitions
     )
     proc = frozen.draft.definition.procedure
-    if isinstance(proc, Orchestration) and proc.has_candidate_choice:
+    if isinstance(proc, Orchestration) and (
+        proc.has_candidate_choice or proc.object_batch
+    ):
         plans = [
             expand_unique_plan(
                 frozen.reference.method_id,
@@ -455,6 +457,8 @@ def verify_sealed_plan(owner, frozen, request, evidence, resolved, *, operations
             for case in request.execution.suite.cases
         ]
         for step in proc.steps:
+            if not step.candidate_choice:
+                continue
             covered = {
                 ref_key(node.reference)
                 for plan in plans

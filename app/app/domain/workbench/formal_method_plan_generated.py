@@ -8,6 +8,7 @@ resource reads or approvals.
 """
 
 import copy
+import hashlib
 import json
 import math
 from dataclasses import dataclass
@@ -26,6 +27,8 @@ from app.domain.workbench.formal_method_generated import (
     LiteralValue,
     MethodRef,
     MethodStep,
+    ObjectItem,
+    ObjectRows,
     Orchestration,
     ResourceValue,
     StepValue,
@@ -207,11 +210,84 @@ class UnmatchedCandidate(ValueError):
         super().__init__(f"No frozen candidate matches input {slot}")
 
 
+class BatchItem(ObjectItem):
+    """A runtime binding for one member of the confirmed list."""
+
+    object_id: str
+
+
+class BatchRows(ObjectRows):
+    """Exact worker instances, in the caller's frozen list order."""
+
+    members: tuple[tuple[str, str], ...]
+
+
+class InvalidObjectList(ValueError):
+    pass
+
+
+def expand_batch(
+    definition: FormalMethodDefinition, graph: Orchestration, values: dict
+) -> FormalMethodDefinition:
+    spec = graph.object_batch
+    assert spec is not None
+    worker, port, template = next(
+        (s, name, i)
+        for s in graph.steps
+        for name, i in s.inputs.items()
+        if isinstance(i.binding, ObjectItem)
+    )
+    assert isinstance(template.binding, ObjectItem)
+    manifest = values.get(template.binding.name)
+    _json_object(values)
+    if (
+        not isinstance(manifest, list)
+        or not 1 <= len(manifest) <= spec.max_objects
+        or not all(
+            isinstance(v, str) and v and template.slot.accepts(v) for v in manifest
+        )
+        or len(set(manifest)) != len(manifest)
+    ):
+        raise InvalidObjectList(f"Invalid object list: {template.binding.name}")
+    collector = next(s for s in graph.steps if s.id != worker.id)
+    instances = []
+    members = []
+    for obj in manifest:
+        # Names remain valid step keys for arbitrary Unicode object IDs.
+        key = "obj_" + hashlib.sha256(obj.encode()).hexdigest()[:48]
+        if key == collector.id or any(k == key for k, _ in members):
+            raise InvalidObjectList("Object instance identifier conflict")
+        binding = BatchItem(
+            source="object_item", name=template.binding.name, object_id=obj
+        )
+        inputs = {
+            **worker.inputs,
+            port: template.model_copy(update={"binding": binding}),
+        }
+        instances.append(worker.model_copy(update={"id": key, "inputs": inputs}))
+        members.append((key, obj))
+    inputs = dict(collector.inputs)
+    for name, item in inputs.items():
+        if isinstance(item.binding, ObjectRows):
+            rows = BatchRows(**item.binding.model_dump(), members=tuple(members))
+            inputs[name] = item.model_copy(update={"binding": rows})
+    instances.append(
+        collector.model_copy(
+            update={"depends_on": tuple(k for k, _ in members), "inputs": inputs}
+        )
+    )
+    return definition.model_copy(
+        update={"procedure": graph.model_copy(update={"steps": tuple(instances)})}
+    )
+
+
 def select_plan(
     definition: FormalMethodDefinition, values: dict
 ) -> FormalMethodDefinition:
     """Derive a fixed invocation graph from the immutable rule and caller inputs."""
     graph = definition.procedure
+    if isinstance(graph, Orchestration) and graph.object_batch:
+        return expand_batch(definition, graph, values)
     if not isinstance(graph, Orchestration) or not graph.has_candidate_choice:
         return definition
     steps = []
@@ -246,7 +322,11 @@ def unique_plan(definition: FormalMethodDefinition) -> tuple[MethodStep, ...]:
         raise ValueError("A unique plan requires an orchestration definition")
     if procedure.has_candidate_choice:
         raise ValueError("Runner lacks conditional candidate selection")
-    if procedure.object_batch:
+    if procedure.object_batch and not any(
+        isinstance(item.binding, BatchItem)
+        for step in procedure.steps
+        for item in step.inputs.values()
+    ):
         raise ValueError("Runner lacks bounded object fanout")
     if procedure.max_replans != 0:
         raise ValueError("Unique plans cannot replan")
@@ -347,7 +427,20 @@ def bind_step_inputs(
     values = {}
     for name, item in step.inputs.items():
         binding = item.binding
-        if isinstance(binding, CallerValue):
+        if isinstance(binding, BatchItem):
+            values[name] = binding.object_id
+        elif isinstance(binding, BatchRows):
+            if any(
+                k not in step.depends_on
+                or binding.output not in accepted_outputs.get(k, {})
+                for k, _ in binding.members
+            ):
+                raise ValueError("Collection requires all confirmed object outputs")
+            values[name] = [
+                {"object_id": obj, "value": accepted_outputs[k][binding.output]}
+                for k, obj in binding.members
+            ]
+        elif isinstance(binding, CallerValue):
             if binding.name in caller_values:
                 values[name] = caller_values[binding.name]
         elif isinstance(binding, LiteralValue):

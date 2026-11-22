@@ -60,7 +60,10 @@ async def resolve_owned_plan(
             if len(ancestors) >= 16:
                 raise CapabilityError("Formal dependency depth limit")
             if (
-                current.procedure.has_candidate_choice
+                (
+                    current.procedure.has_candidate_choice
+                    or current.procedure.object_batch
+                )
                 and len(ancestors) == 1
                 and values is None
             ):
@@ -114,9 +117,8 @@ async def resolve_owned_plan(
             # Expansion counts invocations, including repeated references; only
             # immutable registration reads are deduplicated above.
             compiled = compile_method(method_id, active, definitions)
-            if (
-                isinstance(active.procedure, Orchestration)
-                and active.procedure.has_candidate_choice
+            if isinstance(active.procedure, Orchestration) and (
+                active.procedure.has_candidate_choice or active.procedure.object_batch
             ):
                 refs = tuple(f.reference for _, f in sorted(resolved.items()))
             else:

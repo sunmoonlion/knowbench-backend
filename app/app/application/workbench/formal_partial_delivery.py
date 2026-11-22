@@ -182,6 +182,16 @@ def verified_case_delivery(request, evidence):
         or evidence.get("adapter") == TREE_ADAPTER
     ):
         return None
+    if graph.object_batch:
+        from app.domain.workbench.formal_method_plan_generated import select_plan
+
+        values = next(
+            c.input.values
+            for c in request.execution.suite.cases
+            if c.case_id == case["case_id"]
+        )
+        graph = select_plan(request.draft.definition, values).procedure
+        assert isinstance(graph, Orchestration)
     steps = {s.id: s for s in graph.steps}
     progress = []
     for item in evidence["steps"]:
