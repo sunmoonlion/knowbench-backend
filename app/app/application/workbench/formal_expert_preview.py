@@ -129,7 +129,7 @@ def mcp_quote(leaf, root, accounts, assets, operations, values, pending):
     }, None
 
 
-def execution_preview(
+async def execution_preview(
     task_id,
     revision,
     selected,
@@ -142,9 +142,19 @@ def execution_preview(
     invalid_materials,
     invalid_accounts,
     assets,
-    operations,
+    methods,
+    owner,
+    subject,
 ):
-    issues = []
+    from app.application.workbench.ordinary_material import (
+        material_inputs,
+        read_source_and_quote,
+    )
+
+    values, pins, issues = material_inputs(graph, bindings)
+    bindings = {**bindings, "values": values}
+    operations = methods.operations
+    read_sources = {}
 
     def issue(code, path=(), slot=None):
         issues.append({"code": code, "path": list(path), "slot": slot})
@@ -184,6 +194,13 @@ def execution_preview(
             )
             if problem:
                 issue(problem, node.path)
+        elif node.path in pins:
+            try:
+                read_sources[node.path], quote = await read_source_and_quote(
+                    methods, owner, subject, node, values
+                )
+            except CapabilityError:
+                issue("operation_unverified", node.path)
         elif (
             kind in ("skill_script", "registered_script")
             and operations.script_tariff
@@ -226,6 +243,7 @@ def execution_preview(
                     }
                     for r in node.definition.access_requirements
                 ],
+                **({"material": pins[node.path]} if node.path in pins else {}),
                 "from_outputs": pending,
                 "quote": quote,
             }
@@ -243,4 +261,4 @@ def execution_preview(
         "issues": issues,
         "estimated_maximum": format(total, "f") if priced else None,
         "currency": "CNY",
-    }
+    }, read_sources

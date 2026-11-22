@@ -412,6 +412,16 @@ class FormalHostCalls:
             "operation": decision.operation,
             "access": access,
         }
+        if knowbase_read and isinstance(snapshot, ConsumerPlan):
+            pin = snapshot.materials[slot]
+            if (str(pin.material_id), pin.version_no) != (
+                knowbase_read["material_id"],
+                knowbase_read["version_no"],
+            ):
+                raise CapabilityError(
+                    "Read arguments differ from the confirmed material version"
+                )
+            intent["material_sha256"] = pin.sha256
         if source.kind in ("skill_script", "registered_script"):
             intent["script_quote"] = decision.operation["script_quote"]
         if source.kind == "service_function":

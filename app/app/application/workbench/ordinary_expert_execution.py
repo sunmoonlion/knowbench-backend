@@ -10,20 +10,24 @@ from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.ordinary_expert import CONFIRMED, ConsumerMethod, ConsumerPlan
 
 
-def execution_sources(graph, preview, subject, assets, methods):
+def execution_sources(graph, preview, subject, assets, methods, read_sources):
     """Resolve the consumer's licensed installation, never the publisher's credentials."""
     if not graph or preview["issues"]:
         return {}, "preview_incomplete"
-    if preview["bindings"]["materials"]:
-        return {}, "material_authority_required"
     if any(
-        len(n.path) != 1 or n.definition.procedure.implementation.kind != "mcp"
+        len(n.path) != 1
+        or (
+            n.path not in read_sources
+            and n.definition.procedure.implementation.kind != "mcp"
+        )
         for n in graph.leaf_nodes
     ):
         return {}, "driver_unavailable"
     by_asset = {a["id"]: a for a in assets}
-    sources = {}
+    sources = dict(read_sources)
     for leaf, step in zip(graph.leaf_nodes, preview["steps"], strict=True):
+        if leaf.path in read_sources:
+            continue
         quote = step["quote"]
         impl = leaf.definition.procedure.implementation
         options = methods._sources(
@@ -71,6 +75,9 @@ async def confirm_execution(
         arguments=preview["bindings"]["values"],
         dependencies=tuple(methods.values()),
         policies=policies,
+        materials={
+            s["path"][0]: s["material"] for s in preview["steps"] if "material" in s
+        },
     )
     session_id = str(task["session_id"])
     result = await Ledger(repo).handover(

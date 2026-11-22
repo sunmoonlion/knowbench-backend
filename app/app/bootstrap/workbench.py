@@ -114,9 +114,11 @@ def find_expert_service(session: AsyncSession):
     from app.application.workbench.find_expert import FindExpertService
 
     repo = web_workbench_store(session)
+    capabilities = capability_service(repo)
     return FindExpertService(
         repo,
-        formal_registry=capability_service(repo).formal_sources.registry,
+        formal_registry=capabilities.formal_sources.registry,
+        material_read_enabled=capabilities.data_function is not None,
         directory=knowmart_catalog(),
         demands=knowmart_demands(),
         incubations=knowlab_incubation_requests(),

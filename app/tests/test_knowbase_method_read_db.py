@@ -344,6 +344,7 @@ async def run_host_tree(db, ctx, peer):
     factory = ctx.factory
 
     previous = None
+    versions = []
     for depth in (1, 2, 3):
         await accept_request(db, ctx)
         pending = await advance(db, ctx)
@@ -376,6 +377,7 @@ async def run_host_tree(db, ctx, peer):
         result = await advance(db, ctx)
         assert result["status"] == "passed", result
         previous = freeze(ctx.request, result)
+        versions.append(previous)
         async with db() as session:
             await factory(WorkbenchRepository(session)).formal_sources.register(
                 previous, caller="knowlab"
@@ -384,6 +386,7 @@ async def run_host_tree(db, ctx, peer):
             ctx.request = wrap(ctx.request, previous)
         if depth == 1:
             await check_two_readers(db, ctx)
+    return versions
 
 
 async def check_two_readers(db, ctx):

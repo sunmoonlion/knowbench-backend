@@ -198,6 +198,9 @@ class HostCallDetail(CommonCallDetail):
 
 
 class FormalFunctionDetail(CommonCallDetail):
+    material_sha256: str | None = Field(
+        default=None, pattern=r"^[a-f0-9]{64}$", exclude_if=lambda v: v is None
+    )
     execution_kind: Literal["formal_function"]
     source_asset_id: None
     connection_id: None

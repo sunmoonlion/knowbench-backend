@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -38,110 +39,11 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
     ctx.remote.calls.clear()
     qualified = {expert.reference, ctx.leaf.reference}
 
-    class Market:
-        async def planning_formal_refs(self, subject, refs):
-            assert subject == "author"
-            return qualified.intersection(MethodRef.model_validate(r) for r in refs)
-
-    def factory(repo):
-        caps = ctx.factory(repo)
-        caps.formal_sources.market = Market()
-        return caps
-
-    ref = expert.reference.model_dump(mode="json")
-    proposal = {
-        "contract": "knowbench/expert-match/v5",
-        "requirements": [
-            {
-                "id": "r",
-                "kind": "result",
-                "statement": "Return a receipt",
-                "question_quote": "receipt",
-                "required": True,
-            }
-        ],
-        "outcome": "candidates",
-        "picks": [
-            {
-                "reference": ref,
-                "reason": "Notice",
-                "coverage": [
-                    {"requirement": "r", "promise": "sent", "quote": "receipt"}
-                ],
-                "limitations": [],
-            }
-        ],
-        "explanation": "One candidate",
-        "clarification": None,
-    }
-    model = ScriptedAppServer([json.dumps(proposal)])
-    await model.start()
-    runner = runner_for(db)
-    runner.capabilities = factory
-    try:
-        async with db() as s:
-            repo = WorkbenchRepository(s)
-            async with repo.transaction():
-                await s.execute(
-                    text(
-                        "update workbench_sandboxes set app_server_url=:url,token_ref='inline:t'"
-                    ),
-                    {"url": f"ws://127.0.0.1:{model.port}"},
-                )
-                env = await s.scalar(
-                    text(
-                        "select id from workbench_environments where owner_actor_id=:owner limit 1"
-                    ),
-                    {"owner": ctx.owner},
-                )
-                project = await repo.create_project(
-                    owner_actor_id=ctx.owner,
-                    environment_id=str(env),
-                    workspace_root="/home/u/research",
-                    path="ordinary",
-                    title="Ordinary",
-                )
-        app = web_app(db, None, monkeypatch)
-
-        def finder(session):
-            repo = WorkbenchRepository(session, browser_view=True)
-            return FindExpertService(
-                repo, formal_registry=factory(repo).formal_sources.registry
-            )
-
-        monkeypatch.setattr(routes, "find_expert_service", finder)
-
-        async def service():
-            async with db() as s:
-                yield factory(WorkbenchRepository(s, browser_view=True))
-
-        app.dependency_overrides[capability_routes.service] = service
-        app.dependency_overrides[routes.get_web_knowbase_token_provider] = lambda: None
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-        ) as client:
-            response = await client.post(
-                f"/api/workbench/projects/{project}/find-expert",
-                json={
-                    "reference": ref,
-                    "question": "Please return a receipt",
-                    "idempotency_key": "normal-expert-match",
-                    "match_contract": "knowbench/expert-match/v5",
-                },
-            )
-            assert response.status_code == 201, response.text
-            match = response.json()["task_id"]
-            path = "/api/workbench/find-expert/" + match
-            await drive(runner)
-            result = (await client.get(path)).json()
-            assert "formal" in result, result
-            selected = {
-                "reference": ref,
-                "review_digest": result["formal"]["review_digest"],
-            }
-            assert (
-                await client.put(path + "/selection", json=selected)
-            ).status_code == 200
+    async with selected_match(
+        db, monkeypatch, expert, qualified, ctx.owner, ctx.factory
+    ) as match:
+        client, path, selected, runner, factory, model = match
+        try:
             prep = (await client.get(path + "/preparation")).json()
             bindings = {
                 "expected_revision": 0,
@@ -224,6 +126,137 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
                 None if revoke else {"final_receipt": "test@example.test"}
             )
             assert len(model.turn_inputs) == 1
+        finally:
+            if runner is not match[3]:
+                await close(runner)
+
+
+@asynccontextmanager
+async def selected_match(
+    db,
+    monkeypatch,
+    expert,
+    qualified,
+    owner,
+    make_capabilities,
+    *,
+    token=None,
+    library=None,
+):
+    class Market:
+        async def planning_formal_refs(self, subject, refs):
+            assert subject == "author"
+            return qualified.intersection(MethodRef.model_validate(r) for r in refs)
+
+    def factory(repo):
+        caps = make_capabilities(repo)
+        caps.formal_sources.market = Market()
+        return caps
+
+    ref = expert.reference.model_dump(mode="json")
+    promise, statement = next(
+        iter(expert.draft.definition.capability_declaration.promises.items())
+    )
+    proposal = {
+        "contract": "knowbench/expert-match/v5",
+        "requirements": [
+            {
+                "id": "r",
+                "kind": "result",
+                "statement": "Return a receipt",
+                "question_quote": "receipt",
+                "required": True,
+            }
+        ],
+        "outcome": "candidates",
+        "picks": [
+            {
+                "reference": ref,
+                "reason": "Notice",
+                "coverage": [
+                    {"requirement": "r", "promise": promise, "quote": statement}
+                ],
+                "limitations": [],
+            }
+        ],
+        "explanation": "One candidate",
+        "clarification": None,
+    }
+    model = ScriptedAppServer([json.dumps(proposal)])
+    await model.start()
+    runner = runner_for(db)
+    runner.capabilities = factory
+    try:
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await s.execute(
+                    text(
+                        "update workbench_sandboxes set app_server_url=:url,token_ref='inline:t'"
+                    ),
+                    {"url": f"ws://127.0.0.1:{model.port}"},
+                )
+                env = await s.scalar(
+                    text(
+                        "select id from workbench_environments where owner_actor_id=:owner limit 1"
+                    ),
+                    {"owner": owner},
+                )
+                project = await repo.create_project(
+                    owner_actor_id=owner,
+                    environment_id=str(env),
+                    workspace_root="/home/u/research",
+                    path="ordinary",
+                    title="Ordinary",
+                )
+        app = web_app(db, None, monkeypatch)
+
+        def finder(session):
+            repo = WorkbenchRepository(session, browser_view=True)
+            capabilities = factory(repo)
+            return FindExpertService(
+                repo,
+                formal_registry=capabilities.formal_sources.registry,
+                material_read_enabled=capabilities.data_function is not None,
+            )
+
+        monkeypatch.setattr(routes, "find_expert_service", finder)
+
+        async def service():
+            async with db() as s:
+                yield factory(WorkbenchRepository(s, browser_view=True))
+
+        app.dependency_overrides[capability_routes.service] = service
+        app.dependency_overrides[capability_routes.method_read_service] = service
+        app.dependency_overrides[routes.get_web_knowbase_token_provider] = lambda: token
+        if library:
+            monkeypatch.setattr(routes, "knowbase_v2", lambda: library)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+        ) as client:
+            response = await client.post(
+                f"/api/workbench/projects/{project}/find-expert",
+                json={
+                    "reference": ref,
+                    "question": "Please return a receipt",
+                    "idempotency_key": "normal-expert-match",
+                    "match_contract": "knowbench/expert-match/v5",
+                },
+            )
+            assert response.status_code == 201, response.text
+            match = response.json()["task_id"]
+            path = "/api/workbench/find-expert/" + match
+            await drive(runner)
+            result = (await client.get(path)).json()
+            assert "formal" in result, result
+            selected = {
+                "reference": ref,
+                "review_digest": result["formal"]["review_digest"],
+            }
+            assert (
+                await client.put(path + "/selection", json=selected)
+            ).status_code == 200
+            yield client, path, selected, runner, factory, model
     finally:
         await close(runner)
         await model.close()

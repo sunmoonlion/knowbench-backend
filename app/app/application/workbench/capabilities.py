@@ -2316,6 +2316,14 @@ class Capabilities:
                         arguments=intent["function_arguments"],
                         method_read=knowbase_read,
                     )
+                    if (
+                        "material_sha256" in intent
+                        and receipt["output"]["source"]["sha256"]
+                        != intent["material_sha256"]
+                    ):
+                        raise CapabilityOutcomeUnknown(
+                            "KnowBase content differs from the confirmed material digest"
+                        )
                     result = {
                         "isError": False,
                         "structuredContent": receipt["output"],

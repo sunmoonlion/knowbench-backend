@@ -3168,6 +3168,19 @@
             "default": null,
             "title": "Result"
           },
+          "material_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Material Sha256"
+          },
           "execution_kind": {
             "const": "formal_function",
             "title": "Execution Kind",
@@ -4509,6 +4522,19 @@
           "result": {
             "default": null,
             "title": "Result"
+          },
+          "material_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Material Sha256"
           },
           "execution_kind": {
             "const": "formal_function",
@@ -6206,6 +6232,19 @@
             "default": null,
             "title": "Result"
           },
+          "material_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Material Sha256"
+          },
           "execution_kind": {
             "const": "formal_function",
             "title": "Execution Kind",
@@ -7492,6 +7531,19 @@
           "result": {
             "default": null,
             "title": "Result"
+          },
+          "material_sha256": {
+            "anyOf": [
+              {
+                "pattern": "^[a-f0-9]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Material Sha256"
           },
           "execution_kind": {
             "const": "formal_function",

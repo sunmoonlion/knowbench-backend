@@ -362,6 +362,32 @@ function_probe = {
 examples["RegisteredFunctionProbe"] = Call.model_validate(function_probe).model_dump(
     mode="json", exclude_unset=True
 )
+material_call = {
+    **host,
+    "source_asset_id": None,
+    "connection_id": None,
+    "detail": {
+        **host["detail"],
+        **{
+            k: function_probe["detail"][k]
+            for k in (
+                "registered_source",
+                "tool",
+                "arguments",
+                "purpose",
+                "connection_name",
+                "account_label",
+                "source_asset_id",
+                "connection_id",
+            )
+        },
+        "execution_kind": "formal_function",
+        "material_sha256": "a" * 64,
+    },
+}
+examples["OrdinaryMaterialRead"] = Call.model_validate(material_call).model_dump(
+    mode="json", exclude_unset=True
+)
 model_call = {
     **call,
     "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",

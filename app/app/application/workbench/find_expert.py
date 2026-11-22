@@ -243,6 +243,7 @@ class FindExpertService:
         *,
         directory: ExpertDirectory | None = None,
         formal_registry=None,
+        material_read_enabled: bool = False,
         demands: DemandBoard | None = None,
         incubations: IncubationDesk | None = None,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -250,6 +251,7 @@ class FindExpertService:
         self.repo = repo
         self.directory = directory
         self.formal_registry = formal_registry
+        self.material_read_enabled = material_read_enabled
         self.demands = demands
         self.incubations = incubations
         self.now = now

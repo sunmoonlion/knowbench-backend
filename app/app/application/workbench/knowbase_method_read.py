@@ -24,6 +24,7 @@ async def read_binding(repo, task, snapshot, arguments, purpose, child, scopes):
     except (AttributeError, TypeError, ValueError, KeyError) as exc:
         raise CapabilityError("Select an exact KnowBase material and version") from exc
     from app.application.workbench.method_calls import root_call
+    from app.domain.workbench.ordinary_expert import ConsumerPlan
 
     root = await root_call(repo, task)
     path = [
@@ -31,7 +32,9 @@ async def read_binding(repo, task, snapshot, arguments, purpose, child, scopes):
             "call_id": str(root["id"]),
             "method_id": str(snapshot.method_id),
             "definition_digest": snapshot.definition_digest,
-            "version": None,
+            "version": snapshot.reference.version
+            if isinstance(snapshot, ConsumerPlan)
+            else None,
         }
     ]
     if child is not None:
@@ -118,5 +121,10 @@ async def pending_read(svc, owner, call_id):
             else "host",
             "subject_digest": call["digest"],
             "parent_run_ref": "formal-task:" + host["task_id"],
+            **(
+                {"material_sha256": context.intent["material_sha256"]}
+                if "material_sha256" in context.intent
+                else {}
+            ),
             "read": context.knowbase_read,
         }

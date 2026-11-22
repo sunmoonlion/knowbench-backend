@@ -16,7 +16,7 @@ from app.application.workbench.method_access import check_requirement
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
-from app.domain.workbench.ordinary_expert import CONFIRMED
+from app.domain.workbench.ordinary_expert import CONFIRMED, MaterialPin
 from app.domain.workbench.tool_registry import ToolRegistration, connection_source
 
 PREPARATION = "task/formal_expert_preparation"
@@ -30,12 +30,6 @@ class Strict(BaseModel):
 class ExecutionConfirmation(Strict):
     revision: int = Field(strict=True, gt=0)
     preview_digest: Digest
-
-
-class MaterialPin(Strict):
-    material_id: UUID
-    version_no: int = Field(strict=True, gt=0)
-    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class AccountPin(Strict):
@@ -299,7 +293,8 @@ async def prepare(
                 execution_preview,
             )
 
-            preview = execution_preview(
+            subject = await repo.subject_of_actor(owner)
+            preview, read_sources = await execution_preview(
                 task_id,
                 revision,
                 selected,
@@ -312,12 +307,15 @@ async def prepare(
                 invalid_materials,
                 invalid_accounts,
                 assets,
-                registry.methods.operations,
+                registry.methods,
+                owner,
+                subject,
             )
-            subject = await repo.subject_of_actor(owner)
             sources, unavailable = execution_sources(
-                graph, preview, subject, assets, registry.methods
+                graph, preview, subject, assets, registry.methods, read_sources
             )
+            if read_sources and not service.material_read_enabled:
+                unavailable = "driver_unavailable"
             preview["dispatch_gap"] = unavailable
             preview["preview_digest"] = digest(
                 [preview, [s.fingerprint() for s in sources.values()]]

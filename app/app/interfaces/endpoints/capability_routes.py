@@ -720,6 +720,11 @@ async def approve_knowbase_read(
         expiry = body.expires_at
         if not datetime.now(UTC) < expiry <= request["expires_at"]:
             raise Forbidden("Consent expiry exceeds the pending read window")
+        expected = request.get("material_sha256")
+        if expected and (
+            not isinstance(body, PinnedParentApproval) or body.sha256 != expected
+        ):
+            raise Forbidden("Consent must use the confirmed material digest")
         token = await user_token()
         client = svc.data_function.client
         if isinstance(body, ExistingParentApproval):

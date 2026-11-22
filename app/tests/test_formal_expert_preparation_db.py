@@ -168,7 +168,8 @@ async def test_prepare_from_browser_rechecks_version_connection_budget_and_revis
             url = path + "/execution-preview?revision=1"
             before = (await client.get(url)).json()
             assert before["issues"] == [
-                {"code": "input_required", "slot": "to", "path": []}
+                {"code": "material_authority_required", "slot": "to", "path": []},
+                {"code": "input_required", "slot": "to", "path": []},
             ]
             assert before["estimated_maximum"] == "0" and before["steps"][0][
                 "path"
@@ -194,7 +195,8 @@ async def test_prepare_from_browser_rechecks_version_connection_budget_and_revis
             url = path + "/execution-preview?revision=2"
             complete = (await client.get(url)).json()
             assert (
-                complete["issues"] == []
+                complete["issues"]
+                == [{"code": "material_authority_required", "slot": "to", "path": []}]
                 and complete["bindings"]["values"] == edited["values"]
             )
             assert complete["preview_digest"] != before["preview_digest"]
@@ -202,7 +204,7 @@ async def test_prepare_from_browser_rechecks_version_connection_budget_and_revis
             registry.dependencies.clear()
             revoked = (await client.get(url)).json()
             assert (
-                revoked["issues"][0]["code"] == "dependency_unavailable"
+                any(i["code"] == "dependency_unavailable" for i in revoked["issues"])
                 and revoked["estimated_maximum"] is None
             )
             registry.dependencies.update(deps)

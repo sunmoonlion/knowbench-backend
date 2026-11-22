@@ -12,10 +12,17 @@ from app.domain.workbench.formal_method_generated import (
     MethodRef,
     Orchestration,
     Strict,
+    ToolProcedure,
 )
 
 ORDINARY_SOURCE = "formal-expert"
 CONFIRMED = "task/formal_expert_execution_confirmed"
+
+
+class MaterialPin(Strict):
+    material_id: UUID
+    version_no: int = Field(strict=True, gt=0)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
 class ConsumerMethod(Strict):
@@ -34,6 +41,9 @@ class ConsumerPlan(Strict):
     draft: FormalMethodDraft
     arguments: dict[str, Any]
     dependencies: tuple[ConsumerMethod, ...]
+    materials: dict[str, MaterialPin] = Field(
+        default_factory=dict, exclude_if=lambda pins: not pins
+    )
     policies: dict[str, str]
     caller: Literal["host"] = "host"
 
@@ -61,13 +71,26 @@ class ConsumerPlan(Strict):
             or any(len(n.path) != 1 or n.kind != "tool" for n in graph.nodes)
             or any(
                 m.draft.source is None
-                or m.draft.source.kind != "mcp"
+                or m.draft.source.kind not in ("mcp", "service_function")
                 or m.draft.source.license_basis == "pending"
                 for m in self.dependencies
             )
             or set(self.policies) != {n.step.id for n in graph.nodes}
         ):
             raise ValueError("Unsupported ordinary execution snapshot")
+        reads = set()
+        for leaf in graph.leaf_nodes:
+            procedure = leaf.definition.procedure
+            if not isinstance(procedure, ToolProcedure):
+                raise ValueError("Expected a fixed tool step")
+            impl = procedure.implementation
+            if impl.kind != "service_function":
+                continue
+            if (impl.source, impl.entry) != ("knowbase", "read_method_input"):
+                raise ValueError("Unsupported ordinary service function")
+            reads.add(leaf.step.id)
+        if self.materials.keys() != reads:
+            raise ValueError("Material selections must match the frozen read steps")
         validate_plan_inputs(self.draft.definition, self.arguments)
         return self
 
