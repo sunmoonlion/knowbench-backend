@@ -335,6 +335,7 @@
           "default": null
         },
         "review_requirements": {
+          "additionalProperties": false,
           "maxProperties": 100,
           "patternProperties": {
             "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
@@ -1249,6 +1250,7 @@
         "collaboration": {
           "anyOf": [
             {
+              "additionalProperties": false,
               "maxProperties": 100,
               "minProperties": 1,
               "patternProperties": {

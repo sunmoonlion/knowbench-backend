@@ -290,9 +290,14 @@ class CollaborationStep(Strict):
 
     # Each key is the producer whose accepted output this step reviews.
     review_requirements: dict[
-        Annotated[str, Field(pattern=NAME_PATTERN)],
+        Name,
         Literal["isolated_reviewer", "different_model_family"],
-    ] = Field(default_factory=dict, max_length=100, exclude_if=lambda value: not value)
+    ] = Field(
+        default_factory=dict,
+        max_length=100,
+        exclude_if=lambda value: not value,
+        json_schema_extra={"additionalProperties": False},
+    )
 
     isolation_group: Annotated[str, Field(pattern=NAME_PATTERN)] | None = None
     handoff_from: tuple[Annotated[str, Field(pattern=NAME_PATTERN)], ...] = Field(
@@ -310,14 +315,18 @@ class CollaborationStep(Strict):
         return self
 
 
+CollaborationRoles = Annotated[
+    dict[Name, CollaborationStep],
+    Field(json_schema_extra={"additionalProperties": False}),
+]
+
+
 class Orchestration(Strict):
     object_batch: ObjectBatch | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
 
-    collaboration: (
-        dict[Annotated[str, Field(pattern=NAME_PATTERN)], CollaborationStep] | None
-    ) = Field(
+    collaboration: CollaborationRoles | None = Field(
         default=None,
         min_length=1,
         max_length=100,
