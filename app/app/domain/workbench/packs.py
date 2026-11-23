@@ -855,36 +855,29 @@ def listed_packs() -> list[ExpertPack]:
 
 def find_pack(profile_id: str, version: str | None = None) -> ExpertPack | None:
     if profile_id == INCUBATE.profile_id and version == "2":
-        output = {
-            "sources": [],
-            "gaps": [],
-            "suggestions": [],
-            "self_check": [],
-            "selection": {
-                "status": "ready | clarify | gap",
-                "reason": "business explanation or question",
-                "patterns": "array of selected pattern IDs",
-                "routing_required": "boolean",
-                "steps": "ordered array of proposed steps",
-                "object_batch": "null or bounded batch",
-            },
-        }
+        from app.domain.workbench.incubations import SelectionHandback
+
+        output = SelectionHandback.model_json_schema()
         step = INCUBATE.workflow[0].model_copy(
             update={
                 "method_text": SELECTION_METHOD + JSON_ONLY,
                 "output_schema": output,
                 "acceptance": (
                     AcceptanceRule(kind="json_object"),
-                    AcceptanceRule(kind="required_keys", keys=tuple(output)),
+                    AcceptanceRule(
+                        kind="required_keys", keys=tuple(output["required"])
+                    ),
                 ),
             }
         )
         return INCUBATE.model_copy(update={"version": "2", "workflow": (step,)})
     if profile_id == FIND_EXPERT.profile_id and version == "7":
+        from app.domain.workbench.temporary_plan import PlanProposal
+
         step = FIND_EXPERT.workflow[0].model_copy(
             update={
                 "tools": (),
-                "max_reworks": 0,
+                "max_reworks": 1,
                 "summary": "根据本次问题和可用方法拟临时计划",
                 "method_text": (
                     "Use only the user's question, clarification, authorized probe and catalog.entries. "
@@ -902,15 +895,7 @@ def find_pack(profile_id: str, version: str | None = None) -> ExpertPack | None:
                     + MODEL_GRAPH_RULES
                     + JSON_ONLY
                 ),
-                "output_schema": {
-                    "status": "ready | clarify | gap",
-                    "reason": "string",
-                    "routing_required": "boolean",
-                    "patterns": "array of pattern IDs",
-                    "steps": "ordered array of steps",
-                    "object_batch": "null or bounded batch",
-                    "search_goal": "null or search query",
-                },
+                "output_schema": PlanProposal.model_json_schema(),
                 "acceptance": (
                     AcceptanceRule(kind="json_object"),
                     AcceptanceRule(

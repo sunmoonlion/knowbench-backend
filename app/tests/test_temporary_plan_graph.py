@@ -136,3 +136,37 @@ def test_unresolved_choice_uses_no_steps_and_legacy_receipt_keeps_its_original_s
         )
         == old
     )
+
+
+async def test_immediate_planning_rejects_an_unexecutable_secondary_route_at_preview():
+    task, methods = directory()
+    branch = task["original_input"]["input"]["catalog"]["entries"][-1]
+    old = MethodRef.model_validate(branch["reference"])
+    doc = methods.pop(old).document()
+    proc = doc["procedure"]
+    proc["implementation"].update(
+        kind="registered_instruction", source=str(uuid4()), entry="instruction"
+    )
+    proc["max_model_turns"] = 2
+    invalid = FormalMethodDefinition.model_validate(doc)
+    pin = old.model_copy(update={"digest": invalid.digest()})
+    methods[pin] = invalid
+    branch["reference"] = pin.model_dump(mode="json")
+    choice = read_choice(task, proposal())
+
+    async def permitted(owner, pins):
+        return {ref: methods[ref] for ref in pins}
+
+    service = SimpleNamespace(
+        formal_registry=SimpleNamespace(planning_definitions=permitted)
+    )
+    with pytest.raises(ValueError, match="Unsupported execution contract"):
+        await compile_choice(
+            service,
+            "caller",
+            str(uuid4()),
+            QUESTION,
+            choice,
+            host_capabilities(True, True, True),
+            ["conditional"],
+        )

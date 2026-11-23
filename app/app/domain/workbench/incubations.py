@@ -18,7 +18,12 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.domain.workbench.incubation_selection import Selection, SelectionContext
+from app.domain.workbench.incubation_selection import (
+    Selection,
+    SelectionContext,
+    check_proposal,
+    normalize_unresolved,
+)
 from app.domain.workbench.method_catalog import PlanningContract
 from app.domain.workbench.test_runs import Runner
 
@@ -333,6 +338,32 @@ class Handback(Strict):
                     "a suggestion turned into a gap is no longer suggested"
                 )
         return self
+
+
+class SelectionHandback(Strict):
+    sources: tuple[()]
+    gaps: tuple[()]
+    suggestions: tuple[()]
+    self_check: tuple[()]
+    selection: Selection
+
+
+def read_handback(content, context):
+    if context is None:
+        handback = Handback.model_validate(content)
+        if handback.selection is not None:
+            raise ValueError("Unexpected selection proposal")
+        return handback
+    if isinstance(content, dict) and "selection" in content:
+        content = {**content, "selection": normalize_unresolved(content["selection"])}
+    proposal = SelectionHandback.model_validate(content)
+    check_proposal(
+        proposal.selection,
+        context["methods"],
+        context.get("instructions", {}),
+        context["patterns"],
+    )
+    return proposal
 
 
 def _engineering(value: Any) -> bool:

@@ -10,8 +10,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
+
+from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.acceptance import Verdict, judge, out_of_scope, timed_out
@@ -313,6 +316,24 @@ class Advisor:
                 and a["status"] == AttemptState.FAILED
                 and a["failure_code"] == "acceptance"
             )
+            timeout = STEP_TIMEOUT_SECONDS
+            if task["profile_id"] == FIND_EXPERT.profile_id and str(
+                task.get("profile_version")
+            ) in {"6", "7"}:
+                timeout = min(timeout or 150, 150)
+                if reworks and str(task["profile_version"]) == "7":
+                    elapsed = (
+                        datetime.now(UTC) - attempts[0]["created_at"]
+                    ).total_seconds()
+                    timeout -= max(0, elapsed)
+                    if timeout <= 0:
+                        return (
+                            await led.transition(
+                                task_id,
+                                TaskState.FAILED,
+                                reason={"code": "selection_planning_timeout"},
+                            )
+                        )["state"]
             inputs = {}
             for name in () if view.planned else step.input_refs:
                 art = await repo.get_artifact(task_id=task_id, name=name)
@@ -503,12 +524,6 @@ class Advisor:
                 intake=intake,
             )
 
-        timeout = STEP_TIMEOUT_SECONDS
-        if task["profile_id"] == "FIND_EXPERT" and str(task.get("profile_version")) in {
-            "6",
-            "7",
-        }:
-            timeout = min(timeout or 150, 150)
         result = await self.driver.run_turn(thread_id, text, timeout=timeout)
 
         try:
@@ -567,17 +582,26 @@ class Advisor:
                     reader=self.reader,
                 )
             )
-            if (
-                verdict.ok
-                and task["profile_id"] == FIND_EXPERT.profile_id
-                and str(task.get("profile_version")) in {"2", "5", "6", "7"}
+            profile = (task["profile_id"], str(task.get("profile_version")))
+            selecting = profile in {("INCUBATE", "2"), ("FIND_EXPERT", "7")}
+            if verdict.ok and (
+                selecting
+                or (profile[0] == "FIND_EXPERT" and profile[1] in {"2", "5", "6"})
             ):
                 detail = ""
+                rule = "selection" if selecting else "expert_match"
                 try:
-                    if str(task["profile_version"]) == "7":
+                    if profile == ("INCUBATE", "2"):
+                        from app.domain.workbench.incubations import read_handback
+
+                        context = task["original_input"]["input"]["incubation"][
+                            "selection_context"
+                        ]
+                        read_handback(verdict.parsed, context)
+                    elif profile == ("FIND_EXPERT", "7"):
                         from app.domain.workbench.temporary_plan import read_choice
 
-                        read_choice(task, verdict.parsed)
+                        read_choice(task, verdict.parsed, check_graph=True)
                     elif str(task["profile_version"]) == "6":
                         from app.domain.workbench.formal_method_generated import (
                             MethodRef,
@@ -613,16 +637,29 @@ class Advisor:
                     else:
                         await validate_match_content(repo, task, verdict.parsed)
                 except (ValueError, KeyError) as exc:
-                    detail = str(exc)[:REWORK_FAILURE_CHARS]
+                    if selecting and isinstance(exc, ValidationError):
+                        problems = exc.errors(include_input=False, include_url=False)
+                        detail = "; ".join(
+                            f"{'.'.join(map(str, p['loc']))}: {p['msg']}"
+                            for p in problems[:3]
+                        )[:REWORK_FAILURE_CHARS]
+                    else:
+                        detail = str(exc)[:REWORK_FAILURE_CHARS]
                     verdict.ok = False
-                    verdict.failures.append("expert_match: " + detail)
+                    verdict.failures.append(rule + ": " + detail)
                 verdict.checks.append(
                     {
-                        "rule": "expert_match",
+                        "rule": rule,
                         "pass": not detail,
                         "detail": detail,
-                        "label": "匹配依据与原问题、目录声明一致",
-                        "message": "匹配依据未通过核验" if detail else "",
+                        "label": "草图符合本轮目录及编排规则"
+                        if selecting
+                        else "匹配依据与原问题、目录声明一致",
+                        "message": (
+                            "草图未通过核验" if selecting else "匹配依据未通过核验"
+                        )
+                        if detail
+                        else "",
                     }
                 )
             # 成稿文件写了没有：先认这一轮报过的 fileChange；没见到就经会合点问代理那个文件在不在
@@ -1126,6 +1163,20 @@ class Advisor:
             if reworks < step.max_reworks:  # 还有返工额度：重做本步
                 await self._requeue(led, task_id)
                 return TaskState.QUEUED
+            if (
+                task["profile_id"] == "FIND_EXPERT"
+                and str(task.get("profile_version")) == "7"
+            ):
+                return (
+                    await led.transition(
+                        task_id,
+                        TaskState.FAILED,
+                        reason={
+                            "code": "selection_repair_failed",
+                            "failures": verdict.failures,
+                        },
+                    )
+                )["state"]
             backs = 0
             if step.on_reject == "back" and step.back_to:  # 回到指定的前一步
                 backs = sum(
@@ -1921,7 +1972,11 @@ class Advisor:
         parts += [
             "",
             "## Output",
-            f"Produce the artifact `{step.output_artifact}` as ONE JSON object with this shape:",
+            (
+                f"Return one JSON object conforming to the following JSON Schema for `{step.output_artifact}`."
+                if "$defs" in step.output_schema
+                else f"Produce the artifact `{step.output_artifact}` as ONE JSON object with this shape:"
+            ),
             json.dumps(step.output_schema, ensure_ascii=False),
         ]
         if step.acceptance:

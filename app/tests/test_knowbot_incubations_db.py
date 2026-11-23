@@ -524,3 +524,74 @@ async def test_selection_keeps_author_question_and_discards_premature_routing(db
     finally:
         await close(runner)
         await fake.close()
+
+
+@pytest.mark.parametrize(
+    "mistake", ["missing_flag", "unknown_alias", "bad_topology", "twice"]
+)
+async def test_selection_is_checked_inside_the_bounded_incubation_round(db, mistake):
+    clear = dict(
+        status="clarify",
+        reason="哪个阈值？",
+        steps=[],
+        patterns=[],
+        routing_required=False,
+    )
+    invalid = {**clear}
+    if mistake == "missing_flag":
+        del invalid["routing_required"]
+    elif mistake == "bad_topology":
+        invalid.update(
+            status="ready",
+            patterns=["P5"],
+            routing_required=True,
+            steps=[{"id": "use", "method": "m1", "task": "选路"}],
+        )
+    else:
+        invalid.update(
+            status="ready", steps=[{"id": "use", "method": "unknown", "task": "核对"}]
+        )
+
+    def reply(choice):
+        return json.dumps(
+            dict(selection=choice, sources=[], gaps=[], suggestions=[], self_check=[])
+        )
+
+    fake = ScriptedAppServer(
+        [reply(invalid), reply(invalid if mistake == "twice" else clear)]
+    )
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        wire = request().model_dump(mode="json")
+        wire["selection_context"] = dict(
+            methods={}, patterns={"conditional": True}, partial=False
+        )
+        await accept(db, IncubationRequest.model_validate(wire))
+        conductor = IncubationConductor(workbench_stores(db))
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        done = await status(db)
+        assert len(fake.turn_inputs) == 2 and "rework #1" in fake.turn_inputs[1]
+        assert (
+            '"$defs"' in fake.turn_inputs[0] and '"SketchStep"' in fake.turn_inputs[0]
+        )
+        expected = {
+            "missing_flag": "routing_required",
+            "unknown_alias": "outside the authorized catalog",
+            "bad_topology": "selection_route",
+            "twice": "outside the authorized catalog",
+        }[mistake]
+        assert expected in fake.turn_inputs[1].split("What failed last time")[-1]
+        if mistake == "twice":
+            assert done["status"] == "failed" and done["handback"] is None
+        else:
+            assert (
+                done["status"] == "succeeded"
+                and done["handback"]["selection"]["status"] == "clarify"
+            )
+    finally:
+        await close(runner)
+        await fake.close()

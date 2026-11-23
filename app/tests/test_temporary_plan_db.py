@@ -5,6 +5,7 @@ import json
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
+import pytest
 from formal_plan_support import setup_plan
 from formal_recursive_support import register_completed
 from test_capabilities_db import approval
@@ -450,3 +451,82 @@ async def test_ready_proposal_can_be_replanned_and_only_the_current_review_adopt
         assert saved["selection"]["steps"][0]["task"] == edited["step_text"]["send"]
         assert saved["sketch_digest"] != last["sketch_digest"]
         assert not ctx.remote.calls
+
+
+@pytest.mark.parametrize("second_valid", [True, False])
+async def test_immediate_plan_repairs_the_graph_once_under_the_original_task_budget(
+    db, monkeypatch, second_valid
+):
+    ctx = await setup_plan(db)
+    await register_completed(db, ctx)
+    ctx.remote.calls.clear()
+    bad = {**receipt_proposal(), "routing_required": True}
+    async with selected_match(
+        db,
+        monkeypatch,
+        ctx.leaf,
+        {ctx.leaf.reference},
+        ctx.owner,
+        ctx.factory,
+        planning_choice=bad,
+    ) as match:
+        client, path, selection, runner, _, model = match
+        p = path + "/temporary-plan"
+        model.replies.append(json.dumps(receipt_proposal() if second_valid else bad))
+        (
+            await client.put(p, json={"review_digest": selection["review_digest"]})
+        ).raise_for_status()
+        await drive(runner)
+        receipt = (await client.get(p)).json()
+        assert len(model.turn_inputs) == 2 and not ctx.remote.calls
+        assert (
+            '"$defs"' in model.turn_inputs[0] and '"SketchStep"' in model.turn_inputs[0]
+        )
+        assert (
+            "selection_route" in model.turn_inputs[1].split("What failed last time")[-1]
+        )
+        audit = (await client.get(p + "/audit")).json()
+        assert len(audit["rounds"]) == 1 and len(audit["rounds"][0]["attempts"]) == 2
+        if second_valid:
+            assert receipt["outcome"] == "plan" and receipt["sketch_digest"]
+        else:
+            assert receipt["outcome"] == "gap" and "sketch_digest" not in receipt
+            assert receipt["explanation"] == "selection_repair_failed"
+
+
+async def test_repair_does_not_start_another_turn_after_planning_deadline(
+    db, monkeypatch
+):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    from app.application.workbench import advisor
+
+    ctx = await setup_plan(db)
+    await register_completed(db, ctx)
+    ctx.remote.calls.clear()
+    bad = {**receipt_proposal(), "routing_required": True}
+    async with selected_match(
+        db,
+        monkeypatch,
+        ctx.leaf,
+        {ctx.leaf.reference},
+        ctx.owner,
+        ctx.factory,
+        planning_choice=bad,
+    ) as match:
+        client, path, selection, runner, _, model = match
+        clock = Mock()
+        clock.now.return_value = datetime.now(UTC) + timedelta(minutes=3)
+        monkeypatch.setattr(advisor, "datetime", clock)
+        p = path + "/temporary-plan"
+        (
+            await client.put(p, json={"review_digest": selection["review_digest"]})
+        ).raise_for_status()
+        await drive(runner)
+        receipt = (await client.get(p)).json()
+        assert (
+            receipt["outcome"] == "gap"
+            and receipt["explanation"] == "selection_planning_timeout"
+        )
+        assert len(model.turn_inputs) == 1 and not ctx.remote.calls

@@ -164,7 +164,8 @@ def review_issue(selection: Selection, enabled: dict[str, bool]) -> str | None:
         return "selection_capability"
     for step in selection.steps:
         if step.cases or step.route_input:
-            if len(step.cases) < 2 or not step.route_input:
+            binding = step.inputs.get(step.route_input) if step.route_input else None
+            if len(step.cases) < 2 or binding is None or binding.source != "caller":
                 return "selection_route"
         if step.reviews:
             deps = {b.step for b in step.inputs.values() if b.source == "step"}
@@ -176,6 +177,68 @@ def review_issue(selection: Selection, enabled: dict[str, bool]) -> str | None:
     if any(not enabled.get(FEATURES[p]) for p in patterns):
         return "selection_capability"
     return None
+
+
+def normalize_unresolved(value):
+    if isinstance(value, dict) and value.get("status") in ("gap", "clarify"):
+        return {**value, "steps": [], "patterns": [], "object_batch": None}
+    return value
+
+
+def check_proposal(selection, methods, instructions, enabled):
+    """Check the model's draft against the catalog sealed into this round."""
+    if issue := review_issue(selection, enabled):
+        advice = {
+            "selection_route": "check routing_required, caller input and case labels",
+            "selection_capability": "check runtime patterns and review or batch limits",
+            "selection_review": "bind reviewed outputs and list their steps in reviews",
+            "selection_patterns": "use P3/P4/P5 only when the steps implement them",
+        }
+        raise ValueError(f"{issue}: {advice[issue]}")
+    seen = {}
+    for step in selection.steps:
+        candidates = set(step.cases.values()) or {step.method}
+        if step.method not in candidates or len(candidates) < len(step.cases):
+            raise ValueError(
+                f"{step.id}: use distinct route candidates including the named method"
+            )
+        if candidates & instructions.keys():
+            if not (
+                len(selection.steps) == 1
+                and step.method in instructions
+                and not (
+                    step.inputs
+                    or step.reviews
+                    or step.route_input
+                    or step.cases
+                    or selection.patterns
+                    or selection.object_batch
+                )
+            ):
+                raise ValueError(
+                    f"{step.id}: an instruction source can only be used alone"
+                )
+        elif missing := candidates - methods.keys():
+            raise ValueError(
+                f"{step.id}: method outside the authorized catalog: {sorted(missing)}"
+            )
+        dependencies = {
+            binding.step
+            for binding in step.inputs.values()
+            if binding.source in ("step", "object_rows")
+        }
+        if step.id in seen or not dependencies <= seen.keys():
+            raise ValueError(
+                f"{step.id}: use distinct step IDs and bind only earlier results"
+            )
+        if step.reviews and not all(
+            methods[alias].get("isolated_instruction")
+            for alias in [step.method, *(seen[dep] for dep in step.reviews)]
+        ):
+            raise ValueError(
+                f"{step.id}: independent review needs isolated instruction methods"
+            )
+        seen[step.id] = step.method
 
 
 def expand(
@@ -401,6 +464,36 @@ def available(definition, runtime):
     return True
 
 
+def conditional_witnesses(graph, leaf_counts):
+    """Cover every candidate and the heaviest route without a Cartesian product.
+
+    Choices change only the invoked subtree. compile_method already bounds depth,
+    steps and expansions over all candidates. Leaf counts add across independent
+    caller inputs, while all steps reading the same input share one label.
+    """
+    weights: dict[str, dict[str, int]] = {}
+    for step in graph.steps:
+        choice = step.candidate_choice
+        if choice is None:
+            continue
+        name = step.inputs[choice.input].binding.name
+        labels = {case.equals for case in choice.cases}
+        totals = weights.setdefault(name, dict.fromkeys(sorted(labels), 0))
+        if labels != totals.keys():
+            # Each declared case must reach all mandatory steps.
+            raise ValueError("selection_route")
+        for case in choice.cases:
+            totals[case.equals] += leaf_counts.get(case.candidate, 1)
+    worst = {
+        name: max(totals, key=totals.__getitem__) for name, totals in weights.items()
+    }
+    yield worst
+    for name, totals in weights.items():
+        for label in totals:
+            if label != worst[name]:
+                yield {**worst, name: label}
+
+
 def verify_selection_graph(target, definition, resolved, capabilities, roles=None):
     if any(
         not available(child.definition, capabilities) for child in resolved.values()
@@ -410,6 +503,7 @@ def verify_selection_graph(target, definition, resolved, capabilities, roles=Non
     compile_method(target, definition, resolved)
     if graph.kind == "orchestration":
         # A nested method must already have a fixed invocation graph.
+        leaf_counts = {}
         for child in resolved.values():
             nested = child.definition.procedure
             if nested.kind == "orchestration":
@@ -419,10 +513,16 @@ def verify_selection_graph(target, definition, resolved, capabilities, roles=Non
                     or nested.has_candidate_choice
                 ):
                     raise ValueError("selection_capability")
-                expand_unique_plan(
+                nested_plan = expand_unique_plan(
                     child.reference.method_id, child.definition, resolved
                 )
-        if not graph.has_candidate_choice:
+                leaf_counts[child.reference] = len(nested_plan.leaf_nodes)
+        if graph.has_candidate_choice:
+            if graph.collaboration or roles or graph.object_batch:
+                raise ValueError("selection_capability")
+            for values in conditional_witnesses(graph, leaf_counts):
+                expand_unique_plan(target, select_plan(definition, values), resolved)
+        else:
             values = {}
             if graph.object_batch:
                 keys = [str(i) for i in range(graph.object_batch.max_objects)]

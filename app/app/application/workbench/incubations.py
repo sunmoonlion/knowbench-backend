@@ -43,10 +43,10 @@ from app.domain.workbench.errors import (
 from app.domain.workbench.incubations import (
     CONTRACT,
     FINAL,
-    Handback,
     IncubationRequest,
     label,
     material,
+    read_handback,
     task_key,
 )
 from app.domain.workbench.models import HandoverRequest
@@ -477,42 +477,7 @@ class IncubationConductor:
         )
         try:
             content = (found or {}).get("content")
-            if row["request"].get("selection_context") and isinstance(content, dict):
-                choice = content.get("selection")
-                if isinstance(choice, dict) and choice.get("status") in (
-                    "clarify",
-                    "gap",
-                ):
-                    # Retain the question and drop any premature executable suggestion.
-                    content = {
-                        **content,
-                        "selection": {
-                            **choice,
-                            "patterns": [],
-                            "steps": [],
-                            "object_batch": None,
-                        },
-                    }
-            handback = Handback.model_validate(content)
-            if bool(row["request"].get("selection_context")) != (
-                handback.selection is not None
-            ) or (
-                handback.selection is not None
-                and (
-                    handback.suggestions
-                    or handback.gaps
-                    or handback.sources
-                    or handback.self_check
-                )
-            ):
-                await self._finish(
-                    repo,
-                    row,
-                    status="failed",
-                    error="Unexpected or missing selection proposal",
-                    spent=spent,
-                )
-                return
+            handback = read_handback(content, row["request"].get("selection_context"))
         except ValidationError as exc:
             first = exc.errors()[0] if exc.errors() else {}
             where = ".".join(str(p) for p in first.get("loc") or ())
@@ -525,6 +490,11 @@ class IncubationConductor:
                     f"{where} {first.get('msg', '')}"
                 )[:ERROR_CHARS],
                 spent=spent,
+            )
+            return
+        except ValueError as exc:
+            await self._finish(
+                repo, row, status="failed", error=str(exc)[:ERROR_CHARS], spent=spent
             )
             return
         await self._finish(

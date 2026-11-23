@@ -12,7 +12,13 @@ from app.domain.workbench.formal_method_generated import (
     Strict,
     Text,
 )
-from app.domain.workbench.incubation_selection import Selection, expand, review_issue
+from app.domain.workbench.incubation_selection import (
+    Selection,
+    check_proposal,
+    expand,
+    normalize_unresolved,
+    review_issue,
+)
 
 
 class Choice(Strict):
@@ -149,14 +155,20 @@ class GraphChoice(Choice):
     aliases: dict[str, MethodRef] = Field(max_length=8)
 
 
-def read_choice(task, artifact):
+def read_choice(task, artifact, *, check_graph=False):
     if str(task["profile_version"]) != "7":
         return Choice.model_validate(artifact)
-    if isinstance(artifact, dict) and artifact.get("status") in ("gap", "clarify"):
-        artifact = {**artifact, "steps": [], "patterns": [], "object_batch": None}
-    proposal = PlanProposal.model_validate(artifact)
+    proposal = PlanProposal.model_validate(normalize_unresolved(artifact))
     selection = Selection.model_validate(proposal.model_dump(exclude={"search_goal"}))
-    catalog = task["original_input"]["input"]["catalog"]["entries"]
+    source = task["original_input"]["input"]
+    catalog = source["catalog"]["entries"]
+    if check_graph:
+        check_proposal(
+            selection,
+            {e["alias"]: e for e in catalog},
+            {},
+            source["runtime"]["patterns"],
+        )
     pins = {e["alias"]: MethodRef.model_validate(e["reference"]) for e in catalog}
     aliases = list(
         dict.fromkeys(a for s in selection.steps for a in (s.method, *s.cases.values()))

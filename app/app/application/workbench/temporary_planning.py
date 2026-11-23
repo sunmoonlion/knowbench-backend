@@ -528,6 +528,13 @@ async def sketch(service, owner, task_id):
         probe = await repo.latest_task_payload(task_id, OBSERVED)
         context = child["original_input"]["input"]
         if child["state"] != "SUCCEEDED":
+            if child["state"] == "FAILED":
+                event = await repo.latest_task_payload(
+                    run["planning_task"], "task/state"
+                )
+                reason = ((event or {}).get("reason") or {}).get("code")
+                if reason in {"selection_repair_failed", "selection_planning_timeout"}:
+                    return {**run, "outcome": "gap", "explanation": reason}
             return {
                 **run,
                 "outcome": "gap"
