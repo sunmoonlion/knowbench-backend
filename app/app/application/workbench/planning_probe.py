@@ -10,6 +10,7 @@ from app.domain.workbench.errors import NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_method_generated import Digest
 from app.domain.workbench.ordinary_expert import MaterialPin
+from app.domain.workbench.temporary_plan import read_choice
 
 PERMISSION = "task/temporary_probe_permission"
 CLAIM = "task/temporary_probe_claim"
@@ -47,7 +48,7 @@ async def run(service, owner, task_id, command, library, token):
             if (
                 child["state"] != "SUCCEEDED"
                 or not artifact
-                or artifact["content"].get("outcome") != "clarify"
+                or read_choice(child, artifact["content"]).outcome != "clarify"
             ):
                 raise StaleStateVersion(
                     "Only a completed clarification may inspect an authorized header"

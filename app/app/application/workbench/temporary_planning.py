@@ -16,7 +16,13 @@ from app.application.workbench.ledger import Ledger
 from app.domain.workbench.errors import NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_expert_match import frozen_scope
+from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
 from app.domain.workbench.formal_method_generated import Digest, MethodRef, Strict
+from app.domain.workbench.incubation_selection import (
+    graph_patterns,
+    routing_alternatives,
+    verify_selection_graph,
+)
 from app.domain.workbench.method_search import PlanningQuery
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.planning_capabilities import (
@@ -24,7 +30,14 @@ from app.domain.workbench.planning_capabilities import (
     check_structure,
     requirements,
 )
-from app.domain.workbench.temporary_plan import Choice, root_for
+from app.domain.workbench.temporary_plan import (
+    Choice,
+    GraphChoice,
+    build_selection,
+    expected_routes,
+    read_choice,
+    root_for,
+)
 
 ROUND = "task/temporary_planning_round"
 PLAN = "task/temporary_plan_adopted"
@@ -40,7 +53,15 @@ class PlanningRequest(Strict):
     clarification: str = Field(default="", max_length=1500)
 
 
+class GraphReview(Strict):
+    confirmed: Literal[True]
+    routing_required: bool = Field(strict=True)
+    cases: dict[str, list[str]] = Field(max_length=16)
+    step_text: dict[str, str] = Field(max_length=16)
+
+
 class Adoption(Strict):
+    review: GraphReview | None = Field(default=None, exclude_if=lambda v: v is None)
     review_digest: Digest
     sketch_digest: Digest
     source_task: UUID | None = None
@@ -81,7 +102,7 @@ def page_refs(registry, page):
     return [MethodRef.model_validate(registry.reference(row)) for row in page["items"]]
 
 
-async def describe(registry, owner, pins, *, brief=False):
+async def describe(registry, owner, pins):
     definitions = await registry.planning_definitions(owner, pins)
     entries = []
     for ref in pins:
@@ -94,12 +115,16 @@ async def describe(registry, owner, pins, *, brief=False):
             "title": declaration.title,
             "purpose": declaration.purpose,
         }
-        if not brief:
-            entry.update(
-                declaration=registry.public_declaration(ref, definition)["declaration"],
-                interfaces=definition.interfaces(),
-                kind=definition.procedure.kind,
-            )
+        entry.update(
+            declaration=registry.public_declaration(ref, definition)["declaration"],
+            interfaces=definition.interfaces(),
+            kind=definition.procedure.kind,
+            isolated_instruction=(
+                definition.procedure.kind == "direct"
+                and definition.procedure.implementation.kind
+                in ("registered_instruction", "skill_instruction")
+            ),
+        )
         entries.append(entry)
     return entries
 
@@ -114,14 +139,12 @@ async def catalog(
         )
         trace.append({"by": "host", "stage": "directory", "next": page["next"]})
         if page["next"] is None and mode != "goal":
-            entries = await describe(
-                registry, owner, page_refs(registry, page), brief=True
-            )
+            entries = await describe(registry, owner, page_refs(registry, page))
             if encoded_size(entries) <= 12000:
                 return {
                     "mode": "directory",
                     "entries": entries,
-                    "partial": False,
+                    "partial": len(entries) < len(page["items"]),
                     "queries": 1,
                     "trace": trace,
                 }
@@ -147,7 +170,7 @@ async def catalog(
     entries = await describe(registry, owner, pins[:limit])
     partial = (
         page["next"] is not None
-        or len(pins) > limit
+        or len(entries) < len(pins)
         or bool(previous and previous["partial"])
     )
     while entries and encoded_size(entries) > 16000:
@@ -217,6 +240,7 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                 raise StaleStateVersion(
                     "The approved probe is not for this planning round"
                 )
+        choice = None
         goal = None
         if events:
             prior = await repo.get_task(str(command.previous), owner_actor_id=owner)
@@ -225,11 +249,14 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             )
             if prior["state"] != "SUCCEEDED" or not previous_result:
                 raise StaleStateVersion("The previous planning round did not complete")
-            choice = Choice.model_validate(previous_result["content"])
+            choice = read_choice(prior, previous_result["content"])
             goal = choice.search_goal
-            if choice.outcome != "clarify" or not (
-                command.clarification.strip() or probe or goal
-            ):
+            if (
+                choice.outcome != "clarify"
+                and not (
+                    isinstance(choice, GraphChoice) and command.clarification.strip()
+                )
+            ) or not (command.clarification.strip() or probe or goal):
                 raise StaleStateVersion(
                     "Complete the round and clarify before replanning"
                 )
@@ -247,6 +274,15 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                 | set(prior["original_input"]["input"].get("required_capabilities", []))
             )
         missing = [k for k in needed if not runtime["patterns"].get(k, False)]
+    previous_aliases = (
+        {
+            MethodRef.model_validate(e["reference"]): e["alias"]
+            for e in directory["entries"]
+            if "alias" in e
+        }
+        if events
+        else {}
+    )
     if probe:
         result = probe["result"]
         if not library or not token:
@@ -287,6 +323,21 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             "partial": directory["partial"] or len(entries) < len(refs),
         }
 
+    reserved = set(previous_aliases.values())
+    next_id = 1
+    for entry in directory["entries"]:
+        pin = MethodRef.model_validate(entry["reference"])
+        alias = previous_aliases.get(pin)
+        if alias is None:
+            while f"m{next_id}" in reserved:
+                next_id += 1
+            alias = f"m{next_id}"
+            reserved.add(alias)
+        entry["alias"] = alias
+    # Enforce the same byte ceiling after aliases have been added.
+    while encoded_size(directory["entries"]) > runtime["limits"]["context_bytes"]:
+        directory["entries"].pop()
+        directory["partial"] = True
     async with repo.transaction():
         task, _ = await current(repo, owner, task_id, command.review_digest, lock=True)
         latest = await repo.latest_task_payload(task_id, ROUND)
@@ -312,9 +363,16 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                 idempotency_key="compose:" + task_id + ":" + str(len(events) + 1),
                 session_id=str(task["session_id"]),
                 profile_id="FIND_EXPERT",
-                profile_version="6",
+                profile_version="7",
                 original_input={
                     "text": question,
+                    **(
+                        {"previous_selection": choice.selection.model_dump(mode="json")}
+                        if isinstance(choice, GraphChoice)
+                        and set(choice.aliases)
+                        <= {e["alias"] for e in directory["entries"]}
+                        else {}
+                    ),
                     "clarification": command.clarification,
                     "catalog": directory,
                     "runtime": runtime,
@@ -342,6 +400,95 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
         return receipt
 
 
+async def compile_choice(
+    service, owner, task_id, question, choice, runtime, required, review=None
+):
+    definitions = await service.formal_registry.planning_definitions(
+        owner, choice.steps
+    )
+    if not isinstance(choice, GraphChoice):
+        ref, root = root_for(task_id, question, choice, definitions)
+        check_structure(root, definitions, runtime, required)
+        return ref, root
+    routes = expected_routes(choice.selection)
+    if review is not None:
+        routes = {k: set(v) for k, v in review.cases.items()}
+    ref, root = build_selection(task_id, question, choice, definitions, runtime, routes)
+    found = dict(definitions)
+    found.pop(ref, None)
+    frontier = [root]
+    visited = set()
+    for _ in range(16):
+        needed = set()
+        for definition in frontier:
+            if definition.procedure.kind == "orchestration":
+                for step in definition.procedure.steps:
+                    needed.update(step.candidates)
+        needed -= visited
+        visited.update(needed)
+        missing = list(needed - found.keys())
+        if ref in needed or len(found) + len(missing) > 1000:
+            raise ValueError("selection_graph")
+        for offset in range(0, len(missing), 100):
+            page = missing[offset : offset + 100]
+            authorized = await service.formal_registry.planning_definitions(owner, page)
+            if set(page) != authorized.keys():
+                raise ValueError("selection_candidate")
+            found.update(authorized)
+        frontier = [
+            found[r] for r in needed if found[r].procedure.kind == "orchestration"
+        ]
+        if not frontier:
+            break
+    else:
+        raise ValueError("selection_graph")
+    check_structure(root, found, runtime, required)
+    frozen = {(r.method_id, r.version): FrozenMethod(r, d) for r, d in found.items()}
+    verify_selection_graph(ref.method_id, root, frozen, runtime)
+    return ref, root
+
+
+def reviewed_choice(choice, review):
+    if not isinstance(choice, GraphChoice):
+        return choice
+    if not review or set(review.step_text) != {s.id for s in choice.selection.steps}:
+        raise StaleStateVersion("Review every step before adopting the plan")
+    if review.routing_required != bool(expected_routes(choice.selection)):
+        raise StaleStateVersion(
+            "Review the required conditional routes before adopting the plan"
+        )
+    if any(not text.strip() or len(text) > 1500 for text in review.step_text.values()):
+        raise StaleStateVersion("Invalid reviewed step description")
+    steps = tuple(
+        s.model_copy(update={"task": review.step_text[s.id]})
+        for s in choice.selection.steps
+    )
+    return choice.model_copy(
+        update={"selection": choice.selection.model_copy(update={"steps": steps})}
+    )
+
+
+def visible_graph(choice, entries):
+    if not isinstance(choice, GraphChoice):
+        return {}
+    catalog = {
+        e["alias"]: {
+            "declaration": e["declaration"],
+            "inputs": {k: i["slot"] for k, i in e["interfaces"]["inputs"].items()},
+        }
+        for e in entries
+    }
+    return {
+        "method_titles": {
+            k: m["declaration"]["title"]
+            for k, m in catalog.items()
+            if k in choice.aliases
+        },
+        "patterns": sorted(graph_patterns(choice.selection)),
+        "routing_alternatives": routing_alternatives(choice.selection, catalog),
+    }
+
+
 async def sketch(service, owner, task_id):
     repo = service.repo
     async with repo.transaction():
@@ -349,6 +496,17 @@ async def sketch(service, owner, task_id):
         saved = await repo.latest_task_payload(task_id, PLAN)
         if saved:
             return {
+                **{
+                    k: saved[k]
+                    for k in (
+                        "selection",
+                        "aliases",
+                        "method_titles",
+                        "patterns",
+                        "routing_alternatives",
+                    )
+                    if k in saved
+                },
                 "outcome": "adopted",
                 "reference": saved["reference"],
                 "scope": saved["scope"],
@@ -381,7 +539,7 @@ async def sketch(service, owner, task_id):
         )
         if not artifact:
             raise StaleStateVersion("Missing planner output")
-        choice = Choice.model_validate(artifact["content"])
+        choice = read_choice(child, artifact["content"])
         directory = context["catalog"]
     allowed = [MethodRef.model_validate(e["reference"]) for e in directory["entries"]]
     if not set(choice.steps) <= set(allowed):
@@ -389,6 +547,7 @@ async def sketch(service, owner, task_id):
     result = {
         **run,
         **choice.model_dump(mode="json"),
+        **visible_graph(choice, directory["entries"]),
         "remaining_rounds": 2
         - len(await repo.list_task_events(task_id, types=(ROUND,))),
         "directory_mode": directory["mode"],
@@ -401,17 +560,21 @@ async def sketch(service, owner, task_id):
     result["required_capabilities"] = context["required_capabilities"]
     if choice.outcome != "plan":
         return result
-    definitions = await service.formal_registry.planning_definitions(
-        owner, choice.steps
-    )
     try:
-        _, root = root_for(task_id, context["text"], choice, definitions)
         runtime = capabilities(service)
         if context["runtime"] != runtime:
             raise ValueError(
                 "The runner capabilities changed; review the current deployment"
             )
-        check_structure(root, definitions, runtime, context["required_capabilities"])
+        _, root = await compile_choice(
+            service,
+            owner,
+            task_id,
+            context["text"],
+            choice,
+            runtime,
+            context["required_capabilities"],
+        )
     except ValueError as exc:
         return {**result, "outcome": "gap", "explanation": str(exc)}
     return {
@@ -453,19 +616,33 @@ async def adopt(service, owner, task_id, command):
         or picked.get("outcome") != "plan"
     ):
         raise StaleStateVersion("The planning evidence changed")
-    choice = Choice.model_validate(
-        {k: picked[k] for k in ("outcome", "explanation", "steps")}
-    )
-    definitions = await service.formal_registry.planning_definitions(
-        owner, choice.steps
-    )
+    if picked.get("selection"):
+        original = GraphChoice.model_validate(
+            {
+                k: picked[k]
+                for k in ("outcome", "steps", "explanation", "aliases", "selection")
+            }
+        )
+    else:
+        original = Choice.model_validate(
+            {k: picked[k] for k in ("outcome", "steps", "explanation")}
+        )
+    choice = reviewed_choice(original, command.review)
     try:
-        ref, root = root_for(task_id, review["question"], choice, definitions)
         runtime = capabilities(service)
         required = set(picked.get("required_capabilities", [])) | set(
             requirements(review["question"])
         )
-        check_structure(root, definitions, runtime, required)
+        ref, root = await compile_choice(
+            service,
+            owner,
+            task_id,
+            review["question"],
+            choice,
+            runtime,
+            required,
+            command.review,
+        )
         if not saved and picked["runtime"] != runtime:
             raise ValueError("Runner changed since this sketch was prepared")
     except ValueError as exc:
@@ -475,7 +652,16 @@ async def adopt(service, owner, task_id, command):
         "reference": ref.model_dump(mode="json"),
         "definition": root.document(),
         "scope": frozen_scope(root),
-        "sketch_digest": command.sketch_digest,
+        **{
+            k: picked[k]
+            for k in ("method_titles", "patterns", "routing_alternatives")
+            if k in picked
+        },
+        "sketch_digest": command.sketch_digest
+        if original == choice
+        else digest(
+            [command.sketch_digest, choice.model_dump(mode="json"), root.digest()]
+        ),
         "approval": command.model_dump(mode="json"),
         "required_capabilities": sorted(required),
         "runtime": runtime,

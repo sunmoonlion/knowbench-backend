@@ -122,7 +122,7 @@ async def find_expert(
     """工具 `find_expert`：这个用户请得动的专家的公开信息（不排序，按名称）。"""
     if working.get("profile_id") == FIND_EXPERT.profile_id and str(
         working.get("profile_version")
-    ) in {"5", "6"}:
+    ) in {"5", "6", "7"}:
         raise FindExpertRefused("This match already has its scoped declarations")
     if working.get("profile_id") == FIND_EXPERT.profile_id and str(
         working.get("profile_version")

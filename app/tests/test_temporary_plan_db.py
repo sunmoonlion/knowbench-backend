@@ -16,6 +16,32 @@ from app.domain.workbench.errors import StaleStateVersion
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
+def receipt_proposal():
+    return {
+        "status": "ready",
+        "reason": "Use the qualified receipt tool.",
+        "patterns": [],
+        "routing_required": False,
+        "steps": [
+            {
+                "id": "send",
+                "method": "m1",
+                "task": "Send the receipt",
+                "inputs": {"to": {"source": "caller", "name": "to"}},
+            }
+        ],
+    }
+
+
+def confirmed_receipt():
+    return {
+        "confirmed": True,
+        "routing_required": False,
+        "cases": {},
+        "step_text": {"send": "Send the receipt"},
+    }
+
+
 async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
     db, monkeypatch
 ):
@@ -25,11 +51,7 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
     desk = AsyncMock()
     desk.submit.return_value = {"request_id": str(uuid4()), "handoff": "new"}
     qualified = {ctx.leaf.reference}
-    choice = {
-        "outcome": "plan",
-        "steps": [ctx.leaf.reference.model_dump(mode="json")],
-        "explanation": "Use the qualified receipt tool.",
-    }
+    choice = receipt_proposal()
     async with selected_match(
         db,
         monkeypatch,
@@ -55,6 +77,13 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
         )
         assert len(model.turn_inputs) == 1 and not ctx.remote.calls
         decision = {**review, "sketch_digest": sketch["sketch_digest"]}
+        assert (await client.put(p + "/adoption", json=decision)).status_code == 409
+        invalid = {**confirmed_receipt(), "cases": {"send": ["A"]}}
+        assert (
+            await client.put(p + "/adoption", json={**decision, "review": invalid})
+        ).status_code == 409
+        assert not ctx.remote.calls
+        decision["review"] = confirmed_receipt()
         for _ in range(2):
             response = await client.put(p + "/adoption", json=decision)
             assert response.status_code == 200, response.text
@@ -113,7 +142,7 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
         suggestion = result["feedback"]["suggested_plan"]
         assert suggestion == {
             "sketch_digest": sketch["sketch_digest"],
-            "methods": choice["steps"],
+            "methods": [ctx.leaf.reference.model_dump(mode="json")],
             "outputs": ["receipt"],
         }
         command = {
@@ -148,6 +177,7 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
                 "review_digest": digest,
                 "sketch_digest": sketch["sketch_digest"],
                 "source_task": original,
+                "review": confirmed_receipt(),
             },
         )
         assert again.status_code == 200, again.text
@@ -167,9 +197,11 @@ async def test_clarification_requires_separately_authorized_pinned_probe(
     library.preparation_material.return_value = ("ledger", {(3, pin["sha256"])})
     token = AsyncMock(return_value="user-session")
     clarification = {
-        "outcome": "clarify",
+        "status": "clarify",
+        "patterns": [],
+        "routing_required": False,
         "steps": [],
-        "explanation": "Is the transaction identifier present?",
+        "reason": "Is the transaction identifier present?",
     }
     async with selected_match(
         db,
@@ -271,9 +303,11 @@ async def test_model_requests_contract_search_and_runner_change_blocks_adoption(
     ctx = await setup_plan(db)
     await register_completed(db, ctx)
     pick = {
-        "outcome": "clarify",
+        "status": "clarify",
+        "patterns": [],
+        "routing_required": False,
         "steps": [],
-        "explanation": "Inspect the receipt contract",
+        "reason": "Inspect the receipt contract",
         "search_goal": "receipt",
     }
     async with selected_match(
@@ -292,11 +326,7 @@ async def test_model_requests_contract_search_and_runner_change_blocks_adoption(
         assert response.status_code == 200, response.text
         await drive(runner)
         child = response.json()["planning_task"]
-        actual = {
-            "outcome": "plan",
-            "steps": [ctx.leaf.reference.model_dump(mode="json")],
-            "explanation": "Use the exact method",
-        }
+        actual = receipt_proposal()
         model.replies.append(json.dumps(actual))
         result = await client.put(p, json={**review, "previous": child})
         assert result.status_code == 200, result.text
@@ -318,7 +348,11 @@ async def test_model_requests_contract_search_and_runner_change_blocks_adoption(
         assert (
             await client.put(
                 p + "/adoption",
-                json={**review, "sketch_digest": result["sketch_digest"]},
+                json={
+                    **review,
+                    "sketch_digest": result["sketch_digest"],
+                    "review": confirmed_receipt(),
+                },
             )
         ).status_code == 409
 
@@ -351,3 +385,68 @@ def test_untagged_hard_requirements_and_superfluous_steps():
             Choice(outcome="plan", steps=refs, explanation="Extra steps"),
             versions,
         )
+
+
+async def test_ready_proposal_can_be_replanned_and_only_the_current_review_adopted(
+    db, monkeypatch
+):
+    ctx = await setup_plan(db)
+    await register_completed(db, ctx)
+    ctx.remote.calls.clear()
+    async with selected_match(
+        db,
+        monkeypatch,
+        ctx.leaf,
+        {ctx.leaf.reference},
+        ctx.owner,
+        ctx.factory,
+        planning_choice=receipt_proposal(),
+    ) as match:
+        client, path, selection, runner, _, model = match
+        p = path + "/temporary-plan"
+        evidence = {"review_digest": selection["review_digest"]}
+        (await client.put(p, json=evidence)).raise_for_status()
+        await drive(runner)
+        first = (await client.get(p)).json()
+        model.replies.append(json.dumps(receipt_proposal()))
+        (
+            await client.put(
+                p,
+                json={
+                    **evidence,
+                    "previous": first["planning_task"],
+                    "clarification": "Explain the named recipient.",
+                },
+            )
+        ).raise_for_status()
+        await drive(runner)
+        last = (await client.get(p)).json()
+        assert "previous_selection" in str(model.turn_inputs[-1])
+        assert (
+            last["remaining_rounds"] == 0
+            and last["sketch_digest"] != first["sketch_digest"]
+        )
+        edited = {
+            **confirmed_receipt(),
+            "step_text": {"send": "Send the named recipient a receipt"},
+        }
+
+        async def adopt(data, review):
+            return await client.put(
+                p + "/adoption",
+                json={
+                    **evidence,
+                    "sketch_digest": data["sketch_digest"],
+                    "review": review,
+                },
+            )
+
+        assert (await adopt(first, edited)).status_code == 409
+        assert (
+            await adopt(last, {**edited, "routing_required": True})
+        ).status_code == 409
+        (await adopt(last, edited)).raise_for_status()
+        saved = (await client.get(p)).json()
+        assert saved["selection"]["steps"][0]["task"] == edited["step_text"]["send"]
+        assert saved["sketch_digest"] != last["sketch_digest"]
+        assert not ctx.remote.calls

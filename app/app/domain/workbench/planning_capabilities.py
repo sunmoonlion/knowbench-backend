@@ -73,14 +73,15 @@ def supports_graph(definition):
     if not isinstance(p, Orchestration):
         return set()
     patterns = set()
-    if any(step.depends_on for step in p.steps):
-        patterns.add("sequence")
-    if any(len(step.depends_on) > 1 for step in p.steps):
-        patterns.add("join")
     if review_group(p):
         patterns.add("independent_review")
-    if p.object_batch:
+    elif p.object_batch:
         patterns.add("object_batch")
+    else:
+        if any(len(step.depends_on) == 1 for step in p.steps):
+            patterns.add("sequence")
+        if any(len(step.depends_on) > 1 for step in p.steps):
+            patterns.add("join")
     if p.has_candidate_choice:
         patterns.add("conditional")
     return patterns

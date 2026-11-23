@@ -5,12 +5,14 @@ from uuid import UUID, uuid5
 
 from pydantic import Field, model_validator
 
+from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
 from app.domain.workbench.formal_method_generated import (
     FormalMethodDefinition,
     MethodRef,
     Strict,
     Text,
 )
+from app.domain.workbench.incubation_selection import Selection, expand, review_issue
 
 
 class Choice(Strict):
@@ -125,3 +127,97 @@ def root_for(task_id, question, choice, definitions):
         version=1,
         digest=root.digest(),
     ), root
+
+
+class PlanProposal(Selection):
+    """The same business graph as incubation; a consumer may request more catalog evidence."""
+
+    search_goal: str | None = Field(
+        default=None, min_length=1, max_length=500, pattern=r"\S"
+    )
+
+    @model_validator(mode="after")
+    def search_only_when_unresolved(self):
+        if self.search_goal and self.status != "clarify":
+            raise ValueError("Only a clarification can request another search")
+        return self
+
+
+class GraphChoice(Choice):
+    steps: list[MethodRef] = Field(max_length=8)
+    selection: Selection
+    aliases: dict[str, MethodRef] = Field(max_length=8)
+
+
+def read_choice(task, artifact):
+    if str(task["profile_version"]) != "7":
+        return Choice.model_validate(artifact)
+    if isinstance(artifact, dict) and artifact.get("status") in ("gap", "clarify"):
+        artifact = {**artifact, "steps": [], "patterns": [], "object_batch": None}
+    proposal = PlanProposal.model_validate(artifact)
+    selection = Selection.model_validate(proposal.model_dump(exclude={"search_goal"}))
+    catalog = task["original_input"]["input"]["catalog"]["entries"]
+    pins = {e["alias"]: MethodRef.model_validate(e["reference"]) for e in catalog}
+    aliases = list(
+        dict.fromkeys(a for s in selection.steps for a in (s.method, *s.cases.values()))
+    )
+    if any(a not in pins for a in aliases):
+        raise ValueError("Planner selected outside the authorized catalog")
+    return GraphChoice(
+        outcome="plan" if selection.status == "ready" else selection.status,
+        steps=list(dict.fromkeys(pins[a] for a in aliases)),
+        aliases={a: pins[a] for a in aliases},
+        selection=selection,
+        explanation=selection.reason,
+        search_goal=proposal.search_goal,
+    )
+
+
+def expected_routes(selection):
+    return {step.id: set(step.cases) for step in selection.steps if step.cases}
+
+
+def build_selection(task_id, question, choice, definitions, runtime, cases):
+    if set(choice.steps) != set(definitions) or set(choice.aliases.values()) != set(
+        definitions
+    ):
+        raise ValueError("selection_candidate")
+    proposal = choice.selection
+    if issue := review_issue(proposal, runtime["patterns"]):
+        raise ValueError(issue)
+    if cases != expected_routes(proposal):
+        raise ValueError("selection_route")
+    # A complete, qualified expert may already implement routing or isolation internally.
+    if len(proposal.steps) == 1:
+        step = proposal.steps[0]
+        pin = choice.aliases[step.method]
+        original = definitions[pin]
+        if original.procedure.kind == "orchestration" and not (
+            step.reviews or step.cases or step.route_input or proposal.object_batch
+        ):
+            if step.inputs and (
+                set(step.inputs) != set(original.interfaces()["inputs"])
+                or any(
+                    b.source != "caller" or b.name != k for k, b in step.inputs.items()
+                )
+            ):
+                raise ValueError("selection_input")
+            return pin, original
+    tools = {
+        a: FrozenMethod(pin, definitions[pin]) for a, pin in choice.aliases.items()
+    }
+    draft, roles = expand(
+        proposal, tools, None, runtime["patterns"], required_cases=cases
+    )
+    definition = draft.definition
+    doc = definition.document()
+    doc["capability_declaration"]["purpose"] = question
+    if roles:
+        doc["procedure"]["collaboration"] = roles
+    definition = FormalMethodDefinition.model_validate(doc)
+    ref = MethodRef(
+        method_id=uuid5(UUID(str(task_id)), "temporary-plan"),
+        version=1,
+        digest=definition.digest(),
+    )
+    return ref, definition

@@ -151,7 +151,7 @@ class DelegationService:
         expert_data: ExpertData | None = None,
     ) -> dict[str, Any]:
         """对话里把方向盘交给专家（工作台接口 /sessions/{id}/handover）：同上先签再建委托。"""
-        if req.profile_id == "FIND_EXPERT" and req.profile_version in {"5", "6"}:
+        if req.profile_id == "FIND_EXPERT" and req.profile_version in {"5", "6", "7"}:
             raise Forbidden("Start formal matching through the project expert intake")
         requirements = None
         if req.match is not None:

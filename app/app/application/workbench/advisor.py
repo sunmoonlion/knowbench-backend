@@ -504,10 +504,10 @@ class Advisor:
             )
 
         timeout = STEP_TIMEOUT_SECONDS
-        if (
-            task["profile_id"] == "FIND_EXPERT"
-            and str(task.get("profile_version")) == "6"
-        ):
+        if task["profile_id"] == "FIND_EXPERT" and str(task.get("profile_version")) in {
+            "6",
+            "7",
+        }:
             timeout = min(timeout or 150, 150)
         result = await self.driver.run_turn(thread_id, text, timeout=timeout)
 
@@ -570,11 +570,15 @@ class Advisor:
             if (
                 verdict.ok
                 and task["profile_id"] == FIND_EXPERT.profile_id
-                and str(task.get("profile_version")) in {"2", "5", "6"}
+                and str(task.get("profile_version")) in {"2", "5", "6", "7"}
             ):
                 detail = ""
                 try:
-                    if str(task["profile_version"]) == "6":
+                    if str(task["profile_version"]) == "7":
+                        from app.domain.workbench.temporary_plan import read_choice
+
+                        read_choice(task, verdict.parsed)
+                    elif str(task["profile_version"]) == "6":
                         from app.domain.workbench.formal_method_generated import (
                             MethodRef,
                         )
