@@ -480,3 +480,47 @@ def test_the_migration_goes_down_and_up() -> None:
         with sync.begin() as connection:
             connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
         sync.dispose()
+
+
+async def test_selection_keeps_author_question_and_discards_premature_routing(db):
+    choice = dict(
+        status="clarify",
+        reason="哪个阈值决定分派？",
+        patterns=["P5"],
+        steps=[],
+        routing_required=True,
+    )
+    fake = ScriptedAppServer(
+        [
+            json.dumps(
+                dict(
+                    sources=[], suggestions=[], self_check=[], gaps=[], selection=choice
+                ),
+                ensure_ascii=False,
+            )
+        ]
+    )
+    await fake.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, fake)
+        wire = request().model_dump(mode="json")
+        wire["selection_context"] = dict(
+            methods={}, patterns={"conditional": True}, partial=False
+        )
+        await accept(db, IncubationRequest.model_validate(wire))
+        conductor = IncubationConductor(workbench_stores(db))
+        await conductor.tick()
+        await drive(runner)
+        await conductor.tick()
+        done = await status(db)
+        assert done["status"] == "succeeded", done
+        returned = done["handback"]["selection"]
+        assert returned["reason"] == choice["reason"]
+        assert returned["steps"] == returned["patterns"] == []
+        assert "selection_context" in fake.turn_inputs[0]
+        assert "Never execute methods" in fake.turn_inputs[0]
+        assert "suggest the whole skeleton" not in fake.turn_inputs[0]
+    finally:
+        await close(runner)
+        await fake.close()

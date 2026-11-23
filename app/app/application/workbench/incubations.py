@@ -135,7 +135,7 @@ class IncubationService:
                     "caller": caller,
                     "owner_subject": request.owner_subject,
                     "digest": request.digest(),
-                    "request": request.model_dump(mode="json"),
+                    "request": request.model_dump(mode="json", by_alias=True),
                     "budget_limit": Decimal(request.budget.limit),
                     "timeout_seconds": request.timeout_seconds,
                 }
@@ -364,6 +364,7 @@ class IncubationConductor:
                     idempotency_key=task_key(request.incubation_id),
                     session_id=started["session_id"],
                     profile_id=INCUBATE.profile_id,
+                    profile_version="2" if request.selection_context else None,
                     original_input={
                         "text": label(request),
                         # 契约列死的材料：模型只看这些（0029 第 6.4 节）
@@ -475,7 +476,43 @@ class IncubationConductor:
             task_id=str(task["id"]), name=step.output_artifact
         )
         try:
-            handback = Handback.model_validate((found or {}).get("content"))
+            content = (found or {}).get("content")
+            if row["request"].get("selection_context") and isinstance(content, dict):
+                choice = content.get("selection")
+                if isinstance(choice, dict) and choice.get("status") in (
+                    "clarify",
+                    "gap",
+                ):
+                    # Retain the question and drop any premature executable suggestion.
+                    content = {
+                        **content,
+                        "selection": {
+                            **choice,
+                            "patterns": [],
+                            "steps": [],
+                            "object_batch": None,
+                        },
+                    }
+            handback = Handback.model_validate(content)
+            if bool(row["request"].get("selection_context")) != (
+                handback.selection is not None
+            ) or (
+                handback.selection is not None
+                and (
+                    handback.suggestions
+                    or handback.gaps
+                    or handback.sources
+                    or handback.self_check
+                )
+            ):
+                await self._finish(
+                    repo,
+                    row,
+                    status="failed",
+                    error="Unexpected or missing selection proposal",
+                    spent=spent,
+                )
+                return
         except ValidationError as exc:
             first = exc.errors()[0] if exc.errors() else {}
             where = ".".join(str(p) for p in first.get("loc") or ())
@@ -495,7 +532,7 @@ class IncubationConductor:
             row,
             status="succeeded",
             spent=spent,
-            handback=handback.model_dump(mode="json"),
+            handback=handback.model_dump(mode="json", by_alias=True),
         )
 
     async def _stop(

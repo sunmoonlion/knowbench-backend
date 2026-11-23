@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.domain.workbench.incubation_selection import Selection, SelectionContext
 from app.domain.workbench.method_catalog import PlanningContract
 from app.domain.workbench.test_runs import Runner
 
@@ -160,6 +161,9 @@ class Budget(Strict):
 
 
 class IncubationRequest(Strict):
+    selection_context: SelectionContext | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
     contract: Literal["knowbot-incubation/v1"]
     incubation_id: str = Field(pattern=INCUBATION_ID)
     owner_subject: str = Field(pattern=r"^[A-Za-z0-9._:@-]{1,512}$")
@@ -194,14 +198,14 @@ class IncubationRequest(Strict):
             raise ValueError("only revise names a step")
         if self.test_report is not None and self.action != "revise":
             raise ValueError("only revise carries a test report")
-        if _bytes(self.model_dump(mode="json")) > MAX_REQUEST_BYTES:
+        if _bytes(self.model_dump(mode="json", by_alias=True)) > MAX_REQUEST_BYTES:
             raise ValueError("the request is larger than the limit")
         return self
 
     def digest(self) -> str:
         """同一个 incubation_id 重复提交：内容相同回原状态，不同则 409。"""
         body = json.dumps(
-            self.model_dump(mode="json"),
+            self.model_dump(mode="json", by_alias=True),
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
@@ -214,6 +218,7 @@ def material(request: IncubationRequest) -> dict[str, Any]:
     答过的缺口、数据的格式，还有作者的模型先前直接答过的回答（只算提议）与「让 AI 改」时带上的
     测试报告。作者是谁、孵化号、钱、电脑都不给模型。"""
     body = request.model_dump(
+        by_alias=True,
         mode="json",
         include={
             "action",
@@ -224,6 +229,7 @@ def material(request: IncubationRequest) -> dict[str, Any]:
             "workdraft",
             "answers",
             "data_formats",
+            "selection_context",
             "test_report",
         },
     )
@@ -307,6 +313,7 @@ class SelfCheck(Strict):
 
 
 class Handback(Strict):
+    selection: Selection | None = Field(default=None, exclude_if=lambda v: v is None)
     sources: tuple[SourceEntry, ...] = Field(default=(), max_length=2000)
     gaps: tuple[Gap, ...] = Field(default=(), max_length=200)
     suggestions: tuple[Suggestion, ...] = Field(default=(), max_length=500)
