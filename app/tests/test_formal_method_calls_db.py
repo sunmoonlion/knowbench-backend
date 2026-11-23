@@ -209,7 +209,7 @@ async def test_approval_rechecks_exact_current_authority(db, change):
                 elif change == "wheel":
                     await s.execute(
                         text(
-                            "UPDATE workbench_sessions SET wheel='advisor' WHERE id=:id"
+                            "UPDATE workbench_sessions SET wheel='runtime' WHERE id=:id"
                         ),
                         {"id": sid},
                     )

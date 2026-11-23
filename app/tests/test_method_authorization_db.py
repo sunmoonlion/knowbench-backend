@@ -15,11 +15,11 @@ from test_workbench_ledger_db import OTHER
 from test_workbench_ledger_db import db as db
 from tool_invocation_support import request_call
 
-from app.application.workbench.advisor import Advisor, StepAssessment
 from app.application.workbench.execution_plan import execution_for_task
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_capabilities import check_runtime_method
+from app.application.workbench.task_runtime import StepAssessment, TaskRuntime
 from app.application.workbench.turn import TurnResult
 from app.domain.workbench.capabilities import (
     CapabilityError,
@@ -303,7 +303,7 @@ async def test_revoke_stops_settles_and_waits_for_explicit_reconfirmation(
         attempt = await repo.get_attempt(opened["attempt_id"])
         child_id = attempt["refs"]["method_call_id"]
         assert attempt["refs"]["permission_revocation"]
-    advisor = Advisor(SqlWorkbenchStores(db), SimpleNamespace())
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), SimpleNamespace())
     result = TurnResult(
         turn_id="stopped-permission-turn",
         final_text="Untrusted partial output",
@@ -315,7 +315,7 @@ async def test_revoke_stops_settles_and_waits_for_explicit_reconfirmation(
     )
     for _ in range(2):  # A replay settles cost once and retains the same wait.
         assert (
-            await advisor._settle_step(
+            await task_runtime._settle_step(
                 tid,
                 opened["attempt_id"],
                 view,
@@ -400,7 +400,7 @@ async def test_unconfirmed_permission_stop_cannot_offer_a_retry(db):
             ),
         )
         view = await execution_for_task(repo, await repo.get_task(tid))
-    advisor = Advisor(SqlWorkbenchStores(db), SimpleNamespace())
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), SimpleNamespace())
     result = TurnResult(
         turn_id="unconfirmed-permission-turn",
         final_text=None,
@@ -409,7 +409,7 @@ async def test_unconfirmed_permission_stop_cannot_offer_a_retry(db):
         error="method_permission_revoked: stop not confirmed",
     )
     assert (
-        await advisor._settle_step(
+        await task_runtime._settle_step(
             tid,
             opened["attempt_id"],
             view,
@@ -480,8 +480,8 @@ async def test_revocation_before_dispatch_needs_explicit_not_started_evidence(
         not_started=not_started,
         usage_known=not_started,
     )
-    advisor = Advisor(SqlWorkbenchStores(db), SimpleNamespace())
-    state = await advisor._settle_step(
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), SimpleNamespace())
+    state = await task_runtime._settle_step(
         tid,
         opened["attempt_id"],
         view,
@@ -532,10 +532,10 @@ async def test_cancel_after_revocation_preserves_late_unknown_usage(db, not_star
         permission_stop_unconfirmed=not not_started,
         error="cancel after revoke",
     )
-    advisor = Advisor(SqlWorkbenchStores(db), SimpleNamespace())
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), SimpleNamespace())
     for _ in range(2):
         assert (
-            await advisor._settle_step(
+            await task_runtime._settle_step(
                 tid,
                 opened["attempt_id"],
                 view,

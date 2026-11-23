@@ -36,7 +36,7 @@ class FormalModelCalls:
         bound = runtime.get("formal_probe") or {}
         if (
             not bound
-            or session["wheel"] != "advisor"
+            or session["wheel"] != "runtime"
             or str(session.get("active_task_id")) != bound.get("task_id")
         ):
             raise CapabilityError("Model probe no longer owns this session")

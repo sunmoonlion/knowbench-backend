@@ -13,12 +13,12 @@ from test_knowbot_test_runs_db import (
     runner_for,
     setup_test_computer,
 )
-from test_method_advisor_db import ROWS
+from test_method_task_runtime_db import ROWS
 from test_referenced_method_catalog import manifest
-from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_expert_data_db import FakeKnowbase, FakeSupply
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import ScriptedAppServer, close, drive
 
 from app.application.workbench.catalog import pin_knowbot
 from app.application.workbench.delegation import DelegationService

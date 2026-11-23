@@ -87,7 +87,7 @@ async def test_pagination_is_bounded_and_can_find_later_server():
 async def test_only_active_snapshot_step_declares_data_tools(monkeypatch):
     repo = SimpleNamespace(
         get_session_by_thread=AsyncMock(
-            return_value={"wheel": "advisor", "active_task_id": "task"}
+            return_value={"wheel": "runtime", "active_task_id": "task"}
         ),
         get_task=AsyncMock(
             return_value={

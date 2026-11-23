@@ -4,8 +4,8 @@ from decimal import Decimal
 
 import pytest
 from sqlalchemy import text
-from test_workbench_advisor_db import ScriptedAppServer, close, seed
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import ScriptedAppServer, close, seed
 
 from app.application.workbench.fixed_plans import (
     FIXED_PLAN_ATTEMPT,

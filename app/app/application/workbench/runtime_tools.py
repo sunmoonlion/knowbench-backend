@@ -72,7 +72,7 @@ def verify_probe_inventory(rows):
 async def declared_data_tools(repo: WorkbenchStore, thread_id: str) -> frozenset[str]:
     """Read the active frozen step, never model-supplied names or prompt text."""
     session = await repo.get_session_by_thread(thread_id)
-    if not session or session.get("wheel") != Wheel.advisor:
+    if not session or session.get("wheel") != Wheel.runtime:
         return frozenset()
     task_id = session.get("active_task_id")
     if not task_id:

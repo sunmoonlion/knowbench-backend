@@ -52,7 +52,7 @@ async def _ready(
     ):
         raise MethodPlanInvalid("planning is only allowed at an idle step boundary")
     session = await repo.get_session(str(task["session_id"]))
-    if session["wheel"] != "advisor" or str(session["active_task_id"]) != str(
+    if session["wheel"] != "runtime" or str(session["active_task_id"]) != str(
         task["id"]
     ):
         raise MethodPlanInvalid("task does not hold the session")

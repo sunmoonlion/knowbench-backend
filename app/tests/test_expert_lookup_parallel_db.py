@@ -4,9 +4,9 @@ import asyncio
 import json
 import uuid
 
-from test_workbench_advisor_db import ANSWER, PLAN, ScriptedAppServer, close, seed
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import ANSWER, PLAN, ScriptedAppServer, close, seed
 
 from app.application.workbench.find_expert import FindExpertService
 from app.infrastructure.workbench.repository import WorkbenchRepository
@@ -122,7 +122,7 @@ async def test_lookup_has_its_own_thread_environment_budget_and_completion(db):
             assert original["budget"]["used"] == "0"
             assert task["budget"]["used"] != "0"
             assert original["thread_id"] != task["thread_id"]
-            assert (await repo.get_session(sid))["wheel"] == "advisor"
+            assert (await repo.get_session(sid))["wheel"] == "runtime"
             assert (await repo.get_session(find["session_id"]))["wheel"] == "user"
         [(_, params)] = [pair for pair in fake.turns if pair[0]]
         assert params["environments"] == []

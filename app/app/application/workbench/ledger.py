@@ -176,7 +176,7 @@ class Ledger:
         resolution: dict[str, Any] | None = None,
         task_requirements: TaskRequirements | None = None,
     ) -> dict[str, Any]:
-        """F-INTAKE-01/02、F-ADMIT-01、F-WHEEL-01：幂等建单、首事件、wheel=advisor，同一提交。
+        """F-INTAKE-01/02、F-ADMIT-01、F-WHEEL-01：幂等建单、首事件、wheel=runtime，同一提交。
 
         snapshot：调用方已经核好的专家包快照（跑分身测试时是草稿，SDD 0027 §3.4）。
         pins：分身作者挑选的数据（expert_data.ExpertData 签好的），或测试用例的测试集，
@@ -231,7 +231,7 @@ class Ledger:
             )
             if session["wheel"] != Wheel.user or session["active_task_id"] is not None:
                 raise WheelHeldByOther(
-                    "the advisor already holds the wheel of this session",
+                    "the task runtime already holds the wheel of this session",
                     session_id=req.session_id,
                 )
             if session["project_id"] is None:
@@ -417,18 +417,18 @@ class Ledger:
             }
 
     async def _give_wheel(self, session: dict[str, Any], task_id: str) -> None:
-        """方向盘交给顾问：对话记下在跑的 Task，事件留痕。调用方持有事务与行锁。"""
+        """方向盘交给任务运行时：对话记下在跑的 Task，事件留痕。调用方持有事务与行锁。"""
         await self.repo.cas_session_wheel(
             str(session["id"]),
             expected_version=int(session["state_version"]),
-            wheel=Wheel.advisor,
+            wheel=Wheel.runtime,
             active_task_id=task_id,
         )
         await self.repo.append_event(
             session_id=str(session["id"]),
             kind="wheel",
             event_type="wheel/handover",
-            payload={"from": "user", "to": "advisor", "task_id": task_id},
+            payload={"from": "user", "to": "runtime", "task_id": task_id},
             task_id=task_id,
         )
 
@@ -626,7 +626,7 @@ class Ledger:
                         kind="wheel",
                         event_type="wheel/return",
                         payload={
-                            "from": "advisor",
+                            "from": "runtime",
                             "to": "user",
                             "task_id": task_id,
                             "final_state": target,
@@ -666,7 +666,7 @@ class Ledger:
             if (
                 str(session.get("environment_id")) != environment_id
                 or str(session.get("active_task_id")) != task_id
-                or session["wheel"] != Wheel.advisor
+                or session["wheel"] != Wheel.runtime
             ):
                 return False
             environment = await self.repo.get_environment(
@@ -720,7 +720,7 @@ class Ledger:
 
     async def fail_waiting_data(self, task_id: str, message: str) -> bool:
         """必填的数据没取到、确认过期、数据服务拒绝：等数据的委托失败，说清缺什么。
-        还没走到等数据的，核验时看到清单失败会打回（Advisor），这里不动。"""
+        还没走到等数据的，核验时看到清单失败会打回（TaskRuntime），这里不动。"""
         async with self.repo.transaction():
             task = await self.repo.get_task(task_id, for_update=True)
             if (

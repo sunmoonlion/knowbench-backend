@@ -51,7 +51,7 @@ async def test_asking_an_expert_from_the_expert_entry(make_client, db):  # noqa:
         assert (
             talk["kind"] == "expert" and talk["project_id"] == pid
         )  # 专家入口建的就是专家对话（0017）
-        assert talk["wheel"] == "advisor"
+        assert talk["wheel"] == "runtime"
         assert talk["active_task_id"] == made["task_id"]
         assert talk["title"] == "恒瑞医药 2023 到 2025 年的盈利能力怎么样？"
 

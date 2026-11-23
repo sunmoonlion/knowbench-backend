@@ -39,7 +39,7 @@ async def capture_attempt(repo: WorkbenchStore, thread_id: str):
         return None
     task = await repo.get_task(str(session["active_task_id"]))
     if (
-        session["wheel"] != Wheel.advisor
+        session["wheel"] != Wheel.runtime
         or task["state"] != TaskState.RUNNING
         or task.get("cancel_requested_at")
         or not task.get("active_attempt_id")
@@ -60,7 +60,7 @@ async def bind_turn(
             task["state"] != TaskState.RUNNING
             or task.get("cancel_requested_at")
             or str(task.get("active_attempt_id")) != attempt_id
-            or session["wheel"] != Wheel.advisor
+            or session["wheel"] != Wheel.runtime
             or str(session.get("active_task_id")) != task_id
             or session.get("thread_id") != thread_id
         ):
@@ -148,7 +148,7 @@ class MethodToolGuard:
             return invocation, None
         task = await self.repo.get_task(str(active), owner_actor_id=self.owner)
         if (
-            session["wheel"] != Wheel.advisor
+            session["wheel"] != Wheel.runtime
             or task["state"] != TaskState.RUNNING
             or task.get("cancel_requested_at")
             or task.get("active_interaction_id")

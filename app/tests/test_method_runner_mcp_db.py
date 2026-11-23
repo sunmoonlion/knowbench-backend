@@ -9,12 +9,12 @@ import json
 import pytest
 from method_plan_fixtures import catalog, proposal
 from sqlalchemy import text
-from test_method_advisor_db import ROWS
-from test_workbench_advisor_db import ScriptedAppServer, close, drive, seed
+from test_method_task_runtime_db import ROWS
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_mcp_routes import ISSUER, URL, FakeDataMcp, client
 from test_workbench_mcp_routes import served as served
+from test_workbench_task_runtime_db import ScriptedAppServer, close, drive, seed
 
 from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.repository import WorkbenchRepository

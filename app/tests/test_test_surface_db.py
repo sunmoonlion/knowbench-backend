@@ -10,9 +10,9 @@ from test_knowbot_test_runs_db import (
     request,
     setup_test_computer,
 )
-from test_workbench_advisor_db import ScriptedAppServer
 from test_workbench_ledger_db import OTHER, OWNER
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import ScriptedAppServer
 
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.test_execution import execution_view

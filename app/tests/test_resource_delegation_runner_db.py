@@ -12,8 +12,8 @@ from test_resource_delegation_runtime_db import confirm, setup
 from test_workbench_ledger_db import db as db
 from test_workbench_runner_db import TOKEN, _close, turn_completed
 
-from app.application.workbench.advisor import Advisor, StepAssessment
 from app.application.workbench.execution_plan import execution_for_task
+from app.application.workbench.task_runtime import StepAssessment, TaskRuntime
 from app.bootstrap.workbench import build_runner
 from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.publisher import RedisPublisher
@@ -86,7 +86,7 @@ async def settled(db, ctx, opened, result):
     step = view.pack.step(0)
     assert step is not None
     driver: Any = SimpleNamespace()
-    return await Advisor(SqlWorkbenchStores(db), driver)._settle_step(
+    return await TaskRuntime(SqlWorkbenchStores(db), driver)._settle_step(
         ctx.tid,
         opened["attempt_id"],
         view,

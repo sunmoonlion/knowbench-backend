@@ -6,7 +6,7 @@ import pytest
 from pydantic import ValidationError
 
 from app.application.workbench.acceptance import out_of_scope
-from app.application.workbench.advisor import Advisor, compose_data_plan
+from app.application.workbench.task_runtime import TaskRuntime, compose_data_plan
 from app.domain.workbench.expert_match import Requirement
 from app.domain.workbench.packs import SMOKE, Scope
 
@@ -27,7 +27,7 @@ def test_declared_scope_precedes_data_discovery_and_partial_fit_is_not_permissio
     assert '"proposed_question"' in prompt
     assert "Only after the scope check permits this question" in prompt
     assert 'find_subject(task="task-1"' in prompt
-    step_prompt = Advisor.compose(pack.workflow[0], {}, {}, 0, intake=pack.scope)
+    step_prompt = TaskRuntime.compose(pack.workflow[0], {}, {}, 0, intake=pack.scope)
     assert "partly covered question is NOT" not in step_prompt
     assert "No answer, cancellation or timeout is not consent" in step_prompt
 
@@ -103,8 +103,8 @@ async def test_only_explicit_proceed_carries_concrete_scope_to_later_steps(decis
             ]
         )
     )
-    advisor = Advisor(None, None)
-    answer = await advisor._answers_for_step(
+    task_runtime = TaskRuntime(None, None)
+    answer = await task_runtime._answers_for_step(
         repo, {"id": "task-1", "session_id": "session-1"}, SMOKE.workflow[-1]
     )
     assert answer["proceed"] is (decision == "proceed")

@@ -137,7 +137,9 @@ async def test_projects_on_a_removed_machine_stay_listed_with_its_name(db):
             await repo.set_environment_status(env, "offline")
             await repo.remove_environment(env, owner_actor_id=OWNER)
     async with db() as s:
-        listed = await ProjectService(WorkbenchRepository(s)).listing(owner_actor_id=OWNER)
+        listed = await ProjectService(WorkbenchRepository(s)).listing(
+            owner_actor_id=OWNER
+        )
     assert [p["title"] for p in listed] == [created["title"]]
     assert listed[0]["environment_name"] == "laptop"
     assert listed[0]["online"] is False
@@ -434,7 +436,7 @@ async def test_one_expert_per_project_at_a_time(db):
         # 前一位到终态：排队的那一位自动开始，不用再请
         await led.request_cancel(task["task_id"], owner_actor_id=OWNER)
         started = await repo.get_session(second["session_id"])
-        assert started["wheel"] == "advisor"
+        assert started["wheel"] == "runtime"
         assert str(started["active_task_id"]) == queued["task_id"]
         third = await start(db, "chat", made["id"])
         again = await led.handover(
@@ -679,7 +681,7 @@ async def test_the_next_expert_starts_when_the_first_one_ends(db):
         assert started["original_input"]["client_context"].get("queued_behind") is None
         session = await repo.get_session(second["session_id"])
         assert (
-            session["wheel"] == "advisor"
+            session["wheel"] == "runtime"
             and str(session["active_task_id"]) == b["task_id"]
         )
         types = [

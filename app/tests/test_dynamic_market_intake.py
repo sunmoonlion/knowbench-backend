@@ -143,9 +143,9 @@ async def test_marketplace_pin_to_runner_executes_selected_methods_and_data_stag
         runner_for,
         setup_test_computer,
     )
-    from test_method_advisor_db import ROWS
-    from test_workbench_advisor_db import ScriptedAppServer
+    from test_method_task_runtime_db import ROWS
     from test_workbench_ledger_db import OWNER
+    from test_workbench_task_runtime_db import ScriptedAppServer
 
     from app.application.workbench.catalog import pin_knowbot
     from app.application.workbench.delegation import DelegationService

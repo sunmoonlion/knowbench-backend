@@ -1,4 +1,4 @@
-"""Existing Advisor runs frozen methods; real DB, scripted sandbox turn port."""
+"""Existing TaskRuntime runs frozen methods; real DB, scripted sandbox turn port."""
 
 import asyncio
 import json
@@ -13,11 +13,11 @@ from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 
 from app.application.workbench.acceptance import judge
-from app.application.workbench.advisor import Advisor, StepAssessment
 from app.application.workbench.execution_plan import execution_for_task
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
 from app.application.workbench.plan_receipts import read_plan_version
+from app.application.workbench.task_runtime import StepAssessment, TaskRuntime
 from app.application.workbench.turn import TurnResult
 from app.domain.workbench.method_plan import PLAN_STEP, output_name
 from app.domain.workbench.models import InteractionPrompt
@@ -61,7 +61,7 @@ async def patch_catalog(db, tid, change):
             )
 
 
-async def test_existing_advisor_plans_executes_and_delivers_all_final_outputs(db):
+async def test_existing_task_runtime_plans_executes_and_delivers_all_final_outputs(db):
     tid, _ = await task(db)
     await patch_catalog(
         db, tid, lambda d: d["planning"].update(final_units=["inspect", "report"])
@@ -70,7 +70,8 @@ async def test_existing_advisor_plans_executes_and_delivers_all_final_outputs(db
     plan["final_outputs"]["inspect"] = "inspect_1"
     driver = Driver([json.dumps(plan), ROWS, ROWS])
     assert (
-        await Advisor(SqlWorkbenchStores(db), driver).drive(tid) == TaskState.SUCCEEDED
+        await TaskRuntime(SqlWorkbenchStores(db), driver).drive(tid)
+        == TaskState.SUCCEEDED
     )
     assert len(driver.prompts) == 3
     assert "## First: is this question for this expert?" in driver.prompts[1]
@@ -112,7 +113,9 @@ async def test_dynamic_data_planning_uses_selected_methods_and_cannot_skip_missi
     if records:
         replies += ["No additional data is needed for this synthetic task.", ROWS, ROWS]
     driver = Driver(replies)
-    state = await Advisor(SqlWorkbenchStores(db), driver, records=records).drive(tid)
+    state = await TaskRuntime(SqlWorkbenchStores(db), driver, records=records).drive(
+        tid
+    )
     assert state == (TaskState.SUCCEEDED if records else TaskState.FAILED)
     async with db() as session:
         repo = WorkbenchRepository(session)
@@ -142,7 +145,8 @@ async def test_backtracking_binds_new_inputs_and_excludes_old_outputs(db):
         [proposal().model_dump_json(), ROWS, "{}", "{}", OTHER_ROWS, OTHER_ROWS]
     )
     assert (
-        await Advisor(SqlWorkbenchStores(db), driver).drive(tid) == TaskState.SUCCEEDED
+        await TaskRuntime(SqlWorkbenchStores(db), driver).drive(tid)
+        == TaskState.SUCCEEDED
     )
     async with db() as session:
         repo = WorkbenchRepository(session)
@@ -171,7 +175,9 @@ async def test_colliding_placed_files_never_dispatch_methods_or_deliver(db, path
 
     await patch_catalog(db, tid, with_files)
     driver = Driver([proposal().model_dump_json()])
-    assert await Advisor(SqlWorkbenchStores(db), driver).drive(tid) == TaskState.FAILED
+    assert (
+        await TaskRuntime(SqlWorkbenchStores(db), driver).drive(tid) == TaskState.FAILED
+    )
     async with db() as session:
         repo = WorkbenchRepository(session)
         row = await repo.get_task(tid)
@@ -189,7 +195,7 @@ async def test_colliding_placed_files_never_dispatch_methods_or_deliver(db, path
 
 async def test_restart_continues_accepted_plan_and_ignores_unaccepted_latest(db):
     tid, _ = await task(db)
-    first = Advisor(
+    first = TaskRuntime(
         SqlWorkbenchStores(db), Driver([proposal().model_dump_json(), ROWS])
     )
     assert await first._step_once(tid) == TaskState.QUEUED
@@ -206,7 +212,8 @@ async def test_restart_continues_accepted_plan_and_ignores_unaccepted_latest(db)
             )
     second = Driver([ROWS])
     assert (
-        await Advisor(SqlWorkbenchStores(db), second).drive(tid) == TaskState.SUCCEEDED
+        await TaskRuntime(SqlWorkbenchStores(db), second).drive(tid)
+        == TaskState.SUCCEEDED
     )
     assert len(second.prompts) == 1 and '"id": "one"' in second.prompts[0]
     async with db() as session:
@@ -238,7 +245,9 @@ async def test_cancel_during_remote_validation_is_not_blocked_and_accepts_no_res
 
     driver = Driver([proposal().model_dump_json(), ROWS])
     assert (
-        await Advisor(SqlWorkbenchStores(db), driver, deliverables=Files()).drive(tid)
+        await TaskRuntime(SqlWorkbenchStores(db), driver, deliverables=Files()).drive(
+            tid
+        )
         == TaskState.CANCELLED
     )
     async with db() as session:
@@ -256,7 +265,7 @@ async def test_acceptance_event_fault_rolls_back_result_cost_and_cursor_then_rep
 ):
     tid, _ = await prepared(db)
     driver = Driver([ROWS])
-    advisor = Advisor(SqlWorkbenchStores(db), driver)
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), driver)
     original = WorkbenchRepository.append_event
 
     async def broken(self, **kwargs):
@@ -266,7 +275,7 @@ async def test_acceptance_event_fault_rolls_back_result_cost_and_cursor_then_rep
 
     monkeypatch.setattr(WorkbenchRepository, "append_event", broken)
     with pytest.raises(RuntimeError, match="acceptance event fault"):
-        await advisor._step_once(tid)
+        await task_runtime._step_once(tid)
     monkeypatch.setattr(WorkbenchRepository, "append_event", original)
     async with db() as session:
         repo = WorkbenchRepository(session)
@@ -280,7 +289,7 @@ async def test_acceptance_event_fault_rolls_back_result_cost_and_cursor_then_rep
     assessment = StepAssessment(judge(ROWS, step.acceptance))
     for _ in range(2):
         assert (
-            await advisor._settle_step(
+            await task_runtime._settle_step(
                 tid, aid, view, step, driver.results[0], assessment, 0, None
             )
             == TaskState.QUEUED
@@ -310,7 +319,7 @@ async def test_final_event_fault_rolls_back_handback_and_resumes_without_new_tur
 
     monkeypatch.setattr(WorkbenchRepository, "append_event", broken)
     with pytest.raises(RuntimeError, match="final event fault"):
-        await Advisor(
+        await TaskRuntime(
             SqlWorkbenchStores(db), Driver([proposal().model_dump_json(), ROWS, ROWS])
         ).drive(tid)
     monkeypatch.setattr(WorkbenchRepository, "append_event", original)
@@ -320,7 +329,7 @@ async def test_final_event_fault_rolls_back_handback_and_resumes_without_new_tur
         assert row["state"] == TaskState.QUEUED and row["current_step"] == 2
         assert not await repo.get_artifact(task_id=tid, name="handback")
     assert (
-        await Advisor(SqlWorkbenchStores(db), Driver([])).drive(tid)
+        await TaskRuntime(SqlWorkbenchStores(db), Driver([])).drive(tid)
         == TaskState.SUCCEEDED
     )
 
@@ -328,8 +337,8 @@ async def test_final_event_fault_rolls_back_handback_and_resumes_without_new_tur
 async def test_old_completed_reply_cannot_release_a_later_cancelled_turn_hold(db):
     tid, _ = await prepared(db)
     driver = Driver([ROWS])
-    advisor = Advisor(SqlWorkbenchStores(db), driver)
-    assert await advisor._step_once(tid) == TaskState.QUEUED
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), driver)
+    assert await task_runtime._step_once(tid) == TaskState.QUEUED
     async with db() as session:
         repo = WorkbenchRepository(session)
         view = await execution_for_task(repo, await repo.get_task(tid))
@@ -341,7 +350,7 @@ async def test_old_completed_reply_cannot_release_a_later_cancelled_turn_hold(db
         )
     step = view.pack.step(0)
     assert (
-        await advisor._settle_step(
+        await task_runtime._settle_step(
             tid,
             str(first["id"]),
             view,
@@ -366,8 +375,8 @@ async def test_old_completed_reply_cannot_release_a_later_cancelled_turn_hold(db
 async def test_old_reply_cannot_dismiss_later_turn_question(db):
     tid, _ = await prepared(db)
     driver = Driver([ROWS])
-    advisor = Advisor(SqlWorkbenchStores(db), driver)
-    await advisor._step_once(tid)
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), driver)
+    await task_runtime._step_once(tid)
     async with db() as session:
         repo = WorkbenchRepository(session)
         view = await execution_for_task(repo, await repo.get_task(tid))
@@ -388,11 +397,11 @@ async def test_old_reply_cannot_dismiss_later_turn_question(db):
             attempt_id=later["attempt_id"],
         )
     step = view.pack.step(0)
-    assessment = await advisor._assess_step(
+    assessment = await task_runtime._assess_step(
         tid, str(first["id"]), step, driver.results[0], "", None
     )
     assert (
-        await advisor._settle_step(
+        await task_runtime._settle_step(
             tid, str(first["id"]), view, step, driver.results[0], assessment, 0, None
         )
         == TaskState.WAITING
@@ -407,7 +416,7 @@ async def test_old_reply_cannot_dismiss_later_turn_question(db):
 
 
 async def test_existing_runner_protocol_executes_dynamic_task_from_received(db):
-    from test_workbench_advisor_db import ScriptedAppServer, close, drive, seed
+    from test_workbench_task_runtime_db import ScriptedAppServer, close, drive, seed
 
     settings = []
 
@@ -463,7 +472,7 @@ async def test_existing_runner_protocol_executes_dynamic_task_from_received(db):
 async def test_assessment_exception_still_charges_completed_turn_without_result(db):
     tid, _ = await task(db)
 
-    class BrokenAssessment(Advisor):
+    class BrokenAssessment(TaskRuntime):
         async def _assess_step(self, *args, **kwargs):
             raise RuntimeError("evidence reader crashed")
 
@@ -505,7 +514,7 @@ async def test_cancel_during_final_file_hashing_prevents_handback_and_delivery(d
             return "a" * 64
 
     assert (
-        await Advisor(
+        await TaskRuntime(
             SqlWorkbenchStores(db),
             Driver([proposal().model_dump_json(), ROWS, ROWS]),
             deliverables=Files(),
@@ -520,11 +529,11 @@ async def test_cancel_during_final_file_hashing_prevents_handback_and_delivery(d
 
 async def test_finalization_cannot_substitute_partial_results_for_required_final(db):
     tid, _ = await task(db)
-    advisor = Advisor(
+    task_runtime = TaskRuntime(
         SqlWorkbenchStores(db), Driver([proposal().model_dump_json(), ROWS])
     )
-    await advisor._step_once(tid)
-    await advisor._step_once(tid)
+    await task_runtime._step_once(tid)
+    await task_runtime._step_once(tid)
     async with db() as session:
         repo = WorkbenchRepository(session)
         row = await repo.get_task(tid)
@@ -532,7 +541,7 @@ async def test_finalization_cannot_substitute_partial_results_for_required_final
         from app.domain.workbench.errors import MethodPlanInvalid
 
         with pytest.raises(MethodPlanInvalid, match="not all planned"):
-            await advisor._finish(Ledger(repo), repo, row, view.pack)
+            await task_runtime._finish(Ledger(repo), repo, row, view.pack)
         assert not await repo.get_artifact(task_id=tid, name="handback")
 
 
@@ -542,9 +551,9 @@ async def test_explicit_pin_rework_requires_bounded_new_plan_receipt(db, exhaust
     if exhausted:
         await patch_catalog(db, tid, lambda d: d["planning"].update(max_replans=1))
     driver = Driver([proposal().model_dump_json(), ROWS])
-    advisor = Advisor(SqlWorkbenchStores(db), driver)
-    await advisor._step_once(tid)
-    await advisor._step_once(tid)
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), driver)
+    await task_runtime._step_once(tid)
+    await task_runtime._step_once(tid)
     pinned = proposal(parent=1).model_dump(mode="json")
     pinned["steps"][1]["inputs"][0]["version"] = 1
     driver.replies.append(json.dumps(pinned))
@@ -558,7 +567,7 @@ async def test_explicit_pin_rework_requires_bounded_new_plan_receipt(db, exhaust
         rebound["parent_version"] = 2
         rebound["steps"][1]["inputs"][0]["version"] = 2
         driver.replies.extend([json.dumps(rebound), OTHER_ROWS])
-    assert await advisor.drive(tid) == (
+    assert await task_runtime.drive(tid) == (
         TaskState.FAILED if exhausted else TaskState.SUCCEEDED
     )
     async with db() as session:
@@ -589,7 +598,7 @@ async def test_explicit_pin_rework_requires_bounded_new_plan_receipt(db, exhaust
 async def test_binding_changed_during_assessment_rejects_result_but_settles_cost(db):
     tid, _ = await task(db)
 
-    class Tampered(Advisor):
+    class Tampered(TaskRuntime):
         async def _assess_step(self, *args, **kwargs):
             assessment = await super()._assess_step(*args, **kwargs)
             async with db() as session:

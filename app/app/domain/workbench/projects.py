@@ -181,7 +181,7 @@ THREAD_CONFIG: dict[str, Any] = {
     "features.default_mode_request_user_input": True,
 }
 
-# 被拒后不绕路：Codex 没有这条内置规则，只能在每一轮工作线与顾问步骤的输入里写死（approval.md「被拒之后」）
+# 被拒后不绕路：Codex 没有这条内置规则，只能在每一轮工作线与任务运行时步骤的输入里写死（approval.md「被拒之后」）
 NO_DETOUR = (
     "If a command or file change of yours is declined, do not reach the same effect another "
     "way. Say what was declined and what therefore cannot be done; continue only with the parts "

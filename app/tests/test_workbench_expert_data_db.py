@@ -30,7 +30,6 @@ from test_workbench_routes import make_client as make_client  # noqa: F401
 import app.interfaces.endpoints.knowfeed_status_routes as status_routes
 import app.interfaces.http.web.workbench_expert as expert_routes
 from app.application.errors.exceptions import ServiceUnavailableError
-from app.application.workbench.advisor import DATA_STEP_ID, Advisor, TurnResult
 from app.application.workbench.expert_data import (
     CLAIM_LEASE,
     DataWaiter,
@@ -38,6 +37,8 @@ from app.application.workbench.expert_data import (
     find_subject,
     request_data,
 )
+from app.application.workbench.task_runtime import DATA_STEP_ID, TaskRuntime
+from app.application.workbench.turn import TurnResult
 from app.bootstrap.workbench import workbench_store, workbench_stores
 from app.domain.workbench.data_plan import item_ref
 from app.domain.workbench.errors import DataChoiceInvalid
@@ -347,7 +348,7 @@ async def asked(http, db, world, key_: str, propose=PROPOSED):  # noqa: F811
             {"t": task_id},
         )
     turn = StepZero(db, world["kb"], propose)
-    state = await Advisor(workbench_stores(db), turn, records=True).drive(task_id)
+    state = await TaskRuntime(workbench_stores(db), turn, records=True).drive(task_id)
     return task_id, turn, state
 
 

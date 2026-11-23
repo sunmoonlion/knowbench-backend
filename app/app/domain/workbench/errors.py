@@ -31,7 +31,7 @@ class Forbidden(WorkbenchError):
 
 
 class WheelHeldByOther(WorkbenchError):
-    """方向盘在对方手里：用户在 advisor 期间发 turn，或顾问在 user 期间发 turn（AT-06）。"""
+    """方向盘在对方手里：用户在 runtime 期间发 turn，或任务运行时在 user 期间发 turn（AT-06）。"""
 
     code = "wheel_held_by_other"
     http_status = 409

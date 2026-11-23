@@ -21,9 +21,9 @@ from sample_replies import (
     SCOPE,
     say,
 )
-from test_workbench_advisor_db import ScriptedAppServer, close, drive, seed
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import ScriptedAppServer, close, drive, seed
 
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.ledger import Ledger
@@ -332,7 +332,7 @@ async def test_nothing_of_the_method_is_in_the_view(db):
             )
         assert "method" not in shown
         assert "Reply with ONE JSON" not in shown
-        assert "Advisor step" not in shown
+        assert "Task runtime step" not in shown
     finally:
         await close(runner)
         await fake.close()

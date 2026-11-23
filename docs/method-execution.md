@@ -1,6 +1,6 @@
 # 方法计划的执行视图与开步绑定
 
-这是 WP-10 单元 3 的执行基础、规划服务与 Advisor 执行循环。Advisor 已接入有界规划、
+这是 WP-10 单元 3 的执行基础、规划服务与 TaskRuntime 执行循环。TaskRuntime 已接入有界规划、
 实例派发、固定输入验收及完整最终成果交付，复用现有 Runner/TurnDriver 与 Task/Attempt。
 工具调用入口、运行页面与测试成果读取已接线；作者页面联调和真实沙箱验收尚未完成，
 商城 v3 任务准入保持关闭；作者测试可按下述账号配置受控开放，不能据此声明财务
@@ -46,7 +46,7 @@ Attempt 的 `step_id` 是本任务的实例 ID；`refs` 记录计划版本/摘�
 `accepted_results` 只认游标前的已完成实例，该实例最近一次执行 Attempt 必须成功，再按它登记的输出
 ID/版本取原件；不按名称取最新 Artifact。每一项还要核其历史计划、方法身份、工具范围与
 输入链。回退游标立即排除后缀；上游返工后，即使错误地推进游标，也不能把依赖旧版本的
-旧结果恢复成有效结果。确切 pin 失效时，开步事务先拒绝，Advisor 再发有界规划轮次；
+旧结果恢复成有效结果。确切 pin 失效时，开步事务先拒绝，TaskRuntime 再发有界规划轮次；
 只允许将失效后缀的显式输入版本重新绑定到同一上游已验收新版，形成新计划收据。
 已完成前缀、已开始实例的方法/顺序/依赖/权限及旧收据不改，不能临时把 pin 改为 latest。`final_artifacts` 指向计划指定的全部最终实例，不由“最后一轮”猜。
 
@@ -74,8 +74,7 @@ Task/Attempt 的写路径统一先锁 Task，再锁 Attempt。`attempt_transitio
 的迟到响应只补记费用，不接受提案。turn_id 在终态结算时与费用一起登记，避免只登记
 RUNNING 的 turn_id 就被误认为已付费。故障回滚后仍由现有 Runner 收尾/恢复，不另建账。
 
-`turn.py` 仅抽出原 Advisor 的 TurnResult/TurnDriver/时限，Advisor 保留旧 TurnResult 导入
-入口；没有新增模型客户端。测试中的 Driver 是替身，不能当作真实沙箱规划或生产集成验收。
+`turn.py` 定义 TaskRuntime 与 Runner 共用的 TurnResult、TurnDriver 以及步骤时限。测试中的 Driver 是替身，不能当作真实沙箱规划或生产集成验收。
 
 运行 `tests/test_execution_plan.py`、`tests/test_execution_plan_db.py`、
 `tests/test_method_plan.py`、`tests/test_method_plans_db.py`、`tests/test_workbench_ledger_db.py`。
@@ -88,9 +87,9 @@ RUNNING 的 turn_id 就被误认为已付费。故障回滚后仍由现有 Runne
 非法工具、已执行前缀改写拒绝、并发规划、预算不足/超限、取消迟到计费去重、跨任务误用、
 事件故障整体回滚以及“同名新版本不替换开步输入”的 covers 验收。
 
-## Advisor 执行与原子收尾
+## TaskRuntime 执行与原子收尾
 
-Advisor 在无计划时调用 MethodPlanner，随后按任务视图开方法 Attempt；规划和定数据的
+TaskRuntime 在无计划时调用 MethodPlanner，随后按任务视图开方法 Attempt；规划和定数据的
 完成不算作首个方法已执行，范围检查仍在首个方法进行。每个步骤边界先检查数据等待，
 最后一步也不能绕过未确认的补采单直接成功。
 
@@ -104,7 +103,7 @@ Advisor 在无计划时调用 MethodPlanner，随后按任务视图开方法 Att
 故障回滚后可从已完成游标恢复交付，不再次调用模型。动态 terminal_result_ref 指向包含
 全部最终成果引用的 handback，固定专家仍保留原最终成果引用语义。
 
-新增 `tests/test_method_advisor_db.py` 覆盖完整规划/执行/返工/重启/多最终成果、明确钉版
+新增 `tests/test_method_task_runtime_db.py` 覆盖完整规划/执行/返工/重启/多最终成果、明确钉版
 失效后的新计划与次数耗尽、事件故障回滚、验收异常计费、取消期间验收/文件校验、迟到
 回执与新轮次交错。另用既有 ScriptedAppServer 驱动真实 Runner 的 WebSocket 协议循环；
 这是预录响应工程测试，不是付费真实模型或真实渠道验收。

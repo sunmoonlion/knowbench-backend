@@ -123,7 +123,7 @@ class AttemptRole(StrEnum):
 
 class Wheel(StrEnum):
     user = "user"
-    advisor = "advisor"
+    runtime = "runtime"
 
 
 class InvalidTransition(ValueError):

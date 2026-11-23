@@ -76,7 +76,7 @@ async def test_unpublished_events_arrive_in_order_without_gaps():
         world.db.append(ev(4))  # 写库并发 Redis
         await world.wakeups.put(None)
         await asyncio.sleep(0.1)
-        world.db.append(ev(5, "advisor/step"))  # 只写库，靠轮询取到
+        world.db.append(ev(5, "step/started"))  # 只写库，靠轮询取到
 
     task = asyncio.create_task(writer())
     frames = await asyncio.wait_for(collect(world, stop_after=5), 3)

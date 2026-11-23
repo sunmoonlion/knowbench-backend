@@ -194,7 +194,7 @@ class InstructionRequests:
         session = await self.repo.get_session(
             str(task["session_id"]), owner_actor_id=owner
         )
-        if session["wheel"] != "advisor" or str(session["active_task_id"]) != str(
+        if session["wheel"] != "runtime" or str(session["active_task_id"]) != str(
             task["id"]
         ):
             raise CapabilityError("Instruction task does not control its session")

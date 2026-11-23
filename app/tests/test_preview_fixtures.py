@@ -892,7 +892,7 @@ def check(directory: Path) -> dict[str, Any]:
         if response["file"].endswith(".json") and body.strip():
             json.loads(body)
         # 方法的原文、密钥不在样例里
-        assert "Advisor step" not in body and "Reply with ONE JSON" not in body
+        assert "Task runtime step" not in body and "Reply with ONE JSON" not in body
         assert "sk-" not in body
     return manifest
 

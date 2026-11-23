@@ -214,7 +214,9 @@ class SessionService:
                 session_id, owner_actor_id=owner_actor_id, for_update=True
             )
             if archived and session.get("active_task_id") is not None:
-                raise ProjectBusy("the advisor is still working in this conversation")
+                raise ProjectBusy(
+                    "the task runtime is still working in this conversation"
+                )
             if archived and session["project_id"] is not None:
                 active = await self.repo.active_task_of_project(
                     str(session["project_id"])
@@ -255,7 +257,7 @@ class SessionService:
         session = await self.repo.get_session(session_id, owner_actor_id=owner_actor_id)
         if session["wheel"] != Wheel.user:
             raise WheelHeldByOther(
-                "the advisor holds the wheel; you can watch, answer interactions or cancel",
+                "the task runtime holds the wheel; you can watch, answer interactions or cancel",
                 session_id=session_id,
                 active_task_id=str(session["active_task_id"]),
             )
@@ -293,12 +295,12 @@ class SessionService:
                 payload={"turn_id": turn_id},
             )
 
-    async def assert_advisor_may_drive(
+    async def assert_runtime_may_drive(
         self, session_id: str, *, task_id: str
     ) -> dict[str, Any]:
         session = await self.repo.get_session(session_id)
         if (
-            session["wheel"] != Wheel.advisor
+            session["wheel"] != Wheel.runtime
             or str(session["active_task_id"]) != task_id
         ):
             raise WheelHeldByOther("the user holds the wheel", session_id=session_id)

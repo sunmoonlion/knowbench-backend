@@ -11,8 +11,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 from test_capabilities_db import OWNER, approval
 from test_formal_model_execution_db import drive_to_approval
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import close
 
 from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 from app.application.workbench.formal_test_runs import FormalExecutions

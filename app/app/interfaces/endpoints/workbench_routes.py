@@ -856,7 +856,7 @@ async def stream_session_events(
     keepalive_seconds: float = 15.0,
 ) -> AsyncIterator[str]:
     """事件流的核心循环。数据库是唯一的顺序来源：Redis 消息只当"有新事件"的唤醒信号，醒了（或每 poll_seconds）
-    就按 cursor 取 last 之后的全部事件依次发出——所以只写库、没发 Redis 的事件（任务状态、顾问步骤、用户发言）
+    就按 cursor 取 last 之后的全部事件依次发出——所以只写库、没发 Redis 的事件（任务状态、任务运行时步骤、用户发言）
     也能实时到，而且不会因为先收到后面的事件而把前面没发布的跳过（KIND 09 实测：委托状态要刷新才出现）。
     空闲 keepalive_seconds 发一行 SSE 注释保活（EventSource 忽略注释）。"""
     last = after

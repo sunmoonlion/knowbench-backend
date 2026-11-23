@@ -15,7 +15,7 @@ from usage_support import MODEL, UsageMeter
 from websockets.asyncio.server import serve
 
 HANG = object()  # 专家的这一步不交回：委托停在「正在做」
-STEP = re.compile(r"^# Advisor step: .*\((?P<id>[a-z_]+), v")
+STEP = re.compile(r"^# Task runtime step: .*\((?P<id>[a-z_]+), v")
 
 
 class Plan:

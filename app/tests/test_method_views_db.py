@@ -4,17 +4,17 @@ import json
 
 import pytest
 from method_plan_fixtures import catalog, proposal
-from test_method_advisor_db import OTHER_ROWS, ROWS, Driver, patch_catalog
 from test_method_plans_db import task
+from test_method_task_runtime_db import OTHER_ROWS, ROWS, Driver, patch_catalog
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 
-from app.application.workbench.advisor import Advisor
 from app.application.workbench.execution_plan import current_artifacts
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
 from app.application.workbench.run_files import task_dossier
+from app.application.workbench.task_runtime import TaskRuntime
 from app.domain.workbench.errors import NotFound
 from app.domain.workbench.method_plan import output_name
 from app.domain.workbench.states import TaskState
@@ -60,7 +60,7 @@ async def test_steps_and_dossier_use_selected_instances_and_all_current_finals(d
     raw = proposal(review=True).model_dump(mode="json")
     raw["final_outputs"]["inspect"] = "inspect_1"
     assert (
-        await Advisor(
+        await TaskRuntime(
             SqlWorkbenchStores(db),
             Driver([json.dumps(raw), ROWS, '{"notes":"checked"}', ROWS]),
         ).drive(tid)
@@ -106,9 +106,9 @@ async def test_rewound_results_remain_in_history_but_are_not_current_evidence(db
     raw = proposal().model_dump(mode="json")
     raw["final_outputs"]["inspect"] = "inspect_1"
     driver = Driver([json.dumps(raw), ROWS, "{}", "{}"])
-    advisor = Advisor(SqlWorkbenchStores(db), driver)
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), driver)
     for _ in range(4):
-        assert await advisor._step_once(tid) == TaskState.QUEUED
+        assert await task_runtime._step_once(tid) == TaskState.QUEUED
     async with db() as session:
         repo = WorkbenchRepository(session)
         desk = ExpertDesk(repo)
@@ -135,8 +135,8 @@ async def test_plan_history_and_method_files_follow_current_plan(db):
 
     await patch_catalog(db, tid, files)
     driver = Driver([proposal(review=True).model_dump_json()])
-    advisor = Advisor(SqlWorkbenchStores(db), driver)
-    await advisor._step_once(tid)
+    task_runtime = TaskRuntime(SqlWorkbenchStores(db), driver)
+    await task_runtime._step_once(tid)
     async with db() as session:
         repo = WorkbenchRepository(session)
         dossier = await task_dossier(repo, await repo.get_task(tid))

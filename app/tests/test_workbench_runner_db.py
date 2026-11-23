@@ -643,7 +643,7 @@ async def test_user_wheel_approval_becomes_interaction_and_decision_returns(db):
         await fake.close()
 
 
-async def test_turn_refused_when_advisor_holds_wheel(db):
+async def test_turn_refused_when_task_runtime_holds_wheel(db):
     from decimal import Decimal
 
     from app.domain.workbench.models import HandoverRequest
@@ -681,7 +681,7 @@ async def test_turn_refused_when_advisor_holds_wheel(db):
             events = await repo.list_events(session_id=sid)
             failed = [e for e in events if e["type"] == "command/failed"]
             assert (
-                failed and "wheel is held by advisor" in failed[0]["payload"]["error"]
+                failed and "wheel is held by runtime" in failed[0]["payload"]["error"]
             )
             r = await s.execute(
                 __import__("sqlalchemy").text(
@@ -1227,7 +1227,7 @@ async def test_cancelling_a_running_task_settles_it_now_and_books_the_late_cost(
 
 
 async def test_a_crash_of_a_task_that_was_being_cancelled_ends_it_as_cancelled(db):
-    from app.application.workbench.advisor import Advisor
+    from app.application.workbench.task_runtime import TaskRuntime
     from app.bootstrap.workbench import workbench_stores
 
     fake = FakeAppServer()
@@ -1243,7 +1243,7 @@ async def test_a_crash_of_a_task_that_was_being_cancelled_ends_it_as_cancelled(d
                 {"t": task_id},
             )
             await s.commit()
-        await Advisor(workbench_stores(db), None).fail_after_crash(task_id, "boom")  # type: ignore[arg-type]
+        await TaskRuntime(workbench_stores(db), None).fail_after_crash(task_id, "boom")  # type: ignore[arg-type]
         async with db() as s:
             repo = WorkbenchRepository(s)
             task = await repo.get_task(task_id)
@@ -1260,7 +1260,7 @@ async def test_a_crash_of_a_task_that_was_being_cancelled_ends_it_as_cancelled(d
 
 async def test_a_crash_fails_the_task_as_a_platform_failure(db):
     """推它的程序崩了：委托记失败，原因标平台（测试结果里记出错，不记没过）。"""
-    from app.application.workbench.advisor import Advisor
+    from app.application.workbench.task_runtime import TaskRuntime
     from app.bootstrap.workbench import workbench_stores
 
     fake = FakeAppServer()
@@ -1268,7 +1268,7 @@ async def test_a_crash_fails_the_task_as_a_platform_failure(db):
     try:
         runner, sb, sid, _ = await _started(db, fake)
         task_id, attempt_id = await _task(db, sid, "crash-0002", attempt=True)
-        await Advisor(workbench_stores(db), None).fail_after_crash(task_id, "boom")  # type: ignore[arg-type]
+        await TaskRuntime(workbench_stores(db), None).fail_after_crash(task_id, "boom")  # type: ignore[arg-type]
         async with db() as s:
             repo = WorkbenchRepository(s)
             task = await repo.get_task(task_id)
@@ -1545,10 +1545,10 @@ async def test_time_spent_waiting_for_an_answer_does_not_count_against_the_step(
 ):
     """专家停下来问人时，这一步的钟停着：答得比时限慢，这一步也不按超时判失败（2026-10-19 K19 第 2 稿：
     所有者思考作答的几分钟算进了 15 分钟，这一步超时，问题挂着、测试卡死）。"""
-    from app.application.workbench import advisor as advisor_module
+    from app.application.workbench import task_runtime as task_runtime_module
     from app.domain.workbench.states import AttemptState
 
-    monkeypatch.setattr(advisor_module, "STEP_TIMEOUT_SECONDS", 0.5)
+    monkeypatch.setattr(task_runtime_module, "STEP_TIMEOUT_SECONDS", 0.5)
     fake = FakeAppServer()
     await fake.start()
     try:
@@ -1557,7 +1557,7 @@ async def test_time_spent_waiting_for_an_answer_does_not_count_against_the_step(
             db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
         )
         await runner.run_once()
-        task_id = await _advisor_task(db, sid, "NEED_APPROVAL", "slow-answer-1")
+        task_id = await _task_runtime_task(db, sid, "NEED_APPROVAL", "slow-answer-1")
         async with db() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():
@@ -1844,7 +1844,7 @@ async def test_reconnect_starts_a_new_thread_when_the_rollout_is_gone(db):
 # ---------------- 工具级审批重做（approval.md；账 77、79）----------------
 
 
-async def _advisor_task(db, sid, text_, key):
+async def _task_runtime_task(db, sid, text_, key):
     """请专家（SMOKE）并把 Task 排到 QUEUED：问题文字里带触发词，专家的第一轮就会碰到审批。"""
     from decimal import Decimal
 
@@ -1925,7 +1925,9 @@ async def _approval_rows(db, sid):
         return [tuple(x) for x in r.all()]
 
 
-async def test_advisor_policy_lets_in_project_file_changes_through_without_asking(db):
+async def test_task_runtime_policy_lets_in_project_file_changes_through_without_asking(
+    db,
+):
     fake = FakeAppServer()
     await fake.start()
     try:
@@ -1934,7 +1936,7 @@ async def test_advisor_policy_lets_in_project_file_changes_through_without_askin
             db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
         )
         await runner.run_once()
-        await _advisor_task(db, sid, "NEED_FILE_APPROVAL", "pol-0001")
+        await _task_runtime_task(db, sid, "NEED_FILE_APPROVAL", "pol-0001")
         async with db() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():
@@ -1952,10 +1954,10 @@ async def test_advisor_policy_lets_in_project_file_changes_through_without_askin
         assert await wait_for(decided)
         assert await _pending(db, sid, "tool_approval") == []
         rows = await _approval_rows(db, sid)
-        assert rows[0] == ("accept", "policy", "advisor", "smoke-1") or rows[0][:3] == (
+        assert rows[0] == ("accept", "policy", "runtime", "smoke-1") or rows[0][:3] == (
             "accept",
             "policy",
-            "advisor",
+            "runtime",
         )
         async with db() as s:
             events = await WorkbenchRepository(s).list_events(session_id=sid)
@@ -1968,7 +1970,7 @@ async def test_advisor_policy_lets_in_project_file_changes_through_without_askin
         await fake.close()
 
 
-async def test_advisor_command_asks_with_four_buttons_and_a_task_grant_covers_the_next(
+async def test_task_runtime_command_asks_with_four_buttons_and_a_task_grant_covers_the_next(
     db,
 ):
     from app.domain.workbench.states import TaskState, WaitingReason
@@ -1981,7 +1983,7 @@ async def test_advisor_command_asks_with_four_buttons_and_a_task_grant_covers_th
             db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
         )
         await runner.run_once()
-        task_id = await _advisor_task(db, sid, "NEED_APPROVAL_TWICE", "grant-0001")
+        task_id = await _task_runtime_task(db, sid, "NEED_APPROVAL_TWICE", "grant-0001")
         async with db() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():
@@ -2003,7 +2005,7 @@ async def test_advisor_command_asks_with_four_buttons_and_a_task_grant_covers_th
             "cancel",
         ]
         subject = it["prompt"]["subject"]
-        assert subject["wheel"] == "advisor" and subject["step"]["index"] == 1
+        assert subject["wheel"] == "runtime" and subject["step"]["index"] == 1
         assert subject["after_decline"] is False
         async with db() as s:
             task = await WorkbenchRepository(s).get_task(task_id)
@@ -2033,7 +2035,7 @@ async def test_advisor_command_asks_with_four_buttons_and_a_task_grant_covers_th
             ("accept", "task_grant"),
         ]
         assert all(r[:2] == ("accept", "task_grant") for r in rows[2:])
-        assert all(r[2] == "advisor" and r[3] for r in rows)
+        assert all(r[2] == "runtime" and r[3] for r in rows)
         async with db() as s:
             r = await s.execute(
                 text(
@@ -2060,7 +2062,7 @@ async def test_after_a_decline_even_allowed_changes_ask_and_say_so(db):
             db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
         )
         await runner.run_once()
-        await _advisor_task(db, sid, "NEED_APPROVAL_THEN_FILE", "decl-0001")
+        await _task_runtime_task(db, sid, "NEED_APPROVAL_THEN_FILE", "decl-0001")
         async with db() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():
@@ -2109,7 +2111,7 @@ async def test_stop_interrupts_the_turn_and_parks_the_step_for_the_user(db):
             db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
         )
         await runner.run_once()
-        task_id = await _advisor_task(db, sid, "NEED_APPROVAL", "stop-0001")
+        task_id = await _task_runtime_task(db, sid, "NEED_APPROVAL", "stop-0001")
         async with db() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():
@@ -2163,7 +2165,7 @@ async def test_stop_interrupts_the_turn_and_parks_the_step_for_the_user(db):
 
 async def test_cancelling_while_the_step_waits_for_approval_stops_the_turn_now(db):
     """2026-10-14 所有者：专家页的「停止」不管用。卡在等人批准时取消：委托直接收成已取消，
-    但那一轮还在 Codex 里等批准，要到 15 分钟时限才停；顾问随后再收一次「已取消」还会出错。
+    但那一轮还在 Codex 里等批准，要到 15 分钟时限才停；任务运行时随后再收一次「已取消」还会出错。
     现在取消也发中断，runner 先把这条线上等着的那一问按「停下」答掉，那一轮马上收住。"""
     from app.domain.workbench.states import AttemptState, TaskState
 
@@ -2175,7 +2177,7 @@ async def test_cancelling_while_the_step_waits_for_approval_stops_the_turn_now(d
             db, publisher=RedisPublisher(None, "t"), runner_id="r1", poll_seconds=0.05
         )
         await runner.run_once()
-        task_id = await _advisor_task(db, sid, "NEED_APPROVAL", "cancel-wait-0001")
+        task_id = await _task_runtime_task(db, sid, "NEED_APPROVAL", "cancel-wait-0001")
         async with db() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():

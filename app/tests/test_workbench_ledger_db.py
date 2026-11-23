@@ -142,7 +142,7 @@ async def test_handover_creates_task_and_moves_wheel_atomically(db):
         assert r["created"] and r["state"] == TaskState.RECEIVED
         sess = await repo.get_session(sid)
         assert (
-            sess["wheel"] == "advisor" and str(sess["active_task_id"]) == r["task_id"]
+            sess["wheel"] == "runtime" and str(sess["active_task_id"]) == r["task_id"]
         )
         types = [e["type"] for e in await repo.list_events(session_id=sid)]
         # 交给专家 = 这段对话从此是专家对话（0017），所以多一条 kind_changed
@@ -152,7 +152,7 @@ async def test_handover_creates_task_and_moves_wheel_atomically(db):
             "task/received",
             "wheel/handover",
         ]
-        # 用户在 advisor 期间不能发 turn（AT-06）
+        # 用户在 runtime 期间不能发 turn（AT-06）
         with pytest.raises(WheelHeldByOther):
             await SessionService(repo).assert_user_may_drive(sid, owner_actor_id=OWNER)
 
@@ -168,7 +168,7 @@ async def test_idempotent_handover_same_and_different_digest(db):
             await led.handover(handover(sid, text="别的问题"), owner_actor_id=OWNER)
 
 
-async def test_second_handover_while_advisor_holds_wheel_is_refused(db):
+async def test_second_handover_while_task_runtime_holds_wheel_is_refused(db):
     _, _, sid = await seed(db)
     async with db() as s:
         led = Ledger(WorkbenchRepository(s))
@@ -446,7 +446,7 @@ async def test_restart_can_rebuild_nonterminal_state(db):
             open_tasks[0]["state"] == TaskState.WAITING
             and open_tasks[0]["active_interaction_id"] is not None
         )
-        assert (await repo.get_session(sid))["wheel"] == "advisor"
+        assert (await repo.get_session(sid))["wheel"] == "runtime"
         assert len(await repo.list_interactions(session_id=sid, status="pending")) == 1
 
 

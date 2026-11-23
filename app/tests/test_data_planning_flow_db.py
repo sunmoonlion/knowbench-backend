@@ -14,9 +14,10 @@ from test_workbench_expert_data_db import db as db
 from test_workbench_expert_data_db import make_client as make_client
 from test_workbench_expert_data_db import world as world
 
-from app.application.workbench.advisor import Advisor, TurnResult
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.ledger import Ledger
+from app.application.workbench.task_runtime import TaskRuntime
+from app.application.workbench.turn import TurnResult
 from app.bootstrap.workbench import workbench_store, workbench_stores
 
 
@@ -106,7 +107,7 @@ async def test_unseeded_data_phase_never_looks_like_scope_or_retries_itself(
                 assert (await repo.get_task_resolution(task_id))["status"] == "ready"
         else:
             # Scheduler polling does not launch a paid retry or accept partial requirements.
-            await Advisor(workbench_stores(db), driver, records=True).drive(task_id)
+            await TaskRuntime(workbench_stores(db), driver, records=True).drive(task_id)
             assert len(seen) == 1
             if failure in ("repeated_result", "time_limit"):
                 async with db() as s:
@@ -127,7 +128,9 @@ async def test_unseeded_data_phase_never_looks_like_scope_or_retries_itself(
                             else "stop"
                         },
                     )
-                await Advisor(workbench_stores(db), driver, records=True).drive(task_id)
+                await TaskRuntime(workbench_stores(db), driver, records=True).drive(
+                    task_id
+                )
                 assert len(seen) == (2 if failure == "repeated_result" else 1)
 
 
@@ -177,7 +180,7 @@ async def test_scope_mismatch_pauses_before_data_and_does_not_accept_empty_plan(
             assert options == (["proceed", "stop"] if proposal else ["stop"])
             assert item["prompt"]["subject"]["proposed_question"] == proposal
             assert not await repo.list_artifacts_with_content(task_id)
-        await Advisor(workbench_stores(db), driver, records=True).drive(task_id)
+        await TaskRuntime(workbench_stores(db), driver, records=True).drive(task_id)
         assert (
             len(driver.texts) == 1
         )  # Waiting/polling is not consent or a new paid turn.

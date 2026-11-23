@@ -16,9 +16,9 @@ from decimal import Decimal
 import pytest
 from knowbot_fixtures import manifest
 from sqlalchemy import text
-from test_workbench_advisor_db import ANSWER, PLAN, ScriptedAppServer, close, drive
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import ANSWER, PLAN, ScriptedAppServer, close, drive
 
 from app.application.workbench.agent_service import AgentOffline
 from app.application.workbench.deliverable_check import ReadFile
@@ -350,12 +350,12 @@ async def test_a_crash_while_judging_ends_the_case_as_an_error(db, monkeypatch):
     不挂到超时。"""
     from decimal import InvalidOperation
 
-    from app.application.workbench import advisor as advisor_module
+    from app.application.workbench import task_runtime as task_runtime_module
 
     async def crash(*args, **kwargs):
         raise InvalidOperation
 
-    monkeypatch.setattr(advisor_module, "judge_numbers", crash)
+    monkeypatch.setattr(task_runtime_module, "judge_numbers", crash)
     fake = ScriptedAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)

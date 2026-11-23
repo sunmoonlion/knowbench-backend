@@ -304,7 +304,7 @@ async def open_method_step(
             )
         session = await repo.get_session(str(task["session_id"]))
         if (
-            session["wheel"] != Wheel.advisor
+            session["wheel"] != Wheel.runtime
             or str(session["active_task_id"]) != task_id
         ):
             raise MethodPlanInvalid("task does not hold the session")

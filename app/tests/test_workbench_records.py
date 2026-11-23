@@ -14,7 +14,9 @@ from app.domain.workbench.records import (
 )
 from app.domain.workbench.tool_schema import schema_validator
 
-METHOD = "# Advisor step: 勾稽\nYou are executing one step ... ## Method for this step"
+METHOD = (
+    "# Task runtime step: 勾稽\nYou are executing one step ... ## Method for this step"
+)
 
 
 def event(kind, payload, at="2026-09-29T10:00:00Z"):
@@ -85,7 +87,10 @@ def test_what_never_gets_into_a_record():
         # 专家每一步发给模型的话：Codex 回显成 userMessage，里面是方法的原文
         item(type="userMessage", content=[{"type": "text", "text": METHOD}]),
         # 专家发起的轮次不算用户说的话
-        event("turn/requested", {"by": "advisor", "text": METHOD}),
+        event("turn/requested", {"by": "runtime", "text": METHOD}),
+        event(
+            "turn/requested", {"by": "advisor", "text": "# Advisor step: legacy method"}
+        ),
         # 答复用的令牌
         event(
             "interaction/opened",
@@ -113,7 +118,14 @@ def test_what_never_gets_into_a_record():
         ),
     ]
     shown = json.dumps(record_of(events), ensure_ascii=False)
-    for secret in ("TOKEN", "Advisor step", "Method for this step", "ROWS-", "DIFF"):
+    for secret in (
+        "TOKEN",
+        "Task runtime step",
+        "Advisor step",
+        "Method for this step",
+        "ROWS-",
+        "DIFF",
+    ):
         assert secret not in shown, secret
     assert "第「勾稽」步没有通过验收" in shown
     assert len(record_of(events)) == 3

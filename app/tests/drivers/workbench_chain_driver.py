@@ -328,7 +328,7 @@ async def main() -> int:
             )
 
         print(
-            "--- 4. 交出方向盘，顾问按 SMOKE 专家包驾驶同一个 thread（两步、验收、预算、交回）"
+            "--- 4. 交出方向盘，任务运行时按 SMOKE 专家包驾驶同一个 thread（两步、验收、预算、交回）"
         )
         async with factory() as s:
             repo = WorkbenchRepository(s)
@@ -379,7 +379,7 @@ async def main() -> int:
             if ans:
                 print("  answer:", str(ans["content"])[:300])
         verdict(
-            "顾问驾驶到 SUCCEEDED（真沙箱、Kimi、本机执行）",
+            "任务运行时驾驶到 SUCCEEDED（真沙箱、Kimi、本机执行）",
             task["state"] == "SUCCEEDED",
             task["state"],
         )
@@ -454,7 +454,7 @@ async def main() -> int:
                 )
             except WheelHeldByOther:
                 refused = True
-            verdict("advisor 持方向盘时用户 turn 被拒", refused)
+            verdict("runtime 持方向盘时用户 turn 被拒", refused)
             r = await led.request_cancel(t, owner_actor_id=OWNER)
             verdict(
                 "取消后 Task CANCELLED、方向盘交回",

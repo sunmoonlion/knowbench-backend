@@ -4,7 +4,7 @@ import json
 
 from app.application.workbench.acceptance import judge
 from app.application.workbench.acceptance_numbers import _covers
-from app.application.workbench.advisor import Advisor
+from app.application.workbench.task_runtime import TaskRuntime
 from app.domain.workbench.packs import AcceptanceRule, StepContract
 
 
@@ -25,7 +25,7 @@ def test_initial_prompt_contains_exact_frozen_rules_without_mutating_them():
         acceptance=rules,
     )
     before = step.model_dump_json()
-    prompt = Advisor.compose(step, {}, {}, 0)
+    prompt = TaskRuntime.compose(step, {}, {}, 0)
     encoded = prompt.split("## Acceptance rules for this frozen step\n", 1)[
         1
     ].splitlines()[-1]
@@ -49,7 +49,7 @@ def test_missing_brace_feedback_reaches_rework_and_coverage_still_enforced():
     )
     raw = '{"comparisons":[{"conclusion":"rewritten claim"}]'
     verdict = judge(raw, step.acceptance)
-    prompt = Advisor.compose(step, {}, {}, 1, rework_failures=verdict.failures)
+    prompt = TaskRuntime.compose(step, {}, {}, 1, rework_failures=verdict.failures)
     assert "expected closing delimiters: }" in prompt
     assert "What failed last time" in prompt
     # Correct syntax alone cannot turn altered upstream identities into a pass.
@@ -72,7 +72,7 @@ def test_data_execution_batches_complete_inputs_without_weakening_author_rules()
         acceptance=(AcceptanceRule(kind="json_object"),),
     )
     before = step.model_dump_json()
-    prompt = Advisor.compose(step, {}, {}, 0, listed_data_task="task-1")
+    prompt = TaskRuntime.compose(step, {}, {}, 0, listed_data_task="task-1")
     assert "do not repeat an unchanged lookup" in prompt
     assert "Query raw rows by labels" in prompt
     assert "batch: [{key, name, expression, inputs}" in prompt
@@ -80,5 +80,5 @@ def test_data_execution_batches_complete_inputs_without_weakening_author_rules()
     assert "never substitute another formula" in prompt
     assert step.method_text in prompt
     assert step.model_dump_json() == before
-    ordinary = Advisor.compose(step, {}, {}, 0)
+    ordinary = TaskRuntime.compose(step, {}, {}, 0)
     assert "Keep data retrieval bounded" not in ordinary

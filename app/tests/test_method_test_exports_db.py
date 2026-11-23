@@ -7,12 +7,11 @@ import jsonschema
 import pytest
 from method_plan_fixtures import proposal
 from test_knowbot_test_run_lock import _lock, _schema
-from test_method_advisor_db import OTHER_ROWS, ROWS, Driver, patch_catalog
 from test_method_plans_db import task
+from test_method_task_runtime_db import OTHER_ROWS, ROWS, Driver, patch_catalog
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 
-from app.application.workbench.advisor import Advisor
 from app.application.workbench.deliverable_check import ReadFile
 from app.application.workbench.execution_plan import (
     final_results,
@@ -21,6 +20,7 @@ from app.application.workbench.execution_plan import (
     test_method_results as method_assertion_results,
 )
 from app.application.workbench.expert_desk import ExpertDesk
+from app.application.workbench.task_runtime import TaskRuntime
 from app.application.workbench.test_runs import Account, KnowbotTestConductor
 from app.domain.workbench.method_plan import output_name
 from app.domain.workbench.states import TaskState
@@ -89,7 +89,7 @@ async def test_assertions_and_exports_use_explicit_final_instance_not_latest(db)
     )
     raw["final_outputs"] = {"inspect": "second_inspection", "report": "final_document"}
     assert (
-        await Advisor(
+        await TaskRuntime(
             SqlWorkbenchStores(db),
             Driver([json.dumps(raw), ROWS, OTHER_ROWS, OTHER_ROWS]),
         ).drive(tid)
@@ -158,11 +158,11 @@ async def test_rewind_keeps_historical_output_but_invalidates_assertions_and_fin
     )
     raw = proposal().model_dump(mode="json")
     raw["final_outputs"]["inspect"] = "inspect_1"
-    advisor = Advisor(
+    task_runtime = TaskRuntime(
         SqlWorkbenchStores(db), Driver([json.dumps(raw), ROWS, "{}", "{}"])
     )
     for _ in range(4):
-        assert await advisor._step_once(tid) == TaskState.QUEUED
+        assert await task_runtime._step_once(tid) == TaskState.QUEUED
     async with db() as session:
         repo = WorkbenchRepository(session)
         row = await repo.get_task(tid)
@@ -213,7 +213,7 @@ async def test_each_final_file_is_read_in_the_owner_workspace_and_timeout_is_exp
             return ReadFile(text=kwargs["path"], mtime_ms=None)
 
     assert (
-        await Advisor(
+        await TaskRuntime(
             SqlWorkbenchStores(db),
             Driver([json.dumps(raw), ROWS, ROWS]),
             deliverables=Files(),
@@ -259,7 +259,7 @@ async def test_v2_collector_checks_current_intermediate_output_without_promoting
     tid, _ = await task(db)
     plan = proposal().model_dump(mode="json")
     assert (
-        await Advisor(
+        await TaskRuntime(
             SqlWorkbenchStores(db), Driver([json.dumps(plan), ROWS, ROWS])
         ).drive(tid)
         == TaskState.SUCCEEDED

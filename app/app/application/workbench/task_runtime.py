@@ -1,4 +1,4 @@
-"""顾问：表驱动的工作流解释器（methods.md「编排就是逐步发 turn」）。不调模型；对用户自己的 Codex thread 逐步发 turn。
+"""任务运行时：表驱动的工作流解释器（methods.md「编排就是逐步发 turn」）。不调模型；对用户自己的 Codex thread 逐步发 turn。
 
 一步的循环：开 Attempt（预留预算）→ 组 turn 输入（方法文本 + 上游 Artifact + 输出说明）→ turn/start → 等 turn/completed →
 按预算账扣 token → 确定性验收 → 通过：落新版本 Artifact、游标 +1；不通过：按 on_reject 返工 / 回退 / 交人。
@@ -33,8 +33,7 @@ from app.application.workbench.fixed_plans import accept_fixed_plan
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
 from app.application.workbench.plan_receipts import catalog_for_task
-from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver
-from app.application.workbench.turn import TurnResult as TurnResult
+from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver, TurnResult
 from app.domain.workbench import knowbots
 from app.domain.workbench.data_planning import STOP_REASONS
 from app.domain.workbench.deliverables import (
@@ -100,7 +99,7 @@ class StepAssessment:
     error: str | None = None
 
 
-class Advisor:
+class TaskRuntime:
     def __init__(
         self,
         stores: WorkbenchStores,
@@ -1772,7 +1771,7 @@ class Advisor:
                 "workspace_restore": (
                     "成稿写在项目目录：" + "、".join(files) + "；不要就删掉这些文件"
                     if files
-                    else "顾问没有登记写出的成稿文件；如有改动见各步 Artifact 与对话里的改动面板"
+                    else "任务运行时没有登记写出的成稿文件；如有改动见各步 Artifact 与对话里的改动面板"
                 ),
                 "budget": task["budget"],
             }
@@ -1847,7 +1846,7 @@ class Advisor:
         intake: Scope | None = None,
     ) -> str:
         parts = [
-            f"# Advisor step: {step.title} ({step.step_id}, v{step.step_version})",
+            f"# Task runtime step: {step.title} ({step.step_id}, v{step.step_version})",
             "You are executing one step of a supervised research workflow. Do exactly this step, nothing beyond it.",
             "",
             "## The user's question",

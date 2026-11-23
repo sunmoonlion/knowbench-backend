@@ -492,7 +492,7 @@ async def run_model_read(db, ctx, sandbox, peer, mode):
     from formal_model_support import ModelServer, model_runner, pending_model_call
     from httpx import ASGITransport, AsyncClient
     from test_capabilities_db import approval
-    from test_workbench_advisor_db import close
+    from test_workbench_task_runtime_db import close
 
     from app.interfaces.endpoints.capability_routes import (
         get_web_knowbase_token_provider,

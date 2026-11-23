@@ -5,8 +5,8 @@ from formal_model_support import ModelServer
 from httpx import ASGITransport, AsyncClient
 from test_capabilities_db import OWNER
 from test_formal_model_execution_db import drive_to_approval
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import close
 
 from app.application.workbench.interactions import cancel_task
 from app.domain.workbench.formal_model import PROBE_SERVER, PROBE_TOOL

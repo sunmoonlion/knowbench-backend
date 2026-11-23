@@ -9,10 +9,10 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sample_replies import ALL, METRICS, PROFILE, RECONCILE, SCOPE
 from sqlalchemy import text
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_step_view_db import run
+from test_workbench_task_runtime_db import close
 
 from app.application.workbench.expert_desk import ExpertDesk
 from app.application.workbench.ledger import Ledger

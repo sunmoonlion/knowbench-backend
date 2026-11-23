@@ -16,9 +16,9 @@ from test_formal_method_admission_db import validation_request
 from test_formal_method_use_routes_db import application
 from test_knowbase_method_read_db import suite, wrap
 from test_source_licenses import license_record
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OTHER, OWNER, seed
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import close
 
 from app.application.workbench.capabilities import Capabilities
 from app.application.workbench.task_output_reader import (

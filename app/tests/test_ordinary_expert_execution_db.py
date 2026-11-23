@@ -2,19 +2,24 @@
 
 import asyncio
 import json
+import runpy
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import httpx
 import pytest
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
 from formal_plan_support import setup_plan
 from formal_recursive_support import register_completed, setup_recursive
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from test_capabilities_db import approval
 from test_formal_expert_intake_db import web_app
 from test_knowbot_test_runs_db import runner_for
-from test_workbench_advisor_db import ScriptedAppServer, close, drive
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import ScriptedAppServer, close, drive
 
 from app.application.workbench.find_expert import FindExpertService
 from app.domain.workbench.formal_method_generated import MethodRef
@@ -22,6 +27,43 @@ from app.domain.workbench.formal_recursive import node_key
 from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints import capability_routes
 from app.interfaces.http.web import workbench_expert as routes
+
+WHEEL_MIGRATION = (
+    Path(__file__).resolve().parents[1]
+    / "alembic/versions/20261123_0061_task_runtime_wheel.py"
+)
+
+
+async def round_trip_wheel_migration(db, task, session_id):
+    def migrate(connection, direction):
+        with Operations.context(MigrationContext.configure(connection)):
+            runpy.run_path(str(WHEEL_MIGRATION))[direction]()
+
+    async with db.begin() as session:
+        repo = WorkbenchRepository(session)
+        connection = await session.connection()
+        before = await repo.get_session(session_id)
+        events = await repo.list_events(session_id=session_id)
+        assert before["wheel"] == "runtime" and str(before["active_task_id"]) == task
+        assert any(
+            e["type"] == "wheel/handover" and e["payload"]["to"] == "runtime"
+            for e in events
+        )
+        for direction, owner, invalid in (
+            ("downgrade", "advisor", "runtime"),
+            ("upgrade", "runtime", "advisor"),
+        ):
+            await connection.run_sync(migrate, direction)
+            assert await repo.get_session(session_id) == {**before, "wheel": owner}
+            assert await repo.list_events(session_id=session_id) == events
+            with pytest.raises(IntegrityError, match="ck_workbench_sessions_wheel"):
+                async with session.begin_nested():
+                    await session.execute(
+                        text(
+                            "UPDATE workbench_sessions SET wheel=:owner WHERE id=:sid"
+                        ),
+                        {"owner": invalid, "sid": session_id},
+                    )
 
 
 @pytest.mark.parametrize(
@@ -114,6 +156,8 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
                     assert await repo.test_run_for_task(task) is None
                 if i == 1 and not revoke:
                     await runner._shutdown()
+                    if not nested:
+                        await round_trip_wheel_migration(db, task, call["session_id"])
                     runner = runner_for(db)
                     runner.capabilities = factory
                     await drive(runner)
@@ -166,7 +210,19 @@ async def test_normal_execution_uses_confirmed_revision_and_per_step_approval(
                 assert answer.status_code == 200, answer.text
             await drive(runner)
             async with db() as s:
-                final = (await WorkbenchRepository(s).get_task(task))["state"]
+                repo = WorkbenchRepository(s)
+                final = (await repo.get_task(task))["state"]
+                restored_session = await repo.get_session(call["session_id"])
+                assert (
+                    restored_session["wheel"] == "user"
+                    and restored_session["active_task_id"] is None
+                )
+                returns = [
+                    event
+                    for event in await repo.list_events(session_id=call["session_id"])
+                    if event["type"] == "wheel/return" and str(event["task_id"]) == task
+                ]
+                assert len(returns) == 1 and returns[0]["payload"]["from"] == "runtime"
             assert final == ("FAILED" if revoke else "SUCCEEDED")
             assert len(ctx.remote.calls) == (1 if revoke else steps)
             assert (await client.put(path + "/execution", json=body)).json() == receipt

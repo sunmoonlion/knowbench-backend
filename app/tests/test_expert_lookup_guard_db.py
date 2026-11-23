@@ -6,8 +6,8 @@ from decimal import Decimal
 
 import pytest
 from test_data_planning_runner_db import PlanningServer
-from test_workbench_advisor_db import close, seed
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import close, seed
 
 from app.application.workbench.find_expert import FindExpertService
 from app.domain.workbench.expert_lookup import LookupGuard

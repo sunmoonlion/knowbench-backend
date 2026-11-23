@@ -21,7 +21,7 @@ from test_knowbot_test_runs_db import (
     setup_test_computer,
     status,
 )
-from test_method_advisor_db import ROWS
+from test_method_task_runtime_db import ROWS
 from test_referenced_method_catalog import manifest
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401

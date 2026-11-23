@@ -12,7 +12,9 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from test_workbench_advisor_db import (
+from test_workbench_ledger_db import OWNER
+from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import (
     ANSWER,
     PLAN,
     ScriptedAppServer,
@@ -20,10 +22,8 @@ from test_workbench_advisor_db import (
     drive,
     seed,
 )
-from test_workbench_ledger_db import OWNER
-from test_workbench_ledger_db import db as db  # noqa: F401
 
-from app.application.workbench import advisor as advisor_module
+from app.application.workbench import task_runtime as task_runtime_module
 from app.application.workbench.ledger import Ledger
 from app.bootstrap.workbench import build_runner
 from app.domain.workbench.method_plan import PLAN_ARTIFACT
@@ -205,7 +205,7 @@ async def _run(
 ):
     """answers 里每一项在一次驾驶之后做：dict 是答复待答的问题，"cancel" 是用户叫停，
     "restart" 是换一个新进程接着驾驶。crash 是步骤 id：这一步刚开始时进程断掉一次。"""
-    original = advisor_module.Advisor.__init__
+    original = task_runtime_module.TaskRuntime.__init__
 
     def init(self, *a, **kw):
         kw["fixed_as_plan_owners"] = (
@@ -218,7 +218,7 @@ async def _run(
     async def subject_of_actor(self, actor_id):
         return SUBJECT
 
-    monkeypatch.setattr(advisor_module.Advisor, "__init__", init)
+    monkeypatch.setattr(task_runtime_module.TaskRuntime, "__init__", init)
     monkeypatch.setattr(WorkbenchRepository, "subject_of_actor", subject_of_actor)
     append = WorkbenchRepository.append_event
     crashed: list[str] = []
@@ -262,7 +262,7 @@ async def _run(
             await close(runner)
         await fake.close()
         monkeypatch.setattr(WorkbenchRepository, "append_event", append)
-        monkeypatch.setattr(advisor_module.Advisor, "__init__", original)
+        monkeypatch.setattr(task_runtime_module.TaskRuntime, "__init__", original)
 
 
 SCENARIOS = {

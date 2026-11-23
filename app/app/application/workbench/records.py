@@ -50,7 +50,7 @@ class ProjectRecords:
         if found["state"] in TASK_TERMINAL or not found.get("project_id"):
             raise RecordsRefused("the expert is not working on this task now")
         session = await self.repo.get_session(str(found["session_id"]))
-        if session["wheel"] != Wheel.advisor or str(session["active_task_id"]) != str(
+        if session["wheel"] != Wheel.runtime or str(session["active_task_id"]) != str(
             found["id"]
         ):
             raise RecordsRefused("the expert is not working on this task now")

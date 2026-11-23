@@ -1,11 +1,11 @@
-"""Missing MCP inventory settles through the real Runner/Advisor/Ledger path."""
+"""Missing MCP inventory settles through the real Runner/TaskRuntime/Ledger path."""
 
 import json
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
-from test_workbench_advisor_db import ScriptedAppServer, close, drive, seed
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import ScriptedAppServer, close, drive, seed
 
 from app.application.workbench import runner as runtime
 from app.domain.workbench.states import PLATFORM_FAILURE

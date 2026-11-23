@@ -13,9 +13,9 @@ from test_formal_host_calls_db import FORMAL_OPERATION, host_service
 from test_formal_method_catalog_db import admitted, catalog
 from test_formal_model_admission_db import _decide_case
 from test_source_licenses import license_record
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OTHER
 from test_workbench_ledger_db import db as db  # noqa: F401
+from test_workbench_task_runtime_db import close
 
 from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 from app.application.workbench.formal_test_runs import FormalExecutions

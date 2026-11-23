@@ -182,7 +182,7 @@ class FormalHostCalls:
         session = await self.repo.get_session(session_id, owner_actor_id=owner)
         if (
             str(session.get("active_task_id")) != task_id
-            or session["wheel"] != "advisor"
+            or session["wheel"] != "runtime"
         ):
             raise CapabilityError("Formal execution no longer owns this session")
         if isinstance(snapshot, ConsumerPlan):

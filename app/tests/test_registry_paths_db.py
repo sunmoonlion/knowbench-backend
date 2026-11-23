@@ -149,7 +149,7 @@ async def test_installation_and_two_derived_methods_in_one_turn(db):
     from formal_model_support import ModelServer, setup
     from formal_plan_support import freeze
     from test_formal_model_admission_db import _decide_case
-    from test_workbench_advisor_db import close
+    from test_workbench_task_runtime_db import close
 
     from app.application.workbench.formal_session_tools import (
         FormalSessionTools,

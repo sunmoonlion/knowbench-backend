@@ -9,15 +9,15 @@ import json
 import pytest
 from method_plan_fixtures import proposal
 from sqlalchemy import text
-from test_method_advisor_db import ROWS, Driver
 from test_method_plans_db import task
+from test_method_task_runtime_db import ROWS, Driver
 from test_referenced_method_catalog import manifest
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 
-from app.application.workbench.advisor import Advisor
 from app.application.workbench.execution_plan import final_results
 from app.application.workbench.expert_desk import ExpertDesk
+from app.application.workbench.task_runtime import TaskRuntime
 from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.repository import (
     SqlWorkbenchStores,
@@ -49,7 +49,7 @@ async def test_one_frozen_reference_catalog_runs_distinct_task_plans_and_keeps_v
             + [ROWS]
         )
         assert (
-            await Advisor(SqlWorkbenchStores(db), driver).drive(tid)
+            await TaskRuntime(SqlWorkbenchStores(db), driver).drive(tid)
             == TaskState.SUCCEEDED
         )
         async with db() as session:

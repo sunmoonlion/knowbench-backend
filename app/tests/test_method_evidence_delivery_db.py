@@ -11,16 +11,16 @@ from decimal import Decimal
 import pytest
 from method_plan_fixtures import proposal
 from sqlalchemy import text
-from test_method_advisor_db import patch_catalog
 from test_method_plans_db import task
+from test_method_task_runtime_db import patch_catalog
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 
-from app.application.workbench.advisor import Advisor
 from app.application.workbench.knowbot_compute import COMPUTE_EVENT, KnowbotCompute
 from app.application.workbench.records import ProjectRecords
 from app.application.workbench.run_files import task_dossier
 from app.application.workbench.run_reader import RunReader
+from app.application.workbench.task_runtime import TaskRuntime
 from app.application.workbench.tokens import (
     TokenIssuer,
     generate_private_key_pem,
@@ -289,7 +289,7 @@ async def test_selected_methods_deliver_only_verified_values_quotes_and_file(
             return TurnResult(f"turn-{n}", json.dumps(answer), {}, cost=Decimal("0.01"))
 
     driver = Driver()
-    result = await Advisor(
+    result = await TaskRuntime(
         SqlWorkbenchStores(db), driver, reader=reader, deliverables=files
     ).drive(tid)
     assert result == (TaskState.SUCCEEDED if fault is None else TaskState.WAITING)

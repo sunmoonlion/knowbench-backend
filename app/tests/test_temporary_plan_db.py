@@ -10,8 +10,8 @@ from formal_plan_support import setup_plan
 from formal_recursive_support import register_completed
 from test_capabilities_db import approval
 from test_ordinary_expert_execution_db import selected_match
-from test_workbench_advisor_db import drive
 from test_workbench_ledger_db import db as db
+from test_workbench_task_runtime_db import drive
 
 from app.domain.workbench.errors import StaleStateVersion
 from app.infrastructure.workbench.repository import WorkbenchRepository
@@ -500,7 +500,7 @@ async def test_repair_does_not_start_another_turn_after_planning_deadline(
     from datetime import UTC, datetime, timedelta
     from unittest.mock import Mock
 
-    from app.application.workbench import advisor
+    from app.application.workbench import task_runtime
 
     ctx = await setup_plan(db)
     await register_completed(db, ctx)
@@ -518,7 +518,7 @@ async def test_repair_does_not_start_another_turn_after_planning_deadline(
         client, path, selection, runner, _, model = match
         clock = Mock()
         clock.now.return_value = datetime.now(UTC) + timedelta(minutes=3)
-        monkeypatch.setattr(advisor, "datetime", clock)
+        monkeypatch.setattr(task_runtime, "datetime", clock)
         p = path + "/temporary-plan"
         (
             await client.put(p, json={"review_digest": selection["review_digest"]})

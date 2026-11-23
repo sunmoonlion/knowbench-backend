@@ -13,10 +13,10 @@ from test_service_function_management_db import (
     material_read_revision,
     revision,
 )
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER, seed
 from test_workbench_ledger_db import db as db
 from test_workbench_review_db import unbalanced
+from test_workbench_task_runtime_db import close
 from tool_invocation_support import ObservedPlatformTransport
 from tool_invocation_support import running_platform_world as world
 
@@ -244,7 +244,7 @@ async def test_calling_the_tools(served, db):  # noqa: F811
                 )
                 assert wrong.json()["error"]["code"] == -32602, gone
             shown = got.text + read.text
-            assert "token" not in shown and "Advisor step" not in shown
+            assert "token" not in shown and "Task runtime step" not in shown
     finally:
         await close(runner)
         await fake.close()
@@ -529,7 +529,7 @@ async def test_the_data_tools_are_relayed_to_knowbase(
             async with db() as s, s.begin():
                 await s.execute(
                     text(
-                        "update workbench_sessions set wheel = 'advisor',"
+                        "update workbench_sessions set wheel = 'runtime',"
                         " knowbase_session_id = 'kb-s-9',"
                         " knowbase_session_expires_at = now() + interval '1 hour'"
                         " where id = :s"

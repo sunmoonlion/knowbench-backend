@@ -147,7 +147,7 @@ async def active_source(repo, owner, task):
         str(snap.owner) != owner
         or task.get("cancel_requested_at")
         or task["state"] in TASK_TERMINAL
-        or session["wheel"] != "advisor"
+        or session["wheel"] != "runtime"
         or str(session["active_task_id"]) != str(task["id"])
         or task["original_input"]["input"].get("approval_digest") != task["pack_digest"]
     ):

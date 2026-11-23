@@ -4,13 +4,13 @@ import pytest
 from httpx import AsyncClient
 from sample_replies import PROFILE, SCOPE
 from sqlalchemy import text
-from test_workbench_advisor_db import close
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_mcp_routes import URL, bearer, client, tool
 from test_workbench_mcp_routes import served as served
 from test_workbench_records_db import talk
 from test_workbench_review_db import unbalanced
+from test_workbench_task_runtime_db import close
 from tool_invocation_support import ObservedPlatformTransport
 from tool_invocation_support import running_platform_world as world
 

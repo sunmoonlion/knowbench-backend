@@ -25,7 +25,6 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench import cleanup_observation
-from app.application.workbench.advisor import Advisor, TurnResult
 from app.application.workbench.deliverable_check import DeliverableCheck
 from app.application.workbench.execution_plan import (
     active_method_step,
@@ -40,6 +39,8 @@ from app.application.workbench.runtime_tools import (
     declared_data_tools,
     unavailable_data_tools,
 )
+from app.application.workbench.task_runtime import TaskRuntime
+from app.application.workbench.turn import TurnResult
 from app.domain.workbench import step_progress
 from app.domain.workbench.capabilities import disabled_mcp_config
 from app.domain.workbench.compute_progress import (
@@ -850,7 +851,7 @@ class SandboxLink:
         *,
         timeout: float | None = None,  # noqa: ASYNC109
     ) -> TurnResult:  # noqa: ASYNC109
-        """TurnDriver：顾问在用户的 thread 上发一个 turn 并等它结束。"""
+        """TurnDriver：任务运行时在用户的 thread 上发一个 turn 并等它结束。"""
         client = await self.ensure_connected()
         await self.ensure_thread(thread_id)
         plan = await self.runner.turn_plan(
@@ -1558,9 +1559,9 @@ class SandboxLink:
                     session_id=session_id, task_id=task_id
                 )
             )
-            # 策略只对「顾问驾驶且找得到步骤」有；没有 Task、找不到专家包或步骤：问人
+            # 策略只对「任务运行时驾驶且找得到步骤」有；没有 Task、找不到专家包或步骤：问人
             tier = "ask"
-            if wheel == Wheel.advisor and pack is not None and step is not None:
+            if wheel == Wheel.runtime and pack is not None and step is not None:
                 tier = decide(
                     pack.policy_for(step), category, tokens, after_decline=after_decline
                 )
@@ -1792,7 +1793,7 @@ class SandboxLink:
         """这条线现在谁在开、在哪个 Task 的哪一步。"""
         wheel = str(session["wheel"])
         task = pack = step = None
-        if wheel == Wheel.advisor and session.get("active_task_id"):
+        if wheel == Wheel.runtime and session.get("active_task_id"):
             task = await repo.get_task(str(session["active_task_id"]))
             pack = await display_for_task(repo, task)
             step = pack.step(int(task["current_step"])) if pack else None
@@ -1831,7 +1832,7 @@ class SandboxLink:
         prompt: InteractionPrompt,
         waiting_reason: WaitingReason,
     ) -> dict[str, Any]:
-        """问人只有一条路：开 Interaction。顾问驾驶时 Task 同一提交进 WAITING；自驾只开待办。"""
+        """问人只有一条路：开 Interaction。任务运行时驾驶时 Task 同一提交进 WAITING；自驾只开待办。"""
         session_id = str(session["id"])
         task = where["task"]
         async with self.runner.stores() as repo:
@@ -2116,7 +2117,7 @@ class SandboxLink:
                 )
         thread_id = thread_id_of(params)
         if codex == "cancel" and thread_id:
-            # 停下：整轮中断。顾问驾驶时这一步按「用户停下」收尾（advisor._step_once），不是出错
+            # 停下：整轮中断。任务运行时驾驶时这一步按「用户停下」收尾（task_runtime._step_once），不是出错
             self.user_stops[thread_id] = {
                 "note": note,
                 "source": source,
@@ -2193,9 +2194,9 @@ class SandboxLink:
             task_id = str(task["id"]) if task else None
             step_id = step.step_id if step else None
             refuse = None
-            if wheel == Wheel.advisor:
+            if wheel == Wheel.runtime:
                 if any(q["is_secret"] for q in questions):
-                    refuse = "secret"  # 顾问不能向用户收口令
+                    refuse = "secret"  # 任务运行时不能向用户收口令
                 elif pack is not None and step is not None:
                     policy = pack.policy_for(step)
                     if policy.questions == "deny":
@@ -2654,7 +2655,7 @@ class Runner:
                         stopped=stopped,
                     )
             log.info(
-                "advisor stopped task=%s state=%s (nobody was driving it; turn=%s stopped=%s)",
+                "task_runtime stopped task=%s state=%s (nobody was driving it; turn=%s stopped=%s)",
                 task_id,
                 state,
                 leftover,
@@ -3076,7 +3077,7 @@ class Runner:
             self.driving.pop(task_id, None)
 
     async def _drive(self, task_id: str, link: SandboxLink) -> None:
-        advisor = Advisor(
+        task_runtime = TaskRuntime(
             self.stores,
             link,
             records=self.records,
@@ -3086,15 +3087,15 @@ class Runner:
             capabilities=self.capabilities,
         )
         try:
-            state = await advisor.drive(task_id)
-            log.info("advisor stopped task=%s state=%s", task_id, state)
+            state = await task_runtime.drive(task_id)
+            log.info("task_runtime stopped task=%s state=%s", task_id, state)
         except (StaleStateVersion, InvalidTransition) as exc:
             # 别人（取消、测试超时、对账）已经把委托收了尾，这边写状态撞上了：安静停下（0034 §三.1）
             async with self.stores() as repo:
                 task = await repo.get_task(task_id)
             if TaskState(task["state"]) in TASK_TERMINAL:
                 log.info(
-                    "advisor stopped task=%s state=%s (settled elsewhere: %s)",
+                    "task_runtime stopped task=%s state=%s (settled elsewhere: %s)",
                     task_id,
                     task["state"],
                     type(exc).__name__,
@@ -3102,23 +3103,25 @@ class Runner:
                 async with self.stores() as repo:
                     await Ledger(repo).release_turn(task_id)  # 这边的那一轮已经结束
             else:
-                await self._crashed(advisor, task_id, exc)
+                await self._crashed(task_runtime, task_id, exc)
         except Exception as exc:  # noqa: BLE001
-            await self._crashed(advisor, task_id, exc)
+            await self._crashed(task_runtime, task_id, exc)
         finally:
             self.driving.pop(task_id, None)
 
-    async def _crashed(self, advisor: Advisor, task_id: str, exc: Exception) -> None:
-        log.exception("advisor crashed task=%s", task_id)  # 只在 except 里调
+    async def _crashed(
+        self, task_runtime: TaskRuntime, task_id: str, exc: Exception
+    ) -> None:
+        log.exception("task_runtime crashed task=%s", task_id)  # 只在 except 里调
         try:
-            await advisor.fail_after_crash(
+            await task_runtime.fail_after_crash(
                 task_id, f"platform error: {type(exc).__name__}"
             )
         except Exception:  # noqa: BLE001
             log.exception("could not close the crashed task=%s", task_id)
 
     async def wait_drivers(self, timeout: float = 60) -> None:  # noqa: ASYNC109
-        """测试与优雅停机用：等正在驾驶的顾问停下。"""
+        """测试与优雅停机用：等正在驾驶的任务运行时停下。"""
         tasks = list(self.driving.values())
         if tasks:
             await asyncio.wait(tasks, timeout=timeout)

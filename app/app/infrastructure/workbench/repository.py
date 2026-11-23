@@ -1048,7 +1048,7 @@ class WorkbenchRepository(
                    from workbench_tasks t join workbench_sessions s on s.id = t.session_id
                    where s.environment_id = :env and s.owner_actor_id = :owner
                      and t.owner_actor_id = :owner and s.active_task_id = t.id
-                     and s.wheel = 'advisor' and t.state = 'WAITING'
+                     and s.wheel = 'runtime' and t.state = 'WAITING'
                      and t.waiting_reason = 'ENVIRONMENT' and t.cancel_requested_at is null
                      and t.active_attempt_id is null and t.active_interaction_id is null
                    order by t.id for update of t"""

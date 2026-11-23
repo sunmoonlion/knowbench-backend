@@ -53,7 +53,7 @@ async def test_lookup_runs_beside_analysis_but_each_lane_remains_serial(db, wait
         lookup = await repo.get_task(find["task_id"])
         assert not lookup["original_input"]["client_context"].get("queued_behind")
         assert lookup["budget"]["limit"] == "2"
-        assert (await repo.get_session(find["session_id"]))["wheel"] == "advisor"
+        assert (await repo.get_session(find["session_id"]))["wheel"] == "runtime"
         next_work = await execution(repo, pid, "work-lane-next")
         next_find = await svc.start(
             owner_actor_id=OWNER,
@@ -85,7 +85,7 @@ async def test_lookup_runs_beside_analysis_but_each_lane_remains_serial(db, wait
         assert (await repo.get_task(next_work["task_id"]))["original_input"][
             "client_context"
         ]["queued_behind"] == work["task_id"]
-        assert (await repo.get_session(sid))["wheel"] == "advisor"
+        assert (await repo.get_session(sid))["wheel"] == "runtime"
 
 
 async def test_lookup_does_not_block_execution_or_interactive_work(db):
