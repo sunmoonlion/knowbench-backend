@@ -480,3 +480,73 @@ def test_multiple_planning_replies_cannot_choose_a_winner():
         {"type": "agentMessage", "text": '{"action":"inspect","methods":["a"]}'},
     ]
     assert turn_answer(messages) is None
+
+
+@pytest.mark.parametrize("author", [False, True])
+def test_live_planning_checks_for_a_reserved_choice_before_inspection(author):
+    task, _ = setup(author=author)
+    request = "两套材料都齐全，我稍后指定用哪套。"
+    if author:
+        task["original_input"]["input"]["incubation"]["seed"]["text"] = request
+    else:
+        task["original_input"]["input"]["text"] = request
+    planner = HierarchicalPlanner(task)
+    inspect = {"action": "inspect", "methods": ["first"]}
+    with pytest.raises(ValueError, match="pending_choice"):
+        planner.advance(inspect, require_choice_check=True)
+    with pytest.raises(ValueError, match="must quote"):
+        planner.advance(
+            {**inspect, "pending_choice": "a catalog suggestion"},
+            require_choice_check=True,
+        )
+    result = planner.advance(
+        {**inspect, "pending_choice": "我稍后指定用哪套"}, require_choice_check=True
+    )
+    selection = result["selection"] if author else result
+    assert selection["status"] == "clarify" and selection["steps"] == []
+    assert "我稍后指定用哪套" in selection["reason"]
+
+
+def test_deferred_choice_wins_over_binding_and_a_later_answer_allows_binding():
+    task, _ = setup()
+    src = task["original_input"]["input"]
+    src["text"] = "稍后由我选择口径；两份数据都已备好。"
+    planner = HierarchicalPlanner(task)
+    raw = {**decision(proposal()["steps"][0]), "pending_choice": "稍后由我选择口径"}
+    stopped = planner.advance(raw, require_choice_check=True)
+    assert stopped["status"] == "clarify" and not stopped["steps"]
+
+    src["clarification"] = "已经确定采用合并口径。"
+    src["previous_selection"] = stopped
+    revised = HierarchicalPlanner(task)
+    inspect(revised, "first")
+    ready = revised.advance({**raw, "pending_choice": None}, require_choice_check=True)
+    assert ready["status"] == "ready"
+
+
+def test_compact_planner_prompt_preserves_all_catalog_and_schema_values():
+    import json
+
+    from app.application.workbench.task_runtime import TaskRuntime
+    from app.domain.workbench.packs import find_pack
+
+    task, _ = setup()
+    planner = HierarchicalPlanner(task)
+    context = planner.prompt()
+    rules, schema = planner.model_contract(context)
+    step = (
+        find_pack("FIND_EXPERT", "7")
+        .workflow[0]
+        .model_copy(update={"method_text": rules, "output_schema": schema})
+    )
+    context["goal"] = "术语中的 空格、冒号: 与逗号, 都要保留"
+    original = TaskRuntime.compose(step, context, {}, 0)
+    compact = TaskRuntime.compose(step, context, {}, 0, compact_json=True)
+    assert len(compact) < len(original)
+    assert [
+        json.loads(line) for line in compact.splitlines() if line.startswith(("{", "["))
+    ] == [
+        json.loads(line)
+        for line in original.splitlines()
+        if line.startswith(("{", "["))
+    ]

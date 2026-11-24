@@ -533,6 +533,7 @@ class TaskRuntime:
                 inputs,
                 reworks,
                 rework_failures=rejected[-1].get("failures") if rejected else None,
+                compact_json=planner is not None,
                 folder=folder,
                 records_task=task_id if self.records and not sealed else None,
                 tool_task=task_id if self.records else None,
@@ -629,7 +630,7 @@ class TaskRuntime:
                         task, await repo.latest_task_payload(task_id, htn.EVENT)
                     )
                     planner.turns = len(await repo.list_attempts(task_id)) - 1
-                    final = planner.advance(verdict.parsed)
+                    final = planner.advance(verdict.parsed, require_choice_check=True)
                     if final is None:
                         planning = planner.snapshot()
                     else:
@@ -1936,6 +1937,7 @@ class TaskRuntime:
         reworks: int,
         *,
         rework_failures: list[str] | None = None,
+        compact_json: bool = False,
         records_task: str | None = None,
         tool_task: str | None = None,
         listed_data_task: str | None = None,
@@ -1946,12 +1948,13 @@ class TaskRuntime:
         folder: str | None = None,
         intake: Scope | None = None,
     ) -> str:
+        separators = (",", ":") if compact_json else None
         parts = [
             f"# Task runtime step: {step.title} ({step.step_id}, v{step.step_version})",
             "You are executing one step of a supervised research workflow. Do exactly this step, nothing beyond it.",
             "",
             "## The user's question",
-            json.dumps(question, ensure_ascii=False),
+            json.dumps(question, ensure_ascii=False, separators=separators),
             "",
         ]
         if intake:
@@ -2077,7 +2080,7 @@ class TaskRuntime:
                 if "$defs" in step.output_schema
                 else f"Produce the artifact `{step.output_artifact}` as ONE JSON object with this shape:"
             ),
-            json.dumps(step.output_schema, ensure_ascii=False),
+            json.dumps(step.output_schema, ensure_ascii=False, separators=separators),
         ]
         if step.acceptance:
             parts += [

@@ -520,6 +520,7 @@ async def test_selection_is_checked_inside_the_bounded_incubation_round(db, mist
     clear = dict(action="clarify", reason="哪个阈值？")
     invalid = dict(
         action="hit",
+        pending_choice=None,
         reason="选路",
         operator="leaf",
         step={"id": "use", "method": "unknown", "task": "核对"},
