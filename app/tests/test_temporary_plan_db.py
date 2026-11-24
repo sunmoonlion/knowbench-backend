@@ -20,6 +20,7 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 def receipt_proposal():
     return {
         "action": "hit",
+        "pending_choice": None,
         "operator": "leaf",
         "reason": "Use the qualified receipt tool.",
         "step": {
@@ -494,8 +495,9 @@ async def test_immediate_plan_repairs_the_graph_once_under_the_original_task_bud
             assert receipt["explanation"] == "selection_repair_failed"
 
 
-async def test_repair_does_not_start_another_turn_after_planning_deadline(
-    db, monkeypatch
+@pytest.mark.parametrize("inspect_first", [False, True])
+async def test_no_repair_or_inspection_continuation_after_planning_deadline(
+    db, monkeypatch, inspect_first
 ):
     from datetime import UTC, datetime, timedelta
     from unittest.mock import Mock
@@ -513,7 +515,9 @@ async def test_repair_does_not_start_another_turn_after_planning_deadline(
         {ctx.leaf.reference},
         ctx.owner,
         ctx.factory,
-        planning_choice=bad,
+        planning_choice={"action": "inspect", "pending_choice": None, "methods": ["m1"]}
+        if inspect_first
+        else bad,
     ) as match:
         client, path, selection, runner, _, model = match
         clock = Mock()
@@ -535,6 +539,16 @@ async def test_repair_does_not_start_another_turn_after_planning_deadline(
 async def test_catalog_inspection_is_settled_and_resumed_before_user_confirmation(
     db, monkeypatch
 ):
+    from datetime import UTC, datetime, timedelta
+    from unittest.mock import Mock
+
+    from app.application.workbench import task_runtime
+
+    # A shorter per-turn timeout must not replace the 150-second whole-plan budget.
+    clock = Mock()
+    clock.now.return_value = datetime.now(UTC) + timedelta(seconds=40)
+    monkeypatch.setattr(task_runtime, "datetime", clock)
+    monkeypatch.setattr(task_runtime, "STEP_TIMEOUT_SECONDS", 20.0)
     ctx = await setup_plan(db)
     await register_completed(db, ctx)
     ctx.remote.calls.clear()
@@ -545,7 +559,11 @@ async def test_catalog_inspection_is_settled_and_resumed_before_user_confirmatio
         {ctx.leaf.reference},
         ctx.owner,
         ctx.factory,
-        planning_choice={"action": "inspect", "methods": ["m1"]},
+        planning_choice={
+            "action": "inspect",
+            "methods": ["m1"],
+            "pending_choice": None,
+        },
     ) as match:
         client, path, selection, runner, _, model = match
         model.replies.append(json.dumps(receipt_proposal()))
@@ -570,3 +588,52 @@ async def test_catalog_inspection_is_settled_and_resumed_before_user_confirmatio
             assert len(attempts) == 2 and all(
                 a["status"] == "COMPLETED" for a in attempts
             )
+
+
+async def test_focused_replan_carries_old_tree_across_revocation_and_only_offers_current_methods(
+    db, monkeypatch
+):
+    ctx = await setup_plan(db)
+    expert = await register_completed(db, ctx)
+    qualified = {ctx.leaf.reference}
+    async with selected_match(
+        db,
+        monkeypatch,
+        ctx.leaf,
+        qualified,
+        ctx.owner,
+        ctx.factory,
+        planning_choice=receipt_proposal(),
+    ) as match:
+        client, path, selection, runner, _, model = match
+        qualified.add(expert.reference)
+        path += "/temporary-plan"
+        review = {"review_digest": selection["review_digest"]}
+        for index, ref in enumerate((expert.reference, ctx.leaf.reference)):
+            response = await client.put(path, json=review)
+            response.raise_for_status()
+            tid = response.json()["planning_task"]
+            async with db() as session:
+                task = await WorkbenchRepository(session).get_task(tid)
+            question = task["original_input"]["input"]
+            entries = question["catalog"]["entries"]
+            alias = next(
+                e["alias"]
+                for e in entries
+                if e["reference"] == ref.model_dump(mode="json")
+            )
+            pick = receipt_proposal()
+            pick["step"]["method"] = alias
+            if index:
+                assert len(entries) == 1
+                assert question["previous_selection"]["tree"]["nodes"][0]["id"] == "n1"
+            model.replies[:] = [json.dumps(pick)] * 2
+            await drive(runner)
+            receipt = (await client.get(path)).json()
+            assert receipt["outcome"] == "plan", receipt
+            if not index:
+                qualified.remove(expert.reference)
+                review.update(
+                    previous=tid, clarification="[n1] Replace the withdrawn method."
+                )
+        assert receipt["selection"]["steps"][0]["method"] == alias

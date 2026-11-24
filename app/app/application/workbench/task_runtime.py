@@ -348,15 +348,15 @@ class TaskRuntime:
             if task["profile_id"] == FIND_EXPERT.profile_id and str(
                 task.get("profile_version")
             ) in {"6", "7"}:
-                timeout = min(timeout or 150, 150)
+                remaining = 150.0
                 if (reworks or (planner and attempts)) and str(
                     task["profile_version"]
                 ) == "7":
                     elapsed = (
                         datetime.now(UTC) - attempts[0]["created_at"]
                     ).total_seconds()
-                    timeout -= max(0, elapsed)
-                    if timeout <= 0:
+                    remaining -= max(0, elapsed)
+                    if remaining <= 0:
                         return (
                             await led.transition(
                                 task_id,
@@ -364,6 +364,7 @@ class TaskRuntime:
                                 reason={"code": "selection_planning_timeout"},
                             )
                         )["state"]
+                timeout = min(timeout, remaining) if timeout is not None else remaining
             inputs = {}
             for name in () if view.planned else step.input_refs:
                 art = await repo.get_artifact(task_id=task_id, name=name)

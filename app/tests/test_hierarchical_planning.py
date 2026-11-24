@@ -139,8 +139,9 @@ def test_focused_revision_keeps_parent_and_invalidates_changed_pins():
     ctx["instruction"] = "[n1_1] 更正提取范围"
     revised = HierarchicalPlanner(task)
     assert revised.current.id == "n1_1" and revised.nodes["n1"].status == "split"
-    ctx["selection_context"]["methods"]["first"]["declaration"]["title"] = "改版"
-    assert HierarchicalPlanner(task).current.id == "n1"
+    ctx["selection_context"]["methods"]["b"]["declaration"]["title"] = "保留的分支改版"
+    stale = HierarchicalPlanner(task)
+    assert stale.stale_edit and stale.current.id == "n1"
 
 
 def test_contract_conflict_backtracks_once_then_exposes_no_executable_steps():
@@ -550,3 +551,110 @@ def test_compact_planner_prompt_preserves_all_catalog_and_schema_values():
         for line in original.splitlines()
         if line.startswith(("{", "["))
     ]
+
+
+@pytest.mark.parametrize("author", [False, True])
+def test_separate_inspections_can_finish_a_branch_in_four_turns(author):
+    task, _ = setup(author=author)
+    src = task["original_input"]["input"]
+    if author:
+        methods = src["incubation"]["selection_context"]["methods"]
+        methods["extra"] = deepcopy(methods["first"])
+    else:
+        entries = src["catalog"]["entries"]
+        entries.append({**entries[0], "alias": "extra"})
+    seed = HierarchicalPlanner(task)
+    assert not seed.prompt()["contracts"]
+    inspect(seed, "first", "a")
+    inspect(seed, "b")
+    resumed = HierarchicalPlanner(task, seed.snapshot())
+    assert list(resumed.prompt()["contracts"]) == ["first", "a", "b"]
+    first, branch = proposal()["steps"]
+    assert (
+        resumed.advance(
+            decision(branch, "branch", children={"prepare": "摘取原表明细"})
+        )
+        is None
+    )
+    result = resumed.advance(decision(first))
+    chosen = result["selection"] if author else result
+    assert chosen["status"] == "ready" and resumed.turns == 4
+    assert chosen["steps"][-1]["cases"] == {"A": "a", "B": "b"}
+
+
+def test_disclosure_window_evicts_oldest_and_keeps_requested_contracts_atomic():
+    task, _ = setup(author=True)
+    p = HierarchicalPlanner(task)
+    for entry in p.methods.values():
+        entry["declaration"]["purpose"] = "字" * 15000
+    inspect(p, "a", "b")
+    inspect(p, "a", "first")
+    assert p.shown == ["a", "first"]
+    inspect(p, "b")
+    assert list(p.prompt()["contracts"]) == ["first", "b"]
+    with pytest.raises(ValueError, match="fewer"):
+        p.advance({"action": "inspect", "methods": ["a", "first", "b"]})
+    assert p.shown == ["first", "b"]
+    p.methods["a"]["declaration"]["purpose"] = "宽" * 44000
+    result = p.advance({"action": "inspect", "methods": ["a", "a"]})
+    assert result["selection"]["status"] == "gap"
+
+
+@pytest.mark.parametrize("author", [False, True])
+@pytest.mark.parametrize("target", ["n1", "n1_1"])
+def test_edit_can_replace_withdrawn_leaf_without_reusing_its_pin(author, target):
+    task, _ = setup(author=author)
+    planner = HierarchicalPlanner(task)
+    result = planner.advance(route(planner))
+    previous = result["selection"] if author else result
+    src = task["original_input"]["input"]
+    amendment = f"[{target}] 使用新的提取方法"
+    if author:
+        material = src["incubation"]
+        ctx = material["selection_context"]
+        ctx["previous"] = previous
+        replacement = deepcopy(ctx["methods"].pop("first"))
+        replacement["reference"]["method_id"] = str(uuid4())
+        ctx["methods"]["new"] = replacement
+        material["instruction"] = amendment
+    else:
+        src.update(previous_selection=previous, clarification=amendment)
+        entry = src["catalog"]["entries"][0]
+        entry["alias"] = "new"
+        entry["reference"]["method_id"] = str(uuid4())
+    revised = HierarchicalPlanner(task)
+    assert not revised.stale_edit and revised.current.id == target
+    assert "first" not in revised.prompt()["authorized_index"]
+    assert "first" not in revised.used_pins()
+    inspect(revised, "new")
+    child = {**proposal()["steps"][0], "method": "new"}
+    updated = revised.advance(decision(child))
+    selection = updated["selection"] if author else updated
+    assert selection["status"] == "ready"
+    if target == "n1_1":
+        assert selection["steps"][-1] == previous["steps"][-1]
+    assert set(selection["tree"]["pins"]) == (
+        {"new", "a", "b"} if target == "n1_1" else {"new"}
+    )
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_unphased_explanation_can_precede_only_one_complete_decision(fenced):
+    import json
+
+    from app.domain.workbench.hierarchical_planning import turn_answer
+
+    answer = '{"action":"gap","reason":"缺少能生成汇总报告的方法"}'
+    final = f"```json\n{answer}\n```" if fenced else answer
+
+    def messages(*parts):
+        return [{"type": "agentMessage", "text": part} for part in parts]
+
+    replies = messages(
+        "Checking supplied `m1`.", "各项核验都有，缺少汇总。\n" + final
+    )
+    assert json.loads(turn_answer(replies)) == json.loads(answer)
+    assert turn_answer(messages(answer, final)) is None
+    assert turn_answer(messages(answer + answer)) is None
+    assert turn_answer(messages("example: [", answer + "]")) is None
+    assert turn_answer(messages("Explanation.", final + " trailing")) is None

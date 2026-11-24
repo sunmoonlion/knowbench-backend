@@ -378,8 +378,14 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                     **(
                         {"previous_selection": choice.selection.model_dump(mode="json")}
                         if isinstance(choice, GraphChoice)
-                        and set(choice.aliases)
-                        <= {e["alias"] for e in directory["entries"]}
+                        and (
+                            (
+                                choice.selection.tree
+                                and htn.FOCUSED_AMENDMENT.match(command.clarification)
+                            )
+                            or set(choice.aliases)
+                            <= {e["alias"] for e in directory["entries"]}
+                        )
                         else {}
                     ),
                     "clarification": command.clarification,
