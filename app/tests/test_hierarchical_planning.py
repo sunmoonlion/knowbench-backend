@@ -100,6 +100,7 @@ async def test_both_entries_resume_then_compile_only_the_selected_route(author):
     assert resumed.prompt()["required_outputs"]["value"]["output"] == "receipt"
     out = resumed.advance(leaf)
     artifact = out["selection"] if author else out
+    assert "patterns" not in artifact
     assert artifact["status"] == "ready"
     assert [s["id"] for s in artifact["steps"]] == ["n1_1", "n1"]
     assert set(artifact["tree"]["pins"]) == {"a", "b", "first"}
@@ -128,6 +129,21 @@ async def test_both_entries_resume_then_compile_only_the_selected_route(author):
         )
     with pytest.raises(UnmatchedCandidate):
         select_plan(root, {"label": "C"})
+
+
+@pytest.mark.parametrize("author", [False, True])
+def test_replanning_a_legacy_sketch_supplies_business_structure_without_labels(author):
+    task, _ = setup(author=author)
+    src = task["original_input"]["input"]
+    previous = proposal()
+    if author:
+        src["incubation"]["selection_context"]["previous"] = previous
+    else:
+        src["previous_selection"] = previous
+    brief = HierarchicalPlanner(task).prompt()["request"]["previous_selection"]
+    assert "patterns" not in brief
+    assert brief["steps"] == previous["steps"]
+    assert brief["routing_required"] is True
 
 
 def test_focused_revision_keeps_parent_and_invalidates_changed_pins():
@@ -233,6 +249,15 @@ def test_schema_dictionary_round_trips_and_legacy_receipts_still_bind_every_capa
     legacy["digest"] = digest(legacy)
     assert same_runtime(legacy, current)
     assert not same_runtime(legacy, host_capabilities(False, False, True))
+    for old in (legacy, current):
+        old = {k: v for k, v in old.items() if k != "digest"}
+        old["hints"] = {
+            k: f"P{i} {v}" for i, (k, v) in enumerate(old["hints"].items(), 1)
+        }
+        old["digest"] = digest(old)
+        assert same_runtime(old, current)
+        assert not same_runtime(old, host_capabilities(False, False, True))
+        assert not same_runtime({**old, "digest": "invalid"}, current)
 
 
 def test_gap_with_search_suggestion_does_not_consume_a_repair():
@@ -317,7 +342,8 @@ def test_map_requires_human_bound_and_verified_worker_output(agreed):
     worker = proposal()["steps"][0]
     worker["inputs"] = {"value": {"source": "object_item", "name": "objects"}}
     result = p.advance(decision(worker))["selection"]
-    assert result["patterns"] == ["P4"] and result["object_batch"]["max_objects"] == 3
+    assert "patterns" not in result
+    assert result["object_batch"]["max_objects"] == 3
 
 
 def test_independent_checks_share_source_but_receive_different_target_parameters():

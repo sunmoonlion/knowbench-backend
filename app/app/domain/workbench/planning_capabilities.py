@@ -24,12 +24,25 @@ def requirements(question, explicit=()):
     )
 
 
-PATTERN_HINTS = {
-    "sequence": "P1 Pass a verified named output to the next method.",
-    "join": "P2 Run fixed branches and join their named results.",
-    "independent_review": "P3 Isolate independent reviews, then compare under the approved rules.",
-    "object_batch": "P4 Expand a confirmed bounded object list and aggregate verified outputs.",
-    "conditional": "P5 Choose a frozen candidate by an explicit input rule.",
+CAPABILITY_HINTS = {
+    "sequence": "Pass a verified named output to the next method.",
+    "join": "Run fixed branches and join their named results.",
+    "independent_review": "Isolate independent reviews, then compare under the approved rules.",
+    "object_batch": "Expand a confirmed bounded object list and aggregate verified outputs.",
+    "conditional": "Choose a frozen candidate by an explicit input rule.",
+}
+
+
+# Exact hint text included in capability digests before step labels were retired.
+LEGACY_HINTS = {
+    name: f"{label} {CAPABILITY_HINTS[name]}"
+    for name, label in {
+        "sequence": "P1",
+        "join": "P2",
+        "independent_review": "P3",
+        "object_batch": "P4",
+        "conditional": "P5",
+    }.items()
 }
 
 
@@ -42,21 +55,23 @@ CONSUMER_MAX_TURNS = 4
 def same_runtime(saved, current):
     if saved == current:
         return True
-    if (
-        saved.get("contract") != "knowbench/consumer-planning/v1"
-        or current.get("contract") != "knowbench/consumer-planning/v2"
-    ):
+    if current.get("contract") != "knowbench/consumer-planning/v2":
         return False
-    # Previously confirmed plans retain the exact v1 capability attestation.
-    legacy = {k: v for k, v in current.items() if k != "digest"}
-    legacy["contract"] = saved["contract"]
-    legacy["limits"] = {
-        k: v
-        for k, v in legacy["limits"].items()
-        if k not in ("planning_nodes", "planning_turns", "planning_depth")
-    }
-    legacy["limits"].update(candidate_nodes=8, context_bytes=16000)
-    return saved == {**legacy, "digest": digest(legacy)}
+    expected = {k: v for k, v in current.items() if k != "digest"}
+    if saved.get("contract") == "knowbench/consumer-planning/v1":
+        expected["contract"] = saved["contract"]
+        expected["limits"] = {
+            k: v
+            for k, v in expected["limits"].items()
+            if k not in ("planning_nodes", "planning_turns", "planning_depth")
+        }
+        expected["limits"].update(candidate_nodes=8, context_bytes=16000)
+    # A stored receipt binds the full capability inventory, including its old copy.
+    for hints in (CAPABILITY_HINTS, LEGACY_HINTS):
+        receipt = {**expected, "hints": hints}
+        if saved == {**receipt, "digest": digest(receipt)}:
+            return True
+    return False
 
 
 def capabilities(service):
@@ -79,7 +94,7 @@ def host_capabilities(independent_review, script, material_read):
     doc = {
         "contract": "knowbench/consumer-planning/v2",
         "patterns": enabled,
-        "hints": PATTERN_HINTS,
+        "hints": CAPABILITY_HINTS,
         "script": bool(script),
         "material_read": bool(material_read),
         "limits": {
@@ -104,7 +119,7 @@ def supports_graph(definition):
     patterns = set()
     if review_group(p):
         patterns.add("independent_review")
-    elif p.object_batch:
+    if p.object_batch:
         patterns.add("object_batch")
     else:
         if any(len(step.depends_on) == 1 for step in p.steps):

@@ -4,6 +4,7 @@
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from app.domain.workbench.formal_method_admission_generated import FormalMethodDraft
 from app.domain.workbench.formal_method_compiler_generated import (
@@ -37,13 +38,6 @@ class DeliveryCriteria(Protocol):
 
 Pattern = Literal["P1", "P2", "P3", "P4", "P5"]
 Short = Annotated[str, Field(min_length=1, max_length=1500, pattern=r"\S")]
-FEATURES = dict(
-    P1="sequence",
-    P2="join",
-    P3="independent_review",
-    P4="object_batch",
-    P5="conditional",
-)
 
 
 class SketchStep(Strict):
@@ -111,7 +105,11 @@ class PlanningTree(Strict):
 class Selection(Strict):
     status: Literal["ready", "clarify", "gap"]
     reason: Short
-    patterns: tuple[Pattern, ...] = Field(max_length=5)
+    # Read pre-HTN handbacks without advertising their labels in model schemas.
+    # Preserve explicit empty arrays for the digest of an existing reviewed plan.
+    patterns: SkipJsonSchema[tuple[Pattern, ...] | None] = Field(
+        default=None, max_length=5, exclude_if=lambda v: v is None
+    )
     steps: tuple[SketchStep, ...] = Field(max_length=16)
     routing_required: bool = Field(strict=True)
     tree: PlanningTree | None = Field(default=None, exclude_if=lambda v: v is None)
@@ -127,7 +125,7 @@ class Selection(Strict):
             )
         if self.status == "ready" and not self.steps:
             raise ValueError("A ready sketch needs an available method")
-        if len(set(self.patterns)) != len(self.patterns):
+        if self.patterns and len(set(self.patterns)) != len(self.patterns):
             raise ValueError("Duplicate pattern")
         return self
 
@@ -177,23 +175,19 @@ class SelectionContext(Strict):
     previous: Selection | None = Field(default=None, exclude_if=lambda v: v is None)
 
 
-def graph_patterns(selection: Selection) -> set[str]:
-    patterns = {"P4"} if selection.object_batch else set()
+def required_features(selection: Selection) -> set[str]:
+    features = {"object_batch"} if selection.object_batch else set()
     for step in selection.steps:
-        deps = {
-            b.step
-            for b in step.inputs.values()
-            if b.source == "step" or b.source == "object_rows"
-        }
+        deps = {b.step for b in step.inputs.values() if b.source == "step"}
         if step.cases:
-            patterns.add("P5")
+            features.add("conditional")
         if step.reviews:
-            patterns.add("P3")
-        elif len(deps) > 1:
-            patterns.add("P2")
-        elif deps and not selection.object_batch:
-            patterns.add("P1")
-    return patterns
+            features.add("independent_review")
+        if len(deps) > 1:
+            features.add("join")
+        elif deps:
+            features.add("sequence")
+    return features
 
 
 def routing_alternatives(selection: Selection, methods: dict) -> list[str]:
@@ -220,13 +214,25 @@ def routing_alternatives(selection: Selection, methods: dict) -> list[str]:
 def review_issue(selection: Selection, enabled: dict[str, bool]) -> str | None:
     if selection.status != "ready":
         return None
-    patterns = graph_patterns(selection)
-    if selection.routing_required != ("P5" in patterns):
+    features = required_features(selection)
+    if selection.routing_required != ("conditional" in features):
         return "selection_route"
-    if "P4" in patterns and (len(selection.steps) != 2 or patterns != {"P4"}):
+    if "object_batch" in features and (
+        len(selection.steps) != 2 or features != {"object_batch"}
+    ):
         return "selection_capability"
-    if "P3" in patterns and (len(selection.steps) not in (2, 3) or patterns != {"P3"}):
-        return "selection_capability"
+    if "independent_review" in features:
+        *producers, reviewer = selection.steps
+        if (
+            len(producers) not in (1, 2)
+            or set(reviewer.reviews) != {step.id for step in producers}
+            or any(
+                s.reviews or any(b.source == "step" for b in s.inputs.values())
+                for s in producers
+            )
+            or "conditional" in features
+        ):
+            return "selection_capability"
     for step in selection.steps:
         if step.cases or step.route_input:
             binding = step.inputs.get(step.route_input) if step.route_input else None
@@ -237,16 +243,30 @@ def review_issue(selection: Selection, enabled: dict[str, bool]) -> str | None:
             if set(step.reviews) != deps or len(deps) not in (1, 2):
                 return "selection_review"
     # A label alone cannot provide isolation, iteration, or conditional routing.
-    if ({"P3", "P4", "P5"} & set(selection.patterns)) - patterns:
+    legacy_claims = {
+        "P3": "independent_review",
+        "P4": "object_batch",
+        "P5": "conditional",
+    }
+    if any(
+        legacy_claims[p] not in features
+        for p in selection.patterns or ()
+        if p in legacy_claims
+    ):
         return "selection_patterns"
-    if any(not enabled.get(FEATURES[p]) for p in patterns):
+    if any(not enabled.get(feature) for feature in features):
         return "selection_capability"
     return None
 
 
 def normalize_unresolved(value):
     if isinstance(value, dict) and value.get("status") in ("gap", "clarify"):
-        return {**value, "steps": [], "patterns": [], "object_batch": None}
+        return {
+            **value,
+            "steps": [],
+            **({"patterns": []} if "patterns" in value else {}),
+            "object_batch": None,
+        }
     return value
 
 
@@ -255,9 +275,9 @@ def check_proposal(selection, methods, instructions, enabled):
     if issue := review_issue(selection, enabled):
         advice = {
             "selection_route": "check routing_required, caller input and case labels",
-            "selection_capability": "check runtime patterns and review or batch limits",
+            "selection_capability": "check capabilities and review or batch limits",
             "selection_review": "bind reviewed outputs and list their steps in reviews",
-            "selection_patterns": "use P3/P4/P5 only when the steps implement them",
+            "selection_patterns": "bind the requested review, batch or routes",
         }
         raise ValueError(f"{issue}: {advice[issue]}")
     seen = {}

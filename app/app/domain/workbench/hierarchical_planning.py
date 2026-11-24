@@ -20,7 +20,6 @@ from app.domain.workbench.incubation_selection import (
     Short,
     SketchStep,
     check_proposal,
-    graph_patterns,
 )
 from app.domain.workbench.planning_capabilities import (
     CONSUMER_MAX_NODES,
@@ -326,7 +325,8 @@ class HierarchicalPlanner:
             # A change without an explicit subtree can affect the entire plan.
             if previous.get("reason"):
                 self.brief["previous_selection"] = {
-                    k: previous.get(k) for k in ("reason", "steps", "patterns")
+                    k: previous.get(k)
+                    for k in ("reason", "steps", "routing_required", "object_batch")
                 }
             return
         tree = PlanningTree.model_validate(previous["tree"])
@@ -614,7 +614,6 @@ class HierarchicalPlanner:
         selection = Selection(
             status=status,
             reason=reason[:1500],
-            patterns=(),
             steps=tuple(steps),
             tree=PlanningTree(
                 catalog_digest=self.stamp,
@@ -623,9 +622,6 @@ class HierarchicalPlanner:
             ),
             routing_required=any(s.cases for s in steps),
             object_batch=self.nodes[ROOT].batch if steps else None,
-        )
-        selection = selection.model_copy(
-            update={"patterns": tuple(sorted(graph_patterns(selection)))}
         )
         try:
             check_proposal(selection, self.methods, self.instructions, self.flags)

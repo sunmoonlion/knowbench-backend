@@ -504,7 +504,7 @@ async def test_selection_keeps_author_question_and_discards_premature_routing(db
         assert done["status"] == "succeeded", done
         returned = done["handback"]["selection"]
         assert returned["reason"] == choice["reason"]
-        assert returned["steps"] == returned["patterns"] == []
+        assert returned["steps"] == [] and "patterns" not in returned
         assert "authorized_index" in fake.turn_inputs[0]
         assert "Never execute business methods" in fake.turn_inputs[0]
         assert "suggest the whole skeleton" not in fake.turn_inputs[0]

@@ -20,7 +20,6 @@ from app.domain.workbench.formal_expert_match import frozen_scope
 from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
 from app.domain.workbench.formal_method_generated import Digest, MethodRef, Strict
 from app.domain.workbench.incubation_selection import (
-    graph_patterns,
     routing_alternatives,
     verify_selection_graph,
 )
@@ -543,7 +542,6 @@ def visible_graph(choice, entries):
             for k, m in catalog.items()
             if k in choice.aliases
         },
-        "patterns": sorted(graph_patterns(choice.selection)),
         "routing_alternatives": routing_alternatives(choice.selection, catalog),
     }
 
@@ -561,7 +559,6 @@ async def sketch(service, owner, task_id):
                         "selection",
                         "aliases",
                         "method_titles",
-                        "patterns",
                         "routing_alternatives",
                     )
                     if k in saved
@@ -720,7 +717,7 @@ async def adopt(service, owner, task_id, command):
         "scope": frozen_scope(root),
         **{
             k: picked[k]
-            for k in ("method_titles", "patterns", "routing_alternatives")
+            for k in ("method_titles", "routing_alternatives")
             if k in picked
         },
         "sketch_digest": command.sketch_digest
