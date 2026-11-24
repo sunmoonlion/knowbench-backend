@@ -178,6 +178,18 @@ class SceneRegistry:
                     )
             return {"items": [src.model_dump(mode="json") for src in candidates]}
 
+    async def category_matches(self, subject, terms):
+        from app.domain.workbench.errors import KnowbotUnavailable
+
+        # Market facets are optional discovery metadata, never a use decision.
+        lookup = getattr(self.market, "category_matches", None)
+        if not terms or lookup is None:
+            return []
+        try:
+            return await lookup(subject, terms)
+        except KnowbotUnavailable:
+            return []
+
     async def author_versions(
         self,
         subject,
@@ -186,8 +198,13 @@ class SceneRegistry:
         *,
         all_versions=False,
         declaration=None,
+        goal=None,
         references=None,
     ):
+        terms = search_terms(
+            goal or "", *(positive_fields(declaration) if declaration else ())
+        )
+        topics = await self.category_matches(subject, terms) if goal else []
         owner = await self.repo.actor_for_subject(subject)
         if owner is None:
             return []
@@ -196,53 +213,133 @@ class SceneRegistry:
             limit,
             offset,
             latest=not all_versions,
+            host_only=bool(goal),
             eligible=[r.model_dump(mode="json") for r in references]
             if references is not None
             else None,
-            terms=search_terms(*positive_fields(declaration)) if declaration else [],
+            terms=terms,
+            topic_refs=topics,
         )
 
     async def planning_versions(
         self, owner, limit, offset, *, query=None, locked=False
     ):
-        terms = search_terms(query.question) if query and query.question else []
+        terms = (
+            search_terms(query.question, query.goal or "")
+            if query and query.question
+            else []
+        )
         experts_only = bool(query and query.stage == "expert")
-        # Bound both the authorization request and the in-memory ranking window.
-        # KnowMart pages only this actor's usable pins. Ranking stays local.
-        window = (100 // limit) * limit
-        block = window * (4 if terms or experts_only else 1)
-        start, within = divmod(offset, block)
-        start *= block
         async with self.repo.transaction(independent=not locked):
             subject = await self.repo.subject_of_actor(owner)
             if not subject or self.market is None:
                 raise CapabilityError("Formal method use qualification is unavailable")
-        eligible = []
-        for cursor in range(start, start + block, window):
-            refs, more = await self.market.planning_window(subject, cursor, window)
-            eligible.extend(ref.model_dump(mode="json") for ref in refs)
-            if not more:
-                break
-        async with self.repo.transaction():
-            visible = (
-                await self.repo.registry_method_candidates(
+
+        if not terms:
+            # Browsing retains a bounded market window and its continuation.
+            window = (100 // limit) * limit
+            start = offset // window * window
+            refs, more = await self.market.planning_window(subject, start, window)
+            async with self.repo.transaction():
+                rows = await self.repo.registry_method_candidates(
                     owner,
                     limit + 1,
-                    within,
+                    offset - start,
                     public=True,
                     experts_only=experts_only,
-                    terms=terms,
-                    eligible=eligible,
+                    eligible=[r.model_dump(mode="json") for r in refs],
                 )
-                if eligible
-                else []
+            cursor = (
+                offset + limit
+                if len(rows) > limit
+                else start + window
+                if more
+                else None
             )
-        next_page = None
-        if len(visible) > limit:
-            next_page = start + within + limit
-        elif more:
-            next_page = start + block
-        return {"items": visible[:limit], "next": next_page}
+            return {"items": rows[:limit], "next": cursor}
+
+        topics = [] if experts_only else await self.category_matches(subject, terms)
+        refs, more = await self.market.planning_window(subject, 0, 100)
+        if topics:
+            # Blend categories only within a qualified set so other subjects'
+            # versions cannot affect how many slots each category receives.
+            while more:
+                page, more = await self.market.planning_window(subject, len(refs), 100)
+                refs.extend(page)
+        if more:
+            # Exact-grant checks on indexed hits usually avoid shipping the full
+            # grant set. Only authorized hits count toward the caller's page.
+            hits = []
+            index_offset = 0
+            while len(hits) < offset + limit + 1:
+                async with self.repo.transaction():
+                    batch = await self.repo.registry_method_candidates(
+                        owner,
+                        100,
+                        index_offset,
+                        public=True,
+                        experts_only=experts_only,
+                        terms=terms,
+                        topic_refs=topics,
+                        matching=True,
+                    )
+                if not batch:
+                    break
+                pins = [MethodRef.model_validate(self.reference(r)) for r in batch]
+                allowed = await self.market.planning_formal_refs(
+                    subject, [r.model_dump(mode="json") for r in pins]
+                )
+                hits.extend(
+                    row for row, ref in zip(batch, pins, strict=True) if ref in allowed
+                )
+                if len(batch) < 100:
+                    break
+                index_offset += len(batch)
+            if len(hits) > offset + limit:
+                return {"items": hits[offset : offset + limit], "next": offset + limit}
+            # Fill any remaining places from authorized non-hits. Advance the
+            # market cursor only until this page is full, even if the directory
+            # contains thousands of unrelated granted versions.
+            result = hits[offset : offset + limit + 1]
+            skip = max(offset - len(hits), 0)
+            cursor = 0
+            while True:
+                async with self.repo.transaction():
+                    extras = await self.repo.registry_method_candidates(
+                        owner,
+                        len(refs),
+                        0,
+                        terms=terms,
+                        topic_refs=topics,
+                        matching=False,
+                        public=True,
+                        experts_only=experts_only,
+                        eligible=[r.model_dump(mode="json") for r in refs],
+                    )
+                result.extend(extras[skip : skip + limit + 1 - len(result)])
+                skip = max(0, skip - len(extras))
+                if len(result) > limit or not more:
+                    return {
+                        "items": result[:limit],
+                        "next": offset + limit if len(result) > limit else None,
+                    }
+                cursor += len(refs)
+                refs, more = await self.market.planning_window(subject, cursor, 100)
+        async with self.repo.transaction():
+            rows = await self.repo.registry_method_candidates(
+                owner,
+                limit + 1,
+                offset,
+                public=True,
+                experts_only=experts_only,
+                terms=terms,
+                topic_refs=topics,
+                eligible=[r.model_dump(mode="json") for r in refs],
+            )
+        return {
+            "items": rows[:limit],
+            "next": offset + limit if len(rows) > limit else None,
+        }
 
     async def planning_definitions(
         self, owner, references, *, experts_only=False, locked=False
@@ -460,7 +557,14 @@ class SceneRegistry:
         return frozen, grant
 
     async def shared_tools(
-        self, subject, *, reference=None, after=None, limit=30, declaration=None
+        self,
+        subject,
+        *,
+        reference=None,
+        after=None,
+        limit=30,
+        declaration=None,
+        goal=None,
     ):
         from app.application.workbench.formal_method_catalog import FormalMethodCatalog
         from app.domain.workbench.errors import WorkbenchError
@@ -471,13 +575,68 @@ class SceneRegistry:
             return {"items": [], "next": None}
         if self.market is None:
             raise CapabilityError("KnowMart incubation permissions are unavailable")
-        page = await self.market.incubation_tools(
-            subject, reference=reference, after=after, limit=limit
+        if goal and (reference or after):
+            raise CapabilityError(
+                "A planning search starts from its own ranked directory"
+            )
+        terms = search_terms(
+            goal or "", *(positive_fields(declaration) if declaration else ())
         )
+        search = {"topic_terms": terms} if goal else {}
+        installed_digests = None
+        if goal:
+            async with self.repo.transaction():
+                installed_digests = {
+                    source.digest
+                    for asset in await self.repo.capability_assets(owner)
+                    for source in self.methods._sources(
+                        asset, subject, now=self.methods.now()
+                    )
+                    if source.kind in ("mcp", "a2a", "skill_script")
+                    and source.license_basis != "pending"
+                }
+            if not installed_digests:
+                return {"items": [], "next": None, "partial": False}
+        page = await self.market.incubation_tools(
+            subject,
+            reference=reference,
+            after=after,
+            limit=100 if goal else limit,
+            **search,
+        )
+        grants = list(page.items)
+        if goal:
+            # This is a planning snapshot. Browse and exact reads continue using
+            # the market cursor. Collect grants only, never all method documents.
+            while page.next:
+                cursor = page.next
+                page = await self.market.incubation_tools(
+                    subject, after=str(cursor), limit=100, **search
+                )
+                if page.next and page.next <= cursor:
+                    raise CapabilityError("Incubation directory cursor did not advance")
+                grants.extend(page.items)
+            by_ref = {grant.reference: grant for grant in grants}
+            async with self.repo.transaction():
+                rows = await self.repo.registry_method_candidates(
+                    owner,
+                    len(by_ref),
+                    0,
+                    terms=terms,
+                    public=True,
+                    identities_only=True,
+                    installed_digests=installed_digests,
+                    eligible=[r.model_dump(mode="json") for r in by_ref],
+                    topic_refs=[
+                        r.model_dump(mode="json")
+                        for r, g in by_ref.items()
+                        if g.topic_hit
+                    ],
+                )
+            grants = [by_ref[MethodRef.model_validate(self.reference(r))] for r in rows]
         ranked = []
-        terms = search_terms(*positive_fields(declaration)) if declaration else []
         catalog = FormalMethodCatalog(self.repo, self.methods, self.methods.operations)
-        for grant in page.items:
+        for grant in grants:
             async with self.repo.transaction():
                 try:
                     frozen = await catalog.shared_tool(grant)
@@ -486,7 +645,7 @@ class SceneRegistry:
                     )
                 except (WorkbenchError, ValueError):
                     continue
-                if not options:
+                if not options or (goal and not selected):
                     continue
                 item = {
                     "reference": frozen.reference.model_dump(mode="json"),
@@ -497,6 +656,7 @@ class SceneRegistry:
                     item["definition"] = frozen.draft.definition.model_dump(
                         mode="json", by_alias=True
                     )
+                if reference or goal or selected:
                     item["installations"] = [
                         {
                             "asset_id": str(key),
@@ -508,15 +668,18 @@ class SceneRegistry:
                     ]
                     item["selected"] = str(selected) if selected else None
                 score = 0
-                if terms:
+                if terms and not goal:
                     description = " ".join(
                         positive_fields(frozen.draft.definition.capability_declaration)
                     ).lower()
                     score = sum(term in description for term in terms)
                 ranked.append((score, item))
-        # KnowMart owns the cursor. Rank only the qualified items on this page.
+                if goal and len(ranked) > limit:
+                    break
+        # Python sorting is stable when the global SQL ranking already applies.
         ranked.sort(key=lambda entry: entry[0], reverse=True)
         return {
-            "items": [item for _, item in ranked],
+            "items": [item for _, item in ranked[:limit]],
+            **({"partial": len(ranked) > limit} if goal else {}),
             "next": str(page.next) if page.next else None,
         }

@@ -14,8 +14,36 @@ from app.domain.workbench.formal_method_generated import (
 
 
 class IncubationQuery(Strict):
+    goal: str | None = Field(default=None, min_length=1, max_length=2000, pattern=r"\S")
     declaration: CapabilityDeclaration | None = None
     references: list[MethodRef] | None = Field(default=None, max_length=100)
+
+
+class DirectoryBrowse(Strict):
+    kind: Literal["tool", "expert"] | None = None
+    category: str | None = Field(default=None, max_length=64, pattern=r"^[a-z_.]+$")
+    offset: int = Field(default=0, ge=0, le=2147483647)
+    limit: int = Field(default=30, ge=1, le=100)
+    question: str | None = Field(default=None, max_length=2000)
+
+
+class DirectoryCategory(Strict):
+    code: str
+    group: str
+    name: str
+    group_name: str
+
+
+class VersionCategory(Strict):
+    reference: MethodRef
+    kind: Literal["tool", "expert"]
+    category: str
+
+
+class DirectoryLabels(Strict):
+    subject: str
+    categories: dict[Literal["tool", "expert"], list[DirectoryCategory]]
+    items: list[VersionCategory] = Field(max_length=100)
 
 
 class PlanningQuery(Strict):
@@ -24,12 +52,16 @@ class PlanningQuery(Strict):
         default=None, min_length=1, max_length=2000, pattern=r"\S"
     )
 
+    goal: str | None = Field(default=None, min_length=1, max_length=2000, pattern=r"\S")
+
     @model_validator(mode="after")
     def check_basis(self):
         if (self.stage == "directory") != (self.question is None):
             raise ValueError(
                 "Expert and composition searches require the current question"
             )
+        if self.goal and self.stage != "composition":
+            raise ValueError("Only composition searches accept a subgoal")
         return self
 
 

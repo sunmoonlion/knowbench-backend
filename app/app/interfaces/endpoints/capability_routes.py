@@ -70,7 +70,7 @@ from app.domain.workbench.formal_method_calls import (
     FormalMethodInvocations,
 )
 from app.domain.workbench.formal_method_generated import MethodRef
-from app.domain.workbench.method_search import PlanningQuery
+from app.domain.workbench.method_search import DirectoryBrowse, PlanningQuery
 from app.domain.workbench.native_registry import NATIVE_ACTIONS
 from app.domain.workbench.registry_sources import (
     RegisteredSource,
@@ -229,6 +229,27 @@ async def execute_source_task(
 
     try:
         return await submit(svc, _actor(user), session_id, body)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
+@router.post("/workbench/method-skill-center/directory-browse")
+async def browse_directory(
+    response: Response,
+    body: DirectoryBrowse,
+    user: Principal = Depends(get_web_current_user),
+    svc=Depends(service),
+):
+    from app.application.workbench.directory_browse import browse
+
+    response.headers["Cache-Control"] = "private, no-store"
+    try:
+        registry = svc.formal_sources.registry
+        async with registry.repo.transaction(independent=True):
+            subject = await registry.repo.subject_of_actor(_actor(user))
+        if not subject:
+            raise Forbidden("No registered workbench owner")
+        return await browse(registry, subject, "planning", body)
     except WorkbenchError as exc:
         raise _http(exc) from exc
 

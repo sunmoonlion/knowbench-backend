@@ -38,12 +38,49 @@ class KnowmartSummonClient:
     ) -> set[MethodRef]:
         return await self._use_refs(subject, references, include_acquired=False)
 
-    async def planning_window(self, subject, offset, limit):
+    async def directory_labels(self, subject, references):
+        from app.domain.workbench.method_search import DirectoryLabels
+
+        try:
+            _, body = await self._connect().request(
+                "POST",
+                "/formal-methods/directory-labels",
+                json={
+                    "owner_subject": subject,
+                    "references": [r.model_dump(mode="json") for r in references],
+                },
+            )
+            labels = DirectoryLabels.model_validate(body)
+            items = [item.reference for item in labels.items]
+            if (
+                labels.subject != subject
+                or set(labels.categories) != {"tool", "expert"}
+                or any(ref not in references for ref in items)
+                or len({(ref.method_id, ref.version, ref.digest) for ref in items})
+                != len(items)
+            ):
+                raise ValueError("Unexpected category receipt")
+            return labels
+        except (BadGatewayError, ServiceUnavailableError, ValueError) as exc:
+            raise KnowbotUnavailable("Method categories are unavailable") from exc
+
+    async def category_matches(self, subject, terms):
+        # A broad facet offers little discrimination. Skip its bonus entirely
+        # instead of favoring whichever 100 versions happen to sort first.
+        refs, more = await self.planning_window(subject, 0, 100, topic_terms=terms)
+        return [] if more else [r.model_dump(mode="json") for r in refs]
+
+    async def planning_window(self, subject, offset, limit, *, topic_terms=None):
         try:
             _, body = await self._connect().request(
                 "POST",
                 "/formal-methods/planning-window",
-                json={"owner_subject": subject, "offset": offset, "limit": limit},
+                json={
+                    "owner_subject": subject,
+                    "offset": offset,
+                    "limit": limit,
+                    **({"topic_terms": topic_terms} if topic_terms else {}),
+                },
             )
             if (
                 not isinstance(body, dict)
@@ -107,13 +144,16 @@ class KnowmartSummonClient:
             allowed.update(permitted)
         return allowed
 
-    async def incubation_tools(self, subject, *, reference=None, after=None, limit=30):
+    async def incubation_tools(
+        self, subject, *, reference=None, after=None, limit=30, topic_terms=None
+    ):
         from pydantic import ValidationError
 
         from app.domain.workbench.incubation_tools import IncubationGrants
 
         query = {
             "subject": subject,
+            **({"topic_terms": topic_terms} if topic_terms else {}),
             "after": after,
             "limit": limit,
             "reference": reference.model_dump(mode="json") if reference else None,

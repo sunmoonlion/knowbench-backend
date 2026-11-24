@@ -1,0 +1,116 @@
+"""Browse exact admitted versions by market taxonomy within a scene's existing rights."""
+
+from collections import Counter
+
+from app.domain.workbench.capabilities import CapabilityError
+from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.method_search import search_terms
+
+
+async def browse(registry, subject, scene, query):
+    if registry.market is None:
+        raise CapabilityError("Method categories are unavailable")
+    taxonomy = (await registry.market.directory_labels(subject, [])).categories
+    categories = (
+        [item.model_dump() for item in taxonomy[query.kind]] if query.kind else []
+    )
+    empty = {"items": [], "next": None, "total": 0, "categories": categories}
+    if not query.kind or (scene == "shared" and query.kind != "tool"):
+        return empty
+    codes = {
+        c["code"]
+        for c in categories
+        if not query.category or query.category in (c["code"], c["group"])
+    }
+    if not codes:
+        return empty
+    repo = registry.repo
+    async with repo.transaction(independent=True):
+        owner = await repo.actor_for_subject(subject)
+    if owner is None:
+        return empty
+
+    offset = 0
+    after = None
+    counts = Counter()
+    chosen = {}
+    installations = {}
+    while True:
+        if scene == "shared":
+            page = await registry.shared_tools(subject, after=after, limit=100)
+            batch = [
+                (MethodRef.model_validate(item["reference"]), "tool")
+                for item in page["items"]
+            ]
+            installations.update(
+                {
+                    ref: bool(item.get("selected"))
+                    for (ref, _), item in zip(batch, page["items"], strict=True)
+                }
+            )
+            more = page["next"] is not None
+            if more and after and page["next"] <= after:
+                raise CapabilityError("Incubation cursor did not advance")
+            after = page["next"]
+        else:
+            eligible = None
+            if scene == "planning":
+                pins, more = await registry.market.planning_window(subject, offset, 100)
+                eligible = [r.model_dump(mode="json") for r in pins]
+            async with repo.transaction():
+                rows = await repo.registry_method_candidates(
+                    owner,
+                    100,
+                    offset if scene == "owned" else 0,
+                    latest=scene == "owned",
+                    public=scene == "planning",
+                    eligible=eligible,
+                )
+            if scene == "owned":
+                more = len(rows) == 100
+            batch = [
+                (MethodRef.model_validate(registry.reference(row)), row["method_kind"])
+                for row in rows
+            ]
+            offset += 100
+        refs = [r for r, k in batch if k == query.kind]
+        if refs:
+            labels = await registry.market.directory_labels(subject, refs)
+            by_ref = {
+                item.reference: item.category
+                for item in labels.items
+                if item.kind == query.kind
+            }
+            for ref in refs:
+                category = by_ref.get(ref, "uncategorized")
+                counts[category] += 1
+                if category in codes:
+                    chosen[ref] = category
+        if not more:
+            break
+    terms = search_terms(query.question or "")
+    async with repo.transaction():
+        rows = (
+            await repo.registry_method_candidates(
+                owner,
+                query.limit,
+                query.offset,
+                public=scene != "owned",
+                terms=terms,
+                eligible=[r.model_dump(mode="json") for r in chosen],
+            )
+            if chosen
+            else []
+        )
+    for row in rows:
+        ref = MethodRef.model_validate(registry.reference(row))
+        row["category"] = chosen[ref]
+        row["usable"] = installations.get(ref, True)
+    return {
+        "items": rows,
+        "total": len(chosen),
+        "categories": [{**c, "count": counts[c["code"]]} for c in categories],
+        "next": query.offset + query.limit
+        if query.offset + query.limit < len(chosen)
+        else None,
+    }

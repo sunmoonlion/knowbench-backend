@@ -59,7 +59,7 @@ async def test_cross_author_reference_uses_consumers_account(db, change):
         resume = asyncio.Event()
 
         async def incubation_tools(
-            self, subject, *, reference=None, after=None, limit=30
+            self, subject, *, reference=None, after=None, limit=30, topic_terms=None
         ):
             if self.pause_after:
                 self.pause_after -= 1
@@ -114,6 +114,11 @@ async def test_cross_author_reference_uses_consumers_account(db, change):
             mode="json", by_alias=True
         )
         assert tools["items"][0]["selected"] == buyer_asset["id"]
+        ranked = await svc.shared_tools("other", goal="查找已授权的方法")
+        assert (
+            ranked["items"][0]["selected"] == buyer_asset["id"]
+            and ranked["partial"] is False
+        )
         second = await service(repo).create_connection(
             OTHER,
             body("second-account").model_copy(
@@ -122,6 +127,7 @@ async def test_cross_author_reference_uses_consumers_account(db, change):
         )
         detail = (await svc.shared_tools("other", reference=pub.reference))["items"][0]
         assert detail["selected"] is None
+        assert (await svc.shared_tools("other", goal="查找已授权的方法"))["items"] == []
         assert {i["asset_id"] for i in detail["installations"]} == {
             buyer_asset["id"],
             second["id"],

@@ -171,7 +171,7 @@ async def catalog(
         owner,
         limit,
         0,
-        query=PlanningQuery(stage="composition", question=query),
+        query=PlanningQuery(stage="composition", question=question, goal=goal),
     )
     pins = page_refs(registry, page)
     if previous:

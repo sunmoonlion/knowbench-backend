@@ -8,7 +8,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Path, Query
@@ -44,7 +44,7 @@ from app.domain.workbench.formal_method_execution_generated import (
 )
 from app.domain.workbench.formal_method_generated import MethodRef, Strict
 from app.domain.workbench.incubations import INCUBATION_ID, IncubationRequest
-from app.domain.workbench.method_search import IncubationQuery
+from app.domain.workbench.method_search import DirectoryBrowse, IncubationQuery
 from app.domain.workbench.review_routes import (
     ReviewRoutePreview,
     ReviewRouteQuery,
@@ -190,6 +190,22 @@ async def select_incubation_tool_binding(
         raise _http(exc) from exc
 
 
+@router.post("/users/{subject}/method-skill-center/browse/{scene}")
+async def browse_incubation_methods(
+    _: FormalCaller,
+    subject: str,
+    scene: Literal["owned", "shared"],
+    body: DirectoryBrowse,
+    svc: FormalService,
+):
+    from app.application.workbench.directory_browse import browse
+
+    try:
+        return _out(jsonable_encoder(await browse(svc.registry, subject, scene, body)))
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 class SharedToolsQuery(IncubationQuery):
     subject: str = Field(min_length=1, max_length=512)
     reference: MethodRef | None = None
@@ -209,6 +225,7 @@ async def incubation_tool_versions(
                 after=str(body.after) if body.after else None,
                 limit=body.limit,
                 declaration=body.declaration,
+                goal=body.goal,
             )
         )
     except WorkbenchError as exc:
@@ -370,6 +387,7 @@ async def method_skill_center_incubation_methods(
                         all_versions=all_versions,
                         declaration=body.declaration,
                         references=body.references,
+                        goal=body.goal,
                     )
                 )
             }

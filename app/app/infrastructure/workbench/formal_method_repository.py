@@ -217,6 +217,10 @@ class FormalMethodRepositoryMixin:
         latest=False,
         public=False,
         terms=(),
+        matching=None,
+        topic_refs=(),
+        host_only=False,
+        installed_digests=None,
         experts_only=False,
         reference=None,
         identities_only=False,
@@ -243,41 +247,65 @@ class FormalMethodRepositoryMixin:
             if eligible is not None
             else ""
         )
-        rank = (
-            """(SELECT count(*) FROM unnest(CAST(:terms AS text[])) AS words(term)
-                   WHERE strpos(lower(positive_text), term) > 0) DESC,"""
-            if terms
+        installation_filter = (
+            "AND document#>>'{draft,source,digest}' = ANY(CAST(:installed AS text[]))"
+            if installed_digests is not None
             else ""
+        )
+        # Tokens are materialized once per frozen version. Count distinct query
+        # terms so repeated words in a long declaration do not dominate.
+        hit = "(capability_terms @@ to_tsquery('simple', :query))"
+        score = """(SELECT count(*) FROM unnest(CAST(:terms AS text[])) AS t(word)
+                           WHERE capability_terms @@ plainto_tsquery('simple', word))"""
+        stable_order = "created_at DESC,method_id,latest_version DESC"
+        ranked_query = f"SELECT {columns} FROM candidates"
+        order = f"{score} DESC, {stable_order}" if terms else stable_order
+        if topic_refs:
+            topic = """(method_id,latest_version,digest) IN (
+                SELECT f.method_id, f.version, f.digest FROM jsonb_to_recordset(CAST(:topics AS jsonb))
+                AS f(method_id uuid, version int, digest text))"""
+            # Within the same lexical score, alternate two facet hits with one
+            # cross-facet candidate. Either lane can supply the rest on its own.
+            ranked_query = f"""
+                , scored AS (SELECT candidates.*, {score} AS relevance, ({topic}) AS in_topic FROM candidates),
+                lanes AS (SELECT scored.*, row_number() OVER (
+                    PARTITION BY relevance,in_topic ORDER BY {stable_order}) - 1 AS pos FROM scored)
+                SELECT {columns} FROM lanes"""
+            order = f"""relevance DESC, CASE WHEN in_topic THEN (pos/2)*3 + pos%2
+                      ELSE pos*3+2 END, {stable_order}"""
+            hit = f"({hit} OR {topic})"
+        match_filter = (
+            "" if matching is None else "AND " + ("" if matching else "NOT ") + hit
         )
         rows = await self.session.execute(
             text(f"""
-          SELECT {columns} FROM (SELECT {selection} method_id, version AS latest_version, digest, created_at,
+          WITH versions AS (SELECT {selection} method_id, version AS latest_version, digest, created_at,
             CASE document#>>'{{draft,definition,procedure,kind}}'
               WHEN 'direct' THEN 'tool' WHEN 'orchestration' THEN 'expert' END AS method_kind,
             document#>>'{{draft,definition,capability_declaration,title}}' AS title,
             left(document#>>'{{draft,definition,capability_declaration,purpose}}',500) AS summary,
             document#>'{{draft,definition}}' AS definition,
-            concat_ws(' ', document#>>'{{draft,definition,capability_declaration,title}}',
-              document#>>'{{draft,definition,capability_declaration,purpose}}',
-              document#>>'{{draft,definition,capability_declaration,applies_when}}',
-              document#>>'{{draft,definition,capability_declaration,promises}}',
-              jsonb_path_query_array(document, '$.draft.definition.capability_declaration.conditions.*.when')::text) AS positive_text
-          FROM workbench_formal_methods WHERE caller='knowlab' {pin} {grant_filter}
+            capability_terms
+          FROM workbench_formal_methods WHERE caller='knowlab' {pin} {grant_filter} {installation_filter}
             AND document#>>'{{reference,digest}}' = digest
             AND document#>>'{{reference,method_id}}' = method_id::text
             AND document#>>'{{reference,version}}' = version::text
             AND (owner_actor_id=:owner OR (:public AND document->>'visibility'='public'))
-            AND (NOT :public OR document#>'{{draft,allowed_callers}}' ? 'host')
-          ORDER BY method_id,version DESC) candidates
-          WHERE NOT :experts_only OR method_kind='expert'
-          ORDER BY {rank} created_at DESC,method_id,latest_version DESC LIMIT :limit OFFSET :offset
+            AND (NOT :require_host OR document#>'{{draft,allowed_callers}}' ? 'host')
+          ORDER BY method_id,version DESC),
+          candidates AS (SELECT * FROM versions WHERE (NOT :experts_only OR method_kind='expert') {match_filter})
+          {ranked_query} ORDER BY {order} LIMIT :limit OFFSET :offset
         """),
             {
                 "owner": owner,
                 "limit": limit,
                 "offset": offset,
                 "public": public,
+                "require_host": public or host_only,
+                "installed": list(installed_digests or ()),
                 "terms": list(terms),
+                "topics": json.dumps(list(topic_refs)),
+                "query": " | ".join(terms),
                 "eligible": json.dumps(eligible),
                 "experts_only": experts_only,
                 **(

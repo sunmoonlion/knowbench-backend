@@ -9,6 +9,7 @@ from app.domain.workbench.formal_method_generated import MethodRef, Strict
 
 
 class IncubationGrant(Strict):
+    topic_hit: bool = False
     listing_id: UUID
     owner_subject: str = Field(min_length=1, max_length=512)
     reference: MethodRef

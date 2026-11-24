@@ -171,3 +171,162 @@ async def test_authorized_top_eight_before_and_after_catalog_growth(db):
             "items": [],
             "next": None,
         }
+
+
+async def test_late_tool_in_ten_thousand_and_unauthorized_exact_title(db):
+    """Real index and both scene queries, with exact synthetic grants."""
+    import json
+
+    from sqlalchemy import text
+
+    ctx = await setup_plan(db, accept=False)
+    count = 10000
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+
+        def seed_document(title, purpose):
+            base = ctx.leaf.draft.definition
+            definition = base.model_copy(
+                update={
+                    "capability_declaration": base.capability_declaration.model_copy(
+                        update={"title": title, "purpose": purpose}
+                    )
+                }
+            )
+            digest = definition.digest()
+            return {
+                "visibility": "public",
+                "reference": {"version": 1, "digest": digest},
+                "draft": {
+                    "allowed_callers": ["host"],
+                    "definition": definition.document(),
+                },
+            }
+
+        ordinary = seed_document("整理出货单", "保留仓库货运记录")
+        target = seed_document(
+            "期初余额连续性核验", "比较期初余额与上期末余额并返回差额"
+        )
+        private = seed_document(
+            "期初期末余额连续性核验", "期初余额与上期末余额比较差额"
+        )
+
+        async def insert(doc, low, high, owner):
+            await session.execute(
+                text("""
+                INSERT INTO workbench_formal_methods(method_id, version, digest, owner_actor_id, caller, document, run_id)
+                SELECT id, 1, :digest, :owner, 'knowlab',
+                       jsonb_set(CAST(:doc AS jsonb), '{reference,method_id}', to_jsonb(id::text)), :run
+                FROM (SELECT lpad(to_hex(n),32,'0')::uuid AS id FROM generate_series(CAST(:low AS int),CAST(:high AS int)) n) ids
+            """),
+                {
+                    "digest": doc["reference"]["digest"],
+                    "owner": owner,
+                    "doc": json.dumps(doc),
+                    "run": ctx.leaf.validation.run_id,
+                    "low": low,
+                    "high": high,
+                },
+            )
+
+        async with repo.transaction():
+            await insert(ordinary, 1, count - 1, OWNER)
+            await insert(target, count, count, OWNER)
+            await insert(private, count + 1, count + 1, str(UUID(int=99999)))
+            await session.execute(text("ANALYZE workbench_formal_methods"))
+
+        class Market:
+            windows = 0
+
+            async def planning_window(self, subject, offset, limit):
+                self.windows += 1
+                return [
+                    MethodRef(
+                        method_id=UUID(int=n),
+                        version=1,
+                        digest=(target if n == count else ordinary)["reference"][
+                            "digest"
+                        ],
+                    )
+                    for n in range(1 + offset, 1 + min(count, offset + limit))
+                ], offset + limit < count
+
+            async def directory_labels(self, subject, refs):
+                from app.domain.workbench.method_search import DirectoryLabels
+
+                assert not session.in_transaction() and len(refs) <= 100
+                return DirectoryLabels.model_validate(
+                    {
+                        "subject": subject,
+                        "categories": {
+                            "tool": [
+                                dict(
+                                    group="data",
+                                    group_name="数据",
+                                    code="data.check",
+                                    name="核对",
+                                ),
+                                dict(
+                                    group="uncategorized",
+                                    group_name="未分类",
+                                    code="uncategorized",
+                                    name="未分类",
+                                ),
+                            ],
+                            "expert": [],
+                        },
+                        "items": [
+                            {"reference": r, "kind": "tool", "category": "data.check"}
+                            for r in refs
+                            if count - 30 <= r.method_id.int <= count
+                        ],
+                    }
+                )
+
+            async def planning_formal_refs(self, subject, refs):
+                return {
+                    r
+                    for v in refs
+                    if (r := MethodRef.model_validate(v)).method_id.int <= count
+                }
+
+        market = Market()
+        registry = SceneRegistry(SimpleNamespace(market=market), repo)
+        q = "期初余额和上期末余额差多少"
+        page = await registry.planning_versions(
+            OWNER, 10, 0, query=PlanningQuery(stage="composition", question=q)
+        )
+        assert len(page["items"]) == 10 and page["items"][0]["method_id"].int == count
+        assert all(row["method_id"].int <= count for row in page["items"])
+        assert market.windows == 1
+        async with repo.transaction():
+            owned = await registry.author_versions("author", 10, 0, goal=q)
+            assert owned[0]["method_id"].int == count
+            assert all(row["method_id"].int <= count for row in owned)
+        from app.application.workbench.directory_browse import browse
+        from app.domain.workbench.method_search import DirectoryBrowse
+
+        for scene in ("planning", "owned"):
+            query = DirectoryBrowse(kind="tool", category="data", limit=30, question=q)
+            first = await browse(registry, "author", scene, query)
+            assert (
+                first["total"] == 31
+                and first["next"] == 30
+                and first["items"][0]["method_id"].int == count
+            )
+            last = await browse(
+                registry,
+                "author",
+                scene,
+                query.model_copy(update={"category": "data.check", "offset": 30}),
+            )
+            assert len(last["items"]) == 1 and last["next"] is None
+            assert len({r["method_id"] for r in first["items"] + last["items"]}) == 31
+        # Equal lexical scores alternate two class hits and one cross-class candidate.
+        async with repo.transaction():
+            pins, _ = await market.planning_window("author", 0, 10)
+            args = [r.model_dump(mode="json") for r in pins]
+            tied = await repo.registry_method_candidates(
+                OWNER, 6, 0, eligible=args, terms=["整理"], topic_refs=args[:5]
+            )
+            assert [r["method_id"].int for r in tied] == [1, 2, 6, 3, 4, 7]

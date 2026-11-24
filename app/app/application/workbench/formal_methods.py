@@ -382,7 +382,14 @@ class FormalMethods:
         }
 
     async def shared_tools(
-        self, subject, *, reference=None, after=None, limit=30, declaration=None
+        self,
+        subject,
+        *,
+        reference=None,
+        after=None,
+        limit=30,
+        declaration=None,
+        goal=None,
     ):
         return await self.registry.shared_tools(
             subject,
@@ -390,6 +397,7 @@ class FormalMethods:
             after=after,
             limit=limit,
             declaration=declaration,
+            goal=goal,
         )
 
     async def _compile(
