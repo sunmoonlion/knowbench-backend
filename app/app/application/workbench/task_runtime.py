@@ -34,6 +34,7 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
 from app.application.workbench.plan_receipts import catalog_for_task
 from app.application.workbench.turn import STEP_TIMEOUT_SECONDS, TurnDriver, TurnResult
+from app.domain.workbench import hierarchical_planning as htn
 from app.domain.workbench import knowbots
 from app.domain.workbench.data_planning import STOP_REASONS
 from app.domain.workbench.deliverables import (
@@ -57,6 +58,7 @@ from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.packs import (
     FIND_EXPERT,
     SEALED_INPUT,
+    AcceptanceRule,
     ExpertPack,
     Scope,
     StepContract,
@@ -97,6 +99,7 @@ class StepAssessment:
     written: bool | None = None
     checked: str | None = None
     error: str | None = None
+    planning: dict | None = None
 
 
 class TaskRuntime:
@@ -308,9 +311,32 @@ class TaskRuntime:
                 ):
                     return TaskState.WAITING
             attempts = await repo.list_attempts(task_id)
+            planner = None
+            if htn.active(task):
+                saved = await repo.latest_task_payload(task_id, htn.EVENT)
+                planner = htn.HierarchicalPlanner(task, saved)
+                # An intermediate decision settles its own model turn. Only a
+                # rejection since that decision belongs to the current repair.
+                if saved:
+                    attempts_for_repair = [
+                        a
+                        for a in attempts
+                        if (a.get("refs") or {}).get("planning_turn") == planner.turns
+                    ]
+                else:
+                    attempts_for_repair = attempts
+                step = step.model_copy(
+                    update={
+                        "method_text": htn.RULES,
+                        "output_schema": htn.DECISION.json_schema(),
+                        "acceptance": (AcceptanceRule(kind="json_object"),),
+                    }
+                )
+            else:
+                attempts_for_repair = attempts
             reworks = sum(
                 1
-                for a in attempts
+                for a in attempts_for_repair
                 if a["step_id"] == step.step_id
                 and a["status"] == AttemptState.FAILED
                 and a["failure_code"] == "acceptance"
@@ -320,7 +346,9 @@ class TaskRuntime:
                 task.get("profile_version")
             ) in {"6", "7"}:
                 timeout = min(timeout or 150, 150)
-                if reworks and str(task["profile_version"]) == "7":
+                if (reworks or (planner and attempts)) and str(
+                    task["profile_version"]
+                ) == "7":
                     elapsed = (
                         datetime.now(UTC) - attempts[0]["created_at"]
                     ).total_seconds()
@@ -386,7 +414,10 @@ class TaskRuntime:
                             for k, v in inputs.items()
                         ],
                         reserve=Decimal(step.reserve),
-                        meta={"reworks": reworks},
+                        meta={
+                            "reworks": reworks,
+                            **({"planning_turn": planner.turns} if planner else {}),
+                        },
                     )
             except BudgetExhausted as exc:
                 log.info("budget exhausted before step %s: %s", step.step_id, exc)
@@ -494,6 +525,8 @@ class TaskRuntime:
             # 孵化方法（专家孵化方案第八节）：模型只看契约列死的材料（0029 第 6.4 节），
             # 不加用户的记忆、不给读项目记录的说明
             sealed = pack.profile_id in SEALED_INPUT
+            if planner:
+                question = planner.prompt()
             text = self.compose(
                 step,
                 question,
@@ -583,9 +616,57 @@ class TaskRuntime:
             )
             profile = (task["profile_id"], str(task.get("profile_version")))
             selecting = profile in {("INCUBATE", "2"), ("FIND_EXPERT", "7")}
-            if verdict.ok and (
-                selecting
-                or (profile[0] == "FIND_EXPERT" and profile[1] in {"2", "5", "6"})
+            planning = None
+            if not verdict.ok and htn.active(task) and not result.timed_out:
+                stop_message = htn.read_stop_message(result.final_text)
+                if stop_message is not None:
+                    verdict.ok = True
+                    verdict.parsed = stop_message
+                    verdict.failures.clear()
+            if verdict.ok and htn.active(task):
+                try:
+                    planner = htn.HierarchicalPlanner(
+                        task, await repo.latest_task_payload(task_id, htn.EVENT)
+                    )
+                    planner.turns = len(await repo.list_attempts(task_id)) - 1
+                    final = planner.advance(verdict.parsed)
+                    if final is None:
+                        planning = planner.snapshot()
+                    else:
+                        verdict.parsed = final
+                except (ValueError, KeyError) as exc:
+                    verdict.ok = False
+                    detail = str(exc)
+                    if isinstance(exc, ValidationError):
+                        detail = ", ".join(
+                            f"{'.'.join(map(str, issue['loc']))}: {issue['msg']}"
+                            for issue in exc.errors(
+                                include_input=False, include_url=False
+                            )
+                        )
+                    verdict.failures.append(
+                        "planning: " + detail[:REWORK_FAILURE_CHARS]
+                    )
+            if htn.active(task) and not verdict.ok and not result.timed_out:
+                attempts_used = len(await repo.list_attempts(task_id))
+                current_planner = htn.HierarchicalPlanner(
+                    task, await repo.latest_task_payload(task_id, htn.EVENT)
+                )
+                if attempts_used >= current_planner.max_calls:
+                    verdict.parsed = current_planner.unresolved(
+                        current_planner.current,
+                        "gap",
+                        "规划已达调用次数上限，仍未取得可验证的步骤。",
+                    )
+                    verdict.ok = True
+                    verdict.failures.clear()
+            if (
+                verdict.ok
+                and planning is None
+                and (
+                    selecting
+                    or (profile[0] == "FIND_EXPERT" and profile[1] in {"2", "5", "6"})
+                )
             ):
                 detail = ""
                 rule = "selection" if selecting else "expert_match"
@@ -679,7 +760,9 @@ class TaskRuntime:
                 verdict, written, checked = harden(
                     verdict, written=seen, found=found, output_file=output_file
                 )
-            return StepAssessment(verdict, output_file, written, checked)
+            return StepAssessment(
+                verdict, output_file, written, checked, planning=planning
+            )
 
     async def _settle_step(
         self,
@@ -1083,6 +1166,24 @@ class TaskRuntime:
                     task_id=task_id,
                     attempt_id=attempt_id,
                 )
+            if verdict.ok and assessment.planning is not None:
+                await led.attempt_transition(
+                    attempt_id,
+                    AttemptState.COMPLETED,
+                    consumed=consumed,
+                    tokens=result.tokens,
+                    turn_id=result.turn_id,
+                )
+                await repo.append_event(
+                    session_id=str(task["session_id"]),
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    kind="task",
+                    event_type=htn.EVENT,
+                    payload=assessment.planning,
+                )
+                await self._requeue(led, task_id)
+                return TaskState.QUEUED
             if verdict.ok:
                 art = await repo.put_artifact(
                     task_id=task_id,

@@ -484,22 +484,9 @@ def test_the_migration_goes_down_and_up() -> None:
 
 async def test_selection_keeps_author_question_and_discards_premature_routing(db):
     choice = dict(
-        status="clarify",
-        reason="哪个阈值决定分派？",
-        patterns=["P5"],
-        steps=[],
-        routing_required=True,
+        action="clarify", reason="哪个阈值决定分派？", children={"early": "分派"}
     )
-    fake = ScriptedAppServer(
-        [
-            json.dumps(
-                dict(
-                    sources=[], suggestions=[], self_check=[], gaps=[], selection=choice
-                ),
-                ensure_ascii=False,
-            )
-        ]
-    )
+    fake = ScriptedAppServer([json.dumps(choice, ensure_ascii=False)])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -518,8 +505,8 @@ async def test_selection_keeps_author_question_and_discards_premature_routing(db
         returned = done["handback"]["selection"]
         assert returned["reason"] == choice["reason"]
         assert returned["steps"] == returned["patterns"] == []
-        assert "selection_context" in fake.turn_inputs[0]
-        assert "Never execute methods" in fake.turn_inputs[0]
+        assert "authorized_index" in fake.turn_inputs[0]
+        assert "Never execute business methods" in fake.turn_inputs[0]
         assert "suggest the whole skeleton" not in fake.turn_inputs[0]
     finally:
         await close(runner)
@@ -530,35 +517,19 @@ async def test_selection_keeps_author_question_and_discards_premature_routing(db
     "mistake", ["missing_flag", "unknown_alias", "bad_topology", "twice"]
 )
 async def test_selection_is_checked_inside_the_bounded_incubation_round(db, mistake):
-    clear = dict(
-        status="clarify",
-        reason="哪个阈值？",
-        steps=[],
-        patterns=[],
-        routing_required=False,
+    clear = dict(action="clarify", reason="哪个阈值？")
+    invalid = dict(
+        action="hit",
+        reason="选路",
+        operator="leaf",
+        step={"id": "use", "method": "unknown", "task": "核对"},
     )
-    invalid = {**clear}
     if mistake == "missing_flag":
-        del invalid["routing_required"]
+        del invalid["operator"]
     elif mistake == "bad_topology":
-        invalid.update(
-            status="ready",
-            patterns=["P5"],
-            routing_required=True,
-            steps=[{"id": "use", "method": "m1", "task": "选路"}],
-        )
-    else:
-        invalid.update(
-            status="ready", steps=[{"id": "use", "method": "unknown", "task": "核对"}]
-        )
-
-    def reply(choice):
-        return json.dumps(
-            dict(selection=choice, sources=[], gaps=[], suggestions=[], self_check=[])
-        )
-
+        invalid.update(action="split", operator="sequence", children=["unbound"])
     fake = ScriptedAppServer(
-        [reply(invalid), reply(invalid if mistake == "twice" else clear)]
+        [json.dumps(invalid), json.dumps(invalid if mistake == "twice" else clear)]
     )
     await fake.start()
     runner = runner_for(db)
@@ -579,9 +550,9 @@ async def test_selection_is_checked_inside_the_bounded_incubation_round(db, mist
             '"$defs"' in fake.turn_inputs[0] and '"SketchStep"' in fake.turn_inputs[0]
         )
         expected = {
-            "missing_flag": "routing_required",
+            "missing_flag": "operator",
             "unknown_alias": "outside the authorized catalog",
-            "bad_topology": "selection_route",
+            "bad_topology": "children",
             "twice": "outside the authorized catalog",
         }[mistake]
         assert expected in fake.turn_inputs[1].split("What failed last time")[-1]

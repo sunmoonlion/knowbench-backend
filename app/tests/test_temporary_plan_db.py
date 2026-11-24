@@ -19,18 +19,15 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 
 def receipt_proposal():
     return {
-        "status": "ready",
+        "action": "hit",
+        "operator": "leaf",
         "reason": "Use the qualified receipt tool.",
-        "patterns": [],
-        "routing_required": False,
-        "steps": [
-            {
-                "id": "send",
-                "method": "m1",
-                "task": "Send the receipt",
-                "inputs": {"to": {"source": "caller", "name": "to"}},
-            }
-        ],
+        "step": {
+            "id": "send",
+            "method": "m1",
+            "task": "Send the receipt",
+            "inputs": {"to": {"source": "caller", "name": "to"}},
+        },
     }
 
 
@@ -39,7 +36,7 @@ def confirmed_receipt():
         "confirmed": True,
         "routing_required": False,
         "cases": {},
-        "step_text": {"send": "Send the receipt"},
+        "step_text": {"n1": "Send the receipt"},
     }
 
 
@@ -198,10 +195,7 @@ async def test_clarification_requires_separately_authorized_pinned_probe(
     library.preparation_material.return_value = ("ledger", {(3, pin["sha256"])})
     token = AsyncMock(return_value="user-session")
     clarification = {
-        "status": "clarify",
-        "patterns": [],
-        "routing_required": False,
-        "steps": [],
+        "action": "clarify",
         "reason": "Is the transaction identifier present?",
     }
     async with selected_match(
@@ -299,15 +293,20 @@ async def test_unsupported_requirement_stops_before_model_or_catalog(db, monkeyp
 async def test_model_requests_contract_search_and_runner_change_blocks_adoption(
     db, monkeypatch
 ):
+    from app.application.workbench import temporary_planning
     from app.interfaces.http.web import workbench_expert as routes
 
+    original_catalog = temporary_planning.catalog
+
+    async def partial_window(*args, **kwargs):
+        snapshot = await original_catalog(*args, **kwargs)
+        return {**snapshot, "partial": True}
+
+    monkeypatch.setattr(temporary_planning, "catalog", partial_window)
     ctx = await setup_plan(db)
     await register_completed(db, ctx)
     pick = {
-        "status": "clarify",
-        "patterns": [],
-        "routing_required": False,
-        "steps": [],
+        "action": "clarify",
         "reason": "Inspect the receipt contract",
         "search_goal": "receipt",
     }
@@ -429,7 +428,7 @@ async def test_ready_proposal_can_be_replanned_and_only_the_current_review_adopt
         )
         edited = {
             **confirmed_receipt(),
-            "step_text": {"send": "Send the named recipient a receipt"},
+            "step_text": {"n1": "Send the named recipient a receipt"},
         }
 
         async def adopt(data, review):
@@ -448,7 +447,7 @@ async def test_ready_proposal_can_be_replanned_and_only_the_current_review_adopt
         ).status_code == 409
         (await adopt(last, edited)).raise_for_status()
         saved = (await client.get(p)).json()
-        assert saved["selection"]["steps"][0]["task"] == edited["step_text"]["send"]
+        assert saved["selection"]["steps"][0]["task"] == edited["step_text"]["n1"]
         assert saved["sketch_digest"] != last["sketch_digest"]
         assert not ctx.remote.calls
 
@@ -460,7 +459,7 @@ async def test_immediate_plan_repairs_the_graph_once_under_the_original_task_bud
     ctx = await setup_plan(db)
     await register_completed(db, ctx)
     ctx.remote.calls.clear()
-    bad = {**receipt_proposal(), "routing_required": True}
+    bad = {**receipt_proposal(), "operator": "branch"}
     async with selected_match(
         db,
         monkeypatch,
@@ -483,7 +482,8 @@ async def test_immediate_plan_repairs_the_graph_once_under_the_original_task_bud
             '"$defs"' in model.turn_inputs[0] and '"SketchStep"' in model.turn_inputs[0]
         )
         assert (
-            "selection_route" in model.turn_inputs[1].split("What failed last time")[-1]
+            "Operation and method bindings disagree"
+            in model.turn_inputs[1].split("What failed last time")[-1]
         )
         audit = (await client.get(p + "/audit")).json()
         assert len(audit["rounds"]) == 1 and len(audit["rounds"][0]["attempts"]) == 2
@@ -505,7 +505,7 @@ async def test_repair_does_not_start_another_turn_after_planning_deadline(
     ctx = await setup_plan(db)
     await register_completed(db, ctx)
     ctx.remote.calls.clear()
-    bad = {**receipt_proposal(), "routing_required": True}
+    bad = {**receipt_proposal(), "operator": "branch"}
     async with selected_match(
         db,
         monkeypatch,
@@ -530,3 +530,43 @@ async def test_repair_does_not_start_another_turn_after_planning_deadline(
             and receipt["explanation"] == "selection_planning_timeout"
         )
         assert len(model.turn_inputs) == 1 and not ctx.remote.calls
+
+
+async def test_catalog_inspection_is_settled_and_resumed_before_user_confirmation(
+    db, monkeypatch
+):
+    ctx = await setup_plan(db)
+    await register_completed(db, ctx)
+    ctx.remote.calls.clear()
+    async with selected_match(
+        db,
+        monkeypatch,
+        ctx.leaf,
+        {ctx.leaf.reference},
+        ctx.owner,
+        ctx.factory,
+        planning_choice={"action": "inspect", "methods": ["m1"]},
+    ) as match:
+        client, path, selection, runner, _, model = match
+        model.replies.append(json.dumps(receipt_proposal()))
+        p = path + "/temporary-plan"
+        started = await client.put(
+            p, json={"review_digest": selection["review_digest"]}
+        )
+        assert started.status_code == 200
+        await drive(runner)
+        current = (await client.get(p)).json()
+        assert (
+            current["outcome"] == "plan"
+            and len(model.turn_inputs) == 2
+            and not ctx.remote.calls
+        )
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            tid = current["planning_task"]
+            saved = await repo.latest_task_payload(tid, "planning/node_assessed")
+            assert saved["shown"] == ["m1"] and saved["turns"] == 1
+            attempts = await repo.list_attempts(tid)
+            assert len(attempts) == 2 and all(
+                a["status"] == "COMPLETED" for a in attempts
+            )

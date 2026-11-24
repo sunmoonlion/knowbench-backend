@@ -150,9 +150,9 @@ class PlanProposal(Selection):
 
 
 class GraphChoice(Choice):
-    steps: list[MethodRef] = Field(max_length=8)
+    steps: list[MethodRef] = Field(max_length=48)
     selection: Selection
-    aliases: dict[str, MethodRef] = Field(max_length=8)
+    aliases: dict[str, MethodRef] = Field(max_length=48)
 
 
 def read_choice(task, artifact, *, check_graph=False):

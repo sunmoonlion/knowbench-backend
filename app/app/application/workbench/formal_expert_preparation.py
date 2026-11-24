@@ -193,9 +193,12 @@ async def prepare(
         saved = await repo.latest_task_payload(task_id, PREPARATION)
     registry = service.formal_registry
     if temporary:
-        from app.domain.workbench.planning_capabilities import capabilities
+        from app.domain.workbench.planning_capabilities import (
+            capabilities,
+            same_runtime,
+        )
 
-        if temporary["runtime"] != capabilities(service):
+        if not same_runtime(temporary["runtime"], capabilities(service)):
             raise StaleStateVersion(
                 "Runner capabilities changed; rebuild this temporary sketch"
             )

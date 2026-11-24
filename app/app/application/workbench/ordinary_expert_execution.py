@@ -165,10 +165,12 @@ async def check_execution(methods, owner, task, plan, grants):
         raise CapabilityError("Missing matching owner confirmation for this execution")
     expected = {d.reference: d.draft.definition for d in plan.dependencies}
     from app.application.workbench.temporary_planning import PLAN
+    from app.domain.workbench.planning_capabilities import same_runtime
 
     adopted = await repo.latest_task_payload(str(plan.match_task_id), PLAN)
     if adopted and (
-        not methods.planning_runtime or adopted["runtime"] != methods.planning_runtime()
+        not methods.planning_runtime
+        or not same_runtime(adopted["runtime"], methods.planning_runtime())
     ):
         raise CapabilityError(
             "The runner changed after the temporary plan was approved"

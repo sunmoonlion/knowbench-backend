@@ -33,6 +33,32 @@ PATTERN_HINTS = {
 }
 
 
+CATALOG_ENTRIES = 48
+CATALOG_SNAPSHOT_BYTES = 480_000
+CONSUMER_MAX_NODES = 4
+CONSUMER_MAX_TURNS = 4
+
+
+def same_runtime(saved, current):
+    if saved == current:
+        return True
+    if (
+        saved.get("contract") != "knowbench/consumer-planning/v1"
+        or current.get("contract") != "knowbench/consumer-planning/v2"
+    ):
+        return False
+    # Previously confirmed plans retain the exact v1 capability attestation.
+    legacy = {k: v for k, v in current.items() if k != "digest"}
+    legacy["contract"] = saved["contract"]
+    legacy["limits"] = {
+        k: v
+        for k, v in legacy["limits"].items()
+        if k not in ("planning_nodes", "planning_turns", "planning_depth")
+    }
+    legacy["limits"].update(candidate_nodes=8, context_bytes=16000)
+    return saved == {**legacy, "digest": digest(legacy)}
+
+
 def capabilities(service):
     return host_capabilities(
         service.instruction_service is not None,
@@ -51,7 +77,7 @@ def host_capabilities(independent_review, script, material_read):
         "conditional": True,
     }
     doc = {
-        "contract": "knowbench/consumer-planning/v1",
+        "contract": "knowbench/consumer-planning/v2",
         "patterns": enabled,
         "hints": PATTERN_HINTS,
         "script": bool(script),
@@ -59,8 +85,11 @@ def host_capabilities(independent_review, script, material_read):
         "limits": {
             "planning_rounds": 2,
             "catalog_queries": 3,
-            "candidate_nodes": 8,
-            "context_bytes": 16000,
+            "candidate_nodes": CATALOG_ENTRIES,
+            "context_bytes": CATALOG_SNAPSHOT_BYTES,
+            "planning_nodes": CONSUMER_MAX_NODES,
+            "planning_turns": CONSUMER_MAX_TURNS,
+            "planning_depth": 2,
             "planning_seconds": 300,
             "turn_budget_cny": "2",
         },

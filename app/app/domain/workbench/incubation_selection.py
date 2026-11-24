@@ -57,12 +57,64 @@ class SketchStep(Strict):
     reviews: tuple[Name, ...] = Field(default=(), max_length=8)
 
 
+Operator = Literal["leaf", "sequence", "parallel_join", "branch", "bounded_loop"]
+
+
+class PlanningNode(Strict):
+    id: Name
+    parent: Name | None = None
+    goal: Annotated[str, Field(min_length=1, max_length=60000)]
+    status: Literal["pending", "hit", "split", "gap", "clarify"] = "pending"
+    reason: str = Field(default="", max_length=1500)
+    operator: Operator | None = None
+    step: SketchStep | None = None
+    batch: ObjectBatch | None = None
+    backtracks: int = Field(default=0, ge=0, le=1)
+
+
+class PlanningTree(Strict):
+    catalog_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    nodes: tuple[PlanningNode, ...] = Field(min_length=1, max_length=16)
+    pins: dict[Name, str] = Field(default_factory=dict, max_length=72)
+
+    @model_validator(mode="after")
+    def linked_nodes(self):
+        seen = {}
+        for n in self.nodes:
+            if n.id in seen or (n.parent is None and (seen or n.id != "n1")):
+                raise ValueError("Invalid planning root or duplicate goal")
+            if n.parent is not None and (
+                n.parent not in seen or n.id.rpartition("_")[0] != n.parent
+            ):
+                raise ValueError("Missing planning parent")
+            if (n.status in ("split", "hit")) != (n.step is not None) or (
+                n.step and n.step.id != n.id
+            ):
+                raise ValueError("A resolved goal requires its bound step")
+            seen[n.id] = n
+        for n in self.nodes:
+            children = {c.id for c in self.nodes if c.parent == n.id}
+            bindings = (
+                {
+                    b.step
+                    for b in n.step.inputs.values()
+                    if b.source == "step" or b.source == "object_rows"
+                }
+                if n.step
+                else set()
+            )
+            if bindings != children:
+                raise ValueError("Every planned child must supply its parent's inputs")
+        return self
+
+
 class Selection(Strict):
     status: Literal["ready", "clarify", "gap"]
     reason: Short
     patterns: tuple[Pattern, ...] = Field(max_length=5)
     steps: tuple[SketchStep, ...] = Field(max_length=16)
     routing_required: bool = Field(strict=True)
+    tree: PlanningTree | None = Field(default=None, exclude_if=lambda v: v is None)
     object_batch: ObjectBatch | None = None
 
     @model_validator(mode="after")
@@ -102,7 +154,20 @@ class SelectionCandidate(Strict):
     outputs: dict[Name, ValueSlot]
 
 
+class NodeEdit(Strict):
+    node: Name
+    mode: Literal["revise", "split", "method"]
+    method: MethodRef | None = Field(default=None, exclude_if=lambda v: v is None)
+
+    @model_validator(mode="after")
+    def pinned_method(self):
+        if (self.mode == "method") != (self.method is not None):
+            raise ValueError("Choosing a method requires the exact version")
+        return self
+
+
 class SelectionContext(Strict):
+    edit: NodeEdit | None = Field(default=None, exclude_if=lambda v: v is None)
     instructions: dict[Name, InstructionPin] = Field(
         default_factory=dict, max_length=24, exclude_if=lambda v: not v
     )
@@ -249,6 +314,7 @@ def expand(
     *,
     required_cases: dict[str, set[str]],
     title: str | None = None,
+    scope: tuple[str, str] | None = None,
 ):
     if selection.status != "ready":
         raise ValueError("selection_unresolved")
@@ -388,6 +454,17 @@ def expand(
     doc["procedure"] = procedure
     if template:
         declaration = doc["capability_declaration"]
+        if selection.tree and len(selection.steps) > 1:
+            # A collector describes its internal receipts. The outer method
+            # accepts the author's inputs and owns the confirmed delivery.
+            applies, excludes = scope or ("", "")
+            declaration.update(
+                applies_when=[applies or template.goal],
+                excludes=[excludes] if excludes else [],
+                promises={},
+                conditions={},
+            )
+            doc["how_to_validate"] = []
         declaration.update(
             title=title or declaration["title"],
             purpose=template.goal,

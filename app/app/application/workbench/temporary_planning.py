@@ -13,6 +13,7 @@ from app.application.workbench.formal_expert_intake import (
     read_verified,
 )
 from app.application.workbench.ledger import Ledger
+from app.domain.workbench import hierarchical_planning as htn
 from app.domain.workbench.errors import NotFound, StaleStateVersion
 from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_expert_match import frozen_scope
@@ -26,9 +27,12 @@ from app.domain.workbench.incubation_selection import (
 from app.domain.workbench.method_search import PlanningQuery
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.planning_capabilities import (
+    CATALOG_ENTRIES,
+    CATALOG_SNAPSHOT_BYTES,
     capabilities,
     check_structure,
     requirements,
+    same_runtime,
 )
 from app.domain.workbench.temporary_plan import (
     Choice,
@@ -140,7 +144,7 @@ async def catalog(
         trace.append({"by": "host", "stage": "directory", "next": page["next"]})
         if page["next"] is None and mode != "goal":
             entries = await describe(registry, owner, page_refs(registry, page))
-            if encoded_size(entries) <= 12000:
+            if encoded_size(entries) <= CATALOG_SNAPSHOT_BYTES:
                 return {
                     "mode": "directory",
                     "entries": entries,
@@ -173,7 +177,7 @@ async def catalog(
         or len(entries) < len(pins)
         or bool(previous and previous["partial"])
     )
-    while entries and encoded_size(entries) > 16000:
+    while entries and encoded_size(entries) > CATALOG_SNAPSHOT_BYTES:
         entries.pop()
         partial = True
     trace.append(
@@ -298,14 +302,18 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
         directory = {"entries": [], "queries": 0}
     elif not events:
         directory = await catalog(
-            service.formal_registry, owner, question, 8, mode=command.catalog_mode
+            service.formal_registry,
+            owner,
+            question,
+            CATALOG_ENTRIES,
+            mode=command.catalog_mode,
         )
     elif goal:
         directory = await catalog(
             service.formal_registry,
             owner,
             question,
-            8,
+            CATALOG_ENTRIES,
             previous=directory,
             goal=goal,
         )
@@ -315,7 +323,7 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             for entry in directory["entries"]
         ]
         entries = await describe(service.formal_registry, owner, refs)
-        while entries and encoded_size(entries) > 16000:
+        while entries and encoded_size(entries) > CATALOG_SNAPSHOT_BYTES:
             entries.pop()
         directory = {
             **directory,
@@ -335,7 +343,7 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             reserved.add(alias)
         entry["alias"] = alias
     # Enforce the same byte ceiling after aliases have been added.
-    while encoded_size(directory["entries"]) > runtime["limits"]["context_bytes"]:
+    while encoded_size(directory["entries"]) > CATALOG_SNAPSHOT_BYTES:
         directory["entries"].pop()
         directory["partial"] = True
     async with repo.transaction():
@@ -365,6 +373,7 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                 profile_id="FIND_EXPERT",
                 profile_version="7",
                 original_input={
+                    "planner": htn.PROTOCOL,
                     "text": question,
                     **(
                         {"previous_selection": choice.selection.model_dump(mode="json")}
@@ -569,7 +578,7 @@ async def sketch(service, owner, task_id):
         return result
     try:
         runtime = capabilities(service)
-        if context["runtime"] != runtime:
+        if not same_runtime(context["runtime"], runtime):
             raise ValueError(
                 "The runner capabilities changed; review the current deployment"
             )
@@ -650,7 +659,7 @@ async def adopt(service, owner, task_id, command):
             required,
             command.review,
         )
-        if not saved and picked["runtime"] != runtime:
+        if not saved and not same_runtime(picked["runtime"], runtime):
             raise ValueError("Runner changed since this sketch was prepared")
     except ValueError as exc:
         raise StaleStateVersion(str(exc)) from exc

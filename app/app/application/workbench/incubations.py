@@ -34,6 +34,7 @@ from app.application.workbench.project_service import ONLINE
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.test_folders import FolderRefused
 from app.application.workbench.test_runs import queued_behind
+from app.domain.workbench import hierarchical_planning as htn
 from app.domain.workbench.errors import (
     IncubationConflict,
     IncubationNoComputer,
@@ -367,6 +368,11 @@ class IncubationConductor:
                     profile_version="2" if request.selection_context else None,
                     original_input={
                         "text": label(request),
+                        **(
+                            {"planner": htn.PROTOCOL}
+                            if request.selection_context
+                            else {}
+                        ),
                         # 契约列死的材料：模型只看这些（0029 第 6.4 节）
                         "incubation": material(request),
                     },
