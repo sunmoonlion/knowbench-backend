@@ -8,6 +8,7 @@ from typing import Any
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.catalog import SOURCE_TEST
 from app.application.workbench.expert_desk import ExpertDesk
+from app.application.workbench.test_runs import retired_trial
 from app.domain.workbench.errors import NotFound
 from app.domain.workbench.test_runs import case_outputs, trial_profile_id
 
@@ -22,6 +23,7 @@ async def execution_view(
     run = await repo.get_test_run(run_id)
     if (
         run is None
+        or retired_trial(run)
         or (run.get("request") or {}).get("contract")
         not in ("knowbot-test-run/v1", "knowbot-test-run/v2")
         or (run.get("request") or {}).get("owner_subject") != owner_subject

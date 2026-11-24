@@ -405,6 +405,7 @@ class WorkbenchStore(Protocol):
         *,
         owner_actor_id: str | None = None,
         for_update: bool = False,
+        visible_only: bool = False,
     ) -> dict[str, Any]: ...
 
     async def list_sessions(
@@ -462,7 +463,7 @@ class WorkbenchStore(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def list_record_events(
-        self, *, session_id: str, types: tuple[str, ...]
+        self, *, session_id: str, types: tuple[str, ...], visible_only: bool = False
     ) -> list[dict[str, Any]]: ...
 
     async def list_owner_interactions(

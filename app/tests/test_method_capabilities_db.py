@@ -27,7 +27,7 @@ from app.domain.workbench.capabilities import (
     tool_key,
 )
 from app.domain.workbench.errors import Forbidden
-from app.domain.workbench.packs import SMOKE
+from app.domain.workbench.packs import BUILTIN_PACKS, SMOKE
 from app.domain.workbench.states import TaskState
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
@@ -85,13 +85,10 @@ async def setup_method(db, *, access=None, remote=None, operation=None):
                 }
             ],
         }
-        async with repo.transaction():
-            await s.execute(
-                text(
-                    "UPDATE workbench_tasks SET pack_source='knowmart', pack_snapshot=cast(:p as jsonb), pack_digest=:d WHERE id=:id"
-                ),
-                {"p": json.dumps(pack), "d": "sha256:" + digest(pack), "id": task_id},
-            )
+        profile = (await repo.get_task(task_id))["profile_id"]
+        BUILTIN_PACKS[profile] = type(SMOKE).model_validate(
+            {**pack, "profile_id": profile, "version": "1"}
+        )
         selected = await svc.selection(OWNER, sid)
         assert selected["editable"] and selected["method"]["managed_bindings_supported"]
         assert selected["issues"][0]["code"] == "method_bindings_required"

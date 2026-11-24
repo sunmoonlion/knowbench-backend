@@ -285,6 +285,12 @@ async def _remove_folder(
         await folders.remove(owner=actor, root=root, folder=run_folder(run))
 
 
+def retired_trial(run: dict) -> bool:
+    return ((run.get("request") or {}).get("manifest") or {}).get(
+        "schema"
+    ) == knowbots.MANIFEST_SCHEMA_V2
+
+
 class KnowbotTestService:
     """契约的三个接口：受理、查状态、回答。真正往前推的是 KnowbotTestConductor。"""
 
@@ -321,8 +327,10 @@ class KnowbotTestService:
                 "knowbot-test-run/v2",
             ):
                 raise NotFound("no such test run", run_id=run_id)
+            if retired_trial(run) and not retired_expert:
+                raise NotFound("no such test run", run_id=run_id)
             if run["status"] in FINAL:
-                return await self.status(run_id)
+                return {} if retired_expert else await self.status(run_id)
             cases = await self.repo.list_test_cases(run_id)
             requested = (
                 {} if retired_expert else {c.case_id: c for c in _request(run).cases}
@@ -362,7 +370,7 @@ class KnowbotTestService:
             await _stop_case_task(self.repo, task_id, self.release_grant)
         await _remove_folder(self.repo, self.folders, run)
         log.info("knowbot test run cancelled run=%s", run_id)
-        return await self.status(run_id)
+        return {} if retired_expert else await self.status(run_id)
 
     async def accept(self, request: RunRequest, *, caller: str) -> dict[str, Any]:
         await self._users_computer(request)
@@ -512,9 +520,14 @@ class KnowbotTestService:
 
     async def status(self, run_id: str) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
-        if run is None or (run.get("request") or {}).get("contract") not in (
-            CONTRACT,
-            "knowbot-test-run/v2",
+        if (
+            run is None
+            or retired_trial(run)
+            or (run.get("request") or {}).get("contract")
+            not in (
+                CONTRACT,
+                "knowbot-test-run/v2",
+            )
         ):
             raise NotFound("no such test run", run_id=run_id)
         cases = await self.repo.list_test_cases(run_id)
@@ -671,9 +684,14 @@ class KnowbotTestService:
     async def outputs(self, run_id: str, case_id: str) -> dict[str, Any]:
         """一条用例跑完时取好的产出（SDD 0037）。还没跑完、这次没取、已清空的都是 404。"""
         run = await self.repo.get_test_run(run_id)
-        if run is None or (run.get("request") or {}).get("contract") not in (
-            CONTRACT,
-            "knowbot-test-run/v2",
+        if (
+            run is None
+            or retired_trial(run)
+            or (run.get("request") or {}).get("contract")
+            not in (
+                CONTRACT,
+                "knowbot-test-run/v2",
+            )
         ):
             raise NotFound("no such test run", run_id=run_id)
         found = await self.repo.get_test_case_outputs(run_id, case_id)
@@ -683,9 +701,14 @@ class KnowbotTestService:
 
     async def answer(self, run_id: str, answers: Answers) -> dict[str, Any]:
         run = await self.repo.get_test_run(run_id)
-        if run is None or (run.get("request") or {}).get("contract") not in (
-            CONTRACT,
-            "knowbot-test-run/v2",
+        if (
+            run is None
+            or retired_trial(run)
+            or (run.get("request") or {}).get("contract")
+            not in (
+                CONTRACT,
+                "knowbot-test-run/v2",
+            )
         ):
             raise NotFound("no such test run", run_id=run_id)
         cases = await self.repo.list_test_cases(run_id)

@@ -165,7 +165,7 @@ async def test_native_search_restores_for_analysis_and_does_not_change_other_thr
             await session.commit()
         link = runner.links[sb]
         assert not (await link.run_turn(thread, "propose data")).error
-        assert link.search_scopes[thread] is True
+        assert link.search_scopes[thread] == (True, False)
         async with db() as session:
             await session.execute(
                 text("update workbench_attempts set step_id='s1' where id=:id"),
@@ -173,7 +173,7 @@ async def test_native_search_restores_for_analysis_and_does_not_change_other_thr
             )
             await session.commit()
         assert not (await link.run_turn(thread, "perform analysis")).error
-        assert link.search_scopes[thread] is False
+        assert link.search_scopes[thread] == (False, False)
         resumes = [r["params"] for r in fake.requests if r["method"] == "thread/resume"]
         assert len(resumes) == 2
         assert resumes[0]["config"]["web_search"] == "disabled"
@@ -229,6 +229,55 @@ async def test_stage_configuration_failure_never_spends_a_model_turn(db, blocker
         if blocker == "active":
             assert not any(r["method"] == "thread/unsubscribe" for r in fake.requests)
             assert fake.in_progress[thread] == "existing-turn"
+    finally:
+        if runner:
+            await _close(runner)
+        await fake.close()
+
+
+@pytest.mark.parametrize(
+    "profile,version",
+    [
+        ("FIND_EXPERT", "5"),
+        ("FIND_EXPERT", "6"),
+        ("FIND_EXPERT", "7"),
+        ("INCUBATE", "2"),
+    ],
+)
+async def test_supplied_directory_hides_lookup_and_restores_it_for_ordinary_stage(
+    db, profile, version
+):
+    fake = PlanningServer(complete=True, quiet=True)
+    await fake.start()
+    runner = None
+    try:
+        runner, sb, sid, thread = await _started(db, fake)
+        tid, _ = await _task(db, sid, "directory-snapshot", attempt=True)
+        link = runner.links[sb]
+        for stage, revision, supplied in (
+            (profile, version, True),
+            ("SMOKE", "1", False),
+        ):
+            async with db() as session:
+                await session.execute(
+                    text(
+                        "update workbench_tasks set profile_id=:p,profile_version=:v where id=:t"
+                    ),
+                    {"p": stage, "v": revision, "t": tid},
+                )
+                await session.commit()
+            assert not (await link.run_turn(thread, "compare declarations")).error
+            config = [
+                r["params"]["config"]
+                for r in fake.requests
+                if r["method"] == "thread/resume"
+            ][-1]
+            if supplied:
+                assert config["web_search"] == "disabled"
+                assert config["mcp_servers.sunmoon_workbench.enabled"] is False
+                assert config["mcp_servers.sunmoon_capabilities"]["enabled"] is False
+            else:
+                assert "mcp_servers.sunmoon_workbench.enabled" not in config
     finally:
         if runner:
             await _close(runner)

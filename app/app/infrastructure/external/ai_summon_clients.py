@@ -18,7 +18,6 @@ from urllib.parse import quote
 
 from app.application.errors.exceptions import BadGatewayError, ServiceUnavailableError
 from app.domain.workbench.errors import WorkbenchError
-from app.domain.workbench.expert_match import DirectorySnapshot
 from app.infrastructure.external.service_client import ServiceClient, service_relation
 
 
@@ -63,33 +62,6 @@ class _Relation:
                 f"{self._target} refused: {getattr(exc, 'code', 'error')}"
             ) from None
         return body
-
-
-class KnowmartCatalog(_Relation):
-    def __init__(self, environ: Mapping[str, str] | None = None, **options: Any):
-        super().__init__("knowmart", "catalog", environ, **options)
-
-    async def experts(self, owner_subject: str) -> list[dict[str, Any]]:
-        body = await self._call(
-            "GET", f"/owners/{quote(owner_subject, safe='')}/catalog"
-        )
-        experts = body.get("experts") if isinstance(body, dict) else None
-        if not isinstance(experts, list):
-            raise AiSummonUnavailable("knowmart answered outside the contract")
-        return [e for e in experts if isinstance(e, dict) and e.get("knowbot_id")]
-
-    async def snapshot(self, owner_subject: str) -> DirectorySnapshot:
-        body = await self._call(
-            "GET",
-            f"/owners/{quote(owner_subject, safe='')}/catalog?directory_version=2",
-        )
-        try:
-            snapshot = DirectorySnapshot.model_validate(body)
-        except ValueError:
-            raise AiSummonUnavailable("knowmart public directory is invalid") from None
-        if not snapshot.complete:
-            raise AiSummonUnavailable("knowmart public directory is incomplete")
-        return snapshot
 
 
 class KnowmartDemands(_Relation):

@@ -1,6 +1,6 @@
 """Offline pinned-Codex protocol probe; mock HTTP provider, no model key or fees.
 
-Run from app/: PYTHONPATH=. python tests/probe_native_search_scope.py /path/to/codex-0.155.1
+Run from app/: PYTHONPATH=. python tests/probe_native_search_scope.py /path/to/codex-0.170.0
 Uses a fresh temporary CODEX_HOME, never the user's sandbox or history.
 """
 
@@ -83,15 +83,8 @@ with tempfile.TemporaryDirectory(prefix="luna-stage-config-") as root:
     threading.Thread(target=server.serve_forever, daemon=True).start()
     mcp = Path(root, "mcp.py")
     definitions = [
-        {"name": n, **TOOLS[n]}
-        for n in ("find_subject", "request_data", "find_expert", "compute")
+        {"name": n, **TOOLS[n]} for n in ("find_subject", "request_data", "compute")
     ]
-    definitions.append(
-        {
-            "name": "legacy_find_expert",
-            **{k: v for k, v in TOOLS["find_expert"].items() if k != "annotations"},
-        }
-    )
     Path(root, "tools.json").write_text(json.dumps(definitions))
     mcp.write_text("""import sys, json
 from pathlib import Path
@@ -167,7 +160,7 @@ for line in sys.stdin:
             call("thread/unsubscribe", {"threadId": thread})["status"] == "unsubscribed"
         )
 
-    def run(thread):
+    def run(thread, *, supplied=False):
         inventory = call(
             "mcpServerStatus/list", {"threadId": thread, "detail": "toolsAndAuthOnly"}
         )
@@ -177,13 +170,9 @@ for line in sys.stdin:
             if server["name"] == "probe"
             for tool in server["tools"].values()
         }
-        assert names == {
-            "find_subject",
-            "request_data",
-            "find_expert",
-            "legacy_find_expert",
-            "compute",
-        }
+        assert names == (
+            set() if supplied else {"find_subject", "request_data", "compute"}
+        ), names
         count = len(requests)
         call(
             "turn/start",
@@ -194,6 +183,8 @@ for line in sys.stdin:
             if msg.get("method") == "turn/completed":
                 break
         assert len(requests) == count + 1
+        if supplied:
+            assert "mcp__probe" not in json.dumps(requests[-1]["tools"])
         return [x["type"] for x in requests[-1]["tools"]]
 
     def run_tool(name, succeeds, arguments=None):
@@ -329,6 +320,21 @@ for line in sys.stdin:
         call("thread/resume", {"threadId": t, "config": {"web_search": "disabled"}})
         assert "web_search" not in run(t)
         print("PASS: unsubscribe/resume applies search restriction", flush=True)
+        unload(t)
+        call(
+            "thread/resume",
+            {
+                "threadId": t,
+                "config": {
+                    "web_search": "disabled",
+                    "mcp_servers.probe.enabled": False,
+                },
+            },
+        )
+        assert "web_search" not in run(t, supplied=True)
+        print(
+            "PASS: supplied-directory turn offers no MCP tools to the model", flush=True
+        )
         other = call(
             "thread/start",
             {
@@ -344,9 +350,6 @@ for line in sys.stdin:
         call("thread/resume", {"threadId": t, "config": {}})
         assert "web_search" in run(t)
         print("PASS: original search restored on same durable thread", flush=True)
-        print("PASS: MCP discovery/proposal tools available in every phase", flush=True)
-        run_tool("legacy_find_expert", False)
-        run_tool("find_expert", True)
         run_tool("request_data", False)
         single = {
             "task": "offline-task",

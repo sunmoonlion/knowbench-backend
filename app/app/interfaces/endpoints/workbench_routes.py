@@ -10,7 +10,7 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Literal
+from typing import Any
 from uuid import UUID
 
 import anyio
@@ -73,7 +73,6 @@ from app.bootstrap.workbench import (
 )
 from app.domain.security import Principal
 from app.domain.workbench.errors import MachineNotConnected, WorkbenchError
-from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.provider_url import (
     normalize_mcp_sources,
@@ -135,8 +134,6 @@ class CreateSession(Strict):
     kind: str | None = Field(default=None, pattern=r"^(chat|work|expert)$")
     project_id: str | None = Field(default=None, max_length=64)
     title: str | None = Field(default=None, max_length=400)
-    # 找专家没找到、用户点了「让我的模型直接答」（请专家方案设计第 4.9 节第 5 条）
-    origin: Literal["direct_answer"] | None = None
     environment_id: str | None = None
     sandbox_id: str | None = None
     project_root: str | None = Field(default=None, min_length=1)
@@ -168,7 +165,6 @@ class Handover(Strict):
     budget_currency: str = "CNY"
     requested_deadline: str | None = None
     client_context: dict[str, Any] = Field(default_factory=dict)
-    match: MatchSelection | None = None
 
 
 class RespondInteraction(Strict):
@@ -654,7 +650,6 @@ async def create_session(
                 kind=body.kind,
                 project_id=body.project_id,
                 title=body.title,
-                origin=body.origin,
             )
             created = await repo.get_session(result["session_id"])
             async with repo.transaction():

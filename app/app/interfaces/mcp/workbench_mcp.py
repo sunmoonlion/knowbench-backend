@@ -20,7 +20,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.application.workbench.calls import CallLedger
 from app.application.workbench.expert_data import find_subject, request_data
-from app.application.workbench.find_expert import find_expert
 from app.application.workbench.knowbot_compute import KnowbotCompute
 from app.application.workbench.method_tools import MethodToolGuard
 from app.application.workbench.records import ProjectRecords
@@ -30,7 +29,6 @@ from app.application.workbench.tool_registry import registered_functions
 from app.bootstrap.workbench import (
     knowbase_v2,
     knowfeed_supply,
-    knowmart_catalog,
     workbench_store,
 )
 from app.domain.workbench.capabilities import CapabilityError
@@ -229,9 +227,6 @@ async def _execute_local(records, name, args, relay, receipt):
         return await knowfeed_supply().source_tools(subject, args.get("service"))
     if name == "find_subject":
         return await find_subject(knowfeed_supply(), args.get("name"))
-    if name == "find_expert":
-        # 找专家（请专家方案设计第 4.9 节）：凭这件「找专家」委托，查这个用户的 knowmart 目录
-        return await find_expert(records.repo, knowmart_catalog(), working)
     raise CapabilityError("Missing local function implementation")
 
 
@@ -265,7 +260,6 @@ async def dispatch(records, mid, name, args, relay, *, function, receipt):
                 PROJECT_READ,
                 "discover_source_tools",
                 "find_subject",
-                "find_expert",
             ):
                 failure_status = "unknown"
             output = await _execute_local(records, name, args, relay, receipt)

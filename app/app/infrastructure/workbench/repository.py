@@ -110,14 +110,34 @@ _OCCUPYING = """(
             > now() - make_interval(secs => :hold)))"""
 
 
+def _retired_task(alias: str) -> str:
+    return f"""(({alias}.profile_id = 'FIND_EXPERT' and coalesce({alias}.profile_version,'1') in ('1','2','3','4'))
+        or (coalesce({alias}.pack_source,'') in ('knowlab-test','knowmart')
+            and not jsonb_exists(coalesce({alias}.pack_snapshot, '{{}}'::jsonb), 'runtime_contract')))"""
+
+
+def _retired_session(alias: str) -> str:
+    return f"""(exists (select 1 from workbench_tasks rt where rt.session_id={alias}.id and {_retired_task("rt")})
+        and not exists (select 1 from workbench_tasks ct where ct.session_id={alias}.id and not {_retired_task("ct")}))"""
+
+
+def _visible_session_entry(alias: str) -> str:
+    # In a mixed thread old runtime frames may carry no task id. Only attributed
+    # current entries can be disclosed there. Untouched threads retain all frames.
+    return f"""(not exists (select 1 from workbench_tasks rt where rt.session_id={alias}.session_id and {_retired_task("rt")})
+        or exists (select 1 from workbench_tasks ct where ct.id={alias}.task_id and not {_retired_task("ct")}))"""
+
+
 def _test_task(alias: str) -> str:
     # K29 只认存下来的列（SDD 0052 第二节）：建测试委托时就写 pack_source，迁移 0039 回填，
     # #85 后线上对账与现算一致（11-06）。不再现算 workbench_test_cases
-    return f"(coalesce({alias}.pack_source, '') in ('knowlab-test', 'formal-test'))"
+    return f"(coalesce({alias}.pack_source, '') in ('knowlab-test', 'formal-test') or {_retired_task(alias)})"
 
 
 def _test_session(alias: str) -> str:
-    return f"(coalesce({alias}.origin, '') = 'knowlab-test')"
+    return (
+        f"(coalesce({alias}.origin, '') = 'knowlab-test' or {_retired_session(alias)})"
+    )
 
 
 class WorkbenchRepository(
@@ -623,6 +643,7 @@ class WorkbenchRepository(
         *,
         owner_actor_id: str | None = None,
         for_update: bool = False,
+        visible_only: bool = False,
     ) -> dict[str, Any]:
         # Serialize state changes without blocking foreign-key references from
         # event writers holding the cursor advisory lock. Session IDs are stable.
@@ -635,14 +656,16 @@ class WorkbenchRepository(
             owner_actor_id is not None and str(row["owner_actor_id"]) != owner_actor_id
         ):
             raise NotFound("session not found", session_id=session_id)
-        if self.browser_view:
-            hidden = await self.session.scalar(
+        if self.browser_view or visible_only:
+            retired = await self.session.scalar(
                 text(
-                    f"select {_test_session('s')} from workbench_sessions s where s.id = :id"
+                    f"select {_retired_session('s')} from workbench_sessions s where s.id=:id"
                 ),
                 {"id": session_id},
             )
-            if hidden:
+            if retired:
+                raise NotFound("session not found", session_id=session_id)
+            if self.browser_view and row["origin"] == "knowlab-test":
                 raise TestManagedInKnowlab("Manage this test in knowlab")
         return dict(row)
 
@@ -812,8 +835,9 @@ class WorkbenchRepository(
         self, *, session_id: str, after_cursor: int = 0, limit: int = 500
     ) -> list[dict[str, Any]]:
         r = await self.session.execute(
-            text("""select id, session_id, cursor, kind, event_type as type, payload, task_id, attempt_id, created_at
-                    from workbench_session_events where session_id = :s and cursor > :c order by cursor asc limit :l"""),
+            text(f"""select id, session_id, cursor, kind, event_type as type, payload, task_id, attempt_id, created_at
+                    from workbench_session_events e where session_id = :s and cursor > :c
+                    {("and " + _visible_session_entry("e")) if self.browser_view else ""} order by cursor asc limit :l"""),
             {"s": session_id, "c": after_cursor, "l": limit},
         )
         return [_event(m) for m in r.mappings().all()]
@@ -823,30 +847,31 @@ class WorkbenchRepository(
     ) -> list[dict[str, Any]]:
         """一个项目里的各段对话：几轮、第一句话。给专家挑着读。"""
         r = await self.session.execute(
-            text("""select s.id, s.kind, s.title, s.created_at, s.last_active_at,
+            text(f"""select s.id, s.kind, s.title, s.created_at, s.last_active_at,
                            (select count(*) from workbench_session_events e
                              where e.session_id = s.id
-                               and e.event_type = 'turn/completed') as turns,
+                               and {_visible_session_entry("e")} and e.event_type = 'turn/completed') as turns,
                            (select e.payload->>'text' from workbench_session_events e
                              where e.session_id = s.id
-                               and e.event_type = 'turn/requested'
+                               and {_visible_session_entry("e")} and e.event_type = 'turn/requested'
                                and coalesce(e.payload->>'by', 'user') = 'user'
                              order by e.cursor limit 1) as first_message
                     from workbench_sessions s
-                    where s.project_id = :p and s.owner_actor_id = :o
+                    where s.project_id = :p and s.owner_actor_id = :o and not {_retired_session("s")}
                     order by s.created_at, s.id"""),
             {"p": project_id, "o": owner_actor_id},
         )
         return [dict(m) for m in r.mappings().all()]
 
     async def list_record_events(
-        self, *, session_id: str, types: tuple[str, ...]
+        self, *, session_id: str, types: tuple[str, ...], visible_only: bool = False
     ) -> list[dict[str, Any]]:
         """一段对话里指定种类的全部事件，按先后。不分页：分页在记录上做，不在事件上做。"""
         r = await self.session.execute(
-            text("""select id, session_id, cursor, kind, event_type as type, payload, task_id, attempt_id, created_at
-                    from workbench_session_events
-                    where session_id = :s and event_type = any(:types) order by cursor asc"""),
+            text(f"""select id, session_id, cursor, kind, event_type as type, payload, task_id, attempt_id, created_at
+                    from workbench_session_events e
+                    where session_id = :s and event_type = any(:types)
+                    {("and " + _visible_session_entry("e")) if self.browser_view or visible_only else ""} order by cursor asc"""),
             {"s": session_id, "types": list(types)},
         )
         return [_event(m) for m in r.mappings().all()]
@@ -970,13 +995,15 @@ class WorkbenchRepository(
         ):
             raise NotFound("task not found", task_id=task_id)
         if self.browser_view:
-            hidden = await self.session.scalar(
+            retired = await self.session.scalar(
                 text(
-                    f"select {_test_task('t')} from workbench_tasks t where t.id = :id"
+                    f"select {_retired_task('t')} from workbench_tasks t where t.id=:id"
                 ),
                 {"id": task_id},
             )
-            if hidden:
+            if retired:
+                raise NotFound("task not found", task_id=task_id)
+            if row["pack_source"] in ("knowlab-test", "formal-test"):
                 raise TestManagedInKnowlab("Manage this test in knowlab")
         return dict(row)
 
@@ -1239,6 +1266,11 @@ class WorkbenchRepository(
             text(
                 "select * from workbench_interactions where id = :id"
                 + owner_filter
+                + (
+                    " and " + _visible_session_entry("workbench_interactions")
+                    if self.browser_view
+                    else ""
+                )
                 + (" for update" if for_update else "")
             ),
             params,
@@ -1252,7 +1284,8 @@ class WorkbenchRepository(
         self, *, session_id: str, status: str | None = "pending"
     ) -> list[dict[str, Any]]:
         sql = (
-            "select * from workbench_interactions where session_id = :s"
+            "select * from workbench_interactions i where session_id = :s"
+            + (" and " + _visible_session_entry("i") if self.browser_view else "")
             + (" and status = :st" if status else "")
             + " order by created_at"
         )
@@ -1268,6 +1301,7 @@ class WorkbenchRepository(
                join workbench_sessions s on s.id = i.session_id
                where s.owner_actor_id = :o"""
             + (" and not " + _test_session("s") if self.browser_view else "")
+            + (" and " + _visible_session_entry("i") if self.browser_view else "")
             + (" and i.status = :st" if status else "")
             + (
                 " and (i.expires_at is null or i.expires_at > now())"
@@ -1866,14 +1900,14 @@ class WorkbenchRepository(
     ) -> list[dict[str, Any]]:
         r = await self.session.execute(
             text(
-                """select o.*, t.owner_actor_id, t.session_id, t.profile_id,
+                f"""select o.*, t.owner_actor_id, t.session_id, t.profile_id,
                           t.profile_version, t.pack_source,
                           t.created_at as task_created_at,
                           t.updated_at as task_updated_at
                    from workbench_task_outputs o
                    join workbench_tasks t on t.id = o.task_id
                    where o.status = 'pending' and o.next_try_at <= :now
-                     and t.state = 'SUCCEEDED'
+                     and t.state = 'SUCCEEDED' and not {_retired_task("t")}
                    order by o.next_try_at limit :n"""
             ),
             {"now": now, "n": limit},

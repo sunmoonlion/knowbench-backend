@@ -4,11 +4,11 @@ import asyncio
 import json
 import uuid
 
+from test_expert_lookup_lane_db import lookup_owner, lookup_service
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_task_runtime_db import ANSWER, PLAN, ScriptedAppServer, close, seed
 
-from app.application.workbench.find_expert import FindExpertService
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
@@ -44,9 +44,20 @@ class ParallelServer(ScriptedAppServer):
         reply = (
             json.dumps(
                 {
-                    "outcome": "none",
+                    "contract": "knowbench/expert-match/v5",
+                    "requirements": [
+                        {
+                            "id": "r",
+                            "kind": "result",
+                            "statement": "找到可用的专家",
+                            "question_quote": "找到可用的专家",
+                            "required": True,
+                        }
+                    ],
+                    "outcome": "no_match",
+                    "explanation": "无可用承诺",
+                    "clarification": None,
                     "picks": [],
-                    "recommend": {"action": "direct", "reason": "No expert fits"},
                 }
             )
             if lookup
@@ -95,12 +106,14 @@ async def test_lookup_has_its_own_thread_environment_budget_and_completion(db):
     runner = None
     try:
         runner, sid, _, work = await seed(db, fake)
+        await lookup_owner(db)
         await runner.run_once()
         await asyncio.wait_for(fake.work_started.wait(), 10)
         async with db() as s:
             repo = WorkbenchRepository(s)
             pid = str((await repo.get_session(sid))["project_id"])
-            find = await FindExpertService(repo).start(
+            find = await lookup_service(repo).start(
+                match_contract="knowbench/expert-match/v5",
                 owner_actor_id=OWNER,
                 project_id=pid,
                 question="找到可用的专家",

@@ -14,6 +14,7 @@ from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.catalog import (
+    SNAPSHOT_SOURCES,
     PinnedPack,
     PinnedTestCatalog,
     pack_for_task,
@@ -33,6 +34,7 @@ from app.domain.workbench.errors import (
     StaleStateVersion,
     WheelHeldByOther,
 )
+from app.domain.workbench.expert_lookup import LegacyMatchRetired, legacy_match
 from app.domain.workbench.formal_execution import (
     PinnedFormalMethod,
     is_formal,
@@ -97,6 +99,9 @@ def writes_files(task: dict[str, Any]) -> bool:
     """这件委托的专家会不会往项目里写成稿文件（0015 §3.3）。认不出专家包时按会写算，照旧指向底稿。"""
     if is_formal(task) or task.get("pack_source") == PACK_SOURCE:
         return False
+    if task.get("pack_source") in SNAPSHOT_SOURCES:
+        # Dynamic catalogs select the actual deliverables during execution.
+        return True
     try:
         pack = pack_for_task(task)
     except ValueError:
@@ -191,6 +196,8 @@ class Ledger:
         resolution：分身（清单 v2，expert_data.ExpertData）的解析清单、授权 ref、确认与
         需求单、等数据状态，同一提交记下；没有就不建（请专家页才建得出）。
         """
+        if legacy_match(req.profile_id, req.profile_version or profile_version):
+            raise LegacyMatchRetired()
         digest = req.digest()
         async with self.repo.transaction():
             prior = await self.repo.find_task_by_idempotency(
@@ -322,8 +329,6 @@ class Ledger:
             task_id = str(uuid.uuid4())
             budget = Budget(currency=req.budget_currency, limit=req.budget_limit)
             client_context = dict(req.client_context)
-            if req.match is not None:
-                client_context["match_selection"] = req.match.model_dump(mode="json")
             if queued_behind:
                 client_context["queued_behind"] = queued_behind
             await self.repo.insert_task(
@@ -523,8 +528,16 @@ class Ledger:
         await self.repo.get_project(project_id, for_update=True)
         if await self.repo.active_task_of_project(project_id, lane=lane) is not None:
             return None
-        nxt = await self.repo.next_queued_task(project_id, lane=lane)
-        if nxt is None:
+        while nxt := await self.repo.next_queued_task(project_id, lane=lane):
+            if not legacy_match(nxt["profile_id"], nxt.get("profile_version")):
+                break
+            await self.transition(
+                str(nxt["id"]),
+                TaskState.CANCELLED,
+                reason={"by": "platform", "code": LegacyMatchRetired.code},
+                advance_queue=False,
+            )
+        else:
             return None
         session = await self.repo.get_session(str(nxt["session_id"]), for_update=True)
         if session["wheel"] != Wheel.user or session["active_task_id"] is not None:
@@ -567,11 +580,16 @@ class Ledger:
         reason: dict | None = None,
         actor_id: str | None = None,
         original_input: dict[str, Any] | None = None,
+        advance_queue: bool = True,
         **extra_fields: Any,
     ) -> dict[str, Any]:
         target = TaskState(target)
         async with self.repo.transaction():
             task = await self.repo.get_task(task_id, for_update=True)
+            if target not in TASK_TERMINAL and legacy_match(
+                task["profile_id"], task.get("profile_version")
+            ):
+                raise LegacyMatchRetired()
             validate_task_transition(
                 task["state"],
                 target,
@@ -648,7 +666,7 @@ class Ledger:
                 await self.repo.cancel_pending_interactions(
                     task_id=task_id, reason=f"task {target}"
                 )
-            if target in TASK_TERMINAL and task.get("project_id"):
+            if advance_queue and target in TASK_TERMINAL and task.get("project_id"):
                 await self._start_next_queued(
                     str(task["project_id"]), lane=lane_of(task["profile_id"])
                 )
@@ -744,7 +762,7 @@ class Ledger:
             return True
 
     async def request_cancel(
-        self, task_id: str, *, owner_actor_id: str, retired_expert: bool = False
+        self, task_id: str, *, owner_actor_id: str, retired_reason: str | None = None
     ) -> dict[str, Any]:
         """取消意图先持久化（AT-13），同一事务里直接收成「已取消」，不等推它的程序来落实（0034 §三.1）。
 
@@ -822,8 +840,8 @@ class Ledger:
             done = await self.transition(
                 task_id,
                 TaskState.CANCELLED,
-                reason={"by": "platform", "code": "fixed_expert_retired"}
-                if retired_expert
+                reason={"by": "platform", "code": retired_reason}
+                if retired_reason
                 else {"by": "user"},
                 original_input=(
                     _turn_open(task, task.get("active_attempt_id")) if live else None
@@ -1156,6 +1174,8 @@ class Ledger:
     ) -> dict[str, Any]:
         async with self.repo.transaction():
             task = await self.repo.get_task(task_id, for_update=True)
+            if legacy_match(task["profile_id"], task.get("profile_version")):
+                raise LegacyMatchRetired()
             if retired_fixed_task(task):
                 raise KnowbotInvalid("Fixed v2 expert execution has been retired")
             if task["active_attempt_id"] is not None:

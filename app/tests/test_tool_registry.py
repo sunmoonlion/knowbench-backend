@@ -12,7 +12,7 @@ from app.application.workbench.tool_registry import (
     registered_call,
 )
 from app.domain.workbench.capabilities import CapabilityError, ConnectionCreate
-from app.domain.workbench.native_functions import find_expert_revision
+from app.domain.workbench.native_functions import find_subject_revision
 from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.tool_registry import ToolRegistration, ToolRegistry
 from app.interfaces.mcp.workbench_mcp import handle
@@ -90,7 +90,7 @@ async def test_native_mcp_lists_the_same_registered_definitions_without_losing_h
         SimpleNamespace(
             repo=SimpleNamespace(
                 scene_function_revisions=AsyncMock(
-                    return_value=[find_expert_revision()]
+                    return_value=[find_subject_revision()]
                 )
             )
         ),
@@ -99,7 +99,7 @@ async def test_native_mcp_lists_the_same_registered_definitions_without_losing_h
         per_minute=10,
     )
     listed = response["result"]["tools"]
-    assert listed == [{"name": "find_expert", **TOOLS["find_expert"]}]
+    assert listed == [{"name": "find_subject", **TOOLS["find_subject"]}]
 
 
 async def test_native_mcp_does_not_publish_colliding_data_definitions():

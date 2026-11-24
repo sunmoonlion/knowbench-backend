@@ -20,13 +20,13 @@ from app.application.workbench.calls import CallLedger
 from app.application.workbench.tool_invocation import ToolInvocation
 from app.domain.workbench.errors import NotFound, RecordsRefused
 from app.domain.workbench.native_functions import (
-    find_expert_revision,
     native_registration,
+    project_list_revision,
 )
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
-FIND_EXPERT_FUNCTION = find_expert_revision()
-FIND_EXPERT_REGISTRATION = native_registration(FIND_EXPERT_FUNCTION)
+PROJECT_LIST_FUNCTION = project_list_revision()
+PROJECT_LIST_REGISTRATION = native_registration(PROJECT_LIST_FUNCTION)
 
 
 async def test_method_parent_is_stable_across_calls_and_tracks_task_state(db):
@@ -78,9 +78,9 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         ledger = CallLedger(repo, OWNER)
         first, fresh = await ledger.begin(
             invocation,
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": "task"},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
         )
         assert (
             fresh
@@ -89,9 +89,9 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         )
         same, fresh = await ledger.begin(
             invocation,
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": "task"},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
         )
         assert (
             not fresh and same["id"] == first["id"] and same["status"] == "dispatching"
@@ -99,9 +99,9 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         with pytest.raises(RecordsRefused, match="different operation"):
             await ledger.begin(
                 invocation,
-                FIND_EXPERT_REGISTRATION,
+                PROJECT_LIST_REGISTRATION,
                 {"task": "changed"},
-                function=FIND_EXPERT_FUNCTION,
+                function=PROJECT_LIST_FUNCTION,
             )
         await ledger.finish(
             first,
@@ -110,9 +110,9 @@ async def test_shared_idempotency_has_no_replay_and_preserves_transport_independ
         )
         same, fresh = await ledger.begin(
             invocation,
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": "task"},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
         )
         assert not fresh and same["detail"]["response"] == {
             "result": {"isError": False}
@@ -247,9 +247,9 @@ async def test_method_identity_survives_new_attempt(db):
             ToolInvocation(
                 sid, "thread", "retry-turn", "retry-tool", "sunmoon_workbench"
             ),
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": task_id},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
             task_id=task_id,
         )
         assert fresh and call["parent_call_id"] == stored["parent_call_id"]
@@ -270,9 +270,9 @@ async def test_scope_change_after_authorization_cannot_create_a_false_parent(db)
         with pytest.raises(RecordsRefused, match="context changed"):
             await ledger.begin(
                 ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
-                FIND_EXPERT_REGISTRATION,
+                PROJECT_LIST_REGISTRATION,
                 {"task": "task"},
-                function=FIND_EXPERT_FUNCTION,
+                function=PROJECT_LIST_FUNCTION,
                 task_id="other-task",
             )
         assert await s.scalar(text("SELECT count(*) FROM workbench_calls")) == 0
@@ -288,9 +288,9 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
         ledger = CallLedger(repo, OWNER)
         call, fresh = await ledger.begin(
             invocation,
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": "task"},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
         )
         assert fresh
         async with repo.transaction():
@@ -302,9 +302,9 @@ async def test_unsettled_platform_call_becomes_unknown_and_cannot_be_dispatched_
             )
         same, fresh = await ledger.begin(
             invocation,
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": "task"},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
         )
         assert not fresh and same["id"] == call["id"] and same["status"] == "unknown"
         assert "response" not in same["detail"]
@@ -329,9 +329,9 @@ async def test_session_cleanup_removes_call_tree_and_authority_only_for_that_ses
         else:
             await CallLedger(repo, OWNER).begin(
                 ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
-                FIND_EXPERT_REGISTRATION,
+                PROJECT_LIST_REGISTRATION,
                 {"task": tid},
-                function=FIND_EXPERT_FUNCTION,
+                function=PROJECT_LIST_FUNCTION,
                 task_id=tid,
             )
         for table in ("workbench_calls", "workbench_method_authorizations"):
@@ -391,9 +391,9 @@ async def test_call_migration_refuses_lossy_downgrade_and_preserves_history(db):
         repo = WorkbenchRepository(s)
         await CallLedger(repo, OWNER).begin(
             ToolInvocation(sid, "thread", "turn", "call", "sunmoon_workbench"),
-            FIND_EXPERT_REGISTRATION,
+            PROJECT_LIST_REGISTRATION,
             {"task": tid},
-            function=FIND_EXPERT_FUNCTION,
+            function=PROJECT_LIST_FUNCTION,
             task_id=tid,
         )
         before = (

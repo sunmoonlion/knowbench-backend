@@ -1,8 +1,23 @@
 """Small, bounded directory lookup; limits never apply to author methods."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+
+from app.domain.workbench.errors import WorkbenchError
+
+
+class LegacyMatchRetired(WorkbenchError):
+    code = "legacy_expert_match_retired"
+    http_status = 410
+
+    def __init__(self):
+        super().__init__("旧版专家匹配已退役。请从「请专家」开始新匹配。")
+
+
+def legacy_match(profile, version):
+    return profile == "FIND_EXPERT" and str(version or "1") in {"1", "2", "3", "4"}
+
 
 LOOKUP_SECONDS: float | None = None
 STOP_REASONS = {
@@ -19,39 +34,13 @@ STOP_REASONS = {
 class LookupGuard:
     remaining: Decimal | None
     failure: str | None = None
-    calls: int = 0
-    seen: set[str] = field(default_factory=set)
 
     def observe(self, item: dict[str, Any]) -> None:
         if self.failure:
             return
         kind = item.get("type")
-        if kind in ("commandExecution", "webSearch", "fileChange"):
+        if kind in ("commandExecution", "webSearch", "fileChange", "mcpToolCall"):
             self.failure = "unexpected_tool"
-        if kind != "mcpToolCall" or item.get("tool") != "find_expert":
-            return
-        result = item.get("result") or {}
-        if (
-            item.get("status") == "failed"
-            or item.get("error")
-            or (isinstance(result, dict) and result.get("isError"))
-        ):
-            error = item.get("error")
-            message = error.get("message") if isinstance(error, dict) else None
-            self.failure = (
-                "tool_approval_required"
-                if message
-                == "MCP tool call requires approval, but approval policy is never"
-                else "directory_unavailable"
-            )
-            return
-        identity = item.get("id")
-        if not isinstance(identity, str) or identity in self.seen:
-            return
-        self.seen.add(identity)
-        self.calls += 1
-        if self.calls >= 3:
-            self.failure = "repeated_lookup"
 
     def usage(self, cost: Any) -> None:
         if self.failure or self.remaining is None or cost is None:

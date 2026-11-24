@@ -20,6 +20,25 @@ from app.domain.workbench.states import TaskState, WaitingReason
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
+async def lookup_owner(db):
+    async with db() as s:
+        await s.execute(
+            text(
+                "insert into auth_user (id,issuer,subject,roles,scopes) values (:id,'test','lookup-owner','[]','[]')"
+            ),
+            {"id": OWNER},
+        )
+        await s.commit()
+
+
+def lookup_service(repo):
+    from test_formal_expert_intake_db import Registry
+
+    return FindExpertService(
+        repo, formal_registry=Registry(), planning_owners=frozenset({"lookup-owner"})
+    )
+
+
 async def execution(repo, project, key):
     session = await SessionService(repo).start(
         owner_actor_id=OWNER, kind="expert", project_id=project
@@ -32,6 +51,7 @@ async def execution(repo, project, key):
 @pytest.mark.parametrize("waiting", [False, True])
 async def test_lookup_runs_beside_analysis_but_each_lane_remains_serial(db, waiting):
     _, _, sid = await seed(db)
+    await lookup_owner(db)
     async with db() as s:
         repo = WorkbenchRepository(s)
         led = Ledger(repo)
@@ -43,8 +63,9 @@ async def test_lookup_runs_beside_analysis_but_each_lane_remains_serial(db, wait
             await led.transition(
                 work["task_id"], TaskState.WAITING, waiting_reason=WaitingReason.DATA
             )
-        svc = FindExpertService(repo)
+        svc = lookup_service(repo)
         find = await svc.start(
+            match_contract="knowbench/expert-match/v5",
             owner_actor_id=OWNER,
             project_id=pid,
             question="选择专家",
@@ -56,6 +77,7 @@ async def test_lookup_runs_beside_analysis_but_each_lane_remains_serial(db, wait
         assert (await repo.get_session(find["session_id"]))["wheel"] == "runtime"
         next_work = await execution(repo, pid, "work-lane-next")
         next_find = await svc.start(
+            match_contract="knowbench/expert-match/v5",
             owner_actor_id=OWNER,
             project_id=pid,
             question="另找一位",
@@ -90,10 +112,12 @@ async def test_lookup_runs_beside_analysis_but_each_lane_remains_serial(db, wait
 
 async def test_lookup_does_not_block_execution_or_interactive_work(db):
     _, _, sid = await seed(db)
+    await lookup_owner(db)
     async with db() as s:
         repo = WorkbenchRepository(s)
         pid = str((await repo.get_session(sid))["project_id"])
-        find = await FindExpertService(repo).start(
+        find = await lookup_service(repo).start(
+            match_contract="knowbench/expert-match/v5",
             owner_actor_id=OWNER,
             project_id=pid,
             question="选择专家",
@@ -113,6 +137,7 @@ async def test_lookup_does_not_block_execution_or_interactive_work(db):
 
 async def test_legacy_lookup_queued_behind_analysis_recovers_via_ledger(db):
     _, _, sid = await seed(db)
+    await lookup_owner(db)
     async with db() as s:
         repo = WorkbenchRepository(s)
         pid = str((await repo.get_session(sid))["project_id"])
@@ -120,15 +145,18 @@ async def test_legacy_lookup_queued_behind_analysis_recovers_via_ledger(db):
         # Seed the pre-fix queued shape, then use only the production recovery path.
         pending = await execution(repo, pid, "legacy-find")
         await s.execute(
-            text("update workbench_tasks set profile_id=:profile where id=:id"),
+            text(
+                "update workbench_tasks set profile_id=:profile,profile_version='4' where id=:id"
+            ),
             {"profile": LOOKUP_PROFILE, "id": pending["task_id"]},
         )
         await s.commit()
         assert pid in await repo.projects_with_stalled_queue()
-        assert await Ledger(repo).start_next_queued(pid) == pending["task_id"]
+        assert await Ledger(repo).start_next_queued(pid) is None
         assert await Ledger(repo).start_next_queued(pid) is None
         task = await repo.get_task(pending["task_id"])
-        assert not task["original_input"]["client_context"].get("queued_behind")
+        assert task["state"] == "CANCELLED"
+        assert not await repo.list_attempts(pending["task_id"])
         assert (
             str((await repo.active_task_of_project(pid, lane="execution"))["id"])
             == work["task_id"]
@@ -137,6 +165,7 @@ async def test_legacy_lookup_queued_behind_analysis_recovers_via_ledger(db):
 
 async def test_client_context_cannot_select_the_lookup_lane(db):
     _, _, sid = await seed(db)
+    await lookup_owner(db)
     async with db() as s:
         repo = WorkbenchRepository(s)
         pid = str((await repo.get_session(sid))["project_id"])
@@ -160,6 +189,7 @@ async def test_client_context_cannot_select_the_lookup_lane(db):
 
 async def test_concurrent_lookup_submissions_take_only_one_lane_slot(db):
     _, _, sid = await seed(db)
+    await lookup_owner(db)
     async with db() as s:
         repo = WorkbenchRepository(s)
         pid = str((await repo.get_session(sid))["project_id"])
@@ -167,7 +197,8 @@ async def test_concurrent_lookup_submissions_take_only_one_lane_slot(db):
 
     async def submit(key):
         async with db() as s:
-            return await FindExpertService(WorkbenchRepository(s)).start(
+            return await lookup_service(WorkbenchRepository(s)).start(
+                match_contract="knowbench/expert-match/v5",
                 owner_actor_id=OWNER,
                 project_id=pid,
                 question="选择专家",

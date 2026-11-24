@@ -86,14 +86,6 @@ def knowbase_v2():
 
 
 @lru_cache(maxsize=1)
-def knowmart_catalog():
-    """knowmart 目录（替用户「找专家」，关系 catalog；进程内共用）。"""
-    from app.infrastructure.external.ai_summon_clients import KnowmartCatalog
-
-    return KnowmartCatalog()
-
-
-@lru_cache(maxsize=1)
 def knowmart_demands():
     """knowmart 需求（用户点「发布」后代发，关系 demand；进程内共用）。"""
     from app.infrastructure.external.ai_summon_clients import KnowmartDemands
@@ -138,7 +130,6 @@ def find_expert_service(session: AsyncSession):
         material_read_enabled=capabilities.data_function is not None,
         script_enabled=capabilities.script_executor is not None,
         instruction_service=capabilities.instruction_service,
-        directory=knowmart_catalog(),
         demands=knowmart_demands(),
         incubations=knowlab_incubation_requests(),
     )
@@ -404,7 +395,6 @@ def delegation_service(session: AsyncSession) -> DelegationService:
     return DelegationService(
         web_workbench_store(session),
         dynamic_method_owners=dynamic_market_owners(),
-        directory=knowmart_catalog(),
     )
 
 

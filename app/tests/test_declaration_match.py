@@ -124,10 +124,7 @@ def test_no_match_keeps_user_remedies_and_legacy_rules_unchanged():
         validate_match(
             QUESTION, parse_match(old), DirectorySnapshot.model_validate(directory())
         )
-    assert (
-        "method_proposals"
-        not in find_pack("FIND_EXPERT", "4").workflow[0].output_schema
-    )
+    assert find_pack("FIND_EXPERT", "4") is None
 
 
 def test_manual_selection_has_no_matching_round_and_keeps_whole_question():

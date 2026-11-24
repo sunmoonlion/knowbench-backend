@@ -23,9 +23,7 @@ from app.application.workbench.catalog import (
     require_dynamic_owner,
 )
 from app.application.workbench.expert_data import ExpertData, Prepared, refusal
-from app.application.workbench.find_expert import ExpertDirectory
 from app.application.workbench.ledger import Ledger
-from app.application.workbench.match_selection import resolve_selection
 from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import (
     DataChoiceInvalid,
@@ -33,7 +31,6 @@ from app.domain.workbench.errors import (
     IdempotencyConflict,
     WorkbenchError,
 )
-from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.knowbots import (
     MANIFEST_SCHEMA_V3,
     is_knowbot,
@@ -56,11 +53,9 @@ class DelegationService:
         repo: WorkbenchStore,
         *,
         dynamic_method_owners: frozenset[str] = frozenset(),
-        directory: ExpertDirectory | None = None,
     ):
         self.repo = repo
         self.dynamic_method_owners = dynamic_method_owners
-        self.directory = directory
 
     async def from_expert_entry(
         self,
@@ -75,7 +70,6 @@ class DelegationService:
         tenant: str = "default",
         user_token: UserToken | None = None,
         expert_data: ExpertData | None = None,
-        match: MatchSelection | None = None,
     ) -> dict[str, Any]:
         # 内置专家，或这个人请来并钉住的分身（SDD 0027 P4）
         pack = await offerable_expert(
@@ -90,21 +84,11 @@ class DelegationService:
                 original_input={"text": question},
                 budget_limit=budget_limit,
                 budget_currency=budget_currency,
-                match=match,
-                client_context={
-                    "entry": "expert",
-                    **(
-                        {"match_selection": match.model_dump(mode="json")}
-                        if match
-                        else {}
-                    ),
-                },
+                client_context={"entry": "expert"},
             )
 
-        requirements = await self._match_requirements(
-            match,
+        requirements = await self._manual_requirements(
             owner_actor_id=owner_actor_id,
-            project_id=project_id,
             profile_id=pack.profile_id,
             question=question,
             idempotency_key=idempotency_key,
@@ -150,22 +134,8 @@ class DelegationService:
         expert_data: ExpertData | None = None,
     ) -> dict[str, Any]:
         """对话里把方向盘交给专家（工作台接口 /sessions/{id}/handover）：同上先签再建委托。"""
-        if req.profile_id == "FIND_EXPERT" and req.profile_version in {"5", "6", "7"}:
+        if req.profile_id == "FIND_EXPERT":
             raise Forbidden("Start formal matching through the project expert intake")
-        requirements = None
-        if req.match is not None:
-            session = await self.repo.get_session(
-                req.session_id, owner_actor_id=owner_actor_id
-            )
-            requirements = await self._match_requirements(
-                req.match,
-                owner_actor_id=owner_actor_id,
-                project_id=str(session.get("project_id")),
-                profile_id=req.profile_id,
-                question=req.original_input.get("text", ""),
-                idempotency_key=req.idempotency_key,
-                tenant=tenant,
-            )
         prepared = await self._prepare(
             owner_actor_id=owner_actor_id,
             profile_id=req.profile_id,
@@ -183,7 +153,6 @@ class DelegationService:
                 tenant=tenant,
                 pins=(prepared.pins if prepared else None) or None,
                 resolution=prepared.resolution_row if prepared else None,
-                task_requirements=requirements,
             )
         except BaseException:
             await self._release(expert_data, prepared)
@@ -192,18 +161,16 @@ class DelegationService:
             await self._release(expert_data, prepared)
         return made
 
-    async def _match_requirements(
+    async def _manual_requirements(
         self,
-        match: MatchSelection | None,
         *,
         owner_actor_id: str,
-        project_id: str,
         profile_id: str,
         question: str,
         idempotency_key: str,
         tenant: str,
     ) -> TaskRequirements | None:
-        if match is None and not is_knowbot(profile_id):
+        if not is_knowbot(profile_id):
             return None
         prior = await self.repo.find_task_by_idempotency(
             tenant=tenant,
@@ -219,23 +186,12 @@ class DelegationService:
         pinned = await pinned_pack(
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
-        if match is None:
-            if not isinstance(pinned.catalog, CapabilityMethodCatalog):
-                return None
-            return from_manual(
-                question=question,
-                expert_digest=pinned.digest,
-                capabilities=tuple(c.id for c in pinned.catalog.public_capabilities),
-            )
-        return await resolve_selection(
-            self.repo,
-            self.directory,
-            match,
-            owner_actor_id=owner_actor_id,
-            project_id=project_id,
-            profile_id=profile_id,
+        if not isinstance(pinned.catalog, CapabilityMethodCatalog):
+            return None
+        return from_manual(
             question=question,
             expert_digest=pinned.digest,
+            capabilities=tuple(c.id for c in pinned.catalog.public_capabilities),
         )
 
     async def data_needs(

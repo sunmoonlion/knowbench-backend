@@ -96,7 +96,9 @@ class ProjectRecords:
     ) -> dict[str, Any]:
         working = await self._working(task)
         session = await self.repo.get_session(
-            as_id(conversation, "conversation"), owner_actor_id=self.owner
+            as_id(conversation, "conversation"),
+            owner_actor_id=self.owner,
+            visible_only=True,
         )
         if str(session.get("project_id")) != str(working["project_id"]):
             # 别的项目的对话：和不存在一样答
@@ -106,7 +108,7 @@ class ProjectRecords:
                 "this is the current conversation; it is already in your context"
             )
         events = await self.repo.list_record_events(
-            session_id=str(session["id"]), types=RECORD_EVENTS
+            session_id=str(session["id"]), types=RECORD_EVENTS, visible_only=True
         )
         shown = page_of(record_of(events), page)
         await self._noted(

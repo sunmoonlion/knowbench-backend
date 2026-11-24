@@ -25,7 +25,7 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench import cleanup_observation
-from app.application.workbench.catalog import retired_fixed_task
+from app.application.workbench.catalog import retirement_code
 from app.application.workbench.deliverable_check import DeliverableCheck
 from app.application.workbench.execution_plan import (
     active_method_step,
@@ -188,7 +188,7 @@ class SandboxLink:
         self.live_threads: set[str] = set()
         # Applied runtime configuration, not business state. Cleared on reconnect:
         # a live app-server can otherwise retain the previous stage's search mode.
-        self.search_scopes: dict[str, bool] = {}
+        self.search_scopes: dict[str, tuple[bool, bool]] = {}
         # 每条线上一次向模型说明的情形。进程重启后会再说一次，多说一次无妨
         self.announced: dict[str, str] = {}
         # 每条线用的是哪个模型（起线、重新装载线时对面告诉我们的）：算钱要按它的单价
@@ -276,7 +276,9 @@ class SandboxLink:
         self.live_threads.add(thread_id)
         log.info("thread resumed sandbox=%s thread=%s", self.sandbox_id, thread_id)
 
-    async def configure_search_scope(self, thread_id: str, *, restricted: bool) -> None:
+    async def configure_search_scope(
+        self, thread_id: str, *, restricted: bool, supplied_directory: bool = False
+    ) -> None:
         """Apply stage-only native search settings before spending a model turn.
 
         Codex 0.155.1 ignores config overrides when resuming a loaded thread.
@@ -285,7 +287,8 @@ class SandboxLink:
         Never archive, delete, fork, interrupt a turn or edit global config.
         This sequence is probed against the pinned binary with a real MCP server.
         """
-        if self.search_scopes.get(thread_id) is restricted:
+        scope = (restricted, supplied_directory)
+        if self.search_scopes.get(thread_id) == scope:
             return
         client = await self.ensure_connected()
         state = await client.request(
@@ -308,6 +311,11 @@ class SandboxLink:
             **THREAD_CONFIG,
         }
         config.update(self.capability_config.get(thread_id, {}))
+        if supplied_directory:
+            # Matching and sketching consume the host's authorized snapshot.
+            # The legacy discovery server accepts a different task contract.
+            config.update(disabled_mcp_config())
+            config["mcp_servers.sunmoon_workbench.enabled"] = False
         if restricted:
             config["web_search"] = "disabled"
         resumed = await client.request(
@@ -317,7 +325,7 @@ class SandboxLink:
             raise RuntimeError("stage tools resumed an unexpected thread")
         self.remember_model(thread_id, resumed)
         self.live_threads.add(thread_id)
-        self.search_scopes[thread_id] = restricted
+        self.search_scopes[thread_id] = scope
 
     async def configure_formal_probe(self, thread_id: str) -> None:
         import re
@@ -894,6 +902,16 @@ class SandboxLink:
             )
             planning = bool(active and active["step_id"] == DATA_STEP_ID)
             lookup = bool(task and task["profile_id"] == LOOKUP_PROFILE)
+            supplied_directory = bool(
+                task
+                and (
+                    (lookup and str(task.get("profile_version")) in {"5", "6", "7"})
+                    or (
+                        task["profile_id"] == "INCUBATE"
+                        and str(task.get("profile_version")) == "2"
+                    )
+                )
+            )
             from app.domain.workbench.formal_execution import is_formal_model
             from app.domain.workbench.formal_model import FormalProbeGuard
 
@@ -934,15 +952,23 @@ class SandboxLink:
             # MCP tools. Native web search cannot supply their pinned fact refs;
             # reopening it after data planning causes fruitless off-source loops.
             # Ordinary chat and experts without data tools retain their settings.
-            capability_inputs = await self.prepare_capabilities(
-                thread_id, scene=ExecutionScene.METHOD
-            )
-            prepared_scope = self.capability_scopes.get(thread_id)
+            capability_inputs = []
+            prepared_scope = None
+            if not supplied_directory:
+                capability_inputs = await self.prepare_capabilities(
+                    thread_id, scene=ExecutionScene.METHOD
+                )
+                prepared_scope = self.capability_scopes.get(thread_id)
             if probe:
                 await self.configure_formal_probe(thread_id)
             else:
                 await self.configure_search_scope(
-                    thread_id, restricted=planning or lookup or bool(required_data)
+                    thread_id,
+                    restricted=planning
+                    or lookup
+                    or bool(required_data)
+                    or supplied_directory,
+                    supplied_directory=supplied_directory,
                 )
         except Exception:
             log.warning("stage tool configuration failed thread=%s", thread_id)
@@ -2797,13 +2823,13 @@ class Runner:
                 )
                 if str(task["session_id"]) != str(session_id):
                     raise RuntimeError("Task command belongs to another session")
-                if kind in ("task.drive", "task.reconnect") and retired_fixed_task(
-                    task
+                if kind in ("task.drive", "task.reconnect") and (
+                    reason := retirement_code(task)
                 ):
                     await Ledger(repo).request_cancel(
                         str(task["id"]),
                         owner_actor_id=str(session["owner_actor_id"]),
-                        retired_expert=True,
+                        retired_reason=reason,
                     )
                     return
                 if uses_host_driver(task):
@@ -3239,7 +3265,7 @@ class Runner:
             raise RuntimeError(f"thread/start returned no thread id: {result}")
         link.threads[thread_id] = str(session["id"])
         link.live_threads.add(thread_id)
-        link.search_scopes[thread_id] = False
+        link.search_scopes[thread_id] = (False, False)
         link.capability_config[thread_id] = disabled_mcp_config()
         payload: dict[str, Any] = {
             "thread_id": thread_id,

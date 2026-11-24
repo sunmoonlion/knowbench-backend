@@ -56,30 +56,33 @@ def test_the_digest_is_knowmarts_canonical_json_sha256() -> None:
 
 
 def test_tasks_read_their_own_snapshot() -> None:
-    from app.domain.workbench.packs import ExpertPack
+    from test_referenced_method_catalog import manifest as dynamic_manifest
 
-    doc = manifest()
-    pack = ExpertPack.model_validate(
+    from app.application.workbench.catalog import pack_from_pin
+
+    doc = dynamic_manifest()
+    pin = pack_from_pin(
         {
-            **doc["pack"],
-            "profile_id": knowbots.profile_id(KNOWBOT, "1"),
-            "name": doc["name"],
+            "knowbot_id": KNOWBOT,
+            "version": doc["version"],
+            "manifest": doc,
+            "digest": "sha256:" + "a" * 64,
         }
     )
+    pack = pin.pack
     task = {
+        **pin.task_columns(),
         "profile_id": pack.profile_id,
-        "profile_version": "1",
-        "pack_source": SOURCE_KNOWMART,
-        "pack_digest": "sha256:" + "a" * 64,
-        "pack_snapshot": pack.model_dump(mode="json"),
+        "profile_version": pack.version,
     }
+    assert pack_for_task(task | {"pack_snapshot": manifest()["pack"]}) is None
     first = pack_for_task(task)
     assert first == pack
     assert pack_for_task(dict(task)) is first  # 同一份快照只解析一次
     assert pack_for_task(task | {"pack_snapshot": None}) is None
     builtin = pack_for_task({"profile_id": "FIN_REVIEW", "profile_version": None})
     assert builtin is not None and builtin.profile_id == "FIN_REVIEW"
-    assert expert_name(task) == "我的方法"
+    assert expert_name(task) == (pack.name or pack.title)
     assert (
         expert_name({"pack_source": SOURCE_KNOWMART, "pack_name": "列表行"}) == "列表行"
     )

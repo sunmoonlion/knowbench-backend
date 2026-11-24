@@ -39,7 +39,7 @@ def test_smoke_follows_the_author_order_and_keeps_the_names():
 
 @pytest.mark.parametrize(
     "pack",
-    [*BUILTIN_PACKS.values(), find_pack("FIND_EXPERT", "4")],
+    [*BUILTIN_PACKS.values(), find_pack("FIND_EXPERT", "7")],
     ids=lambda p: f"{p.profile_id}-{p.version}",
 )
 def test_every_builtin_pack_has_a_fixed_plan(pack):

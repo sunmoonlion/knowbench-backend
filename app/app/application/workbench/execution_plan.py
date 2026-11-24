@@ -74,7 +74,7 @@ async def display_for_task(repo: WorkbenchStore, task: dict[str, Any]):
     Dispatch still requires execution_for_task and an accepted receipt.
     """
     if retired_fixed_task(task):
-        return pack_for_task(task)
+        return None
     if is_dynamic(task) and task.get("accepted_plan_version") is None:
         return catalog_header(
             catalog_for_task(task), profile_id=str(task["profile_id"])

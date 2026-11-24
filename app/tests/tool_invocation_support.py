@@ -14,13 +14,12 @@ async def running_platform_world(db, replies, *, extra_tools=()):
     Preserve the project's real grants, records and ownership from world(). The
     scripted runner has already stopped; no production checks are monkeypatched.
     """
-    import json
-
     from sqlalchemy import text
     from test_workbench_records_db import world
 
     from app.application.workbench.catalog import pack_for_task
     from app.application.workbench.ledger import Ledger
+    from app.domain.workbench.packs import BUILTIN_PACKS
 
     fake, runner, ids = await world(db, replies)
     async with db() as s:
@@ -43,8 +42,8 @@ async def running_platform_world(db, replies, *, extra_tools=()):
         )
         steps = list(pack.workflow)
         steps[index] = step
-        snapshot = pack.model_copy(update={"workflow": tuple(steps)}).model_dump(
-            mode="json"
+        BUILTIN_PACKS[pack.profile_id] = pack.model_copy(
+            update={"workflow": tuple(steps)}
         )
         async with repo.transaction():
             await s.execute(
@@ -52,14 +51,6 @@ async def running_platform_world(db, replies, *, extra_tools=()):
                 state='QUEUED', active_interaction_id=NULL, active_attempt_id=NULL,
                 accepted_plan_version=NULL WHERE id=:id"""),
                 {"id": ids["task"]},
-            )
-            row = await repo.get_task(ids["task"])
-            await repo.cas_task(
-                ids["task"],
-                expected_version=row["state_version"],
-                pack_source="knowlab-test",
-                pack_snapshot=json.dumps(snapshot),
-                pack_digest=digest(snapshot),
             )
         await Ledger(repo).open_attempt(
             ids["task"], step_id=step.step_id, step_version=step.step_version

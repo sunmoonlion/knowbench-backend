@@ -75,8 +75,8 @@ class LookupServer(PlanningServer):
 @pytest.mark.parametrize(
     "mode,code",
     [
-        ("failure", "directory_unavailable"),
-        ("approval", "tool_approval_required"),
+        ("failure", "unexpected_tool"),
+        ("approval", "unexpected_tool"),
         ("quiet", "time_limit"),
         ("budget", "budget_limit"),
         ("unconfirmed", None),
@@ -90,8 +90,20 @@ async def test_failed_lookup_settles_cost_without_retry_or_extra_budget(
     runner = None
     try:
         runner, sid, _, task_id = await seed(
-            db, fake, profile="FIND_EXPERT", budget="2"
+            db, fake, profile="FIND_EXPERT", version="5", budget="2"
         )
+        from app.application.workbench.formal_expert_intake import DIRECTORY
+
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.append_event(
+                    session_id=sid,
+                    task_id=task_id,
+                    kind="task",
+                    event_type=DIRECTORY,
+                    payload={"items": [], "more": False},
+                )
         monkeypatch.setattr(
             "app.application.workbench.runner.LOOKUP_SECONDS",
             0.2 if mode == "quiet" else 2,
@@ -132,21 +144,10 @@ async def test_failed_lookup_settles_cost_without_retry_or_extra_budget(
         await fake.close()
 
 
-def test_lookup_guard_deduplicates_calls_and_preserves_success_or_unknown_usage():
+def test_lookup_rejects_even_a_successful_directory_call():
     guard = LookupGuard(Decimal("2"))
-    success = {
-        "id": "a",
-        "type": "mcpToolCall",
-        "tool": "find_expert",
-        "status": "completed",
-        "result": {"experts": []},
-    }
-    for _ in range(5):
-        guard.observe(success)
-    assert guard.calls == 1
     guard.usage(None)
     guard.usage("0.01")
     assert guard.failure is None
-    guard.observe(success | {"id": "b"})
-    guard.observe(success | {"id": "c"})
-    assert guard.failure == "repeated_lookup"
+    guard.observe({"type": "mcpToolCall", "tool": "find_expert", "status": "completed"})
+    assert guard.failure == "unexpected_tool"

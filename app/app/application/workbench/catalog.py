@@ -71,9 +71,19 @@ def retired_fixed_task(task: dict[str, Any]) -> bool:
     )
 
 
+def retirement_code(task):
+    from app.domain.workbench.expert_lookup import LegacyMatchRetired, legacy_match
+
+    if legacy_match(task.get("profile_id"), task.get("profile_version")):
+        return LegacyMatchRetired.code
+    return "fixed_expert_retired" if retired_fixed_task(task) else None
+
+
 def pack_for_task(task: dict[str, Any]) -> ExpertPack | None:
     """这件委托用的专家包。分身读委托上的快照（同一份快照只解析一次）。"""
     if is_formal(task):
+        return None
+    if retired_fixed_task(task):
         return None
     if task.get("pack_source") in SNAPSHOT_SOURCES:
         snapshot, digest = task.get("pack_snapshot"), task.get("pack_digest")
@@ -83,7 +93,7 @@ def pack_for_task(task: dict[str, Any]) -> ExpertPack | None:
         if key not in _snapshots:
             if len(_snapshots) > 512:
                 _snapshots.clear()
-            _snapshots[key] = ExpertPack.model_validate(snapshot)
+            _snapshots[key] = catalog_header(catalog_for_task(task), profile_id=key[0])
         return _snapshots[key]
     return find_pack(str(task.get("profile_id") or ""), task.get("profile_version"))
 
@@ -119,8 +129,7 @@ def expert_name(row: dict[str, Any]) -> str:
         ):
             catalog = catalog_for_task(row)
             return catalog.name or catalog.title
-        pack = pack_for_task(row)
-        return (pack.name or pack.title) if pack else ""
+        return ""
     pack = find_pack(str(row.get("profile_id") or ""), row.get("profile_version"))
     return (pack.name or pack.title) if pack else ""
 

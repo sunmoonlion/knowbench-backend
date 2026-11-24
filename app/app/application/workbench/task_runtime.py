@@ -22,7 +22,7 @@ from app.application.workbench.acceptance_numbers import judge_numbers
 from app.application.workbench.catalog import (
     SNAPSHOT_SOURCES,
     pack_for_task,
-    retired_fixed_task,
+    retirement_code,
 )
 from app.application.workbench.deliverable_check import DeliverableCheck, harden
 from app.application.workbench.execution_plan import (
@@ -32,7 +32,6 @@ from app.application.workbench.execution_plan import (
     is_dynamic,
 )
 from app.application.workbench.expert_data import holds_task, pending_requests
-from app.application.workbench.find_expert import validate_match_content
 from app.application.workbench.fixed_plans import accept_fixed_plan
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.method_planner import MethodPlanner
@@ -138,11 +137,11 @@ class TaskRuntime:
 
         async with self.stores() as repo:
             formal_task = await repo.get_task(task_id)
-            if retired_fixed_task(formal_task):
+            if reason := retirement_code(formal_task):
                 stopped = await Ledger(repo).request_cancel(
                     task_id,
                     owner_actor_id=str(formal_task["owner_actor_id"]),
-                    retired_expert=True,
+                    retired_reason=reason,
                 )
                 return stopped["state"]
             formal = (
@@ -176,7 +175,8 @@ class TaskRuntime:
                     # 分身的委托自带快照，不会走到这里
                     gone = (
                         task.get("pack_source") not in SNAPSHOT_SOURCES
-                        and find_pack(task["profile_id"]) is not None
+                        and find_pack(task["profile_id"], task["profile_version"])
+                        is not None
                     )
                     await led.transition(
                         task_id,
@@ -684,7 +684,7 @@ class TaskRuntime:
                 and planning is None
                 and (
                     selecting
-                    or (profile[0] == "FIND_EXPERT" and profile[1] in {"2", "5", "6"})
+                    or (profile[0] == "FIND_EXPERT" and profile[1] in {"5", "6"})
                 )
             ):
                 detail = ""
@@ -734,7 +734,7 @@ class TaskRuntime:
                             verdict.parsed,
                         ).model_dump(mode="json")
                     else:
-                        await validate_match_content(repo, task, verdict.parsed)
+                        raise ValueError("Retired expert matching contract")
                 except (ValueError, KeyError) as exc:
                     if selecting and isinstance(exc, ValidationError):
                         problems = exc.errors(include_input=False, include_url=False)
@@ -2024,14 +2024,6 @@ class TaskRuntime:
                         f"first {step.input_max_chars} are shown. Say so in your "
                         "output and do not assume what the missing part contains.]"
                     )
-        if tool_task and "find_expert" in step.tools:
-            # 找专家（请专家方案设计第 4.9 节）：目录经工作台查 knowmart，凭这件委托
-            parts += [
-                "",
-                "## The expert directory",
-                f'Call find_expert(task="{tool_task}") to list the experts this user can '
-                "ask. It returns only what each expert published about itself.",
-            ]
         if records_task:
             parts += [
                 "",

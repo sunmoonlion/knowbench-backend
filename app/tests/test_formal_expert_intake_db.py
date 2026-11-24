@@ -115,7 +115,9 @@ def web_app(db, registry, monkeypatch):
     monkeypatch.setattr(
         routes,
         "find_expert_service",
-        lambda s: FindExpertService(WorkbenchRepository(s), formal_registry=registry),
+        lambda s: FindExpertService(
+            WorkbenchRepository(s), unified_entry_enabled=True, formal_registry=registry
+        ),
     )
     monkeypatch.setattr(routes, "publish_commands_wakeup", wake)
     return app
@@ -136,7 +138,9 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
         async def start():
             async with db() as session:
                 finder = FindExpertService(
-                    WorkbenchRepository(session), formal_registry=registry
+                    WorkbenchRepository(session),
+                    unified_entry_enabled=True,
+                    formal_registry=registry,
                 )
                 return await finder.start(
                     owner_actor_id=OWNER,
@@ -157,7 +161,9 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
         tid = made["task_id"]
         async with db() as session:
             finder = FindExpertService(
-                WorkbenchRepository(session), formal_registry=registry
+                WorkbenchRepository(session),
+                unified_entry_enabled=True,
+                formal_registry=registry,
             )
             outcome = await finder.result(OWNER, tid)
             assert outcome["state"] == "SUCCEEDED", outcome
@@ -181,7 +187,9 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
         assert selected == replay
         async with db() as session:
             finder = FindExpertService(
-                WorkbenchRepository(session), formal_registry=registry
+                WorkbenchRepository(session),
+                unified_entry_enabled=True,
+                formal_registry=registry,
             )
             counts = text(
                 "SELECT (SELECT count(*) FROM workbench_tasks), "
@@ -235,14 +243,16 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
                 == 1
             )
             with pytest.raises(NotFound):
-                await FindExpertService(repo, formal_registry=registry).result(
-                    str(uuid4()), tid
-                )
+                await FindExpertService(
+                    repo, unified_entry_enabled=True, formal_registry=registry
+                ).result(str(uuid4()), tid)
         removed = registry.entries.pop(pins[0])
         async with db() as session:
             with pytest.raises(NotFound):
                 await FindExpertService(
-                    WorkbenchRepository(session), formal_registry=registry
+                    WorkbenchRepository(session),
+                    unified_entry_enabled=True,
+                    formal_registry=registry,
                 ).result(OWNER, tid)
         with pytest.raises(NotFound):
             await select(pins[0])
@@ -250,7 +260,9 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
         registry.entries[pins[0]] = removed
         async with db() as session:
             finder = FindExpertService(
-                WorkbenchRepository(session), formal_registry=registry
+                WorkbenchRepository(session),
+                unified_entry_enabled=True,
+                formal_registry=registry,
             )
             revision = await finder.start(
                 owner_actor_id=OWNER,

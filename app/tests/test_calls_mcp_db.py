@@ -139,7 +139,7 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
     fake, runner, ids = await world(
         db,
         [SCOPE, PROFILE, unbalanced()],
-        extra_tools=("discover_source_tools", "find_subject", "find_expert"),
+        extra_tools=("discover_source_tools", "find_subject"),
     )
     original = workbench_mcp.dispatch
     args = {"task": ids["task"]}
@@ -214,7 +214,6 @@ async def test_registered_data_planning_and_expert_directory(served, db, monkeyp
     from types import SimpleNamespace
     from unittest.mock import AsyncMock
 
-    from test_find_expert_db import FREE, Directory
     from test_workbench_expert_data_db import PROPOSED
 
     from app.interfaces.mcp import workbench_mcp
@@ -237,7 +236,6 @@ async def test_registered_data_planning_and_expert_directory(served, db, monkeyp
         securities=AsyncMock(return_value=subjects),
         source_tools=AsyncMock(return_value={"sources": [supplier]}),
     )
-    directory = Directory([FREE])
     base = SimpleNamespace(
         add_needs=AsyncMock(
             return_value={
@@ -247,12 +245,10 @@ async def test_registered_data_planning_and_expert_directory(served, db, monkeyp
         )
     )
     monkeypatch.setattr(workbench_mcp, "knowfeed_supply", lambda: feed)
-    monkeypatch.setattr(workbench_mcp, "knowmart_catalog", lambda: directory)
     monkeypatch.setattr(workbench_mcp, "knowbase_v2", lambda: base)
     calls = {
         "discover_source_tools": {"service": "documents"},
         "find_subject": {"name": "同名"},
-        "find_expert": {},
         "request_data": {"needs": PROPOSED[:1]},
     }
     fake, runner, ids = await world(
@@ -300,8 +296,6 @@ async def test_registered_data_planning_and_expert_directory(served, db, monkeyp
             "sources": [supplier]
         }
         assert answers["find_subject"]["structuredContent"] == {"found": subjects}
-        [expert] = answers["find_expert"]["structuredContent"]["experts"]
-        assert expert == {k: v for k, v in FREE.items() if k != "owned"}
         proposal = answers["request_data"]["structuredContent"]
         assert (proposal["status"], proposal["request"]) == ("listed", "r1")
 
@@ -355,7 +349,7 @@ async def test_registered_data_planning_and_expert_directory(served, db, monkeyp
                 assert replay == answer
         feed.source_tools.assert_awaited_once_with("directory-owner", "documents")
         feed.securities.assert_awaited_once_with("同名", 10)
-        assert directory.asked == ["directory-owner"]
+        assert "find_expert" not in LOCAL_REVISIONS
         base.add_needs.assert_awaited_once()
         assert base.add_needs.await_args.args[:2] == ("directory-owner", "res-1")
     finally:

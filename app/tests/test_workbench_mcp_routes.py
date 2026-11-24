@@ -96,7 +96,11 @@ async def test_the_handshake_and_the_list_of_tools(served):
         listed = (await http.post(URL, json=rpc("tools/list"), headers=bearer())).json()
         names = [t["name"] for t in listed["result"]["tools"]]
         specs = {t["name"]: t for t in listed["result"]["tools"]}
-        assert specs["find_expert"]["annotations"]["readOnlyHint"] is True
+        assert "find_expert" not in specs
+        retired = await http.post(
+            URL, json=tool("find_expert", task="obsolete"), headers=bearer()
+        )
+        assert retired.json()["error"]["code"] == -32602
         # Proposing data and recording calculations must not inherit the
         # directory's read-only exemption from runtime approval.
         for name in ("request_data", "compute"):
@@ -112,7 +116,6 @@ async def test_the_handshake_and_the_list_of_tools(served):
                 "discover_source_tools",
                 "request_data",
                 "find_subject",
-                "find_expert",
             )
             assert "task" in spec["inputSchema"]["required"]
         assert (await http.get(URL, headers=bearer())).status_code == 405

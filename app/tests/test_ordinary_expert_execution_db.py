@@ -381,9 +381,7 @@ async def selected_match(
                 repo,
                 formal_registry=capabilities.formal_sources.registry,
                 incubations=incubations,
-                planning_owners=frozenset({subject})
-                if planning_choice
-                else frozenset(),
+                planning_owners=frozenset({subject}),
                 material_read_enabled=capabilities.data_function is not None,
                 script_enabled=capabilities.script_executor is not None,
                 instruction_service=capabilities.instruction_service,

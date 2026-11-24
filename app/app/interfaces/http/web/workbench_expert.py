@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
@@ -58,7 +57,6 @@ from app.bootstrap.workbench import (
 )
 from app.domain.security import Principal
 from app.domain.workbench.errors import StaleStateVersion, WorkbenchError
-from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
@@ -98,7 +96,6 @@ class Delegate(Strict):
     # 上限可以不给：不给就没有上限。页面上实时显示花了多少，用户随时可以停
     budget_limit: Decimal | None = Field(default=None, gt=0, le=Decimal("100000"))
     budget_currency: str = Field(default="CNY", pattern=r"^CNY$")
-    match: MatchSelection | None = None
 
 
 class ConfirmData(Strict):
@@ -282,7 +279,6 @@ async def delegate(
             idempotency_key=body.idempotency_key,
             user_token=user_token,
             expert_data=expert_data(),
-            match=body.match,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -529,14 +525,7 @@ class FindExpertIn(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     budget_limit: Decimal = Field(default=Decimal("2"), gt=0, le=Decimal("100"))
-    match_contract: Literal[
-        "knowbench/expert-match/v1",
-        "knowbench/expert-match/v2",
-        "knowbench/expert-match/v3",
-        "knowbench/expert-match/v4",
-        "knowbench/expert-match/v5",
-    ] = "knowbench/expert-match/v1"
-    expert: str | None = Field(default=None, max_length=128)
+    match_contract: Literal["knowbench/expert-match/v5"]
     reference: MethodRef | None = None
     retain_empty: bool = Field(default=False, strict=True)
     directory_offset: int = Field(default=0, strict=True, ge=0, le=2147483647)
@@ -550,22 +539,6 @@ class FormalExpertReview(Strict):
 
 class FormalExpertChoice(FormalExpertReview):
     reference: MethodRef
-
-
-class DemandIn(BaseModel):
-    """挂需求：AI 写的描述用户看过、可以改，点了「发布」才发；截止不给就是 30 天后。"""
-
-    model_config = ConfigDict(extra="forbid")
-    title: str = Field(min_length=1, max_length=120)
-    problem: str = Field(min_length=1, max_length=4000)
-    deadline: date | None = None
-
-
-class IncubationAskIn(BaseModel):
-    """「孵化一个专家」：先让自己的模型直接答过的，带上那段对话（回答附去作参考，只算提议）。"""
-
-    model_config = ConfigDict(extra="forbid")
-    conversation_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 @router.post("/projects/{project_id}/find-expert", status_code=201)
@@ -584,7 +557,6 @@ async def start_find_expert(
             idempotency_key=body.idempotency_key,
             budget_limit=body.budget_limit,
             match_contract=body.match_contract,
-            expert=body.expert,
             reference=body.reference,
             directory_offset=body.directory_offset,
             retain_empty=body.retain_empty,
@@ -964,44 +936,6 @@ async def find_expert_result(
     try:
         response.headers["Cache-Control"] = "private, no-store"
         found = await find_expert_service(session).result(_actor(principal), task_id)
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-    return {"contract_version": CONTRACT_VERSION, **found}
-
-
-@router.post("/find-expert/{task_id}/demand", status_code=201)
-async def publish_find_expert_demand(
-    task_id: str,
-    body: DemandIn,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-) -> dict[str, Any]:
-    """用户看过描述、点了「发布」：替他在 knowmart 挂需求（公开展示）。"""
-    try:
-        found = await find_expert_service(session).publish_demand(
-            _actor(principal),
-            task_id,
-            title=body.title,
-            problem=body.problem,
-            deadline=body.deadline,
-        )
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-    return {"contract_version": CONTRACT_VERSION, "demand": found}
-
-
-@router.post("/find-expert/{task_id}/incubation", status_code=201)
-async def ask_find_expert_incubation(
-    task_id: str,
-    body: IncubationAskIn,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-) -> dict[str, Any]:
-    """「孵化一个专家」：knowlab 以用户的名义建「问题」申请（只有他看得到、不花钱）。"""
-    try:
-        found = await find_expert_service(session).ask_incubation(
-            _actor(principal), task_id, conversation_id=body.conversation_id
-        )
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **found}

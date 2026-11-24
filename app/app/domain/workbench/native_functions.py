@@ -5,7 +5,6 @@ from typing import Any
 
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.data_function import DATA_QUERIES, QUERY_PERMISSIONS
-from app.domain.workbench.expert_match import DirectorySnapshot
 from app.domain.workbench.platform_tools import TOOLS
 from app.domain.workbench.records import PAGE_ENTRIES
 from app.domain.workbench.service_functions import FunctionRevision, ServiceFunction
@@ -235,41 +234,10 @@ def request_data_revision():
     return _task_revision("request_data", "task.data_requests.propose", output)
 
 
-def find_expert_revision():
-    text = {"type": "string"}
-    public = _object(
-        {
-            "knowbot_id": text,
-            "name": text,
-            "tagline": text,
-            "version": text,
-            "scope": _object({key: text for key in ("does", "does_not", "elsewhere")}),
-            "price": {"type": ["string", "number", "null"]},
-            "free": {"type": "boolean"},
-        }
-    )
-    snapshot = DirectorySnapshot.model_json_schema()
-    definitions = snapshot.pop("$defs")
-    snapshot["properties"]["directory_digest"] = {
-        "type": "string",
-        "pattern": "^sha256:[0-9a-f]{64}$",
-    }
-    snapshot["required"].append("directory_digest")
-    output = {
-        "$defs": definitions,
-        "oneOf": [
-            snapshot,
-            _object({"experts": _array(public), "note": text}, optional=("note",)),
-        ],
-    }
-    return _task_revision("find_expert", "task.expert_directory.read", output)
-
-
 LOCAL_REVISIONS = {
     "discover_source_tools": discover_source_tools_revision,
     "find_subject": find_subject_revision,
     "request_data": request_data_revision,
-    "find_expert": find_expert_revision,
     COMPUTE: compute_revision,
     PROJECT_LIST: project_list_revision,
     PROJECT_READ: project_read_revision,

@@ -141,7 +141,7 @@ class ScriptedAppServer:
         await self.server.wait_closed()
 
 
-async def seed(db, fake, *, profile="SMOKE", budget="10"):
+async def seed(db, fake, *, profile="SMOKE", budget="10", version=None):
     async with db() as s:
         repo = WorkbenchRepository(s)
         async with repo.transaction():
@@ -183,6 +183,7 @@ async def seed(db, fake, *, profile="SMOKE", budget="10"):
                     idempotency_key=f"k-{uuid.uuid4().hex[:12]}",
                     session_id=sid,
                     profile_id=profile,
+                    profile_version=version,
                     original_input={"text": "What is in this project?"},
                     budget_limit=Decimal(budget),
                 ),
@@ -539,7 +540,7 @@ def test_judge_tolerates_fences_and_flags_missing_keys():
     assert judge(json.dumps({"plan": ["a"]}), SMOKE.workflow[0].acceptance).ok
 
 
-def test_writes_files_follows_the_pack():
+def test_writes_files_follows_the_pack(monkeypatch):
     from app.application.workbench.ledger import writes_files
 
     assert writes_files({"profile_id": "SMOKE", "profile_version": SMOKE.version})
@@ -551,12 +552,12 @@ def test_writes_files_follows_the_pack():
             )
         }
     )
-    snapshot = {
-        "pack_source": "knowlab-test",
-        "pack_snapshot": bare.model_dump(mode="json"),
-        "pack_digest": "d-no-files",
-        "profile_id": "knowbot-test-x",
-    }
-    assert writes_files(snapshot) is False
+    from app.domain.workbench.packs import BUILTIN_PACKS
+
+    monkeypatch.setitem(BUILTIN_PACKS, bare.profile_id, bare)
+    assert (
+        writes_files({"profile_id": bare.profile_id, "profile_version": bare.version})
+        is False
+    )
     # 认不出专家包（旧版已下架）：按会写算，照旧指向底稿
     assert writes_files({"profile_id": "FIN_FORECAST", "profile_version": "0"}) is True

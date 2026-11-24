@@ -191,24 +191,6 @@ TOOLS: dict[str, dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    "find_expert": {
-        # Business read only: the immutable directory receipt is audit evidence,
-        # not an expert selection, delegation, purchase, or permission change.
-        "annotations": {"readOnlyHint": True},
-        "description": (
-            "List the experts this user can ask on knowmart: knowbot_id, name, "
-            "tagline, version, scope {does, does_not, elsewhere} exactly as each "
-            "expert wrote it, price, and free (true when asking costs the user "
-            "nothing extra). Only public information; never ranked. Match only by "
-            "the experts' own scope against the user's question."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {"task": _TASK},
-            "required": ["task"],
-            "additionalProperties": False,
-        },
-    },
     "compute": {
         "description": (
             "Compute exact decimals and record results in the active task. Always copy task from "

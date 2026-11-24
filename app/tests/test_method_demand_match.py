@@ -115,8 +115,5 @@ def test_old_finder_and_receipt_remain_versioned():
     assert parse_match(result()).model_dump(mode="json") == result()
     with pytest.raises(ValueError):
         ExpertMatchV3.model_validate(result())
-    old, new = find_pack("FIND_EXPERT", "2"), find_pack("FIND_EXPERT", "3")
-    assert old and new
-    assert old.workflow[0].output_schema["contract"] == "knowbench/expert-match/v2"
-    assert "method_proposals" not in old.workflow[0].output_schema
-    assert "method_proposals" in new.workflow[0].output_schema
+    assert find_pack("FIND_EXPERT", "2") is None
+    assert find_pack("FIND_EXPERT", "3") is None
