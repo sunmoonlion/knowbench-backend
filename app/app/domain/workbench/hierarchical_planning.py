@@ -676,10 +676,16 @@ class HierarchicalPlanner:
         self.turns += 1
         if isinstance(decision, ChoiceCheck) and decision.pending_choice:
             quoted = decision.pending_choice.strip()
-            if not any(quoted in text for text in self.human_text()):
-                raise ValueError(
-                    "pending_choice must quote the request or the human clarification"
-                )
+            human_text = self.human_text()
+            if not any(quoted in text for text in human_text):
+                # A provider may surround a verbatim quotation with its own
+                # explanation. Only a single attested excerpt may reach the user.
+                excerpts = re.findall(r'"([^"]+)"|“([^”]+)”|「([^」]+)」', quoted)
+                quoted = "".join(excerpts[0]).strip() if len(excerpts) == 1 else ""
+                if not quoted or not any(quoted in text for text in human_text):
+                    raise ValueError(
+                        "pending_choice must quote the request or the human clarification"
+                    )
             return self.unresolved(node, "clarify", f"请确认这项选择后继续：{quoted}")
         if isinstance(decision, Unresolved):
             # A search suggestion on a definite gap does not change its outcome.

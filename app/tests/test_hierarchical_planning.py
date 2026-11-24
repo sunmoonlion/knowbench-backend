@@ -658,3 +658,28 @@ def test_unphased_explanation_can_precede_only_one_complete_decision(fenced):
     assert turn_answer(messages(answer + answer)) is None
     assert turn_answer(messages("example: [", answer + "]")) is None
     assert turn_answer(messages("Explanation.", final + " trailing")) is None
+
+
+def test_only_a_single_verbatim_human_excerpt_can_be_unwrapped_for_clarification():
+    task, _ = setup()
+    src = task["original_input"]["input"]
+    src["text"] = "给了两组原行，先问我采用哪一个报告年度再动手。"
+
+    def inspect_with(note):
+        return HierarchicalPlanner(task).advance(
+            {"action": "inspect", "methods": ["first"], "pending_choice": note},
+            require_choice_check=True,
+        )
+
+    result = inspect_with('模型解释，用户要求"先问我采用哪一个报告年度再动手"')
+    assert result["status"] == "clarify" and result["reason"].endswith(
+        "：先问我采用哪一个报告年度再动手"
+    )
+    assert "模型解释" not in result["reason"] and not result["steps"]
+    for note in (
+        "模型猜测“确认费用”",
+        "解释「给了两组原行」或「哪一个报告年度」",
+        '说明 " "',
+    ):
+        with pytest.raises(ValueError, match="must quote"):
+            inspect_with(note)
