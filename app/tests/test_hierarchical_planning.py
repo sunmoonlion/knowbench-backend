@@ -452,3 +452,31 @@ def test_provider_line_wrap_requires_a_complete_json_document_and_normal_admissi
     with pytest.raises(ValueError, match="authorized"):
         p.advance(restored)
     assert recover_decision(text + " trailing") is None
+
+
+def test_directory_first_turn_shows_input_responsibilities_and_only_inspects_or_stops():
+    task, _ = setup()
+    catalog = task["original_input"]["input"]["catalog"]
+    catalog["entries"] += [{**deepcopy(catalog["entries"][0]), "alias": "fourth"}]
+    planner = HierarchicalPlanner(task)
+    context = planner.prompt()
+    _, schema = planner.model_contract(context)
+    assert context["authorized_index"]["first"]["inputs"].keys() == {"value"}
+    assert set(schema["discriminator"]["mapping"]) == {"inspect", "gap", "clarify"}
+    planner.advance({"action": "inspect", "methods": ["first"]})
+    resumed = HierarchicalPlanner(task, planner.snapshot())
+    _, schema = resumed.model_contract(resumed.prompt())
+    assert (
+        "hit" in schema["discriminator"]["mapping"]
+        and "split" in schema["discriminator"]["mapping"]
+    )
+
+
+def test_multiple_planning_replies_cannot_choose_a_winner():
+    from app.domain.workbench.hierarchical_planning import turn_answer
+
+    messages = [
+        {"type": "agentMessage", "text": '{"action":"gap","reason":"x"}'},
+        {"type": "agentMessage", "text": '{"action":"inspect","methods":["a"]}'},
+    ]
+    assert turn_answer(messages) is None

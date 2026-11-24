@@ -311,6 +311,7 @@ class TaskRuntime:
                 ):
                     return TaskState.WAITING
             attempts = await repo.list_attempts(task_id)
+            question = task["original_input"].get("input", {})
             planner = None
             if htn.active(task):
                 saved = await repo.latest_task_payload(task_id, htn.EVENT)
@@ -325,10 +326,12 @@ class TaskRuntime:
                     ]
                 else:
                     attempts_for_repair = attempts
+                question = planner.prompt()
+                rules, schema = planner.model_contract(question)
                 step = step.model_copy(
                     update={
-                        "method_text": htn.RULES,
-                        "output_schema": htn.DECISION.json_schema(),
+                        "method_text": rules,
+                        "output_schema": schema,
                         "acceptance": (AcceptanceRule(kind="json_object"),),
                     }
                 )
@@ -438,7 +441,6 @@ class TaskRuntime:
             )
             await repo.commit()
             thread_id = task["thread_id"]
-            question = task["original_input"].get("input", {})
             if (
                 task["profile_id"] == FIND_EXPERT.profile_id
                 and str(task.get("profile_version")) == "5"
@@ -525,8 +527,6 @@ class TaskRuntime:
             # 孵化方法（专家孵化方案第八节）：模型只看契约列死的材料（0029 第 6.4 节），
             # 不加用户的记忆、不给读项目记录的说明
             sealed = pack.profile_id in SEALED_INPUT
-            if planner:
-                question = planner.prompt()
             text = self.compose(
                 step,
                 question,

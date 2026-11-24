@@ -41,6 +41,7 @@ from app.application.workbench.runtime_tools import (
 )
 from app.application.workbench.task_runtime import TaskRuntime
 from app.application.workbench.turn import TurnResult
+from app.domain.workbench import hierarchical_planning as htn
 from app.domain.workbench import step_progress
 from app.domain.workbench.capabilities import disabled_mcp_config
 from app.domain.workbench.compute_progress import (
@@ -806,7 +807,11 @@ class SandboxLink:
         elif method == "item/completed":
             item = params.get("item") or {}
             if item.get("type") == "agentMessage" and item.get("text"):
-                w["text"] = item["text"]
+                if "planning_messages" in w:
+                    messages = w["planning_messages"]
+                    messages[item.get("id") or len(messages)] = item
+                else:
+                    w["text"] = item["text"]
             # 这一轮用补丁改到的文件：成稿有没有写出来就看它（0015 §3.3）
             w["files"].extend(changed_paths(item))
             if guard := w.get("planning_guard"):
@@ -821,6 +826,20 @@ class SandboxLink:
                 guard.usage((params.get("cost") or {}).get("turn"))
         elif method == "turn/completed":
             turn = params.get("turn") or {}
+            if "planning_messages" in w:
+                messages = w["planning_messages"]
+                completed = {
+                    item.get("id") or ("receipt", index): item
+                    for index, item in enumerate(turn.get("items") or [])
+                    if item.get("type") == "agentMessage" and item.get("text")
+                }
+                # A full completion may arrive without intermediate notifications.
+                # Some completions carry only the last item. Preserve prior fragments.
+                if messages.keys() <= completed.keys():
+                    messages = completed
+                else:
+                    messages.update(completed)
+                w["text"] = htn.turn_answer(messages.values())
             w["interrupted"] = turn.get("status") == "interrupted"
             if turn.get("status") not in (None, "completed"):
                 error = turn.get("error") or {}
@@ -955,6 +974,7 @@ class SandboxLink:
             if expected_attempt
             else None,
             "text": None,
+            **({"planning_messages": {}} if task and htn.active(task) else {}),
             "reported": False,
             "error": None,
             "env_lost": False,

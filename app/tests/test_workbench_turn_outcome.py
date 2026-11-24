@@ -123,3 +123,46 @@ async def test_interruption_remains_explicit_after_an_error_notification():
         },
     )
     assert w["interrupted"]
+
+
+@pytest.mark.parametrize("receipt", ["stream", "full", "last_only", "replayed_receipt"])
+async def test_planner_readback_reassembles_fragments_in_turn_order(receipt):
+    import json
+
+    link = SandboxLink(SimpleNamespace(), {"id": "sandbox"})
+    w = {**waiter("thread-a"), "planning_messages": {}}
+    link.turn_waiters = {"first": w}
+    items = [
+        {
+            "type": "agentMessage",
+            "id": "a",
+            "phase": "commentary",
+            "text": "Looking up slots",
+        },
+        {"type": "agentMessage", "id": "b", "text": '{"'},
+        {
+            "type": "agentMessage",
+            "id": "c",
+            "text": 'action":"inspect","methods":["m2"]}',
+        },
+    ]
+    if receipt != "full":
+        for item in [*items, items[-1]]:
+            link._feed_turn_waiters(
+                "item/completed",
+                {"threadId": "thread-a", "turnId": "first", "item": item},
+            )
+    final = {
+        "full": items,
+        "last_only": items[-1:],
+        "replayed_receipt": [*items, items[-1]],
+        "stream": [],
+    }[receipt]
+    link._feed_turn_waiters(
+        "turn/completed",
+        {
+            "threadId": "thread-a",
+            "turn": {"id": "first", "status": "completed", "items": final},
+        },
+    )
+    assert json.loads(w["text"]) == {"action": "inspect", "methods": ["m2"]}
