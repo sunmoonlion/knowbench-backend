@@ -84,6 +84,19 @@ def verify_options(question, directory, content):
     return match
 
 
+def assess_proposal(question, directory, content):
+    """Hold a grounded recommendation for clarification before offering any choice."""
+    if (
+        isinstance(content, dict)
+        and content.get("outcome") == "candidates"
+        and isinstance(content.get("clarification"), str)
+        and content["clarification"].strip()
+    ):
+        verify_options(question, directory, {**content, "clarification": None})
+        content = {**content, "outcome": "clarify", "picks": []}
+    return verify_options(question, directory, content)
+
+
 def frozen_scope(definition: FormalMethodDefinition):
     """Project the root contract for its buyer without opening private child definitions."""
     graph = definition.procedure

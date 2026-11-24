@@ -287,7 +287,11 @@ async def accepted_results(
 
 
 async def open_method_step(
-    ledger: Ledger, task_id: str, *, expected_version: int
+    ledger: Ledger,
+    task_id: str,
+    *,
+    expected_version: int,
+    planning_turn: int | None = None,
 ) -> dict[str, Any]:
     """Bind inputs and reserve/open the existing Attempt under one task lock."""
     repo = ledger.repo
@@ -330,6 +334,8 @@ async def open_method_step(
 
         meta = _meta(view, index)
         method_call = await step_call(repo, task, meta)
+        if planning_turn is not None:
+            meta["planning_turn"] = planning_turn
         opened = await ledger.open_attempt(
             task_id,
             step_id=step.step_id,

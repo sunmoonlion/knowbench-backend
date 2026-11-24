@@ -18,7 +18,7 @@ from app.application.workbench.find_expert import FindExpertService
 from app.application.workbench.formal_expert_intake import confirm
 from app.application.workbench.registry_catalog import SceneRegistry
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
-from app.domain.workbench.formal_expert_match import verify_options
+from app.domain.workbench.formal_expert_match import assess_proposal, verify_options
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
@@ -285,6 +285,18 @@ async def test_project_match_compares_pins_and_confirms_once(db, monkeypatch):
     finally:
         await close(runner)
         await fake.close()
+
+
+def test_match_with_a_blocking_question_offers_no_candidate():
+    registry = Registry()
+    result = {**proposal(registry), "clarification": "请确认比较期间？"}
+    directory = {"items": list(registry.entries.values())}
+    match = assess_proposal("差异表", directory, result)
+    assert match.outcome == "clarify" and not match.picks
+    assert match.clarification == result["clarification"]
+    assert verify_options("差异表", directory, match.model_dump(mode="json")) == match
+    with pytest.raises(ValueError, match="Candidate missing"):
+        assess_proposal("差异表", {"items": []}, result)
 
 
 def test_every_mandatory_delivery_needs_a_real_promise_and_output():

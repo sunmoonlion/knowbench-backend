@@ -338,14 +338,6 @@ class TaskRuntime:
                 else:
                     attempts_for_repair = attempts
                 question = planner.prompt()
-                rules, schema = planner.model_contract(question)
-                step = step.model_copy(
-                    update={
-                        "method_text": rules,
-                        "output_schema": schema,
-                        "acceptance": (AcceptanceRule(kind="json_object"),),
-                    }
-                )
             else:
                 attempts_for_repair = attempts
             reworks = sum(
@@ -396,7 +388,9 @@ class TaskRuntime:
                 if view.planned:
                     try:
                         opened = await led.open_method_step(
-                            task_id, expected_version=task["state_version"]
+                            task_id,
+                            expected_version=task["state_version"],
+                            planning_turn=planner.turns if planner else None,
                         )
                     except MethodPlanInvalid as exc:
                         if view.planned_by_model:
@@ -437,6 +431,18 @@ class TaskRuntime:
             except BudgetExhausted as exc:
                 log.info("budget exhausted before step %s: %s", step.step_id, exc)
                 return await self._hard_stop(led, repo, task_id)
+            bound_step = step
+            if planner is not None:
+                # Bind the durable step first. The planner owns the turn's response
+                # contract even when an author-order plan supplied that step.
+                rules, schema = planner.model_contract(question)
+                step = step.model_copy(
+                    update={
+                        "method_text": rules,
+                        "output_schema": schema,
+                        "acceptance": (AcceptanceRule(kind="json_object"),),
+                    }
+                )
             attempt_id = opened["attempt_id"]
             await repo.append_event(
                 session_id=str(task["session_id"]),
@@ -581,7 +587,7 @@ class TaskRuntime:
             )
             assessment = StepAssessment(error=type(exc).__name__)
         return await self._settle_step(
-            task_id, attempt_id, view, step, result, assessment, reworks, intake
+            task_id, attempt_id, view, bound_step, result, assessment, reworks, intake
         )
 
     async def _assess_step(
@@ -719,14 +725,14 @@ class TaskRuntime:
                             snapshot,
                         )
                         from app.domain.workbench.formal_expert_match import (
-                            verify_options,
+                            assess_proposal,
                         )
 
-                        verify_options(
+                        verdict.parsed = assess_proposal(
                             task["original_input"]["input"]["text"],
                             await snapshot(repo, task),
                             verdict.parsed,
-                        )
+                        ).model_dump(mode="json")
                     else:
                         await validate_match_content(repo, task, verdict.parsed)
                 except (ValueError, KeyError) as exc:

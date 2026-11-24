@@ -128,11 +128,16 @@ class Ledger:
         self.dynamic_method_owners = dynamic_method_owners
 
     async def open_method_step(
-        self, task_id: str, *, expected_version: int
+        self, task_id: str, *, expected_version: int, planning_turn: int | None = None
     ) -> dict[str, Any]:
         from app.application.workbench.execution_plan import open_method_step
 
-        return await open_method_step(self, task_id, expected_version=expected_version)
+        return await open_method_step(
+            self,
+            task_id,
+            expected_version=expected_version,
+            planning_turn=planning_turn,
+        )
 
     async def open_method_plan(
         self, task_id: str, *, expected_version: int

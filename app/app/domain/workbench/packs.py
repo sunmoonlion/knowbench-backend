@@ -956,7 +956,7 @@ def find_pack(profile_id: str, version: str | None = None) -> ExpertPack | None:
                     "For each recommended version cite a published promise and its exact text for each requirement. "
                     "Read exclusions and conditional inputs before deciding fit. Never substitute an output. "
                     "Explain only material differences for this question in the user's language. "
-                    "Keep unresolved conditions in limitations. Ask one discriminating question if needed. "
+                    "For candidates, use coverage.promise for the published promise key and coverage.quote for its exact text. Set clarification to null. Keep nonblocking conditions in limitations. If a question must be answered before choosing, return clarify with one question and empty picks. "
                     "No match refers only to the inspected scope. Never assert fees or start execution. "
                     "Return JSON matching this schema: "
                     + json.dumps(
