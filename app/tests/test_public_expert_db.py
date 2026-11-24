@@ -104,6 +104,12 @@ async def test_public_expert_registration_qualifies_the_entire_closure(db, publi
             return
         await service.register(expert, caller="knowlab")
         delivered = await service.delivery("author", expert.reference, market=True)
+        assert "method_kind" not in delivered
+        typed = await service.delivery(
+            "author", expert.reference, market=True, include_kind=True
+        )
+        assert typed["method_kind"] == "expert"
+        assert typed["delivery_digest"] == delivered["delivery_digest"]
         assert delivered["reference"] == expert.reference.model_dump(mode="json")
         service.business_reviews = tuple(
             r

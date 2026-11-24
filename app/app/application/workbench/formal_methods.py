@@ -530,7 +530,9 @@ class FormalMethods:
                 "samples": samples if complete else [],
             }
 
-    async def delivery(self, subject, reference, *, market, skill=None):
+    async def delivery(
+        self, subject, reference, *, market, skill=None, include_kind=False
+    ):
         async with self.repo.transaction():
             owner = await self._owner(subject)
             row = await self.repo.formal_method(
@@ -588,6 +590,14 @@ class FormalMethods:
                     if m.draft.source and m.draft.source.delivery_terms
                 ],
             }
+            if include_kind:
+                from app.domain.workbench.formal_method_compiler_generated import (
+                    implementation_kind,
+                )
+
+                result["method_kind"] = implementation_kind(
+                    root.draft.definition.procedure.kind
+                )
             if skill is not None:
                 if not market or selected is None or not selected.delivery_terms:
                     raise NotFound("Skill is not part of the frozen method")

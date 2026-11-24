@@ -243,11 +243,16 @@ async def market_delivery(
     _: Annotated[ServiceCaller, Depends(require_method_delivery_service)],
     body: DeliverySelection,
     svc: FormalService,
+    include_kind: bool = False,
 ):
     try:
         return _out(
             await svc.delivery(
-                body.owner_subject, body.reference, market=True, skill=body.skill
+                body.owner_subject,
+                body.reference,
+                market=True,
+                skill=body.skill,
+                include_kind=include_kind,
             )
         )
     except WorkbenchError as exc:
