@@ -9,11 +9,30 @@ from app.domain.workbench.formal_model import PROBE_PASSIVE_ITEMS
 from app.domain.workbench.instruction_requests import INSTRUCTION_GUIDANCE
 
 
+class InstructionOutputError(CapabilityError):
+    """A stable error code suitable for receipts that must omit private model text."""
+
+
+def instruction_output(parts):
+    if not parts:
+        raise InstructionOutputError("instruction_final_missing")
+    if any(not isinstance(part, str) for part in parts):
+        raise InstructionOutputError("instruction_final_invalid")
+    try:
+        result = json.loads("".join(parts))
+    except (ValueError, RecursionError):
+        raise InstructionOutputError("instruction_final_invalid_json") from None
+    if not isinstance(result, dict):
+        raise InstructionOutputError("instruction_output_not_object")
+    return result
+
+
 async def run_instruction_turn(
     connector, worker, model, job, *, take_thread, bind_turn, reject
 ):
     completed = asyncio.Event()
-    thread_id = turn_id = final = None
+    thread_id = turn_id = None
+    parts = []
     failed = False
 
     def observe_turn(reply):
@@ -23,7 +42,7 @@ async def run_instruction_turn(
             raise CapabilityError("Instruction turn identity is missing")
 
     async def notice(method, params):
-        nonlocal final, failed
+        nonlocal failed
         if not thread_id or params.get("threadId") != thread_id or not turn_id:
             return
         if method == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
@@ -42,9 +61,7 @@ async def run_instruction_turn(
                 and item.get("type") == "agentMessage"
                 and item.get("phase") != "commentary"
             ):
-                if final is not None:
-                    failed = True
-                final = item.get("text")
+                parts.append(item.get("text"))
 
     async def deny(rid, method, params) -> None:
         nonlocal failed
@@ -114,11 +131,9 @@ async def run_instruction_turn(
             raise CapabilityError("Unexpected instruction worker activity")
         await bind_turn(turn_id)
         await asyncio.wait_for(completed.wait(), timeout=180)
-        if failed or not isinstance(final, str):
-            raise CapabilityError(
-                "Instruction turn returned no admissible final result"
-            )
-        return json.loads(final)
+        if failed:
+            raise InstructionOutputError("instruction_turn_rejected")
+        return instruction_output(parts)
     finally:
         await client.close()
 
@@ -167,11 +182,6 @@ async def read_instruction_turn(connector, worker, thread_id, turn_id):
             for item in items
             if item.get("type") == "agentMessage" and item.get("phase") != "commentary"
         ]
-        if len(finals) != 1 or not isinstance(finals[0], str):
-            raise CapabilityError("Instruction history lacks a unique final answer")
-        output = json.loads(finals[0])
-        if not isinstance(output, dict):
-            raise CapabilityError("Recovered instruction result has no output slots")
-        return output
+        return instruction_output(finals)
     finally:
         await client.close()

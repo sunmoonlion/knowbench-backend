@@ -10,6 +10,7 @@ from app.application.workbench.instruction_requests import (
     issue_instruction_ticket,
 )
 from app.application.workbench.instruction_turn import (
+    InstructionOutputError,
     read_instruction_turn,
     run_instruction_turn,
 )
@@ -355,7 +356,12 @@ class InstructionRunner:
                             raise CapabilityError(
                                 "Instruction output requires a direct method"
                             )
-                        outputs = validate_values(step.outputs, outputs)
+                        try:
+                            outputs = validate_values(step.outputs, outputs)
+                        except ValueError:
+                            raise InstructionOutputError(
+                                "instruction_output_schema_mismatch"
+                            ) from None
                     bill = refs.get("instruction_usage")
                     if bill is None:
                         # The gateway may still be delivering its durable receipt.
@@ -533,6 +539,11 @@ class InstructionRunner:
                 except (AppServerError, OSError):
                     # The original Pod can still be starting or persisting its history.
                     return
+                except InstructionOutputError as exc:
+                    await self.finish(
+                        task_id, attempt_id, thread=dispatch["thread"], code=str(exc)
+                    )
+                    return
                 except (CapabilityError, ValueError):
                     await self.finish(
                         task_id,
@@ -628,6 +639,8 @@ class InstructionRunner:
             # A broken socket may already have started the turn. Poll its original
             # history; the absolute Attempt deadline bounds missing acknowledgements.
             return
+        except InstructionOutputError as exc:
+            await self.finish(task_id, attempt_id, thread=thread, code=str(exc))
         except (CapabilityError, NotFound, ValueError):
             await self.finish(
                 task_id, attempt_id, thread=thread, code="instruction_trial_failed"
