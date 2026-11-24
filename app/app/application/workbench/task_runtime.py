@@ -534,7 +534,7 @@ class TaskRuntime:
                 inputs,
                 reworks,
                 rework_failures=rejected[-1].get("failures") if rejected else None,
-                compact_json=planner is not None,
+                sealed_planning=planner is not None,
                 folder=folder,
                 records_task=task_id if self.records and not sealed else None,
                 tool_task=task_id if self.records else None,
@@ -1939,6 +1939,7 @@ class TaskRuntime:
         *,
         rework_failures: list[str] | None = None,
         compact_json: bool = False,
+        sealed_planning: bool = False,
         records_task: str | None = None,
         tool_task: str | None = None,
         listed_data_task: str | None = None,
@@ -1949,7 +1950,7 @@ class TaskRuntime:
         folder: str | None = None,
         intake: Scope | None = None,
     ) -> str:
-        separators = (",", ":") if compact_json else None
+        separators = (",", ":") if compact_json or sealed_planning else None
         parts = [
             f"# Task runtime step: {step.title} ({step.step_id}, v{step.step_version})",
             "You are executing one step of a supervised research workflow. Do exactly this step, nothing beyond it.",
@@ -1966,10 +1967,15 @@ class TaskRuntime:
             "",
             "## Rules",
             NO_DETOUR,
-            "If you need information you cannot obtain, ask the user with the request_user_input tool "
-            "when it is available. No answer, cancellation or timeout is not consent. "
-            "Never assume permission to drop a requested result, replace a specified method, "
-            "change scope, fetch data or spend more. Pause when that decision is necessary.",
+            (
+                "Use only the supplied planning context. Return clarify in your JSON for a human decision. "
+                "The host carries that question to the user. Planning grants no execution, access or spending authority."
+                if sealed_planning
+                else "If you need information you cannot obtain, ask the user with the request_user_input tool "
+                "when it is available. No answer, cancellation or timeout is not consent. "
+                "Never assume permission to drop a requested result, replace a specified method, "
+                "change scope, fetch data or spend more. Pause when that decision is necessary."
+            ),
         ]
         if user_facts:
             parts += ["", "## About the user", user_facts]

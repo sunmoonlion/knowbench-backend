@@ -542,7 +542,9 @@ def test_compact_planner_prompt_preserves_all_catalog_and_schema_values():
     )
     context["goal"] = "术语中的 空格、冒号: 与逗号, 都要保留"
     original = TaskRuntime.compose(step, context, {}, 0)
-    compact = TaskRuntime.compose(step, context, {}, 0, compact_json=True)
+    compact = TaskRuntime.compose(step, context, {}, 0, sealed_planning=True)
+    assert "request_user_input" in original and "request_user_input" not in compact
+    assert "Return clarify in your JSON" in compact
     assert len(compact) < len(original)
     assert [
         json.loads(line) for line in compact.splitlines() if line.startswith(("{", "["))
@@ -650,9 +652,7 @@ def test_unphased_explanation_can_precede_only_one_complete_decision(fenced):
     def messages(*parts):
         return [{"type": "agentMessage", "text": part} for part in parts]
 
-    replies = messages(
-        "Checking supplied `m1`.", "各项核验都有，缺少汇总。\n" + final
-    )
+    replies = messages("Checking supplied `m1`.", "各项核验都有，缺少汇总。\n" + final)
     assert json.loads(turn_answer(replies)) == json.loads(answer)
     assert turn_answer(messages(answer, final)) is None
     assert turn_answer(messages(answer + answer)) is None
