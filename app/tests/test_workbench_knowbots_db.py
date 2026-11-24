@@ -5,9 +5,11 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from knowbot_fixtures import KNOWBOT, FakeSummoner, manifest
+from knowbot_fixtures import KNOWBOT, FakeSummoner
+from knowbot_fixtures import manifest as fixed_manifest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
+from test_referenced_method_catalog import manifest
 from test_workbench_expert_data_db import FakeKnowbase, FakeSupply, known
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_project_routes import machine, project
@@ -24,6 +26,12 @@ PROFILE = f"knowbot:{KNOWBOT}@1"
 
 @pytest.fixture
 def knowmart(monkeypatch):
+    from app.bootstrap import workbench
+
+    settings = workbench.get_settings().model_copy(
+        update={"knowbot_dynamic_market_owners": (f"sub-{A}",)}
+    )
+    monkeypatch.setattr(workbench, "get_settings", lambda: settings)
     fake = FakeSummoner()
     fake.give(f"sub-{A}", manifest())
     monkeypatch.setattr(expert_routes, "knowmart_summoner", lambda: fake)
@@ -106,7 +114,7 @@ async def test_bad_or_tampered_manifests_are_not_pinned(
     async with make_client(A) as http:
         assert (await pin(http)).status_code == 422
     knowmart.digests.clear()
-    knowmart.give(f"sub-{A}", manifest(tool_policy={"command": "allow"}))
+    knowmart.give(f"sub-{A}", fixed_manifest())
     async with make_client(A) as http:
         assert (await pin(http)).status_code == 422
     async with db() as s:
@@ -120,7 +128,7 @@ async def test_a_pinned_version_never_changes(make_client, db, knowmart) -> None
     async with make_client(A) as http:
         assert (await pin(http)).status_code == 200
         # knowmart 同一版给出别的内容（不该发生）：不覆盖，拒绝
-        changed = manifest(title="改过的")
+        changed = manifest() | {"tagline": "改过的"}
         knowmart.give(f"sub-{A}", changed)
         assert (await pin(http)).status_code == 422
     async with db() as s:
@@ -135,7 +143,7 @@ async def test_asking_a_pinned_knowbot_snapshots_it_on_the_task(
     knowmart,
     monkeypatch,
 ) -> None:
-    # 分身都是清单 v2：请时建空清单（knowbase 的替身），要认得这个用户
+    # 动态目录请入时建空资料清单。
     monkeypatch.setattr(
         expert_routes,
         "expert_data",
@@ -161,7 +169,7 @@ async def test_asking_a_pinned_knowbot_snapshots_it_on_the_task(
         assert made.status_code == 201, made.text
         task_id = made.json()["task_id"]
         steps = (await http.get(f"/api/workbench/tasks/{task_id}/steps")).json()
-        assert steps["steps"], steps
+        assert steps["steps"] == []  # 待用户问题生成计划
         # 移除后正在进行的任务仍可查看；不删除或改写快照。
         assert (await http.delete(f"/api/workbench/packs/{PROFILE}")).status_code == 200
         assert (await http.get(f"/api/workbench/tasks/{task_id}/steps")).json() == steps
@@ -182,7 +190,10 @@ async def test_asking_a_pinned_knowbot_snapshots_it_on_the_task(
     assert row["profile_id"] == PROFILE and row["profile_version"] == "1"
     assert row["pack_source"] == "knowmart"
     assert row["pack_digest"] == manifest_digest(manifest())
-    assert row["pack_snapshot"]["profile_id"] == PROFILE
+    assert (
+        row["pack_snapshot"]["runtime_contract"]
+        == manifest()["pack"]["runtime_contract"]
+    )
     # 来源与快照、摘要绑在一起：分身的委托不能没有快照
     async with db() as s:
         with pytest.raises(DBAPIError, match="ck_workbench_tasks_pack_source"):

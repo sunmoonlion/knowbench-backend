@@ -35,7 +35,6 @@ from app.domain.workbench.errors import (
 )
 from app.domain.workbench.expert_match import MatchSelection
 from app.domain.workbench.knowbots import (
-    MANIFEST_SCHEMA_V2,
     MANIFEST_SCHEMA_V3,
     is_knowbot,
 )
@@ -251,7 +250,7 @@ class DelegationService:
             self.repo, owner_actor_id=owner_actor_id, profile_id=profile_id
         )
         return {
-            "contract": MANIFEST_SCHEMA_V3 if pinned.catalog else MANIFEST_SCHEMA_V2,
+            "contract": MANIFEST_SCHEMA_V3,
             "bound": len(pinned.bindings),
             "scope_check_required": False,
         }

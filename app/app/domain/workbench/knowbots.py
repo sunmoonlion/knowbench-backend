@@ -1,17 +1,4 @@
-"""用户自己的分身（SDD 0027 P4）：从 knowmart 请来的清单，变成工作台能跑的专家包。
-
-清单外层（`knowbot-manifest/v2`）归 knowmart，里面的 `pack` 就是工作台的专家包形状，由这里
-按 ExpertPack 完整校验。分身只归请它的那个用户：专家 id 写作 `knowbot:<分身>@<版本>`，钉在
-委托上的是这一版的包快照与摘要，之后编排、底稿、验收都读快照，knowmart 停了也不影响在跑的。
-
-分身是用户的方法，不是我们的：工具与审批只能比平台默认更严，不许自带命令放行前缀；
-不许用数据线的工具（`C-L2`：分身运行时只读用户自己的数据）。
-
-只认清单 v2（SDD 0043，decisions ⑭；v1 不留兼容，decisions ⑰）= 逻辑 + 作者挑选的数据
-（`bindings`，只带冻结的引用）；没有数据需求声明：委托第 0 步模型用 `request_data` 按问题
-提出要哪些数据、用户确认；读数据用 工作台按授权选择的 KnowBase 登记函数，算数用
-`compute`。
-"""
+"""Validate marketplace references, frozen input bindings and v3 method catalogs."""
 
 from __future__ import annotations
 
@@ -24,7 +11,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.domain.workbench.errors import KnowbotInvalid
 from app.domain.workbench.method_catalog import MethodCatalog, parse_catalog
-from app.domain.workbench.packs import ExpertPack
 from app.domain.workbench.tool_policy import TIER_ORDER, ToolPolicy
 
 PREFIX = "knowbot:"
@@ -147,67 +133,6 @@ def _no_looser_than_platform(policy: ToolPolicy) -> list[str]:
     return problems
 
 
-def pack_from_manifest(
-    manifest: object, *, knowbot_id: str, version: str, profile: str | None = None
-) -> ExpertPack:
-    """核清单并取出专家包；不合格抛 KnowbotInvalid（只说哪里不对，不回显内容）。
-
-    profile：测试中的草稿还没有分身 id，用测试自己的专家 id（test_runs.trial_profile_id）。
-    """
-    if not isinstance(manifest, dict):
-        raise KnowbotInvalid("the knowbot manifest is not an object")
-    if manifest.get("schema") == MANIFEST_SCHEMA_V3:
-        raise KnowbotInvalid(
-            "dynamic method execution is not enabled; this runtime only runs fixed v2 experts",
-            knowbot=knowbot_id,
-        )
-    problems: list[str] = []
-    if manifest.get("schema") != MANIFEST_SCHEMA_V2:
-        problems.append(f"schema must be {MANIFEST_SCHEMA_V2}")
-    if manifest.get("runtime") != RUNTIME:
-        problems.append(f"runtime must be {RUNTIME}")
-    if manifest.get("version") != version:
-        problems.append("version differs from the one summoned")
-    raw = manifest.get("pack")
-    if not isinstance(raw, dict):
-        problems.append("pack must be an object")
-    if problems:
-        raise KnowbotInvalid("; ".join(problems), knowbot=knowbot_id)
-    assert isinstance(raw, dict)
-    body = {
-        **raw,
-        # 身份与给用户看的名字以外层为准：分身的 id 不由清单自己说
-        "profile_id": profile or profile_id(knowbot_id, version),
-        "name": str(manifest.get("name") or raw.get("name") or ""),
-        "tagline": str(manifest.get("tagline") or raw.get("tagline") or ""),
-        "internal": False,
-        "status": "ready",
-        "preparing_note": "",
-    }
-    try:
-        pack = ExpertPack.model_validate(body)
-    except ValidationError as exc:
-        where = sorted({".".join(str(p) for p in e["loc"]) for e in exc.errors()})
-        raise KnowbotInvalid(
-            "the knowbot pack is not a valid expert pack: " + ", ".join(where[:8]),
-            knowbot=knowbot_id,
-        ) from None
-    if pack.version != version:
-        problems.append("pack.version differs from the version")
-    problems += _no_looser_than_platform(pack.tool_policy)
-    for step in pack.workflow:
-        if step.tool_policy is not None and step.tool_policy.command_allow:
-            problems.append(f"step {step.step_id} allows commands by prefix")
-        extra = set(step.tools) - V2_TOOLS
-        if extra:
-            problems.append(f"step {step.step_id} uses tools a knowbot cannot use")
-    if pack.requires_tools:
-        problems.append("a knowbot cannot use the platform's data")
-    if problems:
-        raise KnowbotInvalid("; ".join(problems), knowbot=knowbot_id)
-    return pack
-
-
 def catalog_from_manifest(
     manifest: object, *, knowbot_id: str, version: str
 ) -> MethodCatalog:
@@ -218,6 +143,8 @@ def catalog_from_manifest(
     """
     if not isinstance(manifest, dict):
         raise KnowbotInvalid("the knowbot manifest is not an object")
+    if manifest.get("schema") == MANIFEST_SCHEMA_V2:
+        raise KnowbotInvalid("Fixed v2 expert execution has been retired")
     if (
         manifest.get("schema") != MANIFEST_SCHEMA_V3
         or manifest.get("runtime") != RUNTIME

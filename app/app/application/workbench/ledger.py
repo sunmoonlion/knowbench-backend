@@ -19,6 +19,7 @@ from app.application.workbench.catalog import (
     pack_for_task,
     pinned_pack,
     require_dynamic_owner,
+    retired_fixed_task,
 )
 from app.domain.workbench.errors import (
     BudgetExhausted,
@@ -27,6 +28,7 @@ from app.domain.workbench.errors import (
     EnvironmentOffline,
     IdempotencyConflict,
     InteractionRejected,
+    KnowbotInvalid,
     ProjectRequired,
     StaleStateVersion,
     WheelHeldByOther,
@@ -262,7 +264,7 @@ class Ledger:
                 if is_knowbot(req.profile_id)
                 else None
             )
-            if isinstance(pinned, PinnedPack) and pinned.catalog is not None:
+            if isinstance(pinned, PinnedPack):
                 require_dynamic_owner(
                     pinned,
                     subject=await self.repo.subject_of_actor(owner_actor_id),
@@ -737,7 +739,7 @@ class Ledger:
             return True
 
     async def request_cancel(
-        self, task_id: str, *, owner_actor_id: str
+        self, task_id: str, *, owner_actor_id: str, retired_expert: bool = False
     ) -> dict[str, Any]:
         """取消意图先持久化（AT-13），同一事务里直接收成「已取消」，不等推它的程序来落实（0034 §三.1）。
 
@@ -815,7 +817,9 @@ class Ledger:
             done = await self.transition(
                 task_id,
                 TaskState.CANCELLED,
-                reason={"by": "user"},
+                reason={"by": "platform", "code": "fixed_expert_retired"}
+                if retired_expert
+                else {"by": "user"},
                 original_input=(
                     _turn_open(task, task.get("active_attempt_id")) if live else None
                 ),
@@ -1147,6 +1151,8 @@ class Ledger:
     ) -> dict[str, Any]:
         async with self.repo.transaction():
             task = await self.repo.get_task(task_id, for_update=True)
+            if retired_fixed_task(task):
+                raise KnowbotInvalid("Fixed v2 expert execution has been retired")
             if task["active_attempt_id"] is not None:
                 raise StaleStateVersion(
                     "task already has an active attempt (phase 1 forbids parallel attempts)",

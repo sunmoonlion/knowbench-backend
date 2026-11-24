@@ -65,9 +65,6 @@ async def test_default_author_intake_rejects_dynamic_without_persisting_a_run(db
             await admit(db, req, enabled=False)
         async with db() as session:
             assert await WorkbenchRepository(session).get_test_run(req.run_id) is None
-        # The ordinary marketplace path is unchanged too.
-        with pytest.raises(KnowbotInvalid):
-            knowbots.pack_from_manifest(req.manifest, knowbot_id="test", version="1")
     finally:
         await fake.close()
 

@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from app.application.ports.workbench import WorkbenchStore
-from app.application.workbench.catalog import pack_for_task
+from app.application.workbench.catalog import pack_for_task, retired_fixed_task
 from app.application.workbench.plan_receipts import (
     catalog_for_task,
     read_plan,
@@ -47,6 +47,8 @@ def is_dynamic(task: dict[str, Any]) -> bool:
 async def execution_for_task(
     repo: WorkbenchStore, task: dict[str, Any]
 ) -> ExecutionPlan | None:
+    if retired_fixed_task(task):
+        raise MethodPlanInvalid("Fixed v2 expert execution has been retired")
     if not is_dynamic(task):
         pack = pack_for_task(task)
         if pack is None:
@@ -71,6 +73,8 @@ async def display_for_task(repo: WorkbenchStore, task: dict[str, Any]):
 
     Dispatch still requires execution_for_task and an accepted receipt.
     """
+    if retired_fixed_task(task):
+        return pack_for_task(task)
     if is_dynamic(task) and task.get("accepted_plan_version") is None:
         return catalog_header(
             catalog_for_task(task), profile_id=str(task["profile_id"])

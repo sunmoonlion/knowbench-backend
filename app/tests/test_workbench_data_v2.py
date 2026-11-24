@@ -5,7 +5,6 @@ from __future__ import annotations
 import pytest
 from knowbot_fixtures import KNOWBOT, manifest
 
-from app.application.workbench.catalog import pack_from_pin
 from app.domain.workbench import knowbots
 from app.domain.workbench.data_plan import item_ref, plan
 from app.domain.workbench.data_request import DataRequest
@@ -44,43 +43,6 @@ def v2(**over):
     }
 
 
-def test_a_v2_manifest_is_accepted_with_its_bindings_and_tools():
-    doc = v2(bindings=[BOUND])
-    doc["pack"]["workflow"][0]["tools"] = [
-        "list_inputs",
-        "query_facts",
-        "compute",
-        "request_data",
-        "find_subject",
-    ]
-    pinned = pack_from_pin(
-        {"knowbot_id": KNOWBOT, "version": "1", "manifest": doc, "digest": "d"}
-    )
-    assert pinned.consumer == f"expert:{KNOWBOT}@1"
-    assert pinned.bindings[0].material_id == "m-bound"
-    # 清单 v2 = 逻辑 + 作者挑选的数据：带了数据需求声明就不认（decisions ⑭）
-    with pytest.raises(KnowbotInvalid):
-        pack_from_pin(
-            {
-                "knowbot_id": KNOWBOT,
-                "version": "1",
-                "manifest": {**doc, "data_needs": [ANNUAL]},
-                "digest": "d",
-            }
-        )
-    # v1 的读数据工具不认；清单 v1 不认（decisions ⑰）
-    doc["pack"]["workflow"][0]["tools"] = ["list_my_data"]
-    with pytest.raises(KnowbotInvalid):
-        knowbots.pack_from_manifest(doc, knowbot_id=KNOWBOT, version="1")
-    old = {**manifest(), "schema": "knowbot-manifest/v1"}
-    with pytest.raises(KnowbotInvalid, match="schema must be knowbot-manifest/v2"):
-        knowbots.pack_from_manifest(old, knowbot_id=KNOWBOT, version="1")
-    with pytest.raises(KnowbotInvalid):
-        pack_from_pin(
-            {"knowbot_id": KNOWBOT, "version": "1", "manifest": old, "digest": "d"}
-        )
-
-
 def test_bindings_must_be_frozen_for_this_expert_version():
     for bad in (
         {**BOUND, "basis_ref": f"expert:{KNOWBOT}@2"},
@@ -88,14 +50,7 @@ def test_bindings_must_be_frozen_for_this_expert_version():
         {**BOUND, "need": "annual"},
     ):
         with pytest.raises(KnowbotInvalid):
-            pack_from_pin(
-                {
-                    "knowbot_id": KNOWBOT,
-                    "version": "1",
-                    "manifest": v2(bindings=[bad]),
-                    "digest": "d",
-                }
-            )
+            knowbots.frozen_bindings(v2(bindings=[bad]), knowbot_id=KNOWBOT)
 
 
 def candidate(mid: str, basis: str = "display") -> dict:

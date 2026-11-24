@@ -13,7 +13,7 @@ import logging
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
-from app.application.workbench.catalog import pack_for_task
+from app.application.workbench.catalog import pack_for_task, retired_fixed_task
 from app.application.workbench.execution_plan import is_dynamic
 from app.domain.workbench.errors import MethodPlanInvalid, StaleStateVersion
 from app.domain.workbench.fixed_plan import fixed_pack_digest as _digest
@@ -45,6 +45,8 @@ async def accept_fixed_plan(
             raise StaleStateVersion(
                 "task changed before the fixed plan", task_id=task_id
             )
+        if retired_fixed_task(task):
+            raise MethodPlanInvalid("Fixed v2 expert execution has been retired")
         if is_dynamic(task) or task.get("accepted_plan_version") is not None:
             return None
         pack = pack_for_task(task)

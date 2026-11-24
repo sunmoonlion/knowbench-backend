@@ -10,7 +10,6 @@ from method_plan_fixtures import proposal
 from test_dynamic_method_catalog import parse
 
 from app.domain.workbench.errors import KnowbotInvalid
-from app.domain.workbench.knowbots import pack_from_manifest
 from app.domain.workbench.method_catalog import ReferencedMethodCatalog, render
 from app.domain.workbench.method_plan import validate_plan
 
@@ -40,8 +39,7 @@ def test_pinned_method_snapshot_supports_planning_but_not_execution():
         results={},
         available_tools={"read_input"},
     )
-    with pytest.raises(KnowbotInvalid, match="dynamic method execution is not enabled"):
-        pack_from_manifest(doc, knowbot_id="synthetic", version="1")
+    assert not hasattr(catalog, "workflow")
 
 
 @pytest.mark.parametrize(

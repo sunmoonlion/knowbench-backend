@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 from knowbot_fixtures import KNOWBOT, manifest
 
-from app.domain.workbench.knowbots import pack_from_manifest
+from app.domain.workbench.errors import KnowbotInvalid
+from app.domain.workbench.knowbots import catalog_from_manifest
 
 PARENT = Path(__file__).resolve().parents[3]
 LOCK = PARENT / "contracts/knowmart-knowbot-manifest-v2-lock.json"
@@ -43,9 +44,10 @@ def test_lock_matches_the_provider_schema() -> None:
     assert hashlib.sha256(schema.read_bytes()).hexdigest() == lock["sha256"]
 
 
-def test_a_manifest_the_workbench_runs_satisfies_the_provider_schema() -> None:
+def test_historical_v2_satisfies_its_schema_but_cannot_run() -> None:
     schema = _provider_schema(_lock())
     jsonschema = pytest.importorskip("jsonschema")
     doc = manifest()
-    pack_from_manifest(doc, knowbot_id=KNOWBOT, version="1")
+    with pytest.raises(KnowbotInvalid, match="retired"):
+        catalog_from_manifest(doc, knowbot_id=KNOWBOT, version="1")
     jsonschema.validate(doc, json.loads(schema.read_text(encoding="utf-8")))

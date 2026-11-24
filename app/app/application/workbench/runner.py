@@ -25,6 +25,7 @@ from app.application.ports.workbench import (
     WorkbenchStores,
 )
 from app.application.workbench import cleanup_observation
+from app.application.workbench.catalog import retired_fixed_task
 from app.application.workbench.deliverable_check import DeliverableCheck
 from app.application.workbench.execution_plan import (
     active_method_step,
@@ -2796,6 +2797,15 @@ class Runner:
                 )
                 if str(task["session_id"]) != str(session_id):
                     raise RuntimeError("Task command belongs to another session")
+                if kind in ("task.drive", "task.reconnect") and retired_fixed_task(
+                    task
+                ):
+                    await Ledger(repo).request_cancel(
+                        str(task["id"]),
+                        owner_actor_id=str(session["owner_actor_id"]),
+                        retired_expert=True,
+                    )
+                    return
                 if uses_host_driver(task):
                     task_id = str(task["id"])
                     if kind == "task.drive" and not self._busy(task_id):

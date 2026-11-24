@@ -10,7 +10,7 @@ from knowbot_fixtures import KNOWBOT
 from knowbot_fixtures import manifest as fixed_manifest
 
 from app.domain.workbench.errors import KnowbotInvalid
-from app.domain.workbench.knowbots import catalog_from_manifest, pack_from_manifest
+from app.domain.workbench.knowbots import catalog_from_manifest
 from app.domain.workbench.method_catalog import render
 
 PARENT = Path(__file__).resolve().parents[3]
@@ -37,15 +37,9 @@ def test_catalog_keeps_frozen_method_identity_without_a_workflow():
     assert json.dumps(doc, sort_keys=True) == before
 
 
-def test_incomplete_dynamic_runner_cannot_admit_a_catalog_as_fixed_steps():
-    with pytest.raises(KnowbotInvalid, match="dynamic method execution is not enabled"):
-        pack_from_manifest(manifest(), knowbot_id=KNOWBOT, version="1")
-    assert pack_from_manifest(
-        fixed_manifest(), knowbot_id=KNOWBOT, version="1"
-    ).workflow
-    old_label = manifest() | {"schema": "knowbot-manifest/v2"}
-    with pytest.raises(KnowbotInvalid):
-        pack_from_manifest(old_label, knowbot_id=KNOWBOT, version="1")
+def test_catalog_never_admits_a_fixed_envelope():
+    with pytest.raises(KnowbotInvalid, match="retired"):
+        parse(manifest() | {"schema": "knowbot-manifest/v2"})
     with pytest.raises(KnowbotInvalid):
         parse(fixed_manifest())
 

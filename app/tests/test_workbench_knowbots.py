@@ -17,72 +17,18 @@ from app.domain.workbench import knowbots
 from app.domain.workbench.errors import KnowbotInvalid
 
 
-def _pack(doc, version="1"):
-    return knowbots.pack_from_manifest(doc, knowbot_id=KNOWBOT, version=version)
+def test_market_rejects_fixed_manifest_before_pinning():
+    from app.application.workbench.catalog import pack_from_pin
 
-
-def test_a_good_manifest_becomes_the_owners_expert_pack() -> None:
-    pack = _pack(manifest())
-    assert pack.profile_id == f"knowbot:{KNOWBOT}@1"
-    assert pack.name == "我的方法" and pack.tagline == "按我的口径看一家公司"
-    assert pack.internal is False and pack.status == "ready"
-    assert pack.version == "1" and pack.workflow
-
-
-@pytest.mark.parametrize(
-    ("change", "says"),
-    [
-        ({"runtime": "elsewhere"}, "runtime must be knowbench"),
-        ({"schema": "x"}, "schema must be"),
-        ({"version": "2"}, "version differs"),
-        ({"pack": None}, "pack must be an object"),
-    ],
-)
-def test_the_outer_layer_must_be_for_this_runtime_and_version(change, says) -> None:
-    with pytest.raises(KnowbotInvalid, match=says):
-        _pack(manifest() | change)
-
-
-def test_a_pack_that_is_not_an_expert_pack_is_refused_without_echoing_it() -> None:
-    doc = manifest()
-    del doc["pack"]["workflow"]
-    with pytest.raises(KnowbotInvalid) as raised:
-        _pack(doc)
-    assert "workflow" in raised.value.message
-
-
-@pytest.mark.parametrize(
-    "pack_change",
-    [
-        {"tool_policy": {"command": "allow"}},
-        {"tool_policy": {"network": "allow"}},
-        {"tool_policy": {"file_change_outside": "ask"}},
-        {"tool_policy": {"max_questions": 9}},
-        {"tool_policy": {"command_allow": [["rm", "-rf"]]}},
-        {"requires_tools": True},
-    ],
-)
-def test_a_knowbot_is_never_looser_than_the_platform(pack_change) -> None:
-    with pytest.raises(KnowbotInvalid):
-        _pack(manifest(**pack_change))
-
-
-def test_a_knowbot_step_cannot_use_data_line_tools_or_allow_commands() -> None:
-    doc = manifest()
-    doc["pack"]["workflow"][0]["tools"] = ["run_sql"]  # 数据线的工具（C-L2）
-    with pytest.raises(KnowbotInvalid, match="tools a knowbot cannot use"):
-        _pack(doc)
-    doc = manifest()
-    doc["pack"]["workflow"][0]["tool_policy"] = {"command_allow": [["ls"]]}
-    with pytest.raises(KnowbotInvalid, match="allows commands by prefix"):
-        _pack(doc)
-
-
-def test_stricter_policies_are_fine() -> None:
-    pack = _pack(
-        manifest(tool_policy={"command": "deny", "file_change_in_project": "ask"})
-    )
-    assert pack.tool_policy.command == "deny"
+    with pytest.raises(KnowbotInvalid, match="retired"):
+        pack_from_pin(
+            {
+                "knowbot_id": KNOWBOT,
+                "version": "1",
+                "manifest": manifest(),
+                "digest": "d",
+            }
+        )
 
 
 def test_refs_and_profile_ids() -> None:
@@ -110,7 +56,16 @@ def test_the_digest_is_knowmarts_canonical_json_sha256() -> None:
 
 
 def test_tasks_read_their_own_snapshot() -> None:
-    pack = _pack(manifest())
+    from app.domain.workbench.packs import ExpertPack
+
+    doc = manifest()
+    pack = ExpertPack.model_validate(
+        {
+            **doc["pack"],
+            "profile_id": knowbots.profile_id(KNOWBOT, "1"),
+            "name": doc["name"],
+        }
+    )
     task = {
         "profile_id": pack.profile_id,
         "profile_version": "1",

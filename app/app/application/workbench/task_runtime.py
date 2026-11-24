@@ -19,7 +19,11 @@ from pydantic import ValidationError
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.acceptance import Verdict, judge, out_of_scope, timed_out
 from app.application.workbench.acceptance_numbers import judge_numbers
-from app.application.workbench.catalog import SNAPSHOT_SOURCES, pack_for_task
+from app.application.workbench.catalog import (
+    SNAPSHOT_SOURCES,
+    pack_for_task,
+    retired_fixed_task,
+)
 from app.application.workbench.deliverable_check import DeliverableCheck, harden
 from app.application.workbench.execution_plan import (
     accepted_results,
@@ -134,6 +138,13 @@ class TaskRuntime:
 
         async with self.stores() as repo:
             formal_task = await repo.get_task(task_id)
+            if retired_fixed_task(formal_task):
+                stopped = await Ledger(repo).request_cancel(
+                    task_id,
+                    owner_actor_id=str(formal_task["owner_actor_id"]),
+                    retired_expert=True,
+                )
+                return stopped["state"]
             formal = (
                 is_formal(formal_task)
                 or formal_task.get("pack_source") == "registry-source"

@@ -39,7 +39,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
-from app.application.workbench.catalog import SOURCE_TEST, PinnedPack, PinnedTestCatalog
+from app.application.workbench.catalog import PinnedTestCatalog
 from app.application.workbench.deliverable_check import (
     DeliverableReader,
     DeliverableTooLarge,
@@ -109,23 +109,12 @@ KEEP_OUTPUTS = timedelta(
 NO_KNOWBOT = "00000000-0000-0000-0000-000000000000"  # 草稿还没有分身 id
 
 
-def _test_snapshot(request: RunRequest) -> PinnedPack | PinnedTestCatalog:
+def _test_snapshot(request: RunRequest) -> PinnedTestCatalog:
     manifest = request.manifest
-    digest = knowbots.manifest_digest(manifest)
-    if manifest.get("schema") == knowbots.MANIFEST_SCHEMA_V3:
-        catalog = knowbots.catalog_from_manifest(
-            manifest,
-            knowbot_id=NO_KNOWBOT,
-            version=str(manifest.get("version")),
-        )
-        return PinnedTestCatalog(catalog, digest)
-    pack = knowbots.pack_from_manifest(
-        manifest,
-        knowbot_id=NO_KNOWBOT,
-        version=str(manifest.get("version")),
-        profile=trial_profile_id(request.run_id),
+    catalog = knowbots.catalog_from_manifest(
+        manifest, knowbot_id=NO_KNOWBOT, version=str(manifest.get("version"))
     )
-    return PinnedPack(pack=pack, digest=digest, source=SOURCE_TEST)
+    return PinnedTestCatalog(catalog, knowbots.manifest_digest(manifest))
 
 
 @dataclass(frozen=True)
@@ -318,7 +307,9 @@ class KnowbotTestService:
         self.dynamic_method_owners = dynamic_method_owners
         self.now = now
 
-    async def cancel(self, run_id: str) -> dict[str, Any]:
+    async def cancel(
+        self, run_id: str, *, retired_expert: bool = False
+    ) -> dict[str, Any]:
         """knowlab 停下这次测试（契约 knowbot-test-run/v1 的 cancel，10-30 加：作者撤回交付、
         平台审成不过时停平台重跑，免得接着花作者的钱）。在跑的用例委托照停委托的做法停下
         （作者电脑上那一轮也中断），这些委托签过的授权交还，测试记成取消；已经结束的回原
@@ -333,22 +324,31 @@ class KnowbotTestService:
             if run["status"] in FINAL:
                 return await self.status(run_id)
             cases = await self.repo.list_test_cases(run_id)
-            request = _request(run)
+            requested = (
+                {} if retired_expert else {c.case_id: c for c in _request(run).cases}
+            )
             for row in cases:
                 if row.get("result"):
                     continue
-                case = next(c for c in request.cases if c.case_id == row["case_id"])
-                await self.repo.update_test_case(
-                    run_id,
-                    case.case_id,
-                    result=case_result(
+                case_id = row["case_id"]
+                if retired_expert:
+                    result = {
+                        "case_id": case_id,
+                        "status": "error",
+                        "steps": [],
+                        "expectations": [],
+                        "note": "Fixed v2 expert execution has been retired",
+                    }
+                else:
+                    case = requested[case_id]
+                    result = case_result(
                         case=case,
                         task=None,
                         steps=[],
                         artifacts={},
                         error="cancelled by knowlab",
-                    ),
-                )
+                    )
+                await self.repo.update_test_case(run_id, case_id, result=result)
             now = self.now()
             await self.repo.update_test_run(
                 run_id,
@@ -888,6 +888,13 @@ class KnowbotTestConductor:
         async with self.stores() as repo:
             run = await repo.get_test_run(run_id)
             if run is None or run["status"] not in ACTIVE:
+                return
+            if (run["request"].get("manifest") or {}).get(
+                "schema"
+            ) == knowbots.MANIFEST_SCHEMA_V2:
+                await KnowbotTestService(
+                    repo, folders=self.folders, release_grant=self.release_grant
+                ).cancel(run_id, retired_expert=True)
                 return
             now = self.now()
             # 隔离打开时每次测试用自己的目录；没打开（电脑上的代理还不支持建目录）就在

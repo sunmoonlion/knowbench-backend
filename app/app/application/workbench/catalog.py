@@ -32,20 +32,19 @@ _snapshots: dict[tuple[str, str], ExpertPack] = {}
 class PinnedPack:
     pack: ExpertPack
     digest: str
+    catalog: MethodCatalog
     source: str = SOURCE_KNOWMART
     # 清单 v2（SDD 0043，decisions ⑭）：冻结的作者挑选的数据；要什么数据由委托第 0 步提
     bindings: tuple[knowbots.FrozenBinding, ...] = ()
     # 在 knowbase 那边这位专家这一版叫什么（测试中的草稿没有）
     consumer: str = ""
-    # The header is only for display. Execution always freezes the full catalog.
-    catalog: MethodCatalog | None = None
 
     def task_columns(self) -> dict[str, Any]:
         """建委托时写进委托的三列。"""
         return {
             "pack_source": self.source,
             "pack_digest": self.digest,
-            "pack_snapshot": (self.catalog or self.pack).model_dump(mode="json"),
+            "pack_snapshot": self.catalog.model_dump(mode="json"),
         }
 
 
@@ -62,6 +61,14 @@ class PinnedTestCatalog:
             "pack_digest": self.digest,
             "pack_snapshot": self.pack.model_dump(mode="json"),
         }
+
+
+def retired_fixed_task(task: dict[str, Any]) -> bool:
+    """Persisted market and trial snapshots contain the inner pack, without its envelope."""
+    snapshot = task.get("pack_snapshot")
+    return task.get("pack_source") in SNAPSHOT_SOURCES and (
+        not isinstance(snapshot, dict) or "runtime_contract" not in snapshot
+    )
 
 
 def pack_for_task(task: dict[str, Any]) -> ExpertPack | None:
@@ -121,26 +128,15 @@ def expert_name(row: dict[str, Any]) -> str:
 def pack_from_pin(pin: dict[str, Any]) -> PinnedPack:
     knowbot_id, version = str(pin["knowbot_id"]), str(pin["version"])
     manifest = pin["manifest"]
-    catalog = None
-    if (
-        isinstance(manifest, dict)
-        and manifest.get("schema") == knowbots.MANIFEST_SCHEMA_V3
-    ):
-        catalog = knowbots.catalog_from_manifest(
-            manifest, knowbot_id=knowbot_id, version=version
-        ).model_copy(
-            update={
-                "name": str(manifest.get("name") or ""),
-                "tagline": str(manifest.get("tagline") or ""),
-            }
-        )
-        pack = catalog_header(
-            catalog, profile_id=knowbots.profile_id(knowbot_id, version)
-        )
-    else:
-        pack = knowbots.pack_from_manifest(
-            manifest, knowbot_id=knowbot_id, version=version
-        )
+    catalog = knowbots.catalog_from_manifest(
+        manifest, knowbot_id=knowbot_id, version=version
+    ).model_copy(
+        update={
+            "name": str(manifest.get("name") or ""),
+            "tagline": str(manifest.get("tagline") or ""),
+        }
+    )
+    pack = catalog_header(catalog, profile_id=knowbots.profile_id(knowbot_id, version))
     knowbots.no_declarations(manifest, knowbot_id=knowbot_id)
     return PinnedPack(
         pack=pack,
@@ -155,7 +151,7 @@ def require_dynamic_owner(
     pinned: PinnedPack, *, subject: str | None, allowed: frozenset[str]
 ) -> None:
     """Deployment admission for new marketplace work, never an author approval."""
-    if pinned.catalog is not None and subject not in allowed:
+    if subject not in allowed:
         raise KnowbotInvalid(
             "dynamic marketplace execution is not enabled for this account"
         )
