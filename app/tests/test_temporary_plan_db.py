@@ -480,7 +480,8 @@ async def test_immediate_plan_repairs_the_graph_once_under_the_original_task_bud
         receipt = (await client.get(p)).json()
         assert len(model.turn_inputs) == 2 and not ctx.remote.calls
         assert (
-            '"$defs"' in model.turn_inputs[0] and '"SketchStep"' in model.turn_inputs[0]
+            '"$defs"' in model.turn_inputs[0]
+            and '"ProposedStep"' in model.turn_inputs[0]
         )
         assert (
             "Operation and method bindings disagree"

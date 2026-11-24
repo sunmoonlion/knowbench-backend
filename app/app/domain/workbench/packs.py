@@ -958,6 +958,12 @@ def find_pack(profile_id: str, version: str | None = None) -> ExpertPack | None:
                     "Explain only material differences for this question in the user's language. "
                     "For candidates, use coverage.promise for the published promise key and coverage.quote for its exact text. Set clarification to null. Keep nonblocking conditions in limitations. If a question must be answered before choosing, return clarify with one question and empty picks. "
                     "No match refers only to the inspected scope. Never assert fees or start execution. "
+                    "A deliverable is covered only if the published promise commits to the requested operation and the resulting quantity or artifact. "
+                    "Compare what the expert produces against what is asked, including how the value is derived. "
+                    "Shared inputs, topic, arithmetic, evidence format, or an output column do not establish this. "
+                    "Checking supplied values and producing a requested new value are distinct tasks; a promise to do one does not establish the other. "
+                    "Never infer an unlisted transformation. "
+                    "If none of the declarations covers the requested deliverable, return no_match with empty picks. "
                     "Return JSON matching this schema: "
                     + json.dumps(
                         FormalExpertMatch.model_json_schema(), ensure_ascii=False

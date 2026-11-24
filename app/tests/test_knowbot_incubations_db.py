@@ -551,7 +551,10 @@ async def test_selection_is_checked_inside_the_bounded_incubation_round(db, mist
         assert (
             '"Inspect"' in fake.turn_inputs[0] and '"Unresolved"' in fake.turn_inputs[0]
         )
-        assert '"SketchStep"' not in fake.turn_inputs[0]
+        assert (
+            '"ProposedStep"' not in fake.turn_inputs[0]
+            and '"SketchStep"' not in fake.turn_inputs[0]
+        )
         expected = {
             "missing_flag": "operator",
             "unknown_alias": "outside the authorized catalog",

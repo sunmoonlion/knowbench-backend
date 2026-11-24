@@ -709,3 +709,25 @@ def test_only_a_single_verbatim_human_excerpt_can_be_unwrapped_for_clarification
     ):
         with pytest.raises(ValueError, match="must quote"):
             inspect_with(note)
+
+
+@pytest.mark.parametrize("author", [False, True])
+@pytest.mark.parametrize("source", ["literal", "resource"])
+def test_unsupported_binding_can_be_corrected_without_resetting_parent(author, source):
+    from copy import deepcopy
+
+    planner = HierarchicalPlanner(setup(author=author)[0])
+    child = route(planner)
+    before = planner.snapshot()
+    _, schema = planner.model_contract(planner.prompt())
+    inputs = schema["$defs"]["ProposedStep"]["properties"]["inputs"]
+    [binding] = inputs["patternProperties"].values()
+    sources = binding["discriminator"]["mapping"]
+    assert set(sources) == {"caller", "step", "object_item", "object_rows"}
+    invalid = deepcopy(child)
+    invalid["step"]["inputs"]["value"] = {"source": source, "value": "undeclared"}
+    with pytest.raises(ValueError, match="union_tag_invalid"):
+        planner.advance(invalid)
+    assert planner.snapshot() == before
+    result = planner.advance(child)
+    assert (result["selection"] if author else result)["status"] == "ready"

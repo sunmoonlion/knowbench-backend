@@ -11,7 +11,15 @@ from typing import Annotated, Any, Literal
 
 from pydantic import Field, TypeAdapter
 
-from app.domain.workbench.formal_method_generated import Name, ObjectBatch, Strict
+from app.domain.workbench.formal_method_generated import (
+    CallerValue,
+    Name,
+    ObjectBatch,
+    ObjectItem,
+    ObjectRows,
+    StepValue,
+    Strict,
+)
 from app.domain.workbench.incubation_selection import (
     Operator,
     PlanningNode,
@@ -50,13 +58,25 @@ class Unresolved(Strict):
     search_goal: Annotated[str, Field(min_length=1, max_length=500)] | None = None
 
 
+class ProposedStep(SketchStep):
+    # The planner can wire data from the caller, resolved children or a bounded
+    # collection. Other formal-method sources require a separate authoring flow.
+    inputs: dict[
+        Name,
+        Annotated[
+            CallerValue | StepValue | ObjectItem | ObjectRows,
+            Field(discriminator="source"),
+        ],
+    ] = Field(default_factory=dict, max_length=100)
+
+
 class Resolve(ChoiceCheck):
     action: Literal["hit", "split"]
     reason: Short
     operator: Operator
     # Child names in the local step's input bindings refer to the goals below.
     children: dict[Name, Short] = Field(default_factory=dict, max_length=15)
-    step: SketchStep
+    step: ProposedStep
     shared_inputs: tuple[Name, ...] = Field(default=(), max_length=100)
     review_policy: Literal["isolated", "distinct_model_families"] | None = None
     iteration: Literal["map", "fold", "while"] | None = None
@@ -73,10 +93,14 @@ DIRECTORY_DECISION = TypeAdapter(
 )
 INPUT_RULE = """Separate what the requester supplies from the requested deliverable. During planning the
 caller can promise materials without sending the values yet. Bind such inputs to the caller. If the
-requester delegates sourcing or production, it needs an authorized producer in the directory. Do not
+requester delegates sourcing or production, it needs an authorized producer in the directory.
+Check that producer's required inputs too. If adding a producer needs a new class of materials
+that the requester has not offered, clarify who will supply those materials before binding them. Do not
 assume the model can fetch, extract or generate missing inputs on its own. On a complete directory,
 a missing required capability is gap even if the request also omits details: clarifying details would
-not supply the capability. When the work is supported but responsibility, period, scope or version
+not supply the capability. Before asking, identify which listed method could produce the requested
+result after the answer. If the user would have to supply the result itself, a new tool, or a
+different task, report the capability gap. When the work is supported but responsibility, period, scope or version
 requires a human decision, clarify that decision. Before inspecting or binding, check pending_choice:
 a promise to CHOOSE which alternative to use later is an unresolved decision, even if a target slot
 could store the eventual choice. Quote the user's words there or return clarify. A promise to deliver
@@ -1037,8 +1061,6 @@ class HierarchicalPlanner:
             node.parent == ROOT and self.nodes[ROOT].batch
         ):
             return "An object_item binding needs the worker of an approved bounded collector"
-        if any(v.source in ("literal", "resource") for v in step.inputs.values()):
-            return "Use caller data or verified child results"
         if step.cases and (
             not self.flags.get("conditional")
             or not step.route_input
