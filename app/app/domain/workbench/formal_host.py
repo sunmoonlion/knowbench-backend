@@ -47,6 +47,10 @@ def host_intent_digest(intent: dict) -> str:
         for k, v in intent.items()
         if k not in ("approval_token", "authorization", "result")
     }
+    if original.get("execution_kind") == "formal_script":
+        # The collector adds this flag after usage settlement, then removes it
+        # when the isolated job is released. It is never an approval input.
+        original.pop("script_cleanup_pending", None)
     host = dict(original["formal_host"])
     host.pop("attempt_id")
     return digest({**original, "formal_host": host})

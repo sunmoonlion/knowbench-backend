@@ -5,8 +5,7 @@ from decimal import Decimal
 from uuid import uuid4
 
 import pytest
-from test_capabilities_db import service
-from test_skill_execution_db import approve, setup
+from test_formal_script_execution_db import script_setup, status
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
@@ -16,26 +15,18 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
 async def test_root_script_reservation_and_late_reconciliation(db):
-    sid, executor, _, key, token = await setup(db, method=True)
-    quote = {"maximum": "0.500000", "currency": "CNY"}
+    req, factory, conductor, _ = await script_setup(db)
+    await conductor.advance(str(req.run_id))
+    action = (await status(db, req, factory))["actions"][0]
+    call_id = action["call_id"]
+    quote = action["subject"]["script_quote"]
+    maximum = Decimal(quote["maximum"])
     async with db() as session:
         repo = WorkbenchRepository(session)
-        svc = service(repo)
-        svc.script_executor = executor
-        public, _ = await approve(svc, sid, key, token)
-        call_id = public["id"]
         call = await repo.capability_call(OWNER, call_id)
+        # Start at the dispatch boundary to race the first two reservations.
         async with repo.transaction():
-            await repo.update_call(
-                OWNER,
-                call_id,
-                "dispatching",
-                {
-                    **call["detail"],
-                    "execution_kind": "formal_script",
-                    "script_quote": quote,
-                },
-            )
+            await repo.update_call(OWNER, call_id, "dispatching", call["detail"])
 
     async def reserve():
         async with db() as session:
@@ -57,7 +48,7 @@ async def test_root_script_reservation_and_late_reconciliation(db):
             )
 
     with pytest.raises(IdempotencyConflict):
-        await settle("0.6")
+        await settle(maximum + Decimal("0.1"))
     await asyncio.gather(settle("0.12"), settle("0.12"))
     with pytest.raises(IdempotencyConflict):
         await settle("0.13")
@@ -65,9 +56,9 @@ async def test_root_script_reservation_and_late_reconciliation(db):
         repo = WorkbenchRepository(session)
         entries = await repo.script_budget_entries(call_id)
         assert {k: v["amount"] for k, v in entries.items()} == {
-            "reserve": Decimal("0.5"),
+            "reserve": maximum,
             "consume": Decimal("0.12"),
-            "release": Decimal("0.38"),
+            "release": maximum - Decimal("0.12"),
         }
         task = await repo.get_task(str(call["task_id"]))
         assert Decimal(task["budget"]["used"]) == Decimal("0.12")

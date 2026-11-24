@@ -56,7 +56,8 @@ async def step_call(repo: WorkbenchStore, task: dict, meta: dict) -> dict:
             "step_index",
         )
     }
-    key = "method:" + digest([root["id"], identity])
+    invocation_digest = digest([root["id"], identity])
+    key = "method:" + invocation_digest
     call = await repo.add_call(
         {
             "id": str(uuid.uuid4()),
@@ -67,11 +68,16 @@ async def step_call(repo: WorkbenchStore, task: dict, meta: dict) -> dict:
             "call_key": key,
             "parent_call_id": root["id"],
             "task_id": str(task["id"]),
-            "digest": digest(identity),
+            "digest": invocation_digest,
             "status": "created",
             "detail": {"identity_basis": "accepted_plan", **identity},
         }
     )
-    if call["digest"] != digest(identity) or call["parent_call_id"] != root["id"]:
+    # Earlier rows used only the step digest. add_call can return one on a
+    # retry of the exact owner/session/key, under this same root call.
+    if call["parent_call_id"] != root["id"] or call["digest"] not in {
+        invocation_digest,
+        digest(identity),
+    }:
         raise RecordsRefused("method invocation identity changed")
     return call

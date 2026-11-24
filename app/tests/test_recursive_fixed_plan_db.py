@@ -70,3 +70,43 @@ async def test_bound_planner_dispatches_recursive_decision_contract(db, author):
         assert sorted(a["refs"]["planning_turn"] for a in attempts) == [0, 1]
         assert all(a["status"] == "COMPLETED" for a in attempts)
         assert len(driver.prompts) == 2
+
+
+async def test_same_session_replan_gets_a_distinct_method_call(db):
+    from sqlalchemy import text
+
+    from app.application.workbench.method_calls import step_call
+    from app.domain.workbench.capabilities import digest
+
+    _, _, sid = await seed(db)
+    meta = dict(
+        plan_version=1,
+        plan_digest="plan",
+        pack_digest="pack",
+        instance_id="root",
+        method_id="selection",
+        method_version="1",
+        step_index=0,
+    )
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        ledger = Ledger(repo)
+        first = await ledger.handover(handover(sid), owner_actor_id=OWNER)
+        await ledger.transition(first["task_id"], TaskState.CANCELLED)
+        second = await ledger.handover(
+            handover(sid, key="new-round", text="修订范围"), owner_actor_id=OWNER
+        )
+        async with repo.transaction():
+            original = await repo.get_task(first["task_id"], for_update=True)
+            revised = await repo.get_task(second["task_id"], for_update=True)
+            first_call = await step_call(repo, original, meta)
+            # Model an in-flight attempt written before invocation-scoped digests.
+            await session.execute(
+                text("UPDATE workbench_calls SET digest=:digest WHERE id=:id"),
+                {"digest": digest(meta), "id": first_call["id"]},
+            )
+            assert (await step_call(repo, original, meta))["id"] == first_call["id"]
+            new_call = await step_call(repo, revised, meta)
+            assert new_call["id"] != first_call["id"]
+            assert new_call["parent_call_id"] != first_call["parent_call_id"]
+            assert (await step_call(repo, revised, meta))["id"] == new_call["id"]

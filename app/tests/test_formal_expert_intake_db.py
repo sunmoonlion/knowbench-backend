@@ -302,8 +302,13 @@ def test_match_with_a_blocking_question_offers_no_candidate():
 def test_every_mandatory_delivery_needs_a_real_promise_and_output():
     registry = Registry()
     result = proposal(registry)
-    result["requirements"].append({**result["requirements"][0], "id": "second"})
-    with pytest.raises(ValueError, match="required delivery"):
+    result["requirements"].append(
+        {**result["requirements"][0], "kind": "constraint", "id": "req_input_shape"}
+    )
+    with pytest.raises(
+        ValueError,
+        match="Missing coverage for required delivery or constraint IDs: req_input_shape",
+    ):
         verify_options("差异表", {"items": list(registry.entries.values())}, result)
 
 

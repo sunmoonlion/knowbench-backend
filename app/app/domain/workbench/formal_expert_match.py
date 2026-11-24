@@ -66,10 +66,15 @@ def verify_options(question, directory, content):
             raise ValueError("Candidate missing, repeated or version changed")
         seen.add(pick.reference)
         covered = {c.requirement for c in pick.coverage}
-        if not mandatory <= covered <= ids or len(covered) != len(pick.coverage):
+        missing = sorted(mandatory - covered)
+        if missing:
             raise ValueError(
-                "Each required delivery needs its own declaration evidence"
+                f"Missing coverage for required delivery or constraint IDs: {', '.join(missing)}. "
+                "Cite one published promise per required ID, including input constraints, "
+                "or remove this unsupported candidate."
             )
+        if not covered <= ids or len(covered) != len(pick.coverage):
+            raise ValueError("Use distinct declared requirement IDs in coverage")
         for item in pick.coverage:
             promise = entry["declaration"]["promises"].get(item.promise)
             if (

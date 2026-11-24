@@ -29,6 +29,7 @@ from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.test_runs import KnowbotTestConductor
 from app.bootstrap.workbench import workbench_stores
 from app.domain.workbench.capabilities import MethodPermissionRevoke
+from app.domain.workbench.formal_host import host_intent_digest
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
     FormalTestSuiteDraft,
@@ -946,6 +947,11 @@ async def test_stop_waits_for_usage_and_recovers_job_cleanup(db, missing):
         retained = await repo.capability_call(OWNER, cid)
         assert retained["status"] == ("unknown" if missing else "failed")
         assert retained["detail"]["script_cleanup_pending"]
+        assert host_intent_digest(retained["detail"]) == retained["digest"]
+        assert (
+            host_intent_digest({**retained["detail"], "arguments": {}})
+            != retained["digest"]
+        )
         assert (await repo.script_budget_entries(cid))["consume"]["amount"] == Decimal(
             "0.04"
         )
