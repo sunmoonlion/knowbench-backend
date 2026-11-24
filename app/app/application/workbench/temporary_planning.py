@@ -48,7 +48,15 @@ PLAN = "task/temporary_plan_adopted"
 SAVED = "task/temporary_plan_saved"
 
 
+class NodeMethod(Strict):
+    node: str = Field(pattern=r"^n1(?:_[0-9]+)*$", max_length=80)
+    method: MethodRef
+
+
 class PlanningRequest(Strict):
+    node_method: NodeMethod | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     catalog_mode: Literal["auto", "directory", "goal"] = "auto"
     review_digest: Digest
     previous: UUID | None = None
@@ -230,6 +238,9 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             raise StaleStateVersion("Planning round changed")
         if await repo.latest_task_payload(task_id, PLAN):
             raise StaleStateVersion("This request already has an adopted plan")
+        target = command.node_method
+        if target and not command.previous:
+            raise StaleStateVersion("Choose a node from the previous plan")
         probe = None
         if command.probe_digest:
             from app.application.workbench.planning_probe import OBSERVED
@@ -255,12 +266,21 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                 raise StaleStateVersion("The previous planning round did not complete")
             choice = read_choice(prior, previous_result["content"])
             goal = choice.search_goal
+            if target and not (
+                isinstance(choice, GraphChoice)
+                and choice.selection.tree
+                and any(n.id == target.node for n in choice.selection.tree.nodes)
+            ):
+                raise StaleStateVersion(
+                    "The chosen planning node is no longer available"
+                )
             if (
                 choice.outcome != "clarify"
                 and not (
-                    isinstance(choice, GraphChoice) and command.clarification.strip()
+                    isinstance(choice, GraphChoice)
+                    and (command.clarification.strip() or target)
                 )
-            ) or not (command.clarification.strip() or probe or goal):
+            ) or not (command.clarification.strip() or probe or goal or target):
                 raise StaleStateVersion(
                     "Complete the round and clarify before replanning"
                 )
@@ -308,7 +328,7 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             CATALOG_ENTRIES,
             mode=command.catalog_mode,
         )
-    elif goal:
+    elif goal and not target:
         directory = await catalog(
             service.formal_registry,
             owner,
@@ -322,7 +342,9 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             MethodRef.model_validate(entry["reference"])
             for entry in directory["entries"]
         ]
-        entries = await describe(service.formal_registry, owner, refs)
+        if target:
+            refs = [target.method, *(ref for ref in refs if ref != target.method)]
+        entries = await describe(service.formal_registry, owner, refs[:CATALOG_ENTRIES])
         while entries and encoded_size(entries) > CATALOG_SNAPSHOT_BYTES:
             entries.pop()
         directory = {
@@ -346,6 +368,13 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
     while encoded_size(directory["entries"]) > CATALOG_SNAPSHOT_BYTES:
         directory["entries"].pop()
         directory["partial"] = True
+    if target and not any(
+        e["reference"] == target.method.model_dump(mode="json")
+        for e in directory["entries"]
+    ):
+        raise StaleStateVersion(
+            "The chosen version is no longer available for this plan"
+        )
     async with repo.transaction():
         task, _ = await current(repo, owner, task_id, command.review_digest, lock=True)
         latest = await repo.latest_task_payload(task_id, ROUND)
@@ -381,11 +410,26 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
                         and (
                             (
                                 choice.selection.tree
-                                and htn.FOCUSED_AMENDMENT.match(command.clarification)
+                                and (
+                                    target
+                                    or htn.FOCUSED_AMENDMENT.match(
+                                        command.clarification
+                                    )
+                                )
                             )
                             or set(choice.aliases)
                             <= {e["alias"] for e in directory["entries"]}
                         )
+                        else {}
+                    ),
+                    **(
+                        {
+                            "node_edit": {
+                                "mode": "method",
+                                **target.model_dump(mode="json"),
+                            }
+                        }
+                        if target
                         else {}
                     ),
                     "clarification": command.clarification,

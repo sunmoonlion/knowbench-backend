@@ -590,8 +590,9 @@ async def test_catalog_inspection_is_settled_and_resumed_before_user_confirmatio
             )
 
 
+@pytest.mark.parametrize("from_directory", [False, True])
 async def test_focused_replan_carries_old_tree_across_revocation_and_only_offers_current_methods(
-    db, monkeypatch
+    db, monkeypatch, from_directory
 ):
     ctx = await setup_plan(db)
     expert = await register_completed(db, ctx)
@@ -633,7 +634,23 @@ async def test_focused_replan_carries_old_tree_across_revocation_and_only_offers
             assert receipt["outcome"] == "plan", receipt
             if not index:
                 qualified.remove(expert.reference)
-                review.update(
-                    previous=tid, clarification="[n1] Replace the withdrawn method."
-                )
+                if from_directory:
+                    review["previous"] = tid
+
+                    def selected(pin, node="n1"):
+                        return {"node": node, "method": pin.model_dump(mode="json")}
+
+                    for invalid in (
+                        selected(expert.reference),
+                        selected(ctx.leaf.reference, "n1_99"),
+                    ):
+                        refused = await client.put(
+                            path, json={**review, "node_method": invalid}
+                        )
+                        assert refused.status_code == 409, refused.text
+                    review["node_method"] = selected(ctx.leaf.reference)
+                else:
+                    review.update(
+                        previous=tid, clarification="[n1] Replace the withdrawn method."
+                    )
         assert receipt["selection"]["steps"][0]["method"] == alias

@@ -281,7 +281,7 @@ class HierarchicalPlanner:
             goal = src["text"]
             previous = src.get("previous_selection")
             amendment = src.get("clarification") or ""
-        self.edit = ctx.get("edit") if self.author else None
+        self.edit = ctx.get("edit") if self.author else src.get("node_edit")
         directed = (
             FOCUSED_AMENDMENT.match(amendment)
             if previous and previous.get("tree")
