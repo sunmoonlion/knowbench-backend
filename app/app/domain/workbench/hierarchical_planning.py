@@ -94,6 +94,21 @@ request, return clarify with search_goal only when partial=true. If partial=fals
 from ordinary separate tasks; a request for distinct model families needs explicit runtime evidence."""
 
 
+def recover_decision(text):
+    # A line break in the reserved first key is a known transport formatting
+    # error. Require a complete JSON document and run normal decision validation.
+    if isinstance(text, str) and len(text) <= 64000:
+        normalized, count = re.subn(
+            r'^\s*\{\s*"[ \r\t\n]+action"\s*:', '{"action":', text, count=1
+        )
+        if count:
+            try:
+                return json.loads(normalized)
+            except ValueError:
+                pass
+    return read_stop_message(text)
+
+
 def read_stop_message(text):
     """Recover a terminal reason with unescaped quotes; never construct work or a search."""
     if not isinstance(text, str) or len(text) > 2000:
@@ -599,18 +614,9 @@ class HierarchicalPlanner:
                 decision.methods
             ) <= set(self.shown):
                 raise ValueError("Inspect new authorized method aliases")
-            size = len(
-                json.dumps(
-                    [self.methods[k] for k in decision.methods], ensure_ascii=False
-                ).encode()
-            )
-            if size > 128_000 and len(decision.methods) == 1:
-                return self.unresolved(
-                    node, "gap", "所选方法的精确接口超过本轮容量，无法核对连线。"
-                )
-            if size > 128_000:
-                raise ValueError("Inspect fewer exact contracts at once")
-            self.shown = list(dict.fromkeys(decision.methods))
+            outcome = self.disclose(node, decision.methods)
+            if outcome is not None:
+                return outcome
         else:
             outcome = self.resolve(node, decision)
             if outcome is not None:
@@ -620,6 +626,18 @@ class HierarchicalPlanner:
                 self.current, "gap", "本轮达到规划次数上限，请缩小目标或补充可用方法。"
             )
         return None
+
+    def disclose(self, node, aliases):
+        size = len(
+            json.dumps([self.methods[k] for k in aliases], ensure_ascii=False).encode()
+        )
+        if size > 128_000 and len(aliases) == 1:
+            return self.unresolved(
+                node, "gap", "所选方法的精确接口超过本轮容量，无法核对连线。"
+            )
+        if size > 128_000:
+            raise ValueError("Inspect fewer exact contracts at once")
+        self.shown = list(dict.fromkeys(aliases))
 
     def resolve(self, node, d):
         step = d.step
@@ -639,7 +657,9 @@ class HierarchicalPlanner:
         if aliases - (self.methods.keys() | self.instructions.keys()):
             raise ValueError("Method outside the authorized catalog")
         if aliases - (catalog.keys() | self.instructions.keys()):
-            raise ValueError("Inspect every selected method before binding its ports")
+            # An early pick can request disclosure, but its guessed ports and
+            # executable work do not survive. The next turn sees the real slots.
+            return self.disclose(node, sorted(aliases & self.methods.keys()))
         if d.review_policy == "distinct_model_families":
             return self.unresolved(
                 node, "gap", "当前目录没有可核验的异模型家族复核资格。"

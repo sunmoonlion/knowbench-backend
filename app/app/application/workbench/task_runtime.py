@@ -618,10 +618,10 @@ class TaskRuntime:
             selecting = profile in {("INCUBATE", "2"), ("FIND_EXPERT", "7")}
             planning = None
             if not verdict.ok and htn.active(task) and not result.timed_out:
-                stop_message = htn.read_stop_message(result.final_text)
-                if stop_message is not None:
+                formatted = htn.recover_decision(result.final_text)
+                if formatted is not None:
                     verdict.ok = True
-                    verdict.parsed = stop_message
+                    verdict.parsed = formatted
                     verdict.failures.clear()
             if verdict.ok and htn.active(task):
                 try:

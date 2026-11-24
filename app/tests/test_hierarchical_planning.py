@@ -164,8 +164,8 @@ def test_large_index_exposes_late_match_without_its_full_schema_until_inspected(
     assert len(p.prompt()["authorized_index"]) == 40 and not p.prompt()["contracts"]
     leaf = proposal()["steps"][0]
     leaf["method"] = "a39"
-    with pytest.raises(ValueError, match="Inspect"):
-        p.advance(decision(leaf))
+    assert p.advance(decision(leaf)) is None
+    assert p.current.status == "pending"
     inspect(p, "a39")
     assert set(p.prompt()["contracts"]) == {"a39"}
     assert p.advance(decision(leaf))["steps"][0]["method"] == "a39"
@@ -440,3 +440,15 @@ def test_installed_tool_does_not_discard_other_nodes_when_catalog_aliases_shift(
     assert q.current.id == "n1_1" and q.nodes["n1"].step.method == "new_a"
     assert q.nodes["n1"].step.cases == {"A": "new_a", "B": "new_b"}
     assert not q.may_replan(q.nodes["n1"])
+
+
+def test_provider_line_wrap_requires_a_complete_json_document_and_normal_admission():
+    from app.domain.workbench.hierarchical_planning import recover_decision
+
+    task, _ = setup()
+    p = HierarchicalPlanner(task)
+    text = '{"\naction":"hit","reason":"x","operator":"leaf","step":{"id":"x","method":"absent","task":"x"}}'
+    restored = recover_decision(text)
+    with pytest.raises(ValueError, match="authorized"):
+        p.advance(restored)
+    assert recover_decision(text + " trailing") is None
