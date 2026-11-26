@@ -58,6 +58,11 @@ def step_identity(root_call_id: str, meta: dict) -> tuple[dict, str]:
     return identity, invocation_digest
 
 
+def matches_step_digest(stored: str, invocation_digest: str, identity: dict) -> bool:
+    """Both recorded forms require a row found under the exact parent-bound call key."""
+    return stored == invocation_digest or stored == digest(identity)
+
+
 async def step_call(repo: WorkbenchStore, task: dict, meta: dict) -> dict:
     """Only the accepted-plan dispatcher supplies meta, never an HTTP/MCP caller."""
     root = await root_call(repo, task)
@@ -80,9 +85,8 @@ async def step_call(repo: WorkbenchStore, task: dict, meta: dict) -> dict:
     )
     # Earlier rows used only the step digest. add_call can return one on a
     # retry of the exact owner/session/key, under this same root call.
-    if call["parent_call_id"] != root["id"] or call["digest"] not in {
-        invocation_digest,
-        digest(identity),
-    }:
+    if call["parent_call_id"] != root["id"] or not matches_step_digest(
+        call["digest"], invocation_digest, identity
+    ):
         raise RecordsRefused("method invocation identity changed")
     return call
