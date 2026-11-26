@@ -124,7 +124,11 @@ def supports_graph(definition):
     else:
         if any(len(step.depends_on) == 1 for step in p.steps):
             patterns.add("sequence")
-        if any(len(step.depends_on) > 1 for step in p.steps):
+        delivered = {ref.step for ref in p.exports.values()}
+        consumed = {dep for step in p.steps for dep in step.depends_on}
+        if len(delivered - consumed) > 1 or any(
+            len(step.depends_on) > 1 for step in p.steps
+        ):
             patterns.add("join")
     if p.has_candidate_choice:
         patterns.add("conditional")

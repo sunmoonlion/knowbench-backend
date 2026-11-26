@@ -15,6 +15,7 @@ from app.domain.workbench.formal_method_generated import (
 from app.domain.workbench.incubation_selection import (
     Selection,
     check_proposal,
+    compose_delivery,
     expand,
     normalize_unresolved,
     review_issue,
@@ -105,8 +106,7 @@ def root_for(task_id, question, choice, definitions):
             raise ValueError("A proposed step does not contribute to delivery")
         needed.update(step["depends_on"])
     last = definitions[choice.steps[-1]]
-    doc = last.document()
-    doc["procedure"] = {
+    procedure = {
         "kind": "orchestration",
         "instructions": choice.explanation,
         "steps": steps,
@@ -123,11 +123,9 @@ def root_for(task_id, question, choice, definitions):
             for name, value in last.interfaces()["outputs"].items()
         },
     }
-    doc["access_requirements"] = [
-        r.model_dump(mode="json") for r in permissions.values()
-    ]
-    doc["what_requires_approval"] = [r.model_dump(mode="json") for r in approvals]
-    root = FormalMethodDefinition.model_validate(doc)
+    root = compose_delivery(
+        procedure, permissions.values(), approvals, question=question
+    )
     return MethodRef(
         method_id=uuid5(UUID(str(task_id)), "temporary-plan"),
         version=1,
@@ -205,7 +203,11 @@ def build_selection(task_id, question, choice, definitions, runtime, cases):
         pin = choice.aliases[step.method]
         original = definitions[pin]
         if original.procedure.kind == "orchestration" and not (
-            step.reviews or step.cases or step.route_input or proposal.object_batch
+            step.deliver_as
+            or step.reviews
+            or step.cases
+            or step.route_input
+            or proposal.object_batch
         ):
             if step.inputs and (
                 set(step.inputs) != set(original.interfaces()["inputs"])
@@ -219,14 +221,18 @@ def build_selection(task_id, question, choice, definitions, runtime, cases):
         a: FrozenMethod(pin, definitions[pin]) for a, pin in choice.aliases.items()
     }
     draft, roles = expand(
-        proposal, tools, None, runtime["patterns"], required_cases=cases
+        proposal,
+        tools,
+        None,
+        runtime["patterns"],
+        required_cases=cases,
+        question=question,
     )
     definition = draft.definition
-    doc = definition.document()
-    doc["capability_declaration"]["purpose"] = question
     if roles:
+        doc = definition.document()
         doc["procedure"]["collaboration"] = roles
-    definition = FormalMethodDefinition.model_validate(doc)
+        definition = FormalMethodDefinition.model_validate(doc)
     ref = MethodRef(
         method_id=uuid5(UUID(str(task_id)), "temporary-plan"),
         version=1,

@@ -803,6 +803,13 @@ class FormalExecutions:
             evidence["validated_callers"] = (
                 sorted(request.draft.allowed_callers) if passed else []
             )
+        missing_promises = request.uncovered_promises(
+            {
+                r["case_id"]
+                for r in results
+                if r["status"] == "passed" and r["outcome"] == "succeeded"
+            }
+        )
         review = (
             self.formal.business_review(
                 request.owner_subject,
@@ -810,7 +817,9 @@ class FormalExecutions:
                 request.draft,
                 request.execution.suite.digest,
             )
-            if passed and all(r["status"] == "passed" for r in results)
+            if passed
+            and not missing_promises
+            and all(r["status"] == "passed" for r in results)
             else None
         )
         if review is not None:
@@ -831,6 +840,17 @@ class FormalExecutions:
                     ),
                     "uncovered": []
                     if review
+                    else [
+                        {
+                            "scenario": request.draft.definition.capability_declaration.promises[
+                                promise
+                            ],
+                            "reason": f"Missing passing assertions for delivery promise {promise}",
+                            "scope": "Private use within the tested scope",
+                        }
+                        for promise in sorted(missing_promises)
+                    ]
+                    if missing_promises
                     else [
                         {
                             "scenario": "Real-service business effectiveness beyond the supplied assertions",

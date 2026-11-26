@@ -91,6 +91,32 @@ def route(planner):
 
 
 @pytest.mark.parametrize("author", [False, True])
+def test_explicit_delivery_survives_planner_resume(author):
+    task, _ = setup(author=author)
+    planner = HierarchicalPlanner(task)
+    first, branch = proposal()["steps"]
+    branch["deliver_as"] = {"receipt": "difference"}
+    inspect(planner, "a", "b", "first")
+    assert (
+        planner.advance(
+            decision(branch, "branch", children={"prepare": "摘取原表明细"})
+        )
+        is None
+    )
+    resumed = HierarchicalPlanner(task, planner.snapshot())
+    assert resumed.prompt()["public_deliveries"] == {
+        "difference": {"step": "n1", "output": "receipt"}
+    }
+    first["deliver_as"] = {"receipt": "evidence"}
+    result = resumed.advance(decision(first))
+    artifact = result["selection"] if author else result
+    assert [s["deliver_as"] for s in artifact["steps"]] == [
+        {"receipt": "evidence"},
+        {"receipt": "difference"},
+    ]
+
+
+@pytest.mark.parametrize("author", [False, True])
 async def test_both_entries_resume_then_compile_only_the_selected_route(author):
     task, definitions = setup(author=author)
     p = HierarchicalPlanner(task)

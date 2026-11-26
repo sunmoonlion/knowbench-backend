@@ -146,6 +146,11 @@ Use the user's language for goals, reasons and descriptions. The host assigns th
 Return the WHOLE decision object including its required action tag, never a bare step.
 Example shape for a direct choice: {"action":"hit","pending_choice":null,"operator":"leaf","reason":"...",
 "step":{"id":"result","task":"...","method":"catalog_alias","inputs":{}}}.
+If the request asks for named public outputs from several steps, put deliver_as on each
+delivering step: map its exact output port to a distinct public name. With any explicit bindings,
+only those outputs are returned. Mark every requested result, including the final result.
+Leave internal working data unexported. In object batches deliver only collector outputs.
+Without explicit bindings the final step's outputs are returned.
 Supply actual required inputs. If a more targeted directory search is needed on a consumer
 request, return clarify with search_goal only when partial=true. If partial=false and the directory lacks a method, return gap. Use clarify without a search goal for questions requiring a human choice. Distinguish unsupported isolation or supplier diversity
 from ordinary separate tasks; a request for distinct model families needs explicit runtime evidence."""
@@ -537,6 +542,12 @@ class HierarchicalPlanner:
             "node": node.id,
             "feedback": node.reason,
             "required_outputs": required,
+            "public_deliveries": {
+                public: {"step": n.id, "output": port}
+                for n in self.nodes.values()
+                if n.step
+                for port, public in n.step.deliver_as.items()
+            },
             "value_schemas": types,
             "schema_parts": parts,
             "authorized_index": index,
@@ -778,6 +789,15 @@ class HierarchicalPlanner:
 
     def resolve(self, node, d):
         step = d.step
+        public = list(step.deliver_as.values())
+        allocated = {
+            name
+            for n in self.nodes.values()
+            if n.step
+            for name in n.step.deliver_as.values()
+        }
+        if len(public) != len(set(public)) or allocated.intersection(public):
+            raise ValueError("Give each requested public output a distinct name")
         if self.edit and self.edit["node"] == node.id:
             if self.edit["mode"] == "split" and d.action != "split":
                 raise ValueError(
@@ -886,7 +906,13 @@ class HierarchicalPlanner:
                 raise ValueError("A child must narrow the parent goal")
             ancestor = self.nodes.get(ancestor.parent) if ancestor.parent else None
         if step.method in self.instructions:
-            if node.parent or size or d.operator != "leaf" or step.inputs:
+            if (
+                node.parent
+                or size
+                or d.operator != "leaf"
+                or step.inputs
+                or step.deliver_as
+            ):
                 raise ValueError(
                     "A bare instruction is only available for a direct root"
                 )
@@ -976,7 +1002,11 @@ class HierarchicalPlanner:
                         > self.max_depth
                         for n in subtree
                     )
-                    or any(n.status not in ("hit", "split") for n in subtree)
+                    or any(
+                        n.status not in ("hit", "split")
+                        or (n.step and n.step.deliver_as)
+                        for n in subtree
+                    )
                 ):
                     continue
                 ids = {n.id: pending.id + n.id[len(source.id) :] for n in subtree}
@@ -1012,6 +1042,8 @@ class HierarchicalPlanner:
             if alias not in self.methods:
                 return "Every route must use a qualified method"
             m = self.methods[alias]
+            if step.deliver_as.keys() - m["outputs"].keys():
+                return f"{alias}: deliver_as must reference actual output ports"
             slots = m["inputs"]
             if step.cases:
                 route = slots.get(step.route_input) or {}
@@ -1036,6 +1068,7 @@ class HierarchicalPlanner:
                 and m.get("kind") == "orchestration"
                 and d.operator == "leaf"
                 and not step.inputs
+                and not step.deliver_as
             )
             if not whole and (
                 step.inputs.keys() - slots.keys()

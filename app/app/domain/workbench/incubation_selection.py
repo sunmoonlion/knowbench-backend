@@ -45,6 +45,10 @@ class SketchStep(Strict):
     task: Short
     method: Name
     inputs: dict[Name, InputSource] = Field(default_factory=dict, max_length=100)
+    # Map a frozen output port to its public name in this composition.
+    deliver_as: dict[Name, Name] = Field(
+        default_factory=dict, max_length=100, exclude_if=lambda value: not value
+    )
     # Cases map caller values to versioned catalog aliases.
     route_input: Name | None = None
     cases: dict[Short, Name] = Field(default_factory=dict, max_length=8)
@@ -177,8 +181,10 @@ class SelectionContext(Strict):
 
 def required_features(selection: Selection) -> set[str]:
     features = {"object_batch"} if selection.object_batch else set()
+    terminal_exports = {step.id for step in selection.steps if step.deliver_as}
     for step in selection.steps:
         deps = {b.step for b in step.inputs.values() if b.source == "step"}
+        terminal_exports.difference_update(deps)
         if step.cases:
             features.add("conditional")
         if step.reviews:
@@ -187,6 +193,8 @@ def required_features(selection: Selection) -> set[str]:
             features.add("join")
         elif deps:
             features.add("sequence")
+    if len(terminal_exports) > 1:
+        features.add("join")
     return features
 
 
@@ -281,6 +289,7 @@ def check_proposal(selection, methods, instructions, enabled):
         }
         raise ValueError(f"{issue}: {advice[issue]}")
     seen = {}
+    public_names = set()
     for step in selection.steps:
         candidates = set(step.cases.values()) or {step.method}
         if step.method not in candidates or len(candidates) < len(step.cases):
@@ -293,6 +302,7 @@ def check_proposal(selection, methods, instructions, enabled):
                 and step.method in instructions
                 and not (
                     step.inputs
+                    or step.deliver_as
                     or step.reviews
                     or step.route_input
                     or step.cases
@@ -307,6 +317,14 @@ def check_proposal(selection, methods, instructions, enabled):
             raise ValueError(
                 f"{step.id}: method outside the authorized catalog: {sorted(missing)}"
             )
+        for output, public in step.deliver_as.items():
+            if public in public_names:
+                raise ValueError(f"selection_export: duplicate delivery {public}")
+            for alias in candidates:
+                entry = methods[alias]
+                if output not in entry.get("interfaces", entry)["outputs"]:
+                    raise ValueError(f"selection_export: missing {step.id}.{output}")
+            public_names.add(public)
         dependencies = {
             binding.step
             for binding in step.inputs.values()
@@ -326,6 +344,56 @@ def check_proposal(selection, methods, instructions, enabled):
         seen[step.id] = step.method
 
 
+def compose_delivery(
+    procedure,
+    permissions,
+    approvals,
+    *,
+    template=None,
+    question=None,
+    title=None,
+    scope=None,
+) -> FormalMethodDefinition:
+    """Build the caller-facing contract independently of every child declaration."""
+    if (template is None) == (question is None):
+        raise ValueError("A composition needs one confirmed template or one request")
+    if template is not None:
+        purpose = template.goal
+        applies, excludes = scope or ("", "")
+        promise, delivery = "template_delivery", template.deliverable
+        check, evidence = template.check, template.evidence
+    else:
+        purpose = question
+        applies, excludes = "本次委托按已审定计划提供所需输入。", ""
+        promise, delivery = "request_delivery", "交回本次计划中列明的对外结果。"
+        check = "逐项核对已接受步骤的输出与对外结果的绑定。"
+        evidence = "各交付项的来源步骤、输出名称及执行回执。"
+    return FormalMethodDefinition.model_validate(
+        dict(
+            contract="knowlab/formal-method/v1",
+            capability_declaration=dict(
+                title=title or purpose,
+                purpose=purpose,
+                applies_when=[applies or purpose],
+                excludes=[excludes] if excludes else [],
+                promises={promise: delivery},
+            ),
+            access_requirements=list(permissions),
+            what_requires_approval=list(approvals),
+            procedure=procedure,
+            how_to_validate=[
+                dict(
+                    promise_id=promise,
+                    outputs=list(procedure["exports"]),
+                    check=check,
+                    evidence=evidence,
+                    on_failure="fail",
+                )
+            ],
+        )
+    )
+
+
 def expand(
     selection: Selection,
     tools: dict[str, FrozenMethod],
@@ -333,6 +401,7 @@ def expand(
     enabled: dict[str, bool],
     *,
     required_cases: dict[str, set[str]],
+    question: str | None = None,
     title: str | None = None,
     scope: tuple[str, str] | None = None,
 ):
@@ -346,6 +415,8 @@ def expand(
         raise ValueError(issue)
     dependencies: dict[str, set[str]] = {}
     route_values: dict[str, set[str]] = {}
+    exports = {}
+    explicit_delivery = any(step.deliver_as for step in selection.steps)
     for step in selection.steps:
         aliases = list(step.cases.values()) if step.cases else [step.method]
         if (
@@ -356,6 +427,21 @@ def expand(
             raise ValueError("selection_candidate")
         chosen = tools[step.method].definition
         interface = chosen.interfaces()
+        public_names = step.deliver_as
+        if not explicit_delivery and step.id == selection.steps[-1].id:
+            public_names = {name: name for name in interface["outputs"]}
+        if public_names:
+            candidates = [tools[a].definition.interfaces()["outputs"] for a in aliases]
+            for port, public in public_names.items():
+                if public in exports:
+                    raise ValueError(f"selection_export: duplicate delivery {public}")
+                if any(port not in candidate for candidate in candidates):
+                    raise ValueError(f"selection_export: missing {step.id}.{port}")
+                exports[public] = dict(
+                    step=step.id,
+                    output=port,
+                    always_present=all(c[port]["always_present"] for c in candidates),
+                )
         inputs = {}
         deps = set()
         for name, item in interface["inputs"].items():
@@ -444,21 +530,11 @@ def expand(
         or required_cases != route_values
     ):
         raise ValueError("selection_route")
-    tail = selection.steps[-1]
-    needed = {tail.id}
+    needed = {ref["step"] for ref in exports.values()}
     for s in reversed(selection.steps):
         if s.id not in needed:
             raise ValueError("selection_disconnected")
         needed.update(dependencies[s.id])
-    final = tools[tail.method].definition
-    doc = final.document()
-    exports = {
-        n: dict(step=tail.id, output=n, always_present=i["always_present"])
-        for n, i in final.interfaces()["outputs"].items()
-    }
-    doc.update(
-        access_requirements=list(permissions.values()), what_requires_approval=approvals
-    )
     procedure: dict[str, Any] = dict(
         kind="orchestration",
         instructions="\n".join(step.task for step in selection.steps),
@@ -471,45 +547,15 @@ def expand(
     )
     if selection.object_batch:
         procedure["object_batch"] = selection.object_batch.model_dump()
-    doc["procedure"] = procedure
-    if template:
-        declaration = doc["capability_declaration"]
-        if selection.tree and len(selection.steps) > 1:
-            # A collector describes its internal receipts. The outer method
-            # accepts the author's inputs and owns the confirmed delivery.
-            applies, excludes = scope or ("", "")
-            declaration.update(
-                applies_when=[applies or template.goal],
-                excludes=[excludes] if excludes else [],
-                promises={},
-                conditions={},
-            )
-            doc["how_to_validate"] = []
-        declaration.update(
-            title=title or declaration["title"],
-            purpose=template.goal,
-            promises={
-                **declaration["promises"],
-                "template_delivery": template.deliverable,
-            },
-        )
-        if declaration.get("conditions"):
-            declaration["conditions"].pop("template_delivery", None)
-        doc["how_to_validate"] = [
-            *(
-                v
-                for v in doc["how_to_validate"]
-                if v["promise_id"] != "template_delivery"
-            ),
-            dict(
-                promise_id="template_delivery",
-                outputs=list(exports),
-                check=template.check,
-                evidence=template.evidence,
-                on_failure="fail",
-            ),
-        ]
-    definition = FormalMethodDefinition.model_validate(doc)
+    definition = compose_delivery(
+        procedure,
+        permissions.values(),
+        approvals,
+        template=template,
+        question=question,
+        title=title,
+        scope=scope,
+    )
     if roles and isinstance(definition.procedure, Orchestration):
         definition.procedure.validate_collaboration(roles_typed(roles))
         if not review_group(
