@@ -812,6 +812,71 @@ def test_separate_recovers_only_user_named_outputs_from_model_explanations():
     } == labels
 
 
+def test_conflicting_user_labels_cannot_be_selected_by_name_alone():
+    task, _ = setup()
+    src = task["original_input"]["input"]
+    src.update(text="交回 totals（总额）和 rows（明细）", clarification="totals（均值）")
+    planner = HierarchicalPlanner(task)
+    assert planner.prompt()["requested_outputs"] == {"rows": "rows（明细）"}
+    with pytest.raises(ValueError, match="distinct output names"):
+        planner.advance({"action": "separate", "goals": ["totals", "rows"]})
+    assert len(planner.nodes) == 1
+
+
+@pytest.mark.parametrize("author", [False, True])
+@pytest.mark.parametrize("declared", [False, True])
+def test_separate_uses_host_output_names_independently_of_model_wording(
+    author, declared
+):
+    task, _ = setup(author=author)
+    src = task["original_input"]["input"]
+    seed = src["incubation"]["seed"] if author else src
+    ctx = src["incubation"]["selection_context"] if author else src
+    labels = {"summary": "支出汇总", "receipts": "凭据明细"}
+    seed["text"] = "请分别交回支出汇总和凭据明细。"
+    expected = labels
+    if declared:
+        ctx["target_deliverables"] = [
+            {"promise_id": name, "outputs": [name], "summary": label}
+            for name, label in labels.items()
+        ]
+    else:
+        expected = {name: f"{name}（{label}）" for name, label in labels.items()}
+        seed["text"] = "分别交回" + "和".join(expected.values())
+    planner = HierarchicalPlanner(task)
+    assert planner.prompt()["requested_outputs"] == expected
+    base = {"action": "separate", "pending_choice": None}
+    for names in (["summary", "extra"], ["receipts", "receipts"]):
+        with pytest.raises(ValueError, match="distinct output names"):
+            planner.advance({**base, "goals": names}, require_choice_check=True)
+        assert len(planner.nodes) == 1
+    with pytest.raises(ValueError, match="for summary"):
+        planner.advance(
+            {
+                **base,
+                "goals": {
+                    "summary": expected["receipts"],
+                    "receipts": expected["summary"],
+                },
+            }
+        )
+    for order, note in [
+        (list(labels), {}),
+        (list(reversed(labels)), {"reason": "先汇总再核实。"}),
+        (list(labels), {"reason": "I would also prepare a forecast."}),
+    ]:
+        planner = HierarchicalPlanner(task)
+        assert (
+            planner.advance({**base, "goals": order, **note}, require_choice_check=True)
+            is None
+        )
+        resumed = HierarchicalPlanner(task, planner.snapshot())
+        assert {
+            name: resumed.nodes[node].goal
+            for node, name in resumed.nodes["n1"].delivery_goals.items()
+        } == expected
+
+
 @pytest.mark.parametrize("author", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
 async def test_independent_deliveries_keep_both_sources_through_review_and_compile(
@@ -829,9 +894,15 @@ async def test_independent_deliveries_keep_both_sources_through_review_and_compi
     goals = [("detail", "原表明细"), ("fees", "费用回执")]
     if reverse:
         goals.reverse()
+        ctx = src["incubation"]["selection_context"] if author else src
+        ctx["target_deliverables"] = [
+            {"promise_id": name, "outputs": [name], "summary": label}
+            for name, label in goals
+        ]
     planner = HierarchicalPlanner(task)
     inspect(planner, "first", "a")
-    assert planner.advance({"action": "separate", "goals": dict(goals)}) is None
+    selection = [name for name, _ in goals] if reverse else dict(goals)
+    assert planner.advance({"action": "separate", "goals": selection}) is None
     sources = {}
     for name, label in goals:
         planner = HierarchicalPlanner(task, planner.snapshot())

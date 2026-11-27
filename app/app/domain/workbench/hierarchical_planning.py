@@ -122,30 +122,44 @@ class Unresolved(Strict):
 
 class SeparateDeliveries(ChoiceCheck):
     action: Literal["separate"]
-    # public output name -> requested result (without inventing a collector)
-    goals: dict[Name, Short] = Field(
-        min_length=2,
-        max_length=15,
-        description="Map each public output to a short verbatim quote from the request. "
-        "Leave input instructions, implementation details and explanations out of the value.",
+    goals: (
+        Annotated[list[Name], Field(min_length=2, max_length=15)]
+        | Annotated[dict[Name, Short], Field(min_length=2, max_length=15)]
+    ) = Field(
+        description="Select distinct keys from requested_outputs. For unnamed results, "
+        "map a public name to the user's short source phrase instead.",
+    )
+    reason: Short | None = Field(
+        default=None,
+        description="Optional planning explanation, separate from the requested outputs.",
     )
 
 
-def requested_delivery(name: str, proposal: str, sources: list[str]) -> str:
-    # A model may put the user's named result inside a longer work instruction.
-    # Recover only the complete name and label as written by the requester.
-    pattern = re.compile(
-        rf"(?<![A-Za-z0-9_]){re.escape(name)}[ \t]*"
-        r"(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))"
-    )
-    labels = {m.group() for text in sources for m in pattern.finditer(text)}
-    if len(labels) == 1:
+# A user can explicitly name an output in prose as identifier(label).
+NAMED_OUTPUT = re.compile(
+    r"(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]*"
+    r"(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))"
+)
+
+
+def requested_delivery(
+    name: str, proposal: str, sources: tuple[str, str], known: str | None
+) -> str:
+    if known is not None and proposal in (name, known):
+        return known
+    labels = {
+        m.group()
+        for text in sources
+        for m in NAMED_OUTPUT.finditer(text)
+        if m[1] == name
+    }
+    if len(labels) == 1 and known in labels:
         label = next(iter(labels))
-        if any(m.group() == label for m in pattern.finditer(proposal)):
+        if any(m.group() == label for m in NAMED_OUTPUT.finditer(proposal)):
             return label
         if proposal == label[len(name) :].strip()[1:-1].strip():
             return label
-    elif any(proposal in text for text in sources):
+    elif known is None and not labels and any(proposal in text for text in sources):
         return proposal
     raise ValueError(
         f"Each separate goal must quote a requested deliverable: for {name} copy only "
@@ -234,7 +248,8 @@ identified data later is an ordinary input. For a direct caller input, use only 
 and name. Set caller_slot only together with a projection lens. An explicit later answer can settle an earlier choice.
 For reusable methods, a parameter chosen by future callers is different from an author's open decision."""
 DELIVERY_RULE = """When the user requests several independent results, select the separate action at the root.
-Its goals map each distinct public output name to the exact requested phrase.
+For named results, set goals to an array of keys from requested_outputs. For unnamed results,
+map a distinct public name to each short source phrase. Put any explanation in reason.
 Use each target's public output name when supplied. Plan each child to export its assigned
 name using deliver_as. If a combined report is required, use a real qualified method that
 produces it; listing its ingredients as separate results cannot satisfy that goal."""
@@ -753,6 +768,11 @@ class HierarchicalPlanner:
                 if node.tabu_signatures
                 else {}
             ),
+            **(
+                {"requested_outputs": self.requested_outputs()}
+                if node.id == ROOT
+                else {}
+            ),
             "request": self.brief,
             "goal": node.goal,
             "assigned_delivery": self.nodes[ROOT].delivery_goals.get(node.id),
@@ -840,6 +860,23 @@ class HierarchicalPlanner:
     def human_text(self):
         amendment = "instruction" if self.author else "clarification"
         return (self.nodes[ROOT].goal, self.brief.get(amendment) or "")
+
+    def requested_outputs(self):
+        labels = {}
+        for text in self.human_text():
+            for match in NAMED_OUTPUT.finditer(text):
+                labels.setdefault(match[1], set()).add(match.group())
+        # Five-element drafts already identify each deliverable by its frozen output name.
+        declared = {}
+        for target in self.target_deliverables:
+            for name in target.get("outputs") or (target["promise_id"],):
+                declared.setdefault(name, set()).add(target["summary"])
+        labels.update(declared)
+        return {
+            name: next(iter(values))
+            for name, values in labels.items()
+            if len(values) == 1
+        }
 
     def chosen_method(self):
         return next(
@@ -979,14 +1016,23 @@ class HierarchicalPlanner:
                 return self.unresolved(
                     node, "gap", "独立交付数量超出本轮规划节点上限。"
                 )
-            descriptions = [
-                *self.human_text(),
-                *(d["summary"] for d in self.target_deliverables),
-            ]
-            goals = {
-                name: requested_delivery(name, goal, descriptions)
-                for name, goal in decision.goals.items()
-            }
+            requested = self.requested_outputs()
+            if isinstance(decision.goals, list):
+                names = decision.goals
+                if len(set(names)) != len(names) or any(
+                    name not in requested for name in names
+                ):
+                    raise ValueError(
+                        "Select distinct output names from requested_outputs"
+                    )
+                goals = {name: requested[name] for name in names}
+            else:
+                goals = {
+                    name: requested_delivery(
+                        name, quote, self.human_text(), requested.get(name)
+                    )
+                    for name, quote in decision.goals.items()
+                }
             child_names = {}
             for i, (name, goal) in enumerate(goals.items(), 1):
                 child = PlanningNode(id=f"{ROOT}_{i}", parent=ROOT, goal=goal)
