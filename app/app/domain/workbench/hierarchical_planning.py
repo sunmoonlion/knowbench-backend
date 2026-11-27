@@ -125,8 +125,9 @@ class ProposedDelivery(Strict):
     goal: Short = Field(
         description="Describe the result you propose for this child in your own words."
     )
-    request_quote: Short = Field(
-        description="Quote the part of the request, clarification or declared target that motivates this result."
+    request_quote: Short | None = Field(
+        default=None,
+        description="Optional verbatim excerpt when attributing this result to the requester or a declared target.",
     )
 
 
@@ -148,7 +149,9 @@ def delivery_goal(name, proposal, human_text, targets):
         if name in (target.get("outputs") or (target["promise_id"],))
     ]
     if isinstance(proposal, ProposedDelivery):
-        if any(proposal.request_quote in text for text in (*summaries, *human_text)):
+        if proposal.request_quote is None or any(
+            proposal.request_quote in text for text in (*summaries, *human_text)
+        ):
             return proposal.goal
         raise ValueError(
             f"Provide a source quote for {name} from the request or its declared target"
@@ -255,7 +258,7 @@ and name. Set caller_slot only together with a projection lens. An explicit late
 For reusable methods, a parameter chosen by future callers is different from an author's open decision."""
 DELIVERY_RULE = """When the user requests several independent results, select the separate action at the root.
 Decide which results the request needs. Propose each child's goal in your own words and choose
-a distinct public name for it. Give its source excerpt separately in request_quote.
+a distinct public name for it. If citing the requester, put the exact excerpt in request_quote.
 The requester need not supply plan steps, output names or a list of deliverables.
 Use each target's public output name when supplied. Plan each child to export its assigned
 name using deliver_as. If a combined report is required, use a real qualified method that
@@ -1261,79 +1264,9 @@ class HierarchicalPlanner:
         for key, goal in children.items():
             child = PlanningNode(id=ids[key], parent=node.id, goal=goal)
             self.nodes[child.id] = child
-        self.reuse_completed()
         if all(n.status in ("hit", "split") for n in self.nodes.values()):
             return self.finish("ready", self.nodes[ROOT].reason)
         return None
-
-    def reuse_completed(self):
-        """Copy planning decisions for identical sibling goals; keep separate calls."""
-
-        def requirements(n):
-            return sorted(fingerprint(v) for v in self.required(n).values())
-
-        for pending in list(self.nodes.values()):
-            if (
-                pending.status != "pending"
-                or pending.id in self.nodes[ROOT].delivery_goals
-                or (self.edit and self.edit["node"] == pending.id)
-            ):
-                continue
-            for source in list(self.nodes.values()):
-                if (
-                    source.id == pending.id
-                    or source.id.startswith(pending.id + "_")
-                    or pending.id.startswith(source.id + "_")
-                    or source.goal != pending.goal
-                    or source.status not in ("hit", "split")
-                    or requirements(source) != requirements(pending)
-                ):
-                    continue
-                subtree = [
-                    n
-                    for n in self.nodes.values()
-                    if n.id == source.id or n.id.startswith(source.id + "_")
-                ]
-                if (
-                    len(self.nodes) + len(subtree) - 1 > self.max_nodes
-                    or any(
-                        pending.id.count("_") + n.id.count("_") - source.id.count("_")
-                        > self.max_depth
-                        for n in subtree
-                    )
-                    or any(
-                        n.status not in ("hit", "split")
-                        or (n.step and n.step.deliver_as)
-                        for n in subtree
-                    )
-                ):
-                    continue
-                ids = {n.id: pending.id + n.id[len(source.id) :] for n in subtree}
-                for n in subtree:
-                    assert n.step is not None
-                    inputs = {
-                        k: b.model_copy(update={"step": ids[b.step]})
-                        if b.source == "step" or b.source == "object_rows"
-                        else b
-                        for k, b in n.step.inputs.items()
-                    }
-                    step = n.step.model_copy(
-                        update={
-                            "id": ids[n.id],
-                            "inputs": inputs,
-                            "reviews": tuple(ids[i] for i in n.step.reviews),
-                        }
-                    )
-                    self.nodes[ids[n.id]] = n.model_copy(
-                        update={
-                            "id": ids[n.id],
-                            "parent": ids[n.parent]
-                            if n.parent in ids and n.parent is not None
-                            else pending.parent,
-                            "step": step,
-                        }
-                    )
-                break
 
     def contract_issue(self, node, d):
         step = d.step

@@ -294,12 +294,19 @@ def test_gap_with_search_suggestion_does_not_consume_a_repair():
     assert out["status"] == "gap" and not out.get("search_goal") and not out["steps"]
 
 
-def test_identical_sibling_goals_reuse_the_decision_but_keep_separate_invocations():
-    task, _ = setup(author=True)
-    p = HierarchicalPlanner(task)
-    methods = p.methods
+@pytest.mark.parametrize("author", [True, False])
+def test_each_identical_sibling_goal_needs_its_own_model_decision_after_resume(author):
+    task, _ = setup(author=author)
+    src = task["original_input"]["input"]
+    if author:
+        methods = src["incubation"]["selection_context"]["methods"]
+    else:
+        methods = {
+            entry["alias"]: entry["interfaces"] for entry in src["catalog"]["entries"]
+        }
     sample = methods["first"]["inputs"]["value"]
     methods["a"]["inputs"] = {"left": sample, "right": sample}
+    p = HierarchicalPlanner(task)
     parent = {
         "id": "join",
         "method": "a",
@@ -320,7 +327,23 @@ def test_identical_sibling_goals_reuse_the_decision_but_keep_separate_invocation
         )
         is None
     )
-    result = p.advance(decision(proposal()["steps"][0]))["selection"]
+    first = proposal()["steps"][0]
+    assert set(p.prompt()["required_outputs"]) == {"left"}
+    assert p.advance(decision(first)) is None
+    saved = p.snapshot()
+    p = HierarchicalPlanner(task, saved)
+    clarification = p.advance({"action": "clarify", "reason": "第二份用哪组资料？"})
+    assert (clarification["selection"] if author else clarification)[
+        "status"
+    ] == "clarify"
+    p = HierarchicalPlanner(task, saved)
+    assert p.current.goal == "生成回执" and p.current.step is None
+    assert set(p.prompt()["required_outputs"]) == {"right"}
+    second = {**first, "inputs": {"value": {"source": "caller", "name": "other_rows"}}}
+    handback = p.advance(decision(second))
+    result = handback["selection"] if author else handback
+    assert result["steps"][0]["inputs"]["value"]["name"] == "rows"
+    assert result["steps"][1]["inputs"]["value"]["name"] == "other_rows"
     assert [s["method"] for s in result["steps"]] == ["first", "first", "a"]
     assert result["steps"][0]["id"] != result["steps"][1]["id"]
 
@@ -823,7 +846,7 @@ def test_model_proposes_delivery_goals_from_an_open_question(author):
     assert "requested_outputs" not in planner.prompt()
     assert not planner.nodes["n1"].delivery_goals
     goals = {
-        "trip_spend": {"goal": "按币种汇总差旅支出", "request_quote": "花了多少钱"},
+        "trip_spend": {"goal": "按币种汇总差旅支出"},
         "missing_docs": {
             "goal": "列出未提交凭据的支出记录",
             "request_quote": "哪些单据还没交",
