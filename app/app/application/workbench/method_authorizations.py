@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from app.application.ports.workbench import WorkbenchStore
-from app.application.workbench.method_calls import root_call
+from app.application.workbench.method_calls import (
+    matches_step_digest,
+    root_call,
+    step_identity,
+)
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.method_authorization import (
     METHOD_SCOPE_HOURS,
@@ -65,20 +69,9 @@ async def check_resource_authorities(repo, owner, scope, grants, catalog=None):
     if root is None or view is None or view.receipt is None:
         raise CapabilityError("Resource delegation invocation is unavailable")
     meta = _meta(view, int(task["current_step"]))
-    identity = {
-        key: meta[key]
-        for key in (
-            "plan_version",
-            "plan_digest",
-            "pack_digest",
-            "instance_id",
-            "method_id",
-            "method_version",
-            "step_index",
-        )
-    }
+    identity, invocation_digest = step_identity(root["id"], meta)
     child = await repo.call_by_key(
-        owner, str(task["session_id"]), "method:" + digest([root["id"], identity])
+        owner, str(task["session_id"]), "method:" + invocation_digest
     )
     if (
         root.get("kind") != "method"
@@ -87,7 +80,7 @@ async def check_resource_authorities(repo, owner, scope, grants, catalog=None):
         or child.get("kind") != "method"
         or child.get("parent_call_id") != root["id"]
         or str(child.get("task_id")) != str(task["id"])
-        or child.get("digest") != digest(identity)
+        or not matches_step_digest(child["digest"], invocation_digest, identity)
         or any(child["detail"].get(key) != value for key, value in identity.items())
         or any(
             not g.delegable and str(g.recipient_call_id) != child["id"] for g in backed

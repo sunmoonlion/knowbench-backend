@@ -197,6 +197,39 @@ async def test_explicit_confirmation_binds_one_child_and_preserves_action_approv
     assert len(ctx.remote.calls) == 1
 
 
+async def test_parent_bound_step_remains_authorized_with_either_persisted_digest(db):
+    from app.application.workbench.execution_plan import _meta, execution_for_task
+    from app.application.workbench.method_calls import step_call, step_identity
+
+    ctx = await setup(db)
+    await confirm(db, ctx)
+    await open_step(db, ctx.tid)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        task = await repo.get_task(ctx.tid)
+        root = await repo.call_by_key(OWNER, ctx.sid, "task:" + ctx.tid)
+        view = await execution_for_task(repo, task)
+        meta = _meta(view, task["current_step"])
+        identity, current_digest = step_identity(root["id"], meta)
+        row = await repo.call_by_key(OWNER, ctx.sid, "method:" + current_digest)
+        assert row["parent_call_id"] == root["id"] and row["digest"] == current_digest
+        for stored in (current_digest, digest(identity)):
+            async with repo.transaction():
+                await session.execute(
+                    text("update workbench_calls set digest=:stored where id=:id"),
+                    {"stored": stored, "id": row["id"]},
+                )
+                assert (await step_call(repo, task, meta))["id"] == row["id"]
+            prepared = await ctx.service(repo).prepare(OWNER, ctx.sid, scene="method")
+            assert (
+                "Authorization"
+                in prepared["config"]["mcp_servers.sunmoon_capabilities"][
+                    "http_headers"
+                ]
+            )
+    assert not ctx.remote.calls
+
+
 @pytest.mark.parametrize(
     "change",
     ["empty", "revoked", "digest", "owner", "binding", "connection", "expired"],
