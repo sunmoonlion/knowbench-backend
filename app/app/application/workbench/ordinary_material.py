@@ -17,6 +17,25 @@ def is_material_read(implementation):
     )
 
 
+def declared_material_slots(definition) -> list[str]:
+    """Extract caller input slot names semantically wired as KnowBase materials."""
+    from app.domain.workbench.formal_method_generated import Orchestration
+
+    slots: set[str] = set()
+    interfaces = definition.interfaces()["inputs"]
+    for name, item in interfaces.items():
+        meaning = (item.get("slot") or {}).get("meaning") or {}
+        domain_id = meaning.get("domain_id") or ""
+        if domain_id.startswith("material.") or meaning.get("source") == "knowbase":
+            slots.add(name)
+    if isinstance(definition.procedure, Orchestration):
+        for step in definition.procedure.steps:
+            mat_in = step.inputs.get("material_id")
+            if mat_in and isinstance(mat_in.binding, CallerValue):
+                slots.add(mat_in.binding.name)
+    return sorted(slots)
+
+
 def material_inputs(graph, bindings):
     nodes = {n.path: n for n in graph.nodes} if graph else {}
 

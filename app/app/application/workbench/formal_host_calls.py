@@ -202,7 +202,15 @@ class FormalHostCalls:
                 "case_id": snapshot.case_id,
                 "repetition": snapshot.repetition,
             }
-        source = snapshot.execution_source(frozen) if frozen else draft.source
+        source = (
+            (
+                snapshot.execution_source(frozen, slot)
+                if isinstance(snapshot, ConsumerPlan)
+                else snapshot.execution_source(frozen)
+            )
+            if frozen
+            else draft.source
+        )
         if source is None:
             raise CapabilityError("Formal action has no licensed source")
         host = {
@@ -549,6 +557,31 @@ class FormalHostCalls:
             raise CapabilityError("Formal Task is not its persisted case repetition")
         return request
 
+    @staticmethod
+    def _can_auto_authorize_envelope(snapshot, context: HostContext) -> bool:
+        if not isinstance(snapshot, ConsumerPlan) or not snapshot.envelope_approved:
+            return False
+        if context.artifact_read is not None:
+            return False
+        operation = context.operation
+        exec_kind = context.intent.get("execution_kind")
+        if exec_kind in ("formal_mcp", "formal_a2a", "formal_function"):
+            if operation.get("effect") != "read":
+                return False
+        elif exec_kind not in ("formal_script", "formal_instruction"):
+            return False
+        req_id = (context.access.get("requirement") or {}).get("requirement_id")
+        root_rules = [
+            r
+            for r in snapshot.draft.definition.what_requires_approval
+            if not req_id or r.requirement_id == req_id or not r.requirement_id
+        ]
+        if not root_rules or any(
+            getattr(r, "scope", "per_action") != "envelope" for r in root_rules
+        ):
+            return False
+        return True
+
     async def request(self, owner, task_id, attempt_id, *, model=None):
         grants = (
             {}
@@ -677,124 +710,185 @@ class FormalHostCalls:
             operation = context.operation
             quote = context.intent.get("script_quote")
             model_quote = context.intent.get("instruction_quote")
-            opened = await Ledger(self.repo).open_interaction(
-                task_id,
-                attempt_id=attempt_id,
-                kind="tool_approval",
-                waiting_reason=WaitingReason.APPROVAL,
-                subject_digest=context.identity,
-                ttl=timedelta(minutes=15),
-                prompt=InteractionPrompt(
-                    title="确认本步骤的模型外发与费用"
-                    if model_quote
-                    else "批准隔离脚本及费用"
-                    if quote
-                    else "确认正式方法的外部操作",
-                    question=(
-                        f"将所示输入和本方法指令发至 {operation['data_transfer']['destination']}，由 {model_quote['provider']} 的 {model_quote['model']} 处理一次，费用上限 {model_quote['maximum']} {model_quote['currency']}。"
+            envelope_dispatch = None
+            if model is None and self._can_auto_authorize_envelope(snapshot, context):
+                call = await self.repo.add_call(
+                    {
+                        "id": call_id,
+                        "owner_actor_id": owner,
+                        "session_id": session_id,
+                        "task_id": task_id,
+                        "attempt_id": attempt_id,
+                        "parent_call_id": context.method_call["id"]
+                        if context.method_call
+                        else root["id"],
+                        "kind": "tool",
+                        "origin": "managed",
+                        "call_key": key,
+                        "registration_id": context.registration.tool_id,
+                        "registration_digest": context.registration.descriptor_digest,
+                        "source_asset_id": context.intent["source_asset_id"],
+                        "connection_id": context.intent["connection_id"],
+                        "interaction_id": None,
+                        "digest": context.identity,
+                        "status": "dispatching",
+                        "detail": dict(context.intent),
+                    }
+                )
+                if call["id"] != call_id:
+                    raise CapabilityError("Formal action was concurrently created")
+                intent = await self._authorize_envelope(
+                    owner, call, context, snapshot
+                )
+                await self.repo.update_call(owner, call_id, "dispatching", intent)
+                if intent.get("script_quote"):
+                    from app.application.workbench.script_budget import reserve
+
+                    await reserve(self.repo, owner, call_id, intent["script_quote"])
+                extra_refs = {
+                    "capability_call_id": call_id,
+                    "envelope_approval_ref": snapshot.preview_digest,
+                }
+                if intent.get("execution_kind") == "formal_instruction":
+                    prev_refs = context.attempt.get("refs") or {}
+                    extra_refs["instruction_unit"] = {
+                        **(prev_refs.get("instruction_unit") or {}),
+                        "approved_at": datetime.now(UTC).isoformat(),
+                    }
+                await self.repo.update_attempt(
+                    attempt_id,
+                    refs={**(context.attempt.get("refs") or {}), **extra_refs},
+                )
+                if intent.get("execution_kind") != "formal_instruction":
+                    envelope_dispatch = (call, context.asset, intent, context.knowbase_read)
+            else:
+                opened = await Ledger(self.repo).open_interaction(
+                    task_id,
+                    attempt_id=attempt_id,
+                    kind="tool_approval",
+                    waiting_reason=WaitingReason.APPROVAL,
+                    subject_digest=context.identity,
+                    ttl=timedelta(minutes=15),
+                    prompt=InteractionPrompt(
+                        title="确认本步骤的模型外发与费用"
                         if model_quote
-                        else f"在 {quote['environment']} 执行本次脚本。容器每运行一秒收取 {quote['per_container_second']} {quote['currency']}，本次根预算最多预留 {quote['maximum']} {quote['currency']}。启动前免费，失败或取消按已运行时间结算。"
+                        else "批准隔离脚本及费用"
                         if quote
-                        else "请核对产物版本、输出字段、用途和接收方法链。批准即允许沿所示调用链仅传递这些字段，并执行这一次操作。"
-                        if context.artifact_read
-                        and "return_to" not in context.artifact_read
-                        else "请核对来源任务、产物版本、字段与接收入口。批准即允许本次方法读取所示字段并把结果返回给该入口。"
-                        if context.artifact_read
-                        else "请核对本次账号、用途、资源范围和完整参数。仅批准这一次操作，不授予委派或后续操作权限。"
-                    ),
-                    options=[
-                        {"value": "accept", "label": "仅允许这次"},
-                        {"value": "decline", "label": "拒绝"},
-                    ],
-                    subject={
-                        "capability_call_id": call_id,
-                        "connection": context.asset["name"],
-                        **(
-                            {"registered_source": context.intent["registered_source"]}
-                            if "registered_source" in context.intent
-                            else {}
-                        ),
-                        "account": context.intent["account_label"],
-                        "purpose": context.intent["purpose"],
-                        "tool": context.intent["tool"]["name"],
-                        **(
-                            {"artifact_read": context.artifact_read}
+                        else "确认正式方法的外部操作",
+                        question=(
+                            f"将所示输入和本方法指令发至 {operation['data_transfer']['destination']}，由 {model_quote['provider']} 的 {model_quote['model']} 处理一次，费用上限 {model_quote['maximum']} {model_quote['currency']}。"
+                            if model_quote
+                            else f"在 {quote['environment']} 执行本次脚本。容器每运行一秒收取 {quote['per_container_second']} {quote['currency']}，本次根预算最多预留 {quote['maximum']} {quote['currency']}。启动前免费，失败或取消按已运行时间结算。"
+                            if quote
+                            else "请核对产物版本、输出字段、用途和接收方法链。批准即允许沿所示调用链仅传递这些字段，并执行这一次操作。"
                             if context.artifact_read
-                            else {}
+                            and "return_to" not in context.artifact_read
+                            else "请核对来源任务、产物版本、字段与接收入口。批准即允许本次方法读取所示字段并把结果返回给该入口。"
+                            if context.artifact_read
+                            else "请核对本次账号、用途、资源范围和完整参数。仅批准这一次操作，不授予委派或后续操作权限。"
                         ),
-                        "arguments": context.intent["arguments"],
+                        options=[
+                            {"value": "accept", "label": "仅允许这次"},
+                            {"value": "decline", "label": "拒绝"},
+                        ],
+                        subject={
+                            "capability_call_id": call_id,
+                            "connection": context.asset["name"],
+                            **(
+                                {
+                                    "registered_source": context.intent[
+                                        "registered_source"
+                                    ]
+                                }
+                                if "registered_source" in context.intent
+                                else {}
+                            ),
+                            "account": context.intent["account_label"],
+                            "purpose": context.intent["purpose"],
+                            "tool": context.intent["tool"]["name"],
+                            **(
+                                {"artifact_read": context.artifact_read}
+                                if context.artifact_read
+                                else {}
+                            ),
+                            "arguments": context.intent["arguments"],
+                            **(
+                                {
+                                    "instruction_quote": model_quote,
+                                    "data_transfer": operation["data_transfer"],
+                                }
+                                if model_quote
+                                else {}
+                            ),
+                            **(
+                                {"script_quote": context.intent["script_quote"]}
+                                if "script_quote" in context.intent
+                                else {}
+                            ),
+                            "operation": {
+                                k: operation[k]
+                                for k in (
+                                    "capability_ref",
+                                    "version",
+                                    "operation",
+                                    "effect",
+                                    "resources",
+                                )
+                            },
+                        },
+                    ),
+                )
+                call = await self.repo.add_call(
+                    {
+                        "id": call_id,
+                        "owner_actor_id": owner,
+                        "session_id": session_id,
+                        "task_id": task_id,
+                        "attempt_id": attempt_id,
+                        "parent_call_id": context.method_call["id"]
+                        if context.method_call
+                        else root["id"],
+                        "kind": "tool",
+                        "origin": "managed",
+                        "call_key": key,
+                        "registration_id": context.registration.tool_id,
+                        "registration_digest": context.registration.descriptor_digest,
+                        "source_asset_id": context.intent["source_asset_id"],
+                        "connection_id": context.intent["connection_id"],
+                        "interaction_id": opened["interaction_id"],
+                        "digest": context.identity,
+                        "status": "awaiting_approval",
+                        "detail": {**context.intent, "approval_token": opened["token"]},
+                    }
+                )
+                if call["id"] != call_id:
+                    raise CapabilityError("Formal action was concurrently created")
+                await self.repo.update_attempt(
+                    attempt_id,
+                    refs={
+                        **(context.attempt.get("refs") or {}),
+                        "capability_call_id": call_id,
                         **(
                             {
-                                "instruction_quote": model_quote,
-                                "data_transfer": operation["data_transfer"],
+                                "formal_model_probe": {
+                                    **(context.attempt.get("refs") or {}).get(
+                                        "formal_model_probe", {}
+                                    ),
+                                    "invocation_key": model["invocation"].key,
+                                    "call_id": call_id,
+                                }
                             }
-                            if model_quote
+                            if model is not None
                             else {}
                         ),
-                        **(
-                            {"script_quote": context.intent["script_quote"]}
-                            if "script_quote" in context.intent
-                            else {}
-                        ),
-                        "operation": {
-                            k: operation[k]
-                            for k in (
-                                "capability_ref",
-                                "version",
-                                "operation",
-                                "effect",
-                                "resources",
-                            )
-                        },
                     },
-                ),
+                )
+        if envelope_dispatch is not None:
+            d_call, d_asset, d_intent, d_kb = envelope_dispatch
+            return await self.capabilities._dispatch_call(
+                owner, d_call, d_asset, d_intent, d_kb
             )
-            call = await self.repo.add_call(
-                {
-                    "id": call_id,
-                    "owner_actor_id": owner,
-                    "session_id": session_id,
-                    "task_id": task_id,
-                    "attempt_id": attempt_id,
-                    "parent_call_id": context.method_call["id"]
-                    if context.method_call
-                    else root["id"],
-                    "kind": "tool",
-                    "origin": "managed",
-                    "call_key": key,
-                    "registration_id": context.registration.tool_id,
-                    "registration_digest": context.registration.descriptor_digest,
-                    "source_asset_id": context.intent["source_asset_id"],
-                    "connection_id": context.intent["connection_id"],
-                    "interaction_id": opened["interaction_id"],
-                    "digest": context.identity,
-                    "status": "awaiting_approval",
-                    "detail": {**context.intent, "approval_token": opened["token"]},
-                }
-            )
-            if call["id"] != call_id:
-                raise CapabilityError("Formal action was concurrently created")
-            await self.repo.update_attempt(
-                attempt_id,
-                refs={
-                    **(context.attempt.get("refs") or {}),
-                    "capability_call_id": call_id,
-                    **(
-                        {
-                            "formal_model_probe": {
-                                **(context.attempt.get("refs") or {}).get(
-                                    "formal_model_probe", {}
-                                ),
-                                "invocation_key": model["invocation"].key,
-                                "call_id": call_id,
-                            }
-                        }
-                        if model is not None
-                        else {}
-                    ),
-                },
-            )
-            return public_call(call)
+        return public_call(call)
 
     @staticmethod
     def pending_invocation(task, call):
@@ -1085,6 +1179,118 @@ class FormalHostCalls:
         )
         return {
             **call["detail"],
+            "authorization": {
+                "call_id": str(authorization.call_id),
+                "revision": authorization.revision,
+            },
+        }
+
+    async def _authorize_envelope(self, owner, call, context: HostContext, snapshot):
+        """Mint exact direct/child authority from consumer's pre-approved envelope."""
+        from uuid import UUID
+
+        root = await root_call(self.repo, context.task)
+        recipient = context.method_call["id"] if context.method_call else root["id"]
+        raw = await self.repo.method_authorization(owner, root["id"], lock=True)
+        current = MethodAuthorization.model_validate(raw) if raw else None
+        if current and current.revoked:
+            raise CapabilityError("Envelope authorization has been revoked")
+        expiry = (
+            context.scopes[0].expires_at
+            if context.scopes
+            else datetime.now(UTC) + timedelta(hours=snapshot.scope_hours or 24)
+        )
+        declared = context.access["requirement"]
+        exact = AccessRequirement.model_validate(
+            {
+                **declared,
+                "operations": [context.operation["operation"]],
+                "resources": context.operation["resources"],
+                "data_transfer": {
+                    **declared["data_transfer"],
+                    "argument_fields": sorted(context.intent["arguments"]),
+                },
+            }
+        )
+        host = context.intent["formal_host"]
+        grant = PermissionGrant(
+            grant_id=digest([call["id"], call["digest"], snapshot.preview_digest]),
+            confirmation_context=host["snapshot_digest"],
+            **grant_binding(
+                context.registration.source,
+                context.asset["id"],
+                context.asset["revision"],
+            ),
+            operation_digest=context.access["operation_digest"],
+            requirement=exact,
+            delegable=False,
+            recipient_call_id=recipient,
+            expires_at=expiry,
+            method_ids=(host["method_id"],),
+        )
+        authorization = MethodAuthorization(
+            call_id=root["id"],
+            revision=current.revision + 1 if current else 1,
+            parent_call_id=None,
+            parent_revision=None,
+            method_id=current.method_id
+            if context.scopes and current
+            else host.get("parent_method_id", host["method_id"]),
+            revoked=False,
+            expires_at=current.expires_at if current else expiry,
+            grants=(*(current.grants if current else ()), grant),
+        )
+        await self.repo.save_method_authorization(
+            owner,
+            str(context.task["session_id"]),
+            authorization.model_dump(mode="json"),
+            previous=current.revision if current else 0,
+        )
+        parent_authorization = None
+        if context.method_call is not None:
+            if await self.repo.method_authorization(owner, recipient, lock=True):
+                raise CapabilityError(
+                    "Formal child already has an authorization history"
+                )
+            parent_authorization = authorization
+            authorization = delegate(
+                authorization,
+                call_id=UUID(recipient),
+                method_id=host["method_id"],
+                requirements=(grant,),
+            ).model_copy(update={"expires_at": expiry})
+            await self.repo.save_method_authorization(
+                owner,
+                str(context.task["session_id"]),
+                authorization.model_dump(mode="json"),
+                previous=0,
+            )
+        await self.repo.append_event(
+            session_id=str(context.task["session_id"]),
+            task_id=str(context.task["id"]),
+            attempt_id=str(context.attempt["id"]),
+            kind="task",
+            event_type="method/permissionsConfirmed",
+            payload={
+                "authorization": authorization.model_dump(mode="json"),
+                "authority_source": "consumer_envelope",
+                "envelope_approval_ref": snapshot.preview_digest,
+                "context": host["snapshot_digest"],
+                "action_digest": call["digest"],
+                **(
+                    {
+                        "parent_authorization": parent_authorization.model_dump(
+                            mode="json"
+                        )
+                    }
+                    if parent_authorization
+                    else {}
+                ),
+            },
+        )
+        return {
+            **call["detail"],
+            "envelope_approval_ref": snapshot.preview_digest,
             "authorization": {
                 "call_id": str(authorization.call_id),
                 "revision": authorization.revision,

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, overload
 from uuid import UUID
 
-from pydantic import Field, model_validator
+from pydantic import Field, PrivateAttr, model_validator
 
 from app.domain.workbench.capabilities import digest
 from app.domain.workbench.formal_method_admission_generated import (
@@ -84,6 +84,7 @@ class FormalTaskSnapshot(Strict):
     model_probe: ModelProbeLimits | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    _review_rounds: tuple[dict, ...] = PrivateAttr(default=())
 
     @model_validator(mode="after")
     def pinned(self):
@@ -165,34 +166,81 @@ def invocation_definition(snapshot: FormalTaskSnapshot | ConsumerPlan):
     return select_plan(
         snapshot.draft.definition,
         snapshot.arguments,
-        revisions=len(snapshot._review_rounds)
-        if isinstance(snapshot, ConsumerPlan)
-        else 0,
+        revisions=len(getattr(snapshot, "_review_rounds", ())),
+    )
+
+
+def _is_guarded_flat_plan(snapshot: FormalTaskSnapshot | ConsumerPlan) -> bool:
+    defn = invocation_definition(snapshot)
+    return (
+        isinstance(defn.procedure, Orchestration)
+        and defn.procedure.has_artifact_guard
+        and not recursive_plan(snapshot)
     )
 
 
 def expanded_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
     from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
-    from app.domain.workbench.formal_method_plan_generated import expand_unique_plan
-
-    return expand_unique_plan(
-        snapshot.method_id,
-        invocation_definition(snapshot),
-        {
-            (f.reference.method_id, f.reference.version): FrozenMethod(
-                f.reference, f.draft.definition
-            )
-            for f in snapshot.dependencies
-        },
+    from app.domain.workbench.formal_method_plan_generated import (
+        ExpandedPlan,
+        PlanNode,
+        expand_unique_plan,
+        implementation_kind,
+        topological_envelope_steps,
+        verify_envelope_graph,
     )
+
+    defn = invocation_definition(snapshot)
+    resolved = {
+        (f.reference.method_id, f.reference.version): FrozenMethod(
+            f.reference, f.draft.definition
+        )
+        for f in snapshot.dependencies
+    }
+    if _is_guarded_flat_plan(snapshot):
+        verify_envelope_graph(snapshot.method_id, defn, resolved)
+        steps = topological_envelope_steps(defn.procedure)
+        nodes = []
+        refs = {}
+        for step in steps:
+            ref = step.candidates[0]
+            child = resolved[(ref.method_id, ref.version)]
+            refs[(ref.method_id, ref.version)] = ref
+            nodes.append(
+                PlanNode(
+                    path=(step.id,),
+                    parent_path=(),
+                    step=step,
+                    reference=ref,
+                    definition=child.definition,
+                    kind=implementation_kind(child.definition.procedure.kind),
+                )
+            )
+        return ExpandedPlan(
+            nodes=tuple(nodes),
+            dependencies=tuple(
+                refs[k] for k in sorted(refs, key=lambda item: (str(item[0]), item[1]))
+            ),
+            method_kind=implementation_kind(defn.procedure.kind),
+            depth=2,
+            expansions=1 + len(nodes),
+            steps=len(nodes),
+        )
+    return expand_unique_plan(snapshot.method_id, defn, resolved)
 
 
 def orchestration_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
     """Validate the complete pinned closure; execution expands only reached nodes."""
-    from app.domain.workbench.formal_method_plan_generated import unique_plan
+    from app.domain.workbench.formal_method_plan_generated import (
+        topological_envelope_steps,
+        unique_plan,
+    )
 
+    defn = invocation_definition(snapshot)
     if isinstance(snapshot, ConsumerPlan):
-        return unique_plan(invocation_definition(snapshot))
+        if _is_guarded_flat_plan(snapshot):
+            return topological_envelope_steps(defn.procedure)
+        return unique_plan(defn)
     if snapshot.caller != "host" or snapshot.draft.allowed_callers != ("host",):
         raise ValueError("Formal orchestration currently supports the host caller only")
     refs = [
@@ -227,7 +275,9 @@ def orchestration_plan(snapshot: FormalTaskSnapshot | ConsumerPlan):
         raise ValueError(
             "Formal orchestration requires the exact frozen dependency closure"
         )
-    return unique_plan(invocation_definition(snapshot))
+    if _is_guarded_flat_plan(snapshot):
+        return topological_envelope_steps(defn.procedure)
+    return unique_plan(defn)
 
 
 def execution_steps(snapshot: FormalTaskSnapshot | ConsumerPlan):
@@ -263,6 +313,9 @@ def snapshot_for_task(task: dict) -> FormalTaskSnapshot:
     snapshot = FormalTaskSnapshot.model_validate(task.get("pack_snapshot"))
     if task.get("pack_digest") != digest(snapshot.document()):
         raise ValueError("Formal task snapshot changed")
+    snapshot._review_rounds = tuple(
+        (task.get("execution_policy") or {}).get("formal_review_rounds", ())
+    )
     return snapshot
 
 

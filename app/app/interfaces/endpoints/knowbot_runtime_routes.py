@@ -414,6 +414,31 @@ async def formal_sources(_: FormalCaller, subject: str, svc: FormalService):
         raise _http(exc) from exc
 
 
+@router.put("/users/{subject}/formal-method-sources/{source_id}/versions/{version}")
+async def register_formal_source(
+    _: FormalCaller,
+    subject: str,
+    source_id: UUID,
+    version: Annotated[int, Path(ge=1, le=2147483647)],
+    body: dict[str, Any],
+    svc: FormalService,
+):
+    from app.domain.workbench.registry_sources import SourceDraft
+
+    try:
+        draft = SourceDraft.model_validate(body)
+    except ValidationError as exc:
+        raise AppException(
+            code="source_draft_invalid", status_code=422, msg="invalid source draft"
+        ) from exc
+    try:
+        return _out(
+            await svc.register_direct_source(subject, source_id, version, draft)
+        )
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+
+
 @router.post("/formal-method-validations")
 async def submit_formal_validation(
     caller: FormalCaller, body: FormalMethodValidationRequest, svc: FormalService

@@ -86,8 +86,11 @@ class AccessRequirement(Requirement):
     operations: tuple[Name, ...] = Field(min_length=1, max_length=30)
     resources: tuple[ResourceScope, ...] = Field(max_length=30)
     data_transfer: DataTransfer
-    required_when: Literal["always"] = "always"
-    on_unavailable: Literal["pause"] = "pause"
+    required_when: Literal["always", "when_selected"] = "always"
+    on_unavailable: Literal["pause", "fail", "skip_optional"] = "pause"
+    origin_steps: tuple[Name, ...] = Field(
+        default=(), max_length=100, exclude_if=lambda value: not value
+    )
 
     @model_validator(mode="after")
     def unique(self):
@@ -163,9 +166,32 @@ class AuthorSkill(SkillRequirement):
     )
 
 
+class AuthorServiceFunction(Requirement):
+    provider: Name
+    name: Name
+    version: Name
+    destination: str = Field(min_length=8, max_length=1000)
+    required_permission: Name
+    description: str
+
+
+class AuthorExecutorCapability(Requirement):
+    capability_ref: Literal["isolated-script", "isolated-instruction"]
+    version: Name = "1"
+    operation: Literal["execute"] = "execute"
+    destination: str = Field(min_length=8, max_length=1000)
+    description: str
+
+
 class AuthorCapabilityCatalog(Requirement):
     tools: list[AuthorTool]
     skills: list[AuthorSkill]
+    service_functions: list[AuthorServiceFunction] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
+    executors: list[AuthorExecutorCapability] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
 
 
 def matches_tool(requirements: MethodCapabilities, asset: dict, tool: dict) -> bool:

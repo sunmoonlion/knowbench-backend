@@ -163,16 +163,34 @@
             "$ref": "#/$defs/DataTransfer"
           },
           "required_when": {
-            "const": "always",
             "default": "always",
+            "enum": [
+              "always",
+              "when_selected"
+            ],
             "title": "Required When",
             "type": "string"
           },
           "on_unavailable": {
-            "const": "pause",
             "default": "pause",
+            "enum": [
+              "pause",
+              "fail",
+              "skip_optional"
+            ],
             "title": "On Unavailable",
             "type": "string"
+          },
+          "origin_steps": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Origin Steps",
+            "type": "array"
           }
         },
         "required": [
@@ -398,6 +416,98 @@
   },
   "author_catalog": {
     "$defs": {
+      "AuthorExecutorCapability": {
+        "additionalProperties": false,
+        "properties": {
+          "capability_ref": {
+            "enum": [
+              "isolated-script",
+              "isolated-instruction"
+            ],
+            "title": "Capability Ref",
+            "type": "string"
+          },
+          "version": {
+            "default": "1",
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          },
+          "operation": {
+            "const": "execute",
+            "default": "execute",
+            "title": "Operation",
+            "type": "string"
+          },
+          "destination": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Destination",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability_ref",
+          "destination",
+          "description"
+        ],
+        "title": "AuthorExecutorCapability",
+        "type": "object"
+      },
+      "AuthorServiceFunction": {
+        "additionalProperties": false,
+        "properties": {
+          "provider": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Provider",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          },
+          "destination": {
+            "maxLength": 1000,
+            "minLength": 8,
+            "title": "Destination",
+            "type": "string"
+          },
+          "required_permission": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Required Permission",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider",
+          "name",
+          "version",
+          "destination",
+          "required_permission",
+          "description"
+        ],
+        "title": "AuthorServiceFunction",
+        "type": "object"
+      },
       "AuthorSkill": {
         "additionalProperties": false,
         "properties": {
@@ -516,6 +626,20 @@
           "$ref": "#/$defs/AuthorSkill"
         },
         "title": "Skills",
+        "type": "array"
+      },
+      "service_functions": {
+        "items": {
+          "$ref": "#/$defs/AuthorServiceFunction"
+        },
+        "title": "Service Functions",
+        "type": "array"
+      },
+      "executors": {
+        "items": {
+          "$ref": "#/$defs/AuthorExecutorCapability"
+        },
+        "title": "Executors",
         "type": "array"
       }
     },

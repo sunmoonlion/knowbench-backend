@@ -5,6 +5,8 @@ starts a model turn or interprets an old expert pack, and never retries an
 uncertain logical action under a new Attempt.
 """
 
+from dataclasses import asdict
+
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_execution import (
@@ -14,6 +16,7 @@ from app.domain.workbench.formal_execution import (
     validate_values,
 )
 from app.domain.workbench.formal_host import validate_host_call
+from app.domain.workbench.formal_method_plan_generated import evaluate_v0_checks
 from app.domain.workbench.states import (
     ATTEMPT_TERMINAL,
     TASK_TERMINAL,
@@ -193,8 +196,27 @@ class FormalExecution:
                 return await self._finish(
                     task_id, str(active), "failed", detail=str(exc), observed_call=call
                 )
+            v0_results = evaluate_v0_checks(
+                snapshot.draft.definition, snapshot.arguments, outputs
+            )
+            failed_v0 = [r for r in v0_results if not r.passed]
+            if failed_v0:
+                return await self._finish(
+                    task_id,
+                    str(active),
+                    "failed",
+                    "v0_validation_failed",
+                    detail="; ".join(f"{r.promise_id}:{r.detail}" for r in failed_v0),
+                    observed_call=call,
+                    v0_checks=[asdict(r) for r in v0_results],
+                )
             return await self._finish(
-                task_id, str(active), "succeeded", outputs=outputs, observed_call=call
+                task_id,
+                str(active),
+                "succeeded",
+                outputs=outputs,
+                observed_call=call,
+                v0_checks=[asdict(r) for r in v0_results] if v0_results else None,
             )
         if state in ("declined", "expired", "cancelled"):
             return await self._finish(
@@ -223,6 +245,7 @@ class FormalExecution:
         outputs=None,
         detail="",
         observed_call=None,
+        v0_checks=None,
     ):
         async with self.stores() as repo, repo.transaction():
             task = await repo.get_task(task_id, for_update=True)
@@ -283,7 +306,11 @@ class FormalExecution:
             }
             await repo.update_attempt(
                 attempt_id,
-                refs={**(attempt.get("refs") or {}), "formal_result": result},
+                refs={
+                    **(attempt.get("refs") or {}),
+                    "formal_result": result,
+                    **({"v0_checks": v0_checks} if v0_checks is not None else {}),
+                },
             )
             await led.attempt_transition(
                 attempt_id,

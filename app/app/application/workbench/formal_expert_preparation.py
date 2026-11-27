@@ -31,6 +31,7 @@ class Strict(BaseModel):
 class ExecutionConfirmation(Strict):
     revision: int = Field(strict=True, gt=0)
     preview_digest: Digest
+    accept_envelope: bool = False
 
 
 class AccountPin(Strict):
@@ -301,7 +302,10 @@ async def prepare(
         invalid_accounts = [
             k
             for k, p in bindings["accounts"].items()
-            if not any(o["pin"] == p for o in options.get(k, []))
+            if not any(
+                o["pin"] == p
+                for o in options.get(k.rsplit(":", 1)[-1] if ":" in k else k, [])
+            )
         ]
         if body:
             if invalid_materials or invalid_accounts:
@@ -390,8 +394,24 @@ async def prepare(
                     preview,
                     sources,
                     temporary=bool(temporary and temporary["local_root"]),
+                    envelope_approved=bool(submission.accept_envelope),
                 )
             return preview
+    from app.application.workbench.ordinary_material import declared_material_slots
+
+    material_slots = declared_material_slots(definition)
+    approval_summary = {
+        "envelope": [
+            r.requirement_id
+            for r in definition.what_requires_approval
+            if getattr(r, "scope", "per_action") == "envelope"
+        ],
+        "per_action": [
+            r.requirement_id
+            for r in definition.what_requires_approval
+            if getattr(r, "scope", "per_action") != "envelope"
+        ],
+    }
     return {
         "execution": receipt,
         "input_types": {
@@ -400,6 +420,8 @@ async def prepare(
             else "json"
             for name, slot in slots.items()
         },
+        "material_slots": material_slots,
+        "approval_summary": approval_summary,
         "revision": revision,
         "bindings": bindings,
         "account_options": options,

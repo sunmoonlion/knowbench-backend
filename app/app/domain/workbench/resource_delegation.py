@@ -42,12 +42,33 @@ class ResourceAuthorityRef(Record):
 
 class DelegationBinding(Record):
     # This is the existing accepted-plan identity, not a formal MethodRef.
-    # A future formal-method dispatcher needs its own explicit binding variant.
     kind: Literal["accepted_plan"] = "accepted_plan"
     parent_method_id: Identity
     parent_snapshot_digest: Digest
     child_method_id: Identity
     child_method_version: Identity
+
+
+class FormalTreeDelegationBinding(Record):
+    """Explicit multi-hop call-tree binding for frozen formal orchestrations."""
+
+    kind: Literal["formal_call_tree"] = "formal_call_tree"
+    root_method_id: Identity
+    root_method_version: Identity
+    root_definition_digest: Digest
+    allowed_method_ids: tuple[Identity, ...] = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def unique_allowed_methods(self):
+        if len(set(self.allowed_method_ids)) != len(self.allowed_method_ids):
+            raise ValueError("Duplicate method identity in formal call tree binding")
+        return self
+
+
+AnyDelegationBinding = Annotated[
+    DelegationBinding | FormalTreeDelegationBinding,
+    Field(discriminator="kind"),
+]
 
 
 class DelegationEvidence(Record):
@@ -85,12 +106,12 @@ class ResourceDelegation(Record):
     revision: int = Field(strict=True, ge=1)
     issuer: str = Field(strict=True, min_length=1, max_length=200, pattern=r"\S")
     owner_actor_id: UUID
-    binding: DelegationBinding
+    binding: AnyDelegationBinding
     connection_id: UUID
     connection_revision: int = Field(strict=True, ge=1)
     operation_digest: str = Field(strict=True, pattern=r"^[a-f0-9]{64}$")
     requirement: AccessRequirement
-    max_delegation_depth: int = Field(default=1, strict=True, ge=1, le=1)
+    max_delegation_depth: int = Field(default=1, strict=True, ge=1, le=4)
     status: Literal["active", "revoked"]
     valid_from: datetime
     expires_at: datetime
@@ -102,6 +123,13 @@ class ResourceDelegation(Record):
             raise ValueError("Resource authority times must include a timezone")
         if self.expires_at <= self.valid_from:
             raise ValueError("Resource authority expiry must follow its start")
+        if (
+            isinstance(self.binding, DelegationBinding)
+            and self.max_delegation_depth != 1
+        ):
+            raise ValueError(
+                "Accepted-plan resource delegation supports single-hop depth only"
+            )
         return self
 
     @property
@@ -125,7 +153,7 @@ class DelegationOption(Record):
     authority: ResourceAuthorityRef
     issuer: str = Field(min_length=1, max_length=200)
     expires_at: datetime
-    binding: DelegationBinding
+    binding: AnyDelegationBinding
 
 
 class ResourceDelegationCatalog:
@@ -138,7 +166,7 @@ class ResourceDelegationCatalog:
         self,
         owner,
         *,
-        binding: DelegationBinding,
+        binding: AnyDelegationBinding,
         connection_id,
         connection_revision: int,
         operation_digest: str,

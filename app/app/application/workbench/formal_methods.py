@@ -199,6 +199,21 @@ class FormalMethods:
     async def sources(self, subject: str) -> dict:
         return await self.registry.sources(subject)
 
+    async def register_direct_source(
+        self, subject: str, source_id, version: int, draft
+    ) -> dict[str, Any]:
+        async with self.repo.transaction():
+            owner = await self._owner(subject)
+            registered = await self.repo.register_direct_revision(
+                owner, source_id, version, draft
+            )
+            row = (
+                registered.model_dump(mode="json")
+                if hasattr(registered, "model_dump")
+                else dict(registered)
+            )
+            return self.registry.direct_source(row).model_dump(mode="json")
+
     async def _source(
         self, owner: str, subject: str, source: FormalMethodSource | None
     ) -> bool:
@@ -315,21 +330,35 @@ class FormalMethods:
             owner, reference, shared=shared, grants=grants
         )
 
-    async def binding_options(self, owner, frozen):
+    async def binding_options(
+        self,
+        owner,
+        frozen,
+        *,
+        preloaded_sources: list[tuple[FormalMethodSource, str, str | None]]
+        | None = None,
+    ):
         from app.domain.workbench.formal_execution import same_implementation
 
-        subject = await self.repo.subject_of_actor(owner)
         options = {}
-        for asset in await self.repo.capability_assets(owner):
-            for source in self._sources(asset, subject, now=self.now()):
+        if preloaded_sources is not None:
+            for source, asset_name, account_label in preloaded_sources:
                 if source.license_basis != "pending" and same_implementation(
                     frozen.draft.source, source
                 ):
-                    options[source.asset_id] = (
-                        source,
-                        asset["name"],
-                        asset["detail"].get("account_label"),
-                    )
+                    options[source.asset_id] = (source, asset_name, account_label)
+        else:
+            subject = await self.repo.subject_of_actor(owner)
+            for asset in await self.repo.capability_assets(owner):
+                for source in self._sources(asset, subject, now=self.now()):
+                    if source.license_basis != "pending" and same_implementation(
+                        frozen.draft.source, source
+                    ):
+                        options[source.asset_id] = (
+                            source,
+                            asset["name"],
+                            asset["detail"].get("account_label"),
+                        )
         preferred = await self.repo.incubation_asset(owner, frozen.reference)
         selected = preferred
         if selected is None and len(options) == 1:
@@ -435,8 +464,48 @@ class FormalMethods:
         except ValueError as exc:
             raise CapabilityError(str(exc)) from exc
 
-    async def check_delivery_source(self, owner, frozen, run=None, *, market=True):
+    async def check_delivery_source(
+        self,
+        owner,
+        frozen,
+        run=None,
+        *,
+        market=True,
+        internal_dependency: bool = False,
+    ):
         source = frozen.draft.source
+        if (
+            internal_dependency
+            and frozen.visibility == "private"
+            and source is not None
+            and source.kind
+            in ("registered_script", "registered_instruction", "service_function")
+        ):
+            if not frozen.validation.execution or frozen.validation.uncovered:
+                raise Forbidden(
+                    "Internal private leaf lacks complete execution validation"
+                )
+            run = run or await self.repo.formal_validation(
+                owner, str(frozen.validation.run_id)
+            )
+            evidence = (run or {}).get("execution_evidence") or {}
+            expected_adapter = (
+                "knowbench/formal-script-host/v1"
+                if source.kind == "registered_script"
+                else "knowbench/formal-instruction-host/v1"
+                if source.kind == "registered_instruction"
+                else function_evidence_adapter(frozen.draft)
+            )
+            if (
+                fingerprint(evidence) != frozen.validation.execution.evidence_digest
+                or evidence.get("adapter") != expected_adapter
+            ):
+                raise Forbidden(
+                    "Internal private leaf lacks verified execution evidence"
+                )
+            if not await self._source(owner, frozen.owner_subject, source):
+                raise Forbidden("Internal private leaf source is unavailable")
+            return
         if market:
             if frozen.visibility != "public" or not frozen.validation.execution:
                 raise Forbidden("Version has no public validation")
@@ -563,7 +632,12 @@ class FormalMethods:
             ):
                 if method.owner_subject != subject:
                     raise Forbidden("Dependency is owned by another author")
-                await self.check_delivery_source(owner, method, market=market)
+                await self.check_delivery_source(
+                    owner,
+                    method,
+                    market=market,
+                    internal_dependency=(method.reference != root.reference),
+                )
             for method in sorted(
                 documents, key=lambda m: (m.reference.method_id, m.reference.version)
             ):
@@ -602,10 +676,16 @@ class FormalMethods:
                 from app.domain.workbench.formal_method_compiler_generated import (
                     implementation_kind,
                 )
+                from app.domain.workbench.formal_method_generated import (
+                    extract_public_contract,
+                )
 
                 result["method_kind"] = implementation_kind(
                     root.draft.definition.procedure.kind
                 )
+                result["public_contract"] = extract_public_contract(
+                    root.draft.definition
+                ).model_dump(mode="json")
             if skill is not None:
                 if not market or selected is None or not selected.delivery_terms:
                     raise NotFound("Skill is not part of the frozen method")
@@ -835,7 +915,9 @@ class FormalMethods:
                             raise Forbidden(
                                 "Incubation permission does not grant public distribution"
                             )
-                        await self.check_delivery_source(owner, dep)
+                        await self.check_delivery_source(
+                            owner, dep, internal_dependency=True
+                        )
                     public_dependencies = {
                         (dep.reference.method_id, dep.reference.version): dep
                         for dep in dependencies

@@ -7,6 +7,7 @@ postorder selection crosses into the existing review and execution pipeline.
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, TypeAdapter
@@ -17,8 +18,11 @@ from app.domain.workbench.formal_method_generated import (
     ObjectBatch,
     ObjectItem,
     ObjectRows,
+    ProjectionLens,
     StepValue,
     Strict,
+    project_schema,
+    slot_meaning_compatible,
 )
 from app.domain.workbench.incubation_selection import (
     Operator,
@@ -38,7 +42,63 @@ EVENT = "planning/node_assessed"
 PROTOCOL = "htn/v1"
 ROOT = "n1"
 DISCLOSURE_BYTES = 128_000
+TOP_K_PRE_DISCLOSURE_BYTES = 16_000
+MIN_HTN_TURN_SECONDS = 25.0
 FOCUSED_AMENDMENT = re.compile(r"^\[(n1(?:_\d+)*)\]\s*(\S.*)", re.S)
+
+
+def _rank_by_target_domains(
+    methods: Mapping[str, Mapping[str, Any]],
+    target_domain_ids: tuple[str, ...],
+) -> tuple[dict[str, str], list[str]]:
+    if not target_domain_ids:
+        return {}, list(methods.keys())[:12]
+    targets = [{"domain_id": d} for d in target_domain_ids if d]
+    if not targets:
+        return {}, list(methods.keys())[:12]
+    direct: set[str] = set()
+    needed_upstream: list[dict[str, str]] = []
+    for alias, cand in methods.items():
+        outputs = cand.get("outputs") or {}
+        inputs = cand.get("inputs") or {}
+        if any(
+            slot_meaning_compatible(slot.get("meaning") or {}, t)
+            for slot in outputs.values()
+            for t in targets
+        ):
+            direct.add(alias)
+            for in_slot in inputs.values():
+                meaning = in_slot.get("meaning") or {}
+                if "domain_id" in meaning:
+                    needed_upstream.append(dict(meaning))
+    upstream: set[str] = set()
+    if needed_upstream:
+        for alias, cand in methods.items():
+            if alias in direct:
+                continue
+            outputs = cand.get("outputs") or {}
+            if any(
+                slot_meaning_compatible(slot.get("meaning") or {}, req)
+                for slot in outputs.values()
+                for req in needed_upstream
+            ):
+                upstream.add(alias)
+    reachability: dict[str, str] = {}
+    for alias in methods:
+        reachability[alias] = (
+            "direct_deliverable"
+            if alias in direct
+            else ("upstream_producer" if alias in upstream else "available")
+        )
+    ranked: list[str] = []
+    for group in (direct, upstream):
+        for alias in methods:
+            if alias in group and alias not in ranked:
+                ranked.append(alias)
+    for alias in methods:
+        if alias not in ranked:
+            ranked.append(alias)
+    return reachability, ranked
 
 
 class ChoiceCheck(Strict):
@@ -304,6 +364,29 @@ class HierarchicalPlanner:
             goal = src["text"]
             previous = src.get("previous_selection")
             amendment = src.get("clarification") or ""
+        self.target_deliverables = list(
+            ctx.get("target_deliverables")
+            or (src.get("target_deliverables") if not self.author else None)
+            or ()
+        )
+        self.allowed_capabilities = list(
+            ctx.get("allowed_capabilities")
+            or (src.get("allowed_capabilities") if not self.author else None)
+            or ()
+        )
+        self.table_axes = dict(
+            ctx.get("table_axes")
+            or (src.get("table_axes") if not self.author else None)
+            or {}
+        )
+        target_domains = tuple(
+            item["expected_domain_id"]
+            for item in self.target_deliverables
+            if isinstance(item, Mapping) and item.get("expected_domain_id")
+        )
+        self.reachability, ranked_aliases = _rank_by_target_domains(
+            self.methods, target_domains
+        )
         self.edit = ctx.get("edit") if self.author else src.get("node_edit")
         directed = (
             FOCUSED_AMENDMENT.match(amendment)
@@ -340,6 +423,32 @@ class HierarchicalPlanner:
         elif previous:
             restored = self.restore(previous, amendment, goal)
             self.stale_edit = bool(self.focus and not restored)
+        if not saved and self.target_deliverables and not self.stale_edit:
+            self._pre_disclose_top_k(ranked_aliases)
+
+    def _pre_disclose_top_k(self, ranked_aliases: list[str]) -> None:
+        ordered: list[str] = []
+        chosen = self.chosen_method()
+        if chosen and chosen in self.methods:
+            ordered.append(chosen)
+        for alias in ranked_aliases:
+            if (
+                alias in self.methods
+                and alias not in ordered
+                and self.reachability.get(alias)
+                in ("direct_deliverable", "upstream_producer")
+            ):
+                ordered.append(alias)
+        budget = TOP_K_PRE_DISCLOSURE_BYTES
+        picked: list[str] = []
+        for alias in ordered[:8]:
+            cost = len(json.dumps(self.methods[alias], ensure_ascii=False).encode()) + 2
+            if cost > budget:
+                continue
+            budget -= cost
+            picked.append(alias)
+        if picked:
+            self.shown = picked
 
     def restore(self, previous, amendment, goal):
         focus = FOCUSED_AMENDMENT.match(amendment)
@@ -391,18 +500,23 @@ class HierarchicalPlanner:
         self.brief["requested_change"] = change
         return True
 
-    def reset(self, node, reason, *, backtrack=True):
+    def reset(self, node, reason, *, backtrack=True, tabu_signature: str | None = None):
         self.nodes = {
             k: v for k, v in self.nodes.items() if not k.startswith(node.id + "_")
         }
+        tabu = list(node.tabu_signatures)
+        if tabu_signature and tabu_signature not in tabu:
+            tabu.append(tabu_signature)
         self.nodes[node.id] = PlanningNode(
             id=node.id,
             parent=node.parent,
             goal=node.goal,
             reason=reason,
             backtracks=int(backtrack),
+            tabu_signatures=tuple(tabu[:16]),
         )
-        self.shown = []
+        if not backtrack:
+            self.shown = []
 
     def limits(self, node):
         if self.author and self.edit and self.edit["mode"] == "split":
@@ -453,6 +567,11 @@ class HierarchicalPlanner:
                 "output": binding.output,
                 "slot": inputs[port],
                 "source": binding.source,
+                **(
+                    {"lens": binding.lens.model_dump(mode="json", exclude_none=True)}
+                    if getattr(binding, "lens", None) is not None
+                    else {}
+                ),
             }
             for port, binding in parent.inputs.items()
             if (binding.source == "step" or binding.source == "object_rows")
@@ -476,6 +595,11 @@ class HierarchicalPlanner:
                     if v["required"]
                 },
                 "outputs": {k: v["description"][:160] for k, v in m["outputs"].items()},
+                **(
+                    {"reachability": self.reachability[alias]}
+                    if alias in self.reachability
+                    else {}
+                ),
             }
             for alias, m in self.methods.items()
         }
@@ -526,8 +650,25 @@ class HierarchicalPlanner:
             edit["requested_action"] = self.edit["mode"]
             if self.edit.get("method"):
                 edit["requested_method"] = self.chosen_method()
+        guidance = {}
+        if self.target_deliverables:
+            guidance["target_deliverables"] = self.target_deliverables
+        if self.allowed_capabilities:
+            guidance["allowed_capabilities"] = self.allowed_capabilities
+        if self.table_axes:
+            guidance["table_axes"] = self.table_axes
         return {
             **edit,
+            **(
+                {"five_element_guidance": guidance}
+                if guidance
+                else {}
+            ),
+            **(
+                {"tabu_methods": list(node.tabu_signatures)}
+                if node.tabu_signatures
+                else {}
+            ),
             "request": self.brief,
             "goal": node.goal,
             "caller_inputs": {
@@ -571,9 +712,10 @@ class HierarchicalPlanner:
             if port in shared:
                 for other, key in uses[binding.name]:
                     previous = self.methods[other.step.method]["inputs"][key]
-                    if any(
-                        previous[field] != current[field]
-                        for field in ("schema", "meaning")
+                    if previous["schema"] != current[
+                        "schema"
+                    ] or not slot_meaning_compatible(
+                        previous["meaning"], current["meaning"]
                     ):
                         raise ValueError(
                             "Shared caller input has a different contract; name the distinct input"
@@ -902,7 +1044,11 @@ class HierarchicalPlanner:
                         node, "gap", "所选方法与已审定的上游或下游接口不相容。" + error
                     )
                 if node.parent and self.may_replan(self.nodes[node.parent]):
-                    self.reset(self.nodes[node.parent], error)
+                    self.reset(
+                        self.nodes[node.parent],
+                        error,
+                        tabu_signature=step.method,
+                    )
                     return None
                 if node.parent and self.nodes[node.parent].backtracks:
                     return self.unresolved(
@@ -1050,7 +1196,18 @@ class HierarchicalPlanner:
                 schema = required["schema"]
                 if requirement["source"] == "object_rows":
                     schema = schema.get("items", {}).get("properties", {}).get("value")
-                if slot["schema"] != schema or slot["meaning"] != required["meaning"]:
+                produced_schema = slot["schema"]
+                if requirement.get("lens") is not None:
+                    try:
+                        produced_schema = project_schema(
+                            produced_schema,
+                            ProjectionLens.model_validate(requirement["lens"]),
+                        )
+                    except ValueError as exc:
+                        return f"{alias}: {exc}"
+                if produced_schema != schema or not slot_meaning_compatible(
+                    slot["meaning"], required["meaning"]
+                ):
                     return f"{alias}: incompatible output schema or meaning for {requirement['output']}"
         if (
             any(v.source == "object_rows" for v in step.inputs.values())

@@ -6,7 +6,10 @@ from uuid import UUID
 from pydantic import Field, PrivateAttr, model_validator
 
 from app.domain.workbench.capabilities import digest
-from app.domain.workbench.formal_method_admission_generated import FormalMethodDraft
+from app.domain.workbench.formal_method_admission_generated import (
+    FormalMethodDraft,
+    FormalMethodSource,
+)
 from app.domain.workbench.formal_method_generated import (
     Digest,
     MethodRef,
@@ -44,6 +47,12 @@ class ConsumerPlan(Strict):
     dependencies: tuple[ConsumerMethod, ...]
     materials: dict[str, MaterialPin] = Field(
         default_factory=dict, exclude_if=lambda pins: not pins
+    )
+    slot_sources: dict[str, FormalMethodSource] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
+    envelope_approved: bool = Field(
+        default=False, strict=True, exclude_if=lambda value: not value
     )
     scope_hours: int | None = Field(
         default=None, strict=True, gt=0, exclude_if=lambda value: value is None
@@ -133,7 +142,9 @@ class ConsumerPlan(Strict):
     def definition_digest(self):
         return self.reference.digest
 
-    def execution_source(self, method):
+    def execution_source(self, method, slot: str | None = None):
+        if slot and slot in self.slot_sources:
+            return self.slot_sources[slot]
         return method.draft.source
 
     def identity(self):

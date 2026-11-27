@@ -60,6 +60,7 @@ from app.domain.workbench.memory import memory_note
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.packs import (
     FIND_EXPERT,
+    INCUBATE,
     SEALED_INPUT,
     AcceptanceRule,
     ExpertPack,
@@ -327,6 +328,50 @@ class TaskRuntime:
             if htn.active(task):
                 saved = await repo.latest_task_payload(task_id, htn.EVENT)
                 planner = htn.HierarchicalPlanner(task, saved)
+                if planner.stale_edit:
+                    settled = planner.advance(
+                        {"action": "clarify", "reason": "stale_edit"}
+                    )
+                    async with repo.transaction():
+                        fresh_task = await repo.get_task(task_id, for_update=True)
+                        if fresh_task["state"] not in (
+                            TaskState.QUEUED,
+                            TaskState.RUNNING,
+                        ):
+                            return fresh_task["state"]
+                        if fresh_task["state"] == TaskState.QUEUED:
+                            fresh_task = await led.transition(
+                                task_id, TaskState.RUNNING
+                            )
+                        art = await repo.put_artifact(
+                            task_id=task_id,
+                            attempt_id=None,
+                            name=step.output_artifact,
+                            kind="step",
+                            content=settled,
+                        )
+                        await repo.cas_task(
+                            task_id,
+                            expected_version=int(fresh_task["state_version"]),
+                            current_step=int(fresh_task["current_step"]) + 1,
+                        )
+                        await repo.append_event(
+                            session_id=str(fresh_task["session_id"]),
+                            kind="task",
+                            event_type="step/accepted",
+                            payload={
+                                "step_id": step.step_id,
+                                "artifact": art,
+                                "checks": [],
+                                "consumed": "0",
+                                "short_circuit": "stale_edit",
+                            },
+                            task_id=task_id,
+                            attempt_id=None,
+                        )
+                        await self._requeue(led, task_id)
+                    await repo.commit()
+                    return TaskState.QUEUED
                 # An intermediate decision settles its own model turn. Only a
                 # rejection since that decision belongs to the current repair.
                 if saved:
@@ -359,7 +404,8 @@ class TaskRuntime:
                         datetime.now(UTC) - attempts[0]["created_at"]
                     ).total_seconds()
                     remaining -= max(0, elapsed)
-                    if remaining <= 0:
+                    min_turn = htn.MIN_HTN_TURN_SECONDS if planner else 1e-9
+                    if remaining < min_turn:
                         return (
                             await led.transition(
                                 task_id,
@@ -368,6 +414,31 @@ class TaskRuntime:
                             )
                         )["state"]
                 timeout = min(timeout, remaining) if timeout is not None else remaining
+            elif planner is not None and task["profile_id"] == INCUBATE.profile_id:
+                inc_timeout = float(
+                    ((task.get("original_input") or {}).get("input") or {})
+                    .get("incubation", {})
+                    .get("timeout_seconds")
+                    or (STEP_TIMEOUT_SECONDS or 300.0)
+                )
+                if attempts:
+                    elapsed = (
+                        datetime.now(UTC) - attempts[0]["created_at"]
+                    ).total_seconds()
+                    remaining_inc = inc_timeout - max(0.0, elapsed)
+                    if remaining_inc < htn.MIN_HTN_TURN_SECONDS:
+                        return (
+                            await led.transition(
+                                task_id,
+                                TaskState.FAILED,
+                                reason={"code": "selection_planning_timeout"},
+                            )
+                        )["state"]
+                    timeout = (
+                        min(timeout, remaining_inc)
+                        if timeout is not None
+                        else remaining_inc
+                    )
             inputs = {}
             for name in () if view.planned else step.input_refs:
                 art = await repo.get_artifact(task_id=task_id, name=name)
@@ -1002,6 +1073,18 @@ class TaskRuntime:
                 )
                 return TaskState.WAITING
             if result.lookup_failure:
+                if (
+                    task["profile_id"] == INCUBATE.profile_id
+                    and result.lookup_failure == "budget_limit"
+                ):
+                    await led.attempt_transition(
+                        attempt_id,
+                        AttemptState.BUDGET_EXCEEDED,
+                        consumed=consumed,
+                        tokens=result.tokens,
+                        turn_id=result.turn_id,
+                    )
+                    return TaskState.WAITING
                 await led.attempt_transition(
                     attempt_id,
                     AttemptState.FAILED,

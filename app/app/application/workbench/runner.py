@@ -62,6 +62,7 @@ from app.domain.workbench.method_plan import PLAN_STEP
 from app.domain.workbench.models import InteractionPrompt
 from app.domain.workbench.native_permissions import inside, permission_profile
 from app.domain.workbench.native_registry import NATIVE_REQUESTS, native_event_payload
+from app.domain.workbench.packs import SEALED_INPUT
 from app.domain.workbench.pricing import (
     DEFAULT_PRICES,
     PriceList,
@@ -902,14 +903,12 @@ class SandboxLink:
             )
             planning = bool(active and active["step_id"] == DATA_STEP_ID)
             lookup = bool(task and task["profile_id"] == LOOKUP_PROFILE)
+            sealed = bool(task and task["profile_id"] in SEALED_INPUT)
             supplied_directory = bool(
                 task
                 and (
                     (lookup and str(task.get("profile_version")) in {"5", "6", "7"})
-                    or (
-                        task["profile_id"] == "INCUBATE"
-                        and str(task.get("profile_version")) == "2"
-                    )
+                    or task["profile_id"] == "INCUBATE"
                 )
             )
             from app.domain.workbench.formal_execution import is_formal_model
@@ -920,9 +919,9 @@ class SandboxLink:
             if probe:
                 assert active is not None
                 remaining = Decimal(str(active["budget_allocated"]["amount"]))
-            if lookup:
+            if lookup or sealed:
                 assert task is not None
-                if LOOKUP_SECONDS is not None:
+                if lookup and LOOKUP_SECONDS is not None:
                     timeout = (
                         min(timeout, LOOKUP_SECONDS)
                         if timeout is not None
@@ -1011,7 +1010,7 @@ class SandboxLink:
             "planning_guard": DataPlanningGuard() if planning else None,
             "planning_failure": None,
             "planning_stop_unconfirmed": False,
-            "lookup_guard": LookupGuard(remaining) if lookup else None,
+            "lookup_guard": LookupGuard(remaining) if (lookup or sealed) else None,
             "lookup_failure": None,
             "lookup_stop_unconfirmed": False,
             "probe_guard": FormalProbeGuard(remaining)
@@ -1021,6 +1020,7 @@ class SandboxLink:
             if active
             and not planning
             and not lookup
+            and not sealed
             and not probe
             and active["step_id"] != PLAN_STEP
             else None,
@@ -1140,7 +1140,7 @@ class SandboxLink:
                     await self._notice_stall(waiter, guard, now)
                 if (
                     (planning and waiter["planning_guard"].failure)
-                    or (lookup and waiter["lookup_guard"].failure)
+                    or ((lookup or sealed) and waiter["lookup_guard"].failure)
                     or (waiter["compute_guard"] and waiter["compute_guard"].failure)
                     or (waiter["idle_guard"] and waiter["idle_guard"].failure)
                     or (waiter["probe_guard"] and waiter["probe_guard"].failure)
@@ -1159,7 +1159,11 @@ class SandboxLink:
                         min(
                             left,
                             0.25
-                            if planning or lookup or probe or waiter["compute_guard"]
+                            if planning
+                            or lookup
+                            or sealed
+                            or probe
+                            or waiter["compute_guard"]
                             else 5.0,
                         ),
                     )
@@ -1185,7 +1189,7 @@ class SandboxLink:
                     waiter["planning_guard"].failure,
                     stage="planning",
                 )
-            elif lookup and waiter["lookup_guard"].failure:
+            elif (lookup or sealed) and waiter["lookup_guard"].failure:
                 await self._stop_guarded_turn(
                     client,
                     thread_id,
@@ -2995,8 +2999,16 @@ class Runner:
                     session_id=str(session["id"]),
                     facts="[workbench] Isolated candidate-method verification. Only the explicitly supplied candidate call is available.",
                 )
-            if task and task["profile_id"] == LOOKUP_PROFILE:
+            if task and (
+                task["profile_id"] == LOOKUP_PROFILE
+                or task["profile_id"] in SEALED_INPUT
+            ):
                 # Independent read-only thread: no local machine, project files or memory.
+                note = (
+                    "[workbench] Select an expert using only the user's question and the public expert directory. Do not read project files or run analysis."
+                    if task["profile_id"] == LOOKUP_PROFILE
+                    else "[workbench] Sealed method incubation turn. Use only the explicitly supplied contract material; do not read project files, user memories, or external data."
+                )
                 return TurnPlan(
                     settings=turn_settings(
                         "chat",
@@ -3009,7 +3021,7 @@ class Runner:
                     mode="chat",
                     directory=None,
                     session_id=str(session["id"]),
-                    facts="[workbench] Select an expert using only the user's question and the public expert directory. Do not read project files or run analysis.",
+                    facts=note,
                 )
             test_round = await repo.is_test_session(str(session["id"]))
             online = True
@@ -3218,7 +3230,13 @@ class Runner:
                 if session.get("active_task_id")
                 else None
             )
-            lookup = bool(task and task["profile_id"] == LOOKUP_PROFILE)
+            lookup = bool(
+                task
+                and (
+                    task["profile_id"] == LOOKUP_PROFILE
+                    or task["profile_id"] in SEALED_INPUT
+                )
+            )
             from app.domain.workbench.formal_execution import is_formal_model
 
             probe = bool(task and is_formal_model(task))

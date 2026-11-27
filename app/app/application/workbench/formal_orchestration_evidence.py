@@ -375,6 +375,7 @@ async def verify_step_evidence(
     events,
     accepted,
     versions,
+    skipped_steps=(),
 ):
     refs = attempt.get("refs") or {}
     actual = refs.get("formal_result") or {}
@@ -406,7 +407,9 @@ async def verify_step_evidence(
         "step_index": index,
         "reference": leaf.reference.model_dump(mode="json"),
     }
-    inputs = bind_step_inputs(step, snapshot.arguments, accepted)
+    inputs = bind_step_inputs(
+        step, snapshot.arguments, accepted, skipped_steps=skipped_steps
+    )
     bindings = [
         version for version in versions if version["step_id"] in step.depends_on
     ]
@@ -651,15 +654,31 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             and str(matches[0].get("session_id")) == str(task["session_id"]),
             "persisted_plan_case_mismatch",
         )
+        skipped_steps = set(
+            ((task.get("execution_policy") or {}).get("formal_frontier") or {}).get(
+                "skipped_steps"
+            )
+            or ()
+        )
+        executed_plan = [
+            (idx, step)
+            for idx, step in enumerate(plan)
+            if step.id not in skipped_steps
+        ]
         _require(
             task["state"] == TaskState.SUCCEEDED
             and result["outcome"] == "succeeded"
             and task.get("active_attempt_id") is None
             and task.get("active_interaction_id") is None
             and task.get("cancel_requested_at") is None
-            and len(attempts) == len(plan)
+            and len(attempts) == len(executed_plan)
+            and bool(attempts)
             and str(attempts[-1]["id"]) == result["attempt_id"]
-            and task["current_step"] == len(plan) - 1,
+            and (
+                task["current_step"] == len(plan) - 1
+                if not skipped_steps
+                else task["current_step"] >= executed_plan[-1][0]
+            ),
             "plan_execution_incomplete",
         )
         validate_plan_inputs(invocation_definition(snapshot), snapshot.arguments)
@@ -700,8 +719,8 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             "unexpected_plan_cost",
         )
         accepted, versions = {}, []
-        for index, (step, attempt, item) in enumerate(
-            zip(plan, attempts, evidence["steps"], strict=True)
+        for pos, ((index, step), attempt, item) in enumerate(
+            zip(executed_plan, attempts, evidence["steps"], strict=True)
         ):
             stage = step.id
             await verify_step_evidence(
@@ -712,15 +731,18 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
                 step,
                 index,
                 attempt,
-                attempts[index - 1] if index else None,
+                attempts[pos - 1] if pos else None,
                 item,
                 root,
                 events,
                 accepted,
                 versions,
+                skipped_steps=skipped_steps,
             )
         stage = "exports"
-        exported = export_outputs(invocation_definition(snapshot), accepted)
+        exported = export_outputs(
+            invocation_definition(snapshot), accepted, skipped_steps=skipped_steps
+        )
         exports = attempts[-1]["refs"].get("formal_exports")
         _require(
             exports == {"outputs": exported, "outputs_digest": digest(exported)}

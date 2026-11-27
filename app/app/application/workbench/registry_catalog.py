@@ -260,12 +260,6 @@ class SceneRegistry:
 
         topics = [] if experts_only else await self.category_matches(subject, terms)
         refs, more = await self.market.planning_window(subject, 0, 100)
-        if topics:
-            # Blend categories only within a qualified set so other subjects'
-            # versions cannot affect how many slots each category receives.
-            while more:
-                page, more = await self.market.planning_window(subject, len(refs), 100)
-                refs.extend(page)
         if more:
             # Exact-grant checks on indexed hits usually avoid shipping the full
             # grant set. Only authorized hits count toward the caller's page.
@@ -584,17 +578,21 @@ class SceneRegistry:
         )
         search = {"topic_terms": terms} if goal else {}
         installed_digests = None
+        preloaded_sources = None
+        async with self.repo.transaction():
+            now_at = self.methods.now()
+            preloaded_sources = [
+                (source, asset["name"], asset["detail"].get("account_label"))
+                for asset in await self.repo.capability_assets(owner)
+                for source in self.methods._sources(asset, subject, now=now_at)
+                if source.license_basis != "pending"
+            ]
         if goal:
-            async with self.repo.transaction():
-                installed_digests = {
-                    source.digest
-                    for asset in await self.repo.capability_assets(owner)
-                    for source in self.methods._sources(
-                        asset, subject, now=self.methods.now()
-                    )
-                    if source.kind in ("mcp", "a2a", "skill_script")
-                    and source.license_basis != "pending"
-                }
+            installed_digests = {
+                source.digest
+                for source, _, _ in preloaded_sources
+                if source.kind in ("mcp", "a2a", "skill_script")
+            }
             if not installed_digests:
                 return {"items": [], "next": None, "partial": False}
         page = await self.market.incubation_tools(
@@ -605,10 +603,12 @@ class SceneRegistry:
             **search,
         )
         grants = list(page.items)
+        market_truncated = False
         if goal:
             # This is a planning snapshot. Browse and exact reads continue using
-            # the market cursor. Collect grants only, never all method documents.
-            while page.next:
+            # the market cursor. Bound grant paging to at most 5 pages (500 grants).
+            pages_fetched = 1
+            while page.next and pages_fetched < 5:
                 cursor = page.next
                 page = await self.market.incubation_tools(
                     subject, after=str(cursor), limit=100, **search
@@ -616,6 +616,8 @@ class SceneRegistry:
                 if page.next and page.next <= cursor:
                     raise CapabilityError("Incubation directory cursor did not advance")
                 grants.extend(page.items)
+                pages_fetched += 1
+            market_truncated = bool(page.next)
             by_ref = {grant.reference: grant for grant in grants}
             async with self.repo.transaction():
                 rows = await self.repo.registry_method_candidates(
@@ -641,7 +643,7 @@ class SceneRegistry:
                 try:
                     frozen = await catalog.shared_tool(grant)
                     options, selected = await self.methods.binding_options(
-                        owner, frozen
+                        owner, frozen, preloaded_sources=preloaded_sources
                     )
                 except (WorkbenchError, ValueError):
                     continue
@@ -680,6 +682,10 @@ class SceneRegistry:
         ranked.sort(key=lambda entry: entry[0], reverse=True)
         return {
             "items": [item for _, item in ranked[:limit]],
-            **({"partial": len(ranked) > limit} if goal else {}),
+            **(
+                {"partial": bool(market_truncated or len(ranked) > limit)}
+                if goal
+                else {}
+            ),
             "next": str(page.next) if page.next else None,
         }

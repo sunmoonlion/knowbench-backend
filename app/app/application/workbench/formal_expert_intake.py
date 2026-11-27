@@ -233,9 +233,35 @@ async def review(repo, registry, owner, task, artifact):
         result["match"]["picks"] = [
             p for p in result["match"]["picks"] if p["reference"] == selected
         ]
-    else:
-        for option in result["options"]:
-            await check_current(registry, owner, option)
+    elif result["options"]:
+        if hasattr(registry, "local_definitions"):
+            refs = [
+                MethodRef.model_validate(option["reference"])
+                for option in result["options"]
+            ]
+            found = await registry.planning_definitions(
+                owner, refs, experts_only=True
+            )
+            checked_options = []
+            for option in result["options"]:
+                ref = MethodRef.model_validate(option["reference"])
+                defn = found.get(ref)
+                if defn is None:
+                    checked_options.append({**option, "unavailable": True})
+                    continue
+                if registry.public_declaration(ref, defn) != option:
+                    raise StaleStateVersion("Expert declaration changed")
+                checked_options.append(option)
+            result["options"] = checked_options
+        else:
+            checked_options = []
+            for option in result["options"]:
+                try:
+                    await check_current(registry, owner, option)
+                    checked_options.append(option)
+                except NotFound:
+                    checked_options.append({**option, "unavailable": True})
+            result["options"] = checked_options
     async with repo.transaction():
         if await repo.list_task_events(str(task["id"]), types=(REVISION,)):
             raise StaleStateVersion("The question has been revised")

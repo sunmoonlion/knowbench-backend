@@ -524,8 +524,13 @@ class FormalExecutions:
         ):
             exports = refs.get("formal_exports")
             if task["state"] != TaskState.SUCCEEDED or not exports:
+                rejection = task.get("rejection") or {}
                 outcome = "failed"
-                actual = {"detail": "The expert did not complete its declared exports"}
+                actual = {
+                    "rejection_code": rejection.get("code"),
+                    "detail": rejection.get("message")
+                    or "The expert did not complete its declared exports",
+                }
             else:
                 actual = {**actual, **exports}
         assertions = (

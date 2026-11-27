@@ -501,6 +501,30 @@ async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
             return None
         accepted, _ = await accepted_children(repo, task, snapshot, call, path)
         exports = _result(export_outputs(definition, accepted))
+        from app.domain.workbench.formal_method_plan_generated import evaluate_v0_checks
+        from app.domain.workbench.ordinary_expert import ConsumerPlan
+
+        node_caller_inputs = (
+            snapshot.arguments
+            if node is None
+            else (call["detail"].get("arguments") or {})
+        )
+        node_v0 = evaluate_v0_checks(
+            definition,
+            node_caller_inputs,
+            exports["outputs"],
+            authorized_materials=[
+                str(m.material_id) for m in snapshot.materials.values()
+            ]
+            if node is None and isinstance(snapshot, ConsumerPlan)
+            else None,
+        )
+        bad_node_v0 = [r for r in node_v0 if not r.passed]
+        if bad_node_v0:
+            raise ValueError(
+                "v0_validation_failed: "
+                + "; ".join(f"{r.promise_id}:{r.detail}" for r in bad_node_v0)
+            )
         export_ref = await store_result(repo, task, path, exports, exports=True)
         if node is None:
             await repo.update_call(

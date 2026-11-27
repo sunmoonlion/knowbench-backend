@@ -383,7 +383,10 @@ class FormalMethodExecutionRequest(Strict):
             # Only a supported fixed graph can enter the static plan executor.
             plan = (
                 p.steps
-                if p.object_batch or p.has_candidate_choice
+                if p.object_batch
+                or p.has_candidate_choice
+                or p.has_step_batch
+                or p.has_artifact_guard
                 else unique_plan(self.draft.definition)
             )
             if self.draft.allowed_callers != ("host",):

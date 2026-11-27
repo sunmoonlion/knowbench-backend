@@ -42,23 +42,43 @@ def execution_sources(graph, preview, subject, assets, methods, local_sources):
 
 
 async def confirm_execution(
-    repo, owner, task, selected, definition, graph, preview, sources, *, temporary=False
+    repo,
+    owner,
+    task,
+    selected,
+    definition,
+    graph,
+    preview,
+    sources,
+    *,
+    temporary=False,
+    envelope_approved=False,
 ):
     methods = {}
+    slot_sources = {}
+    nested = graph.depth > 2
     for node in graph.nodes:
+        source_for_node = sources[node.path] if node.kind == "tool" else None
         method = ConsumerMethod(
             reference=node.reference,
             draft=FormalMethodDraft(
                 definition=node.definition,
-                source=sources[node.path] if node.kind == "tool" else None,
+                source=source_for_node,
                 allowed_callers=("host",),
             ),
         )
-        if node.reference in methods and methods[node.reference] != method:
-            raise CapabilityError(
-                "A repeated method requires conflicting account bindings"
-            )
-        methods[node.reference] = method
+        if node.reference in methods:
+            if (
+                node.kind == "tool"
+                and methods[node.reference].draft.source != source_for_node
+            ):
+                slot_sources[plan_slot(node.path, nested=nested)] = source_for_node
+            elif methods[node.reference] != method:
+                raise CapabilityError(
+                    "A repeated method requires conflicting definitions"
+                )
+        else:
+            methods[node.reference] = method
     plan = ConsumerPlan(
         temporary=temporary,
         match_task_id=task["id"],
@@ -70,6 +90,8 @@ async def confirm_execution(
         ),
         arguments=preview["bindings"]["values"],
         dependencies=tuple(methods.values()),
+        slot_sources=slot_sources,
+        envelope_approved=bool(envelope_approved),
         scope_hours=preview.get("scope_hours"),
         policies={
             plan_slot(s["path"], nested=graph.depth > 2): s["quote"]["basis"]

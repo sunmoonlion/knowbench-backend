@@ -41,12 +41,6 @@ async def after_comparison(
     if verdict is False or (verdict is None and policy.max_reworks == 0):
         return None
     tid = str(task["id"])
-    if not isinstance(snapshot, ConsumerPlan):
-        return (
-            await led.transition(
-                tid, TaskState.FAILED, reason={"code": "comparison_requires_revision"}
-            )
-        )["state"]
     from app.application.workbench.formal_orchestration_execution import (
         accepted_outputs,
     )
@@ -57,6 +51,54 @@ async def after_comparison(
     iteration = step.iteration + 1
     root = next(iter(procedure.collaboration[step.role].review_requirements))
     requirement = procedure.collaboration[step.role].review_requirements[root]
+    max_allowed = min(
+        policy.max_reworks,
+        (procedure.max_expansions - 1) // 3 - 1,
+        procedure.max_steps // 3 - 1,
+    )
+    if not isinstance(snapshot, ConsumerPlan):
+        if type(verdict) is bool and verdict and iteration <= max_allowed:
+            try:
+                caps = capability_factory(repo) if capability_factory else None
+                if caps and caps.instruction_service:
+                    owner = str(task["owner_actor_id"])
+                    svc = await caps.instruction_service(caps.formal_sources, owner)
+                    session = await repo.get_session(
+                        str(task["session_id"]), owner_actor_id=owner
+                    )
+                    currency = task["budget"]["currency"]
+                    producer = await graph_route(
+                        svc, owner, session, currency, producer=True
+                    )
+                    reviewer = await graph_route(
+                        svc, owner, session, currency, requirement=requirement
+                    )
+                    maximum = Decimal(producer["maximum"]) + 2 * Decimal(
+                        reviewer["maximum"]
+                    )
+                    if maximum <= Budget.model_validate(task["budget"]).available:
+                        policies = {
+                            root: digest(producer),
+                            step.role: digest(reviewer),
+                            review_stage_id(step.role, "blind"): digest(reviewer),
+                        }
+                        await append_round(
+                            repo,
+                            task,
+                            {
+                                "iteration": iteration,
+                                "comparison": artifacts[-1],
+                                "policies": policies,
+                            },
+                        )
+                        return (await led.transition(tid, TaskState.QUEUED))["state"]
+            except (WorkbenchError, ValueError):
+                pass
+        return (
+            await led.transition(
+                tid, TaskState.FAILED, reason={"code": "comparison_requires_revision"}
+            )
+        )["state"]
     subject = {
         "reviewer": step.role,
         "round": step.iteration,
@@ -67,11 +109,7 @@ async def after_comparison(
     kind = ADJUDICATE
     if type(verdict) is not bool:
         reason = "本轮没有给出布尔型返工结论，需要你裁定。"
-    elif iteration <= min(
-        policy.max_reworks,
-        (procedure.max_expansions - 1) // 3 - 1,
-        procedure.max_steps // 3 - 1,
-    ):
+    elif iteration <= max_allowed:
         try:
             caps = capability_factory(repo) if capability_factory else None
             if not caps or not caps.instruction_service:

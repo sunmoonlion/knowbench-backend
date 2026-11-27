@@ -1,5 +1,6 @@
 """Transfer the approved problem and interface gap, and recover an interrupted transfer."""
 
+from typing import Any
 from uuid import UUID
 
 from pydantic import Field
@@ -22,6 +23,12 @@ class Handoff(Strict):
     gap: str = Field(min_length=1, max_length=2000)
     reference: MethodRef | None = None
     plan_digest: Digest | None = None
+    htn_tree: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
+    draft_contract: dict[str, Any] | None = Field(
+        default=None, exclude_if=lambda v: v is None
+    )
 
 
 async def context(repo, task, review_digest):
@@ -44,6 +51,9 @@ async def context(repo, task, review_digest):
             "methods": plan["steps"],
             "outputs": [item["name"] for item in plan["scope"]["outputs"]],
         }
+        if plan and saved["sketch_digest"] == plan["sketch_digest"]
+        else None,
+        "htn_tree": (plan.get("selection") or {}).get("tree")
         if plan and saved["sketch_digest"] == plan["sketch_digest"]
         else None,
         "attached_plan": bool(intent and intent.get("suggested_plan")),
@@ -99,8 +109,13 @@ async def transfer(service, owner, task_id, command):
             not attachment or attachment["sketch_digest"] != command.plan_digest
         ):
             raise StaleStateVersion("The saved plan differs from the approved proposal")
+        use_v2 = bool(
+            command.htn_tree is not None or command.draft_contract is not None
+        )
         payload = {
-            "contract": "knowlab/formal-handoff/v1",
+            "contract": (
+                "knowlab/formal-handoff/v2" if use_v2 else "knowlab/formal-handoff/v1"
+            ),
             "owner_subject": subject,
             "project_id": str(task["project_id"]),
             "task_id": task_id,

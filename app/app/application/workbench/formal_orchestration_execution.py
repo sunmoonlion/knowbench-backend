@@ -1,6 +1,7 @@
 """Deterministic formal steps on the existing Task/Attempt/Artifact ledger."""
 
 import uuid
+from dataclasses import asdict
 from decimal import Decimal
 
 from app.application.workbench.ledger import Ledger
@@ -22,6 +23,8 @@ from app.domain.workbench.formal_method_execution_generated import bounded_json
 from app.domain.workbench.formal_method_generated import ReviewPhaseStep
 from app.domain.workbench.formal_method_plan_generated import (
     bind_step_inputs,
+    evaluate_artifact_guard,
+    evaluate_v0_checks,
     export_outputs,
     review_group,
     review_stage_id,
@@ -124,13 +127,35 @@ async def accepted_step(repo, task, snapshot, index, step, matches):
     return value, versions[0]
 
 
-async def accepted_outputs(repo, task, snapshot, before):
+def _frontier_state(task: dict) -> dict:
+    raw = (task.get("execution_policy") or {}).get("formal_frontier") or {}
+    return {
+        "skipped_steps": list(raw.get("skipped_steps") or ()),
+        "outputs_index": dict(raw.get("outputs_index") or {}),
+    }
+
+
+async def accepted_outputs(repo, task, snapshot, before, *, include_skipped=False):
     """Read exact accepted artifact versions, never a newer artifact with the same name."""
     steps = orchestration_plan(snapshot)
     attempts = await repo.list_attempts(str(task["id"]))
+    by_id = {str(a["id"]): a for a in attempts}
+    frontier = _frontier_state(task)
+    skipped = set(frontier["skipped_steps"])
+    outputs_index = frontier["outputs_index"]
     outputs, artifacts = {}, []
     for index, step in enumerate(steps[:before]):
-        matches = [a for a in attempts if (a.get("refs") or {}).get("slot") == step.id]
+        if step.id in skipped:
+            if step.always_required:
+                raise CapabilityError("Mandatory formal step cannot be skipped")
+            continue
+        indexed = outputs_index.get(step.id)
+        if indexed and str(indexed.get("attempt_id")) in by_id:
+            matches = [by_id[str(indexed["attempt_id"])]]
+        else:
+            matches = [
+                a for a in attempts if (a.get("refs") or {}).get("slot") == step.id
+            ]
         value, version = await accepted_step(repo, task, snapshot, index, step, matches)
         outputs[step.id] = value
         artifact = {"step_id": step.id, **version}
@@ -144,6 +169,8 @@ async def accepted_outputs(repo, task, snapshot, before):
                 raise CapabilityError(
                     "Rework decision differs from its sealed comparison"
                 )
+    if include_skipped:
+        return outputs, artifacts, skipped
     return outputs, artifacts
 
 
@@ -199,8 +226,12 @@ async def step_context(repo, task, attempt):
         ):
             raise CapabilityError("Formal nested Attempt changed invocation")
     else:
-        outputs, artifacts = await accepted_outputs(repo, task, snapshot, index)
-        inputs = bind_step_inputs(step, snapshot.arguments, outputs)
+        outputs, artifacts, skipped = await accepted_outputs(
+            repo, task, snapshot, index, include_skipped=True
+        )
+        inputs = bind_step_inputs(
+            step, snapshot.arguments, outputs, skipped_steps=skipped
+        )
         bindings = [a for a in artifacts if a["step_id"] in step.depends_on]
     edge = review_group(snapshot.draft.definition.procedure)
     predecessors = isolation_sources(edge, steps[:index])
@@ -349,16 +380,154 @@ class FormalOrchestrationExecution:
                             )["state"]
                     else:
                         try:
-                            previous_outputs, artifacts = await accepted_outputs(
-                                repo, task, snapshot, index
+                            (
+                                previous_outputs,
+                                artifacts,
+                                skipped,
+                            ) = await accepted_outputs(
+                                repo,
+                                task,
+                                snapshot,
+                                index,
+                                include_skipped=True,
                             )
+                            if (
+                                step.artifact_guard is not None
+                                and not evaluate_artifact_guard(
+                                    step.artifact_guard, previous_outputs
+                                )
+                            ):
+                                frontier = _frontier_state(task)
+                                if step.id not in frontier["skipped_steps"]:
+                                    frontier["skipped_steps"].append(step.id)
+                                policy = dict(task.get("execution_policy") or {})
+                                policy["formal_frontier"] = frontier
+                                next_index = index + 1
+                                await repo.append_event(
+                                    session_id=str(task["session_id"]),
+                                    task_id=task_id,
+                                    kind="task",
+                                    event_type="formal/step_skipped_by_guard",
+                                    payload={
+                                        "step_id": step.id,
+                                        "guard": step.artifact_guard.model_dump(
+                                            mode="json"
+                                        ),
+                                    },
+                                )
+                                if next_index == len(steps):
+                                    try:
+                                        exported = export_outputs(
+                                            invocation_definition(snapshot),
+                                            previous_outputs,
+                                            skipped_steps=set(
+                                                frontier["skipped_steps"]
+                                            ),
+                                        )
+                                        bounded_json(exported)
+                                    except ValueError as exc:
+                                        await repo.cas_task(
+                                            task_id,
+                                            expected_version=task["state_version"],
+                                            execution_policy=policy,
+                                        )
+                                        return (
+                                            await led.transition(
+                                                task_id,
+                                                TaskState.FAILED,
+                                                reason={
+                                                    "code": "export_validation_failed",
+                                                    "message": str(exc)[:500],
+                                                },
+                                            )
+                                        )["state"]
+                                    from app.domain.workbench.ordinary_expert import (
+                                        ConsumerPlan,
+                                    )
+
+                                    v0 = evaluate_v0_checks(
+                                        invocation_definition(snapshot),
+                                        snapshot.arguments,
+                                        exported,
+                                        authorized_materials=[
+                                            str(m.material_id)
+                                            for m in snapshot.materials.values()
+                                        ]
+                                        if isinstance(snapshot, ConsumerPlan)
+                                        else None,
+                                    )
+                                    bad_v0 = [r for r in v0 if not r.passed]
+                                    await repo.cas_task(
+                                        task_id,
+                                        expected_version=task["state_version"],
+                                        execution_policy=policy,
+                                    )
+                                    if bad_v0:
+                                        return (
+                                            await led.transition(
+                                                task_id,
+                                                TaskState.FAILED,
+                                                reason={
+                                                    "code": "v0_validation_failed",
+                                                    "message": "; ".join(
+                                                        f"{r.promise_id}:{r.detail}"
+                                                        for r in bad_v0
+                                                    )[:500],
+                                                },
+                                            )
+                                        )["state"]
+                                    if attempts:
+                                        last_att = attempts[-1]
+                                        await repo.update_attempt(
+                                            str(last_att["id"]),
+                                            refs={
+                                                **(last_att.get("refs") or {}),
+                                                "formal_exports": {
+                                                    "outputs": exported,
+                                                    "outputs_digest": digest(exported),
+                                                },
+                                            },
+                                        )
+                                    if isinstance(snapshot, ConsumerPlan):
+                                        final = await repo.put_artifact(
+                                            task_id=task_id,
+                                            attempt_id=str(attempts[-1]["id"])
+                                            if attempts
+                                            else None,
+                                            name="expert_delivery",
+                                            kind="handback",
+                                            content=exported,
+                                        )
+                                        return (
+                                            await led.transition(
+                                                task_id,
+                                                TaskState.SUCCEEDED,
+                                                terminal_result_ref=final["id"],
+                                            )
+                                        )["state"]
+                                    return (
+                                        await led.transition(
+                                            task_id, TaskState.SUCCEEDED
+                                        )
+                                    )["state"]
+                                await repo.cas_task(
+                                    task_id,
+                                    expected_version=task["state_version"],
+                                    current_step=next_index,
+                                    execution_policy=policy,
+                                )
+                                continue
                             arguments = bind_step_inputs(
-                                step, snapshot.arguments, previous_outputs
+                                step,
+                                snapshot.arguments,
+                                previous_outputs,
+                                skipped_steps=skipped,
                             )
                             edge = review_group(snapshot.draft.definition.procedure)
                             priors = [
                                 producer_isolation(attempts, name)
                                 for name in isolation_sources(edge, steps[:index])
+                                if name not in skipped
                             ]
                             if priors:
                                 extra["independent_review"] = priors[0]
@@ -561,7 +730,9 @@ class FormalOrchestrationExecution:
                 ):
                     return task["state"]
                 if status == "succeeded":
-                    _, step, frozen, _ = await step_context(repo, task, attempt)
+                    _, step, frozen, step_inputs = await step_context(
+                        repo, task, attempt
+                    )
                     try:
                         outputs = validate_step_outputs(
                             step,
@@ -570,6 +741,17 @@ class FormalOrchestrationExecution:
                             ),
                         )
                         bounded_json(outputs)
+                        leaf_v0 = evaluate_v0_checks(
+                            frozen.draft.definition, step_inputs, outputs
+                        )
+                        failed_leaf_v0 = [r for r in leaf_v0 if not r.passed]
+                        if failed_leaf_v0:
+                            raise ValueError(
+                                "v0_validation_failed: "
+                                + "; ".join(
+                                    f"{r.promise_id}:{r.detail}" for r in failed_leaf_v0
+                                )
+                            )
                     except (ValueError, TypeError, RecursionError) as exc:
                         return await self.finish(
                             task_id,
@@ -803,22 +985,94 @@ class FormalOrchestrationExecution:
                     settle_ancestors,
                 )
 
-                exports = await settle_ancestors(
-                    repo, task, snapshot, outcome="succeeded"
-                )
+                try:
+                    exports = await settle_ancestors(
+                        repo, task, snapshot, outcome="succeeded"
+                    )
+                except (ValueError, CapabilityError) as exc:
+                    err_code = (
+                        "v0_validation_failed"
+                        if str(exc).startswith("v0_validation_failed:")
+                        else "export_validation_failed"
+                    )
+                    await settle_ancestors(
+                        repo, task, snapshot, outcome="failed", detail=str(exc)
+                    )
+                    return (
+                        await led.transition(
+                            task_id,
+                            TaskState.FAILED,
+                            reason={"code": err_code, "message": str(exc)[:500]},
+                        )
+                    )["state"]
                 if exports is not None and index != len(execution_steps(snapshot)):
                     raise CapabilityError(
                         "Formal root returned before all leaf attempts"
                     )
             elif index == len(orchestration_plan(snapshot)):
-                accepted, _ = await accepted_outputs(repo, task, snapshot, index)
-                exported = export_outputs(invocation_definition(snapshot), accepted)
-                bounded_json(exported)
+                accepted, _, skipped_done = await accepted_outputs(
+                    repo, task, snapshot, index, include_skipped=True
+                )
+                try:
+                    exported = export_outputs(
+                        invocation_definition(snapshot),
+                        accepted,
+                        skipped_steps=skipped_done,
+                    )
+                    bounded_json(exported)
+                except ValueError as exc:
+                    return (
+                        await led.transition(
+                            task_id,
+                            TaskState.FAILED,
+                            reason={
+                                "code": "export_validation_failed",
+                                "message": str(exc)[:500],
+                            },
+                        )
+                    )["state"]
+                from app.domain.workbench.ordinary_expert import ConsumerPlan
+
+                root_v0 = evaluate_v0_checks(
+                    invocation_definition(snapshot),
+                    snapshot.arguments,
+                    exported,
+                    authorized_materials=[
+                        str(m.material_id) for m in snapshot.materials.values()
+                    ]
+                    if isinstance(snapshot, ConsumerPlan)
+                    else None,
+                )
+                bad_root_v0 = [r for r in root_v0 if not r.passed]
+                if bad_root_v0:
+                    return (
+                        await led.transition(
+                            task_id,
+                            TaskState.FAILED,
+                            reason={
+                                "code": "v0_validation_failed",
+                                "checks": [asdict(r) for r in root_v0],
+                                "message": "; ".join(
+                                    f"{r.promise_id}:{r.detail}" for r in bad_root_v0
+                                )[:500],
+                            },
+                        )
+                    )["state"]
                 exports = {"outputs": exported, "outputs_digest": digest(exported)}
             if exports is not None:
+                extra_refs = (
+                    {"v0_checks": [asdict(r) for r in root_v0]}
+                    if not recursive_plan(snapshot) and root_v0
+                    else {}
+                )
                 await repo.update_attempt(
                     attempt_id,
-                    refs={**refs, "formal_result": result, "formal_exports": exports},
+                    refs={
+                        **refs,
+                        "formal_result": result,
+                        "formal_exports": exports,
+                        **extra_refs,
+                    },
                 )
                 from app.domain.workbench.ordinary_expert import ConsumerPlan
 
@@ -838,7 +1092,28 @@ class FormalOrchestrationExecution:
                         )
                     )["state"]
                 return (await led.transition(task_id, TaskState.SUCCEEDED))["state"]
+            policy_updates = {}
+            if (
+                not recursive_plan(snapshot)
+                and getattr(
+                    invocation_definition(snapshot).procedure,
+                    "has_artifact_guard",
+                    False,
+                )
+                and versions
+            ):
+                frontier = _frontier_state(task)
+                frontier["outputs_index"][step.id] = {
+                    "attempt_id": str(attempt_id),
+                    **versions[0],
+                }
+                policy = dict(task.get("execution_policy") or {})
+                policy["formal_frontier"] = frontier
+                policy_updates["execution_policy"] = policy
             await repo.cas_task(
-                task_id, expected_version=task["state_version"], current_step=index
+                task_id,
+                expected_version=task["state_version"],
+                current_step=index,
+                **policy_updates,
             )
             return (await led.transition(task_id, TaskState.QUEUED))["state"]

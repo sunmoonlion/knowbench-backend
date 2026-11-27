@@ -47,16 +47,34 @@
           "$ref": "#/$defs/DataTransfer"
         },
         "required_when": {
-          "const": "always",
           "default": "always",
+          "enum": [
+            "always",
+            "when_selected"
+          ],
           "title": "Required When",
           "type": "string"
         },
         "on_unavailable": {
-          "const": "pause",
           "default": "pause",
+          "enum": [
+            "pause",
+            "fail",
+            "skip_optional"
+          ],
           "title": "On Unavailable",
           "type": "string"
+        },
+        "origin_steps": {
+          "default": [],
+          "items": {
+            "maxLength": 128,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 100,
+          "title": "Origin Steps",
+          "type": "array"
         }
       },
       "required": [
@@ -111,6 +129,15 @@
             "fail"
           ],
           "title": "On Denied",
+          "type": "string"
+        },
+        "scope": {
+          "default": "per_action",
+          "enum": [
+            "envelope",
+            "per_action"
+          ],
+          "title": "Scope",
           "type": "string"
         }
       },
@@ -190,6 +217,28 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
           "title": "Name",
           "type": "string"
+        },
+        "lens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectionLens"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "caller_slot": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ValueSlot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -374,6 +423,66 @@
         }
       },
       "title": "CollaborationStep",
+      "type": "object"
+    },
+    "CollectPack": {
+      "additionalProperties": false,
+      "description": "Pack homogeneous or subtype-compatible predecessor outputs into a typed array.",
+      "properties": {
+        "source": {
+          "const": "collect_pack",
+          "title": "Source",
+          "type": "string"
+        },
+        "items": {
+          "items": {
+            "$ref": "#/$defs/PackMember"
+          },
+          "maxItems": 32,
+          "minItems": 1,
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source",
+        "items"
+      ],
+      "title": "CollectPack",
+      "type": "object"
+    },
+    "CollectionCoverageCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "collection_coverage",
+          "title": "Kind",
+          "type": "string"
+        },
+        "items_pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Items Pointer",
+          "type": "string"
+        },
+        "key_field": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Key Field",
+          "type": "string"
+        },
+        "expected_keys_input_slot": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Expected Keys Input Slot",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "items_pointer",
+        "key_field",
+        "expected_keys_input_slot"
+      ],
+      "title": "CollectionCoverageCheck",
       "type": "object"
     },
     "ContainsAssertion": {
@@ -1053,6 +1162,28 @@
           ],
           "default": null
         },
+        "artifact_guard": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/VerifiedArtifactGuard"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "step_batch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ObjectBatch"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "id": {
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
           "title": "Id",
@@ -1160,6 +1291,41 @@
         "max_method_calls"
       ],
       "title": "ModelProbeLimits",
+      "type": "object"
+    },
+    "NumericIdentityCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "numeric_identity",
+          "title": "Kind",
+          "type": "string"
+        },
+        "lhs_pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Lhs Pointer",
+          "type": "string"
+        },
+        "rhs_pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Rhs Pointer",
+          "type": "string"
+        },
+        "tolerance": {
+          "default": 0.0,
+          "minimum": 0,
+          "title": "Tolerance",
+          "type": "number"
+        }
+      },
+      "required": [
+        "kind",
+        "lhs_pointer",
+        "rhs_pointer"
+      ],
+      "title": "NumericIdentityCheck",
       "type": "object"
     },
     "ObjectBatch": {
@@ -1339,6 +1505,101 @@
       "title": "Orchestration",
       "type": "object"
     },
+    "PackMember": {
+      "additionalProperties": false,
+      "properties": {
+        "tag": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Tag",
+          "type": "string"
+        },
+        "step": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Step",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        },
+        "allow_skipped": {
+          "default": false,
+          "title": "Allow Skipped",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "tag",
+        "step",
+        "output"
+      ],
+      "title": "PackMember",
+      "type": "object"
+    },
+    "ProhibitedTermsCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "prohibited_terms",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "extra_terms": {
+          "default": [],
+          "items": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "pattern": "\\S",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Extra Terms",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer"
+      ],
+      "title": "ProhibitedTermsCheck",
+      "type": "object"
+    },
+    "ProjectionLens": {
+      "additionalProperties": false,
+      "description": "Side-effect-free width projection and field renaming (§2.2 closed value ops).",
+      "properties": {
+        "pick_fields": {
+          "default": [],
+          "items": {
+            "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Pick Fields",
+          "type": "array"
+        },
+        "rename_fields": {
+          "maxProperties": 64,
+          "patternProperties": {
+            "^[A-Za-z][A-Za-z0-9_-]{0,63}$": {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+              "type": "string"
+            }
+          },
+          "title": "Rename Fields",
+          "type": "object"
+        }
+      },
+      "title": "ProjectionLens",
+      "type": "object"
+    },
     "PromiseCondition": {
       "additionalProperties": false,
       "properties": {
@@ -1479,6 +1740,66 @@
       "title": "Runner",
       "type": "object"
     },
+    "SchemaRangeCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "schema_and_range",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "min_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Value"
+        },
+        "max_value": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Value"
+        },
+        "non_empty": {
+          "default": true,
+          "title": "Non Empty",
+          "type": "boolean"
+        },
+        "allowed_values": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 64,
+          "title": "Allowed Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer"
+      ],
+      "title": "SchemaRangeCheck",
+      "type": "object"
+    },
     "SkillDeliveryTerms": {
       "additionalProperties": false,
       "description": "Publishable provenance and verbatim notices from the operator's review.",
@@ -1507,6 +1828,41 @@
       "title": "SkillDeliveryTerms",
       "type": "object"
     },
+    "SourcedCitationCheck": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "const": "sourced_citation",
+          "title": "Kind",
+          "type": "string"
+        },
+        "pointer": {
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "material_input_slot": {
+          "anyOf": [
+            {
+              "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Material Input Slot"
+        }
+      },
+      "required": [
+        "kind",
+        "pointer"
+      ],
+      "title": "SourcedCitationCheck",
+      "type": "object"
+    },
     "StepInput": {
       "additionalProperties": false,
       "properties": {
@@ -1517,6 +1873,7 @@
           "discriminator": {
             "mapping": {
               "caller": "#/$defs/CallerValue",
+              "collect_pack": "#/$defs/CollectPack",
               "literal": "#/$defs/LiteralValue",
               "object_item": "#/$defs/ObjectItem",
               "object_rows": "#/$defs/ObjectRows",
@@ -1531,6 +1888,9 @@
             },
             {
               "$ref": "#/$defs/StepValue"
+            },
+            {
+              "$ref": "#/$defs/CollectPack"
             },
             {
               "$ref": "#/$defs/LiteralValue"
@@ -1572,6 +1932,17 @@
           "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
           "title": "Output",
           "type": "string"
+        },
+        "lens": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ProjectionLens"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
@@ -1691,6 +2062,41 @@
           ],
           "title": "On Failure",
           "type": "string"
+        },
+        "v0_checks": {
+          "default": [],
+          "items": {
+            "discriminator": {
+              "mapping": {
+                "collection_coverage": "#/$defs/CollectionCoverageCheck",
+                "numeric_identity": "#/$defs/NumericIdentityCheck",
+                "prohibited_terms": "#/$defs/ProhibitedTermsCheck",
+                "schema_and_range": "#/$defs/SchemaRangeCheck",
+                "sourced_citation": "#/$defs/SourcedCitationCheck"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/NumericIdentityCheck"
+              },
+              {
+                "$ref": "#/$defs/SchemaRangeCheck"
+              },
+              {
+                "$ref": "#/$defs/SourcedCitationCheck"
+              },
+              {
+                "$ref": "#/$defs/CollectionCoverageCheck"
+              },
+              {
+                "$ref": "#/$defs/ProhibitedTermsCheck"
+              }
+            ]
+          },
+          "maxItems": 16,
+          "title": "V0 Checks",
+          "type": "array"
         }
       },
       "required": [
@@ -1753,6 +2159,54 @@
         "on_missing"
       ],
       "title": "ValueSlot",
+      "type": "object"
+    },
+    "VerifiedArtifactGuard": {
+      "additionalProperties": false,
+      "description": "Deterministic model-free predicate over an accepted predecessor output.",
+      "properties": {
+        "step": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Step",
+          "type": "string"
+        },
+        "output": {
+          "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$",
+          "title": "Output",
+          "type": "string"
+        },
+        "pointer": {
+          "default": "",
+          "maxLength": 512,
+          "pattern": "^(?:/(?:[^~/]|~[01])*)*$",
+          "title": "Pointer",
+          "type": "string"
+        },
+        "op": {
+          "enum": [
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "in_set",
+            "is_present"
+          ],
+          "title": "Op",
+          "type": "string"
+        },
+        "value": {
+          "default": null,
+          "title": "Value"
+        }
+      },
+      "required": [
+        "step",
+        "output",
+        "op"
+      ],
+      "title": "VerifiedArtifactGuard",
       "type": "object"
     }
   },

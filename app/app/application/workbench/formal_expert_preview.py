@@ -113,11 +113,23 @@ def mcp_quote(leaf, root, accounts, assets, operations, values, pending):
     if len(requirements) != 1:
         return None, "permission_unresolved"
     need = requirements[0]
-    matches = {
-        accounts[r.requirement_id]["asset_id"]
-        for r in root.access_requirements
-        if r.requirement_id in accounts and covers_requirement(r, need)
+    step_slot = "/".join(leaf.path)
+    direct_slot = leaf.path[0]
+    scoped_keys = (f"{step_slot}:{need.requirement_id}", f"{direct_slot}:{need.requirement_id}")
+    scoped_matches = {
+        accounts[key]["asset_id"]
+        for key in scoped_keys
+        if key in accounts
+        and any(covers_requirement(r, need) for r in root.access_requirements)
     }
+    if scoped_matches:
+        matches = scoped_matches
+    else:
+        matches = {
+            accounts[r.requirement_id]["asset_id"]
+            for r in root.access_requirements
+            if r.requirement_id in accounts and covers_requirement(r, need)
+        }
     if len(matches) != 1:
         return None, "account_unresolved"
     asset = assets.get(matches.pop())

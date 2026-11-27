@@ -85,6 +85,9 @@ class PermissionGrant(Requirement):
     resource_authority: ResourceAuthorityRef | None = Field(
         default=None, exclude_if=lambda value: value is None
     )
+    remaining_delegation_depth: int = Field(
+        default=1, strict=True, ge=1, le=4, exclude_if=lambda value: value == 1
+    )
 
     @model_validator(mode="after")
     def valid(self):
@@ -194,7 +197,16 @@ def covers(
         or (
             parent.resource_authority is not None
             and parent.delegable
-            and (child.delegable or child.recipient_call_id != call_id)
+            and (
+                (
+                    child.remaining_delegation_depth
+                    != parent.remaining_delegation_depth - 1
+                    or parent.remaining_delegation_depth <= 1
+                    or child.recipient_call_id is not None
+                )
+                if child.delegable
+                else child.recipient_call_id != call_id
+            )
         )
         or not (parent.delegable or parent.recipient_call_id == call_id)
         or (child.delegable and not parent.delegable)
@@ -277,12 +289,25 @@ def delegate(
     call_id: UUID,
     method_id: str,
     requirements: tuple[PermissionGrant, ...],
+    intermediate: bool = False,
 ) -> MethodAuthorization:
     """Host supplies the concrete child need/binding, separately from input values."""
-    # Current resource evidence supports one hop only. A child receives direct
-    # authority for its host-created invocation, never another delegable grant.
     narrowed = tuple(
-        grant.model_copy(update={"delegable": False, "recipient_call_id": call_id})
+        (
+            grant.model_copy(
+                update={
+                    "remaining_delegation_depth": grant.remaining_delegation_depth - 1,
+                }
+            )
+            if intermediate and grant.remaining_delegation_depth > 1
+            else grant.model_copy(
+                update={
+                    "delegable": False,
+                    "recipient_call_id": call_id,
+                    "remaining_delegation_depth": 1,
+                }
+            )
+        )
         if grant.delegable and grant.resource_authority is not None
         else grant
         for grant in requirements
