@@ -759,6 +759,59 @@ def test_unsupported_binding_can_be_corrected_without_resetting_parent(author, s
     assert (result["selection"] if author else result)["status"] == "ready"
 
 
+def test_direct_binding_accepts_copy_of_frozen_port_but_rejects_contract_changes():
+    task, _ = setup(author=True)
+    planner = HierarchicalPlanner(task)
+    first = proposal()["steps"][0]
+    method = first["method"]
+    inspect(planner, method)
+    port, binding = next(iter(first["inputs"].items()))
+    slot = planner.methods[method]["inputs"][port]
+    first["inputs"][port] = {
+        **binding,
+        "caller_slot": {**slot, "schema": {"type": "null"}},
+    }
+    with pytest.raises(ValueError, match="caller_slot"):
+        planner.advance(decision(first))
+    first["inputs"][port]["caller_slot"] = {**slot, "description": "作者对此输入的说明"}
+    artifact = planner.advance(decision(first))["selection"]
+    assert artifact["status"] == "ready"
+    assert artifact["steps"][0]["inputs"][port] == binding
+
+
+def test_separate_recovers_only_user_named_outputs_from_model_explanations():
+    task, _ = setup()
+    src = task["original_input"]["input"]
+    src["text"] = (
+        "独立交付 opening_evidence（期初平衡核验回执）和 cash_difference（现金滚动差额回执）。"
+    )
+    labels = {
+        "opening_evidence": "opening_evidence（期初平衡核验回执）",
+        "cash_difference": "cash_difference（现金滚动差额回执）",
+    }
+    goals = {
+        name: f"按核验目标复算并交付 {label}，再执行额外动作。"
+        for name, label in labels.items()
+    }
+    for bad in (
+        goals | {"cash_difference": goals["opening_evidence"]},
+        goals | {"cash_difference": labels["opening_evidence"]},
+        goals | {"cash_difference": "交付 cash_difference（新增结果）。"},
+        goals | {"cash_difference": "交付 extra_cash_difference（现金滚动差额回执）。"},
+    ):
+        planner = HierarchicalPlanner(task)
+        with pytest.raises(ValueError, match="for cash_difference"):
+            planner.advance({"action": "separate", "goals": bad})
+        assert len(planner.nodes) == 1
+    planner = HierarchicalPlanner(task)
+    assert planner.advance({"action": "separate", "goals": goals}) is None
+    resumed = HierarchicalPlanner(task, planner.snapshot())
+    root = resumed.nodes["n1"]
+    assert {
+        name: resumed.nodes[node].goal for node, name in root.delivery_goals.items()
+    } == labels
+
+
 @pytest.mark.parametrize("author", [False, True])
 @pytest.mark.parametrize("reverse", [False, True])
 async def test_independent_deliveries_keep_both_sources_through_review_and_compile(

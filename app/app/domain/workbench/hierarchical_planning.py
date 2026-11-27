@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, TypeAdapter
+from pydantic import Field, TypeAdapter, ValidationInfo, model_validator
 
 from app.domain.workbench.formal_method_generated import (
     CallerValue,
@@ -21,6 +21,7 @@ from app.domain.workbench.formal_method_generated import (
     ProjectionLens,
     StepValue,
     Strict,
+    ValueSlot,
     project_schema,
     slot_meaning_compatible,
 )
@@ -122,7 +123,34 @@ class Unresolved(Strict):
 class SeparateDeliveries(ChoiceCheck):
     action: Literal["separate"]
     # public output name -> requested result (without inventing a collector)
-    goals: dict[Name, Short] = Field(min_length=2, max_length=15)
+    goals: dict[Name, Short] = Field(
+        min_length=2,
+        max_length=15,
+        description="Map each public output to a short verbatim quote from the request. "
+        "Leave input instructions, implementation details and explanations out of the value.",
+    )
+
+
+def requested_delivery(name: str, proposal: str, sources: list[str]) -> str:
+    # A model may put the user's named result inside a longer work instruction.
+    # Recover only the complete name and label as written by the requester.
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_]){re.escape(name)}[ \t]*"
+        r"(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))"
+    )
+    labels = {m.group() for text in sources for m in pattern.finditer(text)}
+    if len(labels) == 1:
+        label = next(iter(labels))
+        if any(m.group() == label for m in pattern.finditer(proposal)):
+            return label
+        if proposal == label[len(name) :].strip()[1:-1].strip():
+            return label
+    elif any(proposal in text for text in sources):
+        return proposal
+    raise ValueError(
+        f"Each separate goal must quote a requested deliverable: for {name} copy only "
+        "the exact output phrase, without surrounding instructions"
+    )
 
 
 class ProposedStep(SketchStep):
@@ -135,6 +163,34 @@ class ProposedStep(SketchStep):
             Field(discriminator="source"),
         ],
     ] = Field(default_factory=dict, max_length=100)
+
+    @model_validator(mode="before")
+    @classmethod
+    def canonical_direct_bindings(cls, step: Any, info: ValidationInfo) -> Any:
+        if not isinstance(step, dict) or not isinstance(step.get("inputs"), dict):
+            return step
+        method = step.get("method")
+        catalog = (info.context or {}).get("methods", {})
+        ports = (
+            catalog.get(method, {}).get("inputs", {}) if isinstance(method, str) else {}
+        )
+        inputs = step["inputs"].copy()
+        for port, binding in inputs.items():
+            if not (
+                isinstance(binding, dict)
+                and binding.get("source") == "caller"
+                and binding.get("lens") is None
+                and binding.get("caller_slot") is not None
+                and port in ports
+            ):
+                continue
+            # A direct binding already inherits this frozen port. The planner may
+            # repeat it with a task-specific description; keep the catalog contract.
+            offered = ValueSlot.model_validate(binding["caller_slot"])
+            frozen = ValueSlot.model_validate(ports[port])
+            if offered.model_copy(update={"description": frozen.description}) == frozen:
+                inputs[port] = {k: v for k, v in binding.items() if k != "caller_slot"}
+        return {**step, "inputs": inputs}
 
 
 class Resolve(ChoiceCheck):
@@ -174,7 +230,8 @@ different task, report the capability gap. When the work is supported but respon
 requires a human decision, clarify that decision. Before inspecting or binding, check pending_choice:
 a promise to CHOOSE which alternative to use later is an unresolved decision, even if a target slot
 could store the eventual choice. Quote the user's words there or return clarify. A promise to deliver
-identified data later is an ordinary input. An explicit later answer can settle an earlier choice.
+identified data later is an ordinary input. For a direct caller input, use only source="caller"
+and name. Set caller_slot only together with a projection lens. An explicit later answer can settle an earlier choice.
 For reusable methods, a parameter chosen by future callers is different from an author's open decision."""
 DELIVERY_RULE = """When the user requests several independent results, select the separate action at the root.
 Its goals map each distinct public output name to the exact requested phrase.
@@ -869,7 +926,7 @@ class HierarchicalPlanner:
                 "clarify",
                 "目录或目标已变更，请重新确认要修改的目标和方法。",
             )
-        decision = DECISION.validate_python(raw)
+        decision = DECISION.validate_python(raw, context={"methods": self.methods})
         node = self.current
         self.turns += 1
         if isinstance(decision, ChoiceCheck) and decision.pending_choice:
@@ -926,15 +983,12 @@ class HierarchicalPlanner:
                 *self.human_text(),
                 *(d["summary"] for d in self.target_deliverables),
             ]
-            if any(
-                not any(goal in text for text in descriptions)
-                for goal in decision.goals.values()
-            ):
-                raise ValueError(
-                    "Each separate goal must quote a requested deliverable"
-                )
+            goals = {
+                name: requested_delivery(name, goal, descriptions)
+                for name, goal in decision.goals.items()
+            }
             child_names = {}
-            for i, (name, goal) in enumerate(decision.goals.items(), 1):
+            for i, (name, goal) in enumerate(goals.items(), 1):
                 child = PlanningNode(id=f"{ROOT}_{i}", parent=ROOT, goal=goal)
                 self.nodes[child.id] = child
                 child_names[child.id] = name
