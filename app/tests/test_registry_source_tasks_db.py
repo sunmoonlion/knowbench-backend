@@ -89,6 +89,20 @@ async def test_script_uses_confirmed_version_and_recovers_receipt(db):
         svc = service(repo)
         with pytest.raises(NotFound):
             await preview(svc, str(uuid4()), sid, req)
+        from app.domain.workbench.source_tasks import SourceTask, digest
+
+        active = (await preview(svc, OWNER, sid, req)).task_columns()
+        archived = {**active["pack_snapshot"], "review_rounds": 2}
+        with pytest.raises(CapabilityError, match="Invalid registered source task"):
+            SourceTask.load(
+                {
+                    **active,
+                    "pack_snapshot": archived,
+                    "pack_digest": digest(archived),
+                    "owner_actor_id": OWNER,
+                    "session_id": sid,
+                }
+            )
         tid = await confirm(svc, sid, req)
         async with repo.transaction():
             await repo.register_direct_revision(

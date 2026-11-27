@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -69,13 +68,12 @@ class Units:
 async def stack(db, *, setup_case=setup, result=None, **kwargs):
     host, task, cred, wire = await setup_case(db, **kwargs)
     async with host() as svc:
-        review_inputs = svc.formal.review_inputs
         catalog = svc.formal.source_licenses
         taskrow = await svc.repo.get_task(task)
         session = await svc.repo.get_session(str(taskrow["session_id"]))
 
     def formal(repo):
-        svc = FormalMethods(repo, review_inputs=review_inputs)
+        svc = FormalMethods(repo)
         svc.source_licenses = catalog
         return svc
 
@@ -508,124 +506,3 @@ async def test_pre_upgrade_attempt_resumes_and_reclaims_its_task_scoped_unit(db)
     await s.driver.cleanup(OWNER, s.task, attempt_id)
     assert set(s.units.scopes) == {None}
     assert s.units.reclaimed and s.turns == [1]
-
-
-@pytest.mark.parametrize(
-    "failure", ["empty_finding", "reused_gateway", "revoked_connection"]
-)
-async def test_strict_review_retains_evidence_and_stops_before_comparison(
-    db, monkeypatch, failure
-):
-    from functools import partial
-
-    from branch_review_support import review_case
-
-    s = await stack(
-        db,
-        setup_case=partial(review_case, monkeypatch=monkeypatch, strict=True),
-        result={"result": "" if failure == "empty_finding" else "sealed finding"},
-    )
-    s.units.ready = True
-    await drive(s)
-    if failure == "revoked_connection":
-        async with s.host() as svc, svc.repo.transaction():
-            await svc.repo.revoke_credential(s.cred["id"], owner_actor_id=OWNER)
-    await drive(s)
-    await drive(s)
-    # Only the independent round incurred a charge; no assessment ever reached the provider.
-    async with db() as session:
-        from app.infrastructure.workbench.repository import WorkbenchRepository
-
-        repo = WorkbenchRepository(session)
-        task = await repo.get_task(s.task)
-        attempts = await repo.list_attempts(s.task)
-    assert task["state"] == "FAILED" and len(s.provider_requests) == 1
-    assert "withheld author opinion" not in json.dumps(s.provider_requests)
-    assert (
-        Decimal(task["budget"]["reserved"]) == 0 and Decimal(task["budget"]["used"]) > 0
-    )
-    from app.application.workbench.review_decisions import OwnerDecision, decision_page
-
-    async with db() as sql:
-        repo = WorkbenchRepository(sql)
-        page = await decision_page(repo, OWNER, s.task)
-        assert (
-            page["task_state"] == "FAILED"
-            and "review-comparison" in page["missing_stages"]
-        )
-        if failure == "empty_finding":
-            assert not page["reports"]
-        else:
-            (report,) = page["reports"]
-            saved = await decision_page(
-                repo,
-                OWNER,
-                s.task,
-                command=OwnerDecision.model_validate(
-                    {
-                        "review_digest": page["review_digest"],
-                        "previous_revision": 0,
-                        "items": [
-                            {
-                                "artifact_id": report["id"],
-                                "quote": "sealed finding",
-                                "decision": "deferred",
-                                "reason": "Comparison still missing.",
-                            }
-                        ],
-                    }
-                ),
-            )
-            assert saved["revision"] == 1 and saved["missing_stages"] == [
-                "review-comparison"
-            ]
-    if failure == "empty_finding":
-        assert len(attempts) == 1 and not attempts[0]["output_artifacts"]
-    else:
-        second = next(a for a in attempts if a["step_id"] == "review-comparison")
-        assert (
-            second["status"] == "FAILED" and "instruction_request" not in second["refs"]
-        )
-        first = next(a for a in attempts if a["step_id"] == "direct")
-        assert first["output_artifacts"] == second["input_artifact_versions"]
-
-
-async def test_uncertain_first_review_neither_releases_assessment_nor_reissues_request(
-    db, monkeypatch
-):
-    from functools import partial
-
-    from branch_review_support import review_case
-
-    from app.domain.workbench.capabilities import CapabilityError
-    from app.domain.workbench.source_tasks import SourceTask
-
-    s = await stack(
-        db, setup_case=partial(review_case, monkeypatch=monkeypatch, strict=True)
-    )
-    s.units.ready = True
-
-    async def lost_reply():
-        raise asyncio.CancelledError
-
-    s.units.after_claim = lost_reply
-    with pytest.raises(asyncio.CancelledError):
-        await drive(s)
-    await drive(s)
-    async with s.host() as svc:
-        task = await svc.repo.get_task(s.task)
-        (attempt,) = await svc.repo.list_attempts(s.task)
-        assert task["state"] == "RUNNING" and attempt["step_id"] == "direct"
-        assert attempt["refs"].get("instruction_request") and not attempt["refs"].get(
-            "instruction_usage"
-        )
-        assert (
-            not attempt["output_artifacts"] and Decimal(task["budget"]["reserved"]) > 0
-        )
-        with pytest.raises(CapabilityError, match="Comparison attempt is not active"):
-            await svc.formal.review_inputs(
-                svc.repo, OWNER, SourceTask.load(task).review, comparison_task=s.task
-            )
-    assert len(
-        s.provider_requests
-    ) == 1 and "withheld author opinion" not in json.dumps(s.provider_requests)

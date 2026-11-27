@@ -239,7 +239,6 @@ async def wire(
         "no_route",
         "bad_blind",
         "two_sources",
-        "received",
     ],
 )
 async def test_author_strict_then_ordinary_cross_family(
@@ -271,9 +270,6 @@ async def test_author_strict_then_ordinary_cross_family(
     await settle(conductor, req)
     run = await status(db, req, factory)
     assert run["status"] == "passed", run
-    if scenario == "received":
-        await check_received_model(db, s, factory, req, run)
-        return
     expert = freeze(req, run)
     async with db() as session:
         await factory(WorkbenchRepository(session)).formal_sources.register(
@@ -474,154 +470,3 @@ async def test_author_strict_then_ordinary_cross_family(
                 db, monkeypatch, client, path, delivery, expert.reference, qualified
             )
         assert len(s.provider_requests) == initial + len(phases)
-
-
-async def check_received_model(db, s, factory, req, run):
-    from branch_review_support import existing_review
-
-    from app.application.workbench.branch_review_route import (
-        RoutePreviewRequest,
-        branch_route,
-        review_projection,
-    )
-    from app.application.workbench.ledger import Ledger
-    from app.application.workbench.session_service import SessionService
-    from app.domain.workbench.formal_method_execution_generated import (
-        PrepareBranchReview,
-        ReceiveBranch,
-    )
-    from app.domain.workbench.registry_sources import SourceDraft
-    from app.domain.workbench.states import TaskState
-
-    case = run["cases"][0]
-    report = case["verified_steps"]
-    step = next(row for row in report["steps"] if row["step"] == "first")
-    selector = ReceiveBranch(
-        request_id=req.request_id,
-        case_id=case["case_id"],
-        repetition=case["repetition"],
-        step="first",
-        scope_digest=report["scope_digest"],
-    )
-    rid = str(req.run_id)
-
-    def formal(repo):
-        methods = factory(repo).formal_sources
-
-        async def inputs(store, owner, binding, *, comparison_task=None):
-            return await review_projection(
-                FormalExecutions(store, factory(store)),
-                methods.review_policy,
-                owner,
-                binding,
-                comparison_task=comparison_task,
-            )
-
-        methods.review_inputs = inputs
-        return methods
-
-    s.driver.formal = formal
-    async with db() as session:
-        repo = WorkbenchRepository(session)
-        executions = FormalExecutions(repo, factory(repo))
-        subject = await repo.subject_of_actor(OWNER)
-        policy = formal(repo).review_policy
-        await executions.receive_branch(subject, rid, selector, caller="knowlab")
-        receipt = await executions.receive_branch(
-            subject,
-            rid,
-            PrepareBranchReview.model_validate(
-                {
-                    **selector.model_dump(),
-                    "artifact": step["artifact"],
-                    "previous": None,
-                    "criteria": {
-                        "outputs": ["summary"],
-                        "reviewer": "different_model_family",
-                        "assertions": [
-                            {
-                                "kind": "equals",
-                                "pointer": "/summary",
-                                "value": "checked work",
-                            }
-                        ],
-                    },
-                }
-            ),
-            caller="knowlab",
-        )
-        request = RoutePreviewRequest(
-            **selector.model_dump(), review_digest=receipt["review"]["digest"]
-        )
-        view = (await branch_route(executions, policy, OWNER, rid, request)).page
-        assert view["verified_producer"]["model"] == ROUTE.model
-        from unittest.mock import AsyncMock, patch
-
-        with patch.object(repo, "sealed_artifact_model", AsyncMock(return_value=None)):
-            legacy = (await branch_route(executions, policy, OWNER, rid, request)).page
-            assert not legacy.get("verified_producer")
-        async with repo.transaction():
-            sessions = await repo.list_sessions(owner_actor_id=OWNER)
-            env = next(x["environment_id"] for x in sessions if x.get("environment_id"))
-            project = await repo.create_project(
-                owner_actor_id=OWNER,
-                environment_id=str(env),
-                workspace_root="/home/u/research",
-                path="review",
-                title="Received review",
-            )
-            source = await repo.register_direct_revision(
-                OWNER,
-                uuid4(),
-                1,
-                SourceDraft(
-                    kind="instruction",
-                    name="Review",
-                    content="Check only the received summary.",
-                ),
-            )
-        sid = (
-            await SessionService(repo).start(
-                owner_actor_id=OWNER, project_id=project, kind="expert"
-            )
-        )["session_id"]
-        task = await existing_review(
-            executions,
-            policy,
-            OWNER,
-            rid,
-            selector,
-            receipt["review"]["digest"],
-            source,
-            sid,
-        )
-        with patch.object(repo, "sealed_artifact_model", AsyncMock(return_value=None)):
-            from app.domain.workbench.errors import StaleStateVersion
-            from app.domain.workbench.source_tasks import SourceTask
-
-            binding = SourceTask.load(await repo.get_task(task)).review
-            with pytest.raises(StaleStateVersion):
-                await review_projection(executions, policy, OWNER, binding)
-        ledger = Ledger(repo)
-        await ledger.transition(task, TaskState.VALIDATING)
-        await ledger.transition(task, TaskState.QUEUED)
-        svc = await factory(repo).instruction_service(formal(repo), OWNER)
-        aid = await svc.open(OWNER, task, caller="registry-source", managed=True)
-        quote, job = await svc.authority(
-            OWNER, await repo.get_task(task), "registry-source"
-        )
-        assert job["input"]["arguments"] == {"summary": "checked work"}
-    s.units.task = task
-    s.units.uid, s.units.worker, s.units.thread = map(str, (uuid4(), uuid4(), uuid4()))
-    s.units.result = {"result": "Independently accepted"}
-    s.units.reported_model = quote["model"]
-    assert s.units.reported_model == "review-model"
-    s.wire["model"] = quote["model"]
-    s.wire["input"][0]["content"][0]["text"] = json.dumps(job["input"])
-    s.wire["text"]["format"]["schema"] = job["output_schema"]
-    await s.driver.drive(task)
-    async with db() as session:
-        repo = WorkbenchRepository(session)
-        assert (await repo.get_task(task))["state"] == "SUCCEEDED"
-        attempt = await repo.get_attempt(aid)
-        assert attempt["refs"]["instruction_usage"]["model"] == "review-model"

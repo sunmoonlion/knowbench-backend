@@ -216,14 +216,13 @@ class Ledger:
                 ):
                     raise IdempotencyConflict("Formal task snapshot changed")
                 prior_input = prior.get("original_input") or {}
-                author_scope = (
+                author_request = (
                     prior.get("pack_source") == "knowlab-test"
-                    and prior_input.get("task_requirements_origin")
-                    in {"author_scope", "author_request"}
+                    and prior_input.get("task_requirements_origin") == "author_request"
                     and task_requirements is None
                 )
                 if prior["request_digest"] != digest or (
-                    not author_scope
+                    not author_request
                     and prior_input.get("task_requirements")
                     != (
                         task_requirements.model_dump(mode="json")

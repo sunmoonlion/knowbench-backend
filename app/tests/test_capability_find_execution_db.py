@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 
 from knowbot_fixtures import KNOWBOT, FakeSummoner
-from test_expert_match import QUESTION
 from test_knowbot_test_runs_db import (
     AUTHOR,
     ENV,
@@ -24,6 +23,8 @@ from app.application.workbench.delegation import DelegationService
 from app.application.workbench.expert_data import ExpertData
 from app.application.workbench.project_service import ProjectService
 from app.infrastructure.workbench.repository import WorkbenchRepository
+
+QUESTION = "核对文件并复核，交付报告。"
 
 
 async def test_manual_expert_enters_delegation_without_directory_or_model_matching(db):

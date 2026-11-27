@@ -33,96 +33,20 @@ from app.interfaces.http.internal import instruction_control
     reason="requires pinned local Codex and Docker",
 )
 @pytest.mark.parametrize(
-    "late_receipt,registered,review",
-    [
-        (False, False, False),
-        (True, False, False),
-        (False, True, False),
-        (False, False, True),
-        (False, False, "strict"),
-    ],
-    ids=[
-        "runner-restart",
-        "receipt-delay",
-        "registered-runner-restart",
-        "branch-review-restart",
-        "strict-review-restart",
-    ],
+    "late_receipt,registered",
+    [(False, False), (True, False), (False, True)],
+    ids=["runner-restart", "receipt-delay", "registered-runner-restart"],
 )
 async def test_real_instruction_runner(
-    db, make_client, monkeypatch, tmp_path, late_receipt, registered, review
+    db, make_client, monkeypatch, tmp_path, late_receipt, registered
 ):
     trial = AuthorTrial()
-    if review:
-        from branch_review_support import review_case
-
-        s = await stack(
-            db,
-            setup_case=partial(
-                review_case, monkeypatch=monkeypatch, strict=review == "strict"
-            ),
-        )
-    else:
-        s = await stack(db, author_trial=trial.start, registered=registered)
-    for stage in range(1, 3 if review == "strict" else 2):
-        unit_dir = tmp_path / str(stage)
-        unit_dir.mkdir()
-        if stage == 2:
-            # A newer version with the same name must never replace the sealed finding.
-            async with s.host() as service, service.repo.transaction():
-                await service.repo.put_artifact(
-                    task_id=s.task,
-                    attempt_id=None,
-                    name="formal-step:direct",
-                    kind="step",
-                    content={"result": "unsealed replacement"},
-                )
-            s.units.uid, s.units.worker = str(uuid4()), str(uuid4())
-            s.units.bindings.clear()
-        await isolated_round(
-            db,
-            make_client.app,
-            monkeypatch,
-            unit_dir,
-            s,
-            trial,
-            late_receipt,
-            review,
-            stage,
-        )
-
-    if review == "strict":
-        from test_workbench_ledger_db import OWNER
-
-        from app.application.workbench.review_decisions import (
-            OwnerDecision,
-            decision_page,
-        )
-
-        async with s.host() as svc:
-            page = await decision_page(svc.repo, OWNER, s.task)
-            first, comparison = page["reports"]
-            assert first["id"] != comparison["id"] and first["version"] == 1
-            assert (
-                first["text"] == "ready"
-            )  # The later same-name artifact was never accepted.
-            receipt = OwnerDecision.model_validate(
-                {
-                    "review_digest": page["review_digest"],
-                    "previous_revision": 0,
-                    "items": [
-                        {
-                            "artifact_id": r["id"],
-                            "quote": r["text"],
-                            "decision": "deferred",
-                            "reason": "Owner needs the signed evidence.",
-                        }
-                        for r in page["reports"]
-                    ],
-                }
-            )
-            saved = await decision_page(svc.repo, OWNER, s.task, command=receipt)
-            assert saved["revision"] == 1 and len(saved["items"]) == 2
+    s = await stack(db, author_trial=trial.start, registered=registered)
+    unit_dir = tmp_path / "1"
+    unit_dir.mkdir()
+    await isolated_round(
+        db, make_client.app, monkeypatch, unit_dir, s, trial, late_receipt, 1
+    )
 
 
 async def isolated_round(
@@ -133,7 +57,6 @@ async def isolated_round(
     s,
     trial,
     late_receipt,
-    review,
     stage,
     *,
     ordinary_round=None,
@@ -151,7 +74,7 @@ async def isolated_round(
         async with s.host() as svc:
             yield s.driver.formal(svc.repo) if ordinary_round else svc.formal
 
-    if review or ordinary_round:
+    if ordinary_round:
         from app.infrastructure.storage.postgres import get_db_session
 
         async def sessions():
@@ -159,8 +82,7 @@ async def isolated_round(
                 yield session
 
         app.dependency_overrides[get_db_session] = sessions
-    if not review or ordinary_round:
-        app.dependency_overrides[formal_methods] = formal
+    app.dependency_overrides[formal_methods] = formal
     app.dependency_overrides[token_issuer] = lambda: s.driver.issuer
     monkeypatch.setattr(
         instruction_control,
@@ -258,9 +180,7 @@ async def isolated_round(
             ):
                 provider.ask = False
                 provider.limit_one = False
-                provider.output = {"result" if review else "summary": "ready"}
-                if review and stage == 2:
-                    provider.output = {"result": "compared both views"}
+                provider.output = {"summary": "ready"}
                 provider.first_request = len(fixtures.captures) + 1
                 initial = len(fixtures.captures)
                 threads = [
@@ -391,21 +311,16 @@ async def isolated_round(
                         with pytest.raises(asyncio.CancelledError):
                             await asyncio.wait_for(drive(s), 45)
                         s.driver.finish = commit_result
-                    if review == "strict":
-                        await drive(s)
-                    else:
-                        for _ in range(5):
-                            await s.runner.run_once()
-                            if active := s.runner.driving.get(s.task):
-                                await active
-                            if s.runner.instruction_cleanup:
-                                await s.runner.instruction_cleanup
-                            async with s.host() as svc:
-                                if (await svc.repo.get_task(s.task))[
-                                    "state"
-                                ] != "RUNNING":
-                                    break
-                            await asyncio.sleep(0.2)
+                    for _ in range(5):
+                        await s.runner.run_once()
+                        if active := s.runner.driving.get(s.task):
+                            await active
+                        if s.runner.instruction_cleanup:
+                            await s.runner.instruction_cleanup
+                        async with s.host() as svc:
+                            if (await svc.repo.get_task(s.task))["state"] != "RUNNING":
+                                break
+                        await asyncio.sleep(0.2)
                     async with s.host() as svc:
                         task = await svc.repo.get_task(s.task)
                         attempts = await svc.repo.list_attempts(s.task)
@@ -415,26 +330,10 @@ async def isolated_round(
                         if str(a["id"]) == s.units.bindings[-1]["attempt"]
                     )
                     assert attempt["status"] == "COMPLETED"
-                    if review == "strict" and stage == 1:
-                        assert task["state"] == "RUNNING" and len(attempts) == 2
-                        second = next(
-                            a for a in attempts if a["step_id"] == "review-comparison"
-                        )
-                        assert (
-                            second["input_artifact_versions"]
-                            == attempt["output_artifacts"]
-                        )
-                        assert second["refs"]["independent_review"][
-                            "attempt_id"
-                        ] == str(attempt["id"])
-                        assert Decimal(task["budget"]["reserved"]) == Decimal(
-                            ROUTE.quote(PRICES)["maximum"]
-                        )
-                    else:
-                        assert task["state"] == "SUCCEEDED", attempt["refs"].get(
-                            "formal_result"
-                        )
-                        assert Decimal(task["budget"]["reserved"]) == 0
+                    assert task["state"] == "SUCCEEDED", attempt["refs"].get(
+                        "formal_result"
+                    )
+                    assert Decimal(task["budget"]["reserved"]) == 0
                     assert Decimal(task["budget"]["used"]) == stage * Decimal(
                         "0.000006"
                     )
@@ -452,50 +351,7 @@ async def isolated_round(
                         )["response_id"]
                         == attempt["refs"]["instruction_usage"]["response_id"]
                     )
-                    if review:
-                        assert task["pack_snapshot"]["review"]["revision"] == 1
-                        assert attempt["refs"]["instruction_thread"]["thread"]
-                        from app.domain.workbench.instruction_requests import (
-                            leaf_responses_body,
-                        )
-                        from app.domain.workbench.source_tasks import instruction_input
-
-                        expected = instruction_input(
-                            "Check the approved output independently.",
-                            {"receipt": "test@example.test"},
-                        )
-                        if stage == 2:
-                            from app.application.workbench.review_comparison import (
-                                COMPARISON_GUIDANCE,
-                            )
-
-                            expected = instruction_input(
-                                "Check the approved output independently."
-                                + "\n\n"
-                                + COMPARISON_GUIDANCE,
-                                {
-                                    "approved_outputs": {
-                                        "receipt": "test@example.test"
-                                    },
-                                    "independent_findings": "ready",
-                                    "author_assessment": {
-                                        "self_assessment": "withheld author opinion"
-                                    },
-                                },
-                            )
-                            first = next(
-                                a for a in attempts if a["step_id"] == "direct"
-                            )
-                            assert (
-                                first["refs"]["instruction_thread"]["thread"]
-                                != attempt["refs"]["instruction_thread"]["thread"]
-                            )
-                            assert len(attempts) == 2
-                        assert fixtures.captures[-1] == leaf_responses_body(
-                            expected, ROUTE.model, ROUTE.output_tokens
-                        )
-                    else:
-                        await trial.finish(db)
+                    await trial.finish(db)
                 finally:
                     s.units.request = request
                     for v in (relay, provider):
@@ -560,7 +416,6 @@ async def real_ordinary_round(
         directory,
         stack,
         None,
-        False,
         False,
         stage,
         ordinary_round=resume_after_interruption,

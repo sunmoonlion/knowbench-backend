@@ -11,7 +11,6 @@ from decimal import Decimal
 from typing import Any
 
 from app.application.ports.workbench import WorkbenchStores
-from app.application.workbench import test_scope
 from app.application.workbench.execution_plan import (
     accepted_results,
     execution_for_task,
@@ -73,8 +72,7 @@ class MethodPlanner:
                     )
                 )["state"]
             catalog = catalog_for_task(task)
-            initial_test = test_scope.pending(task, catalog)
-            requirements = None if initial_test else task_requirements(task, catalog)
+            requirements = task_requirements(task, catalog)
             previous = await read_plan(repo, task)
             if (previous.version if previous else 0) != parent_version:
                 return task["state"]
@@ -164,19 +162,6 @@ class MethodPlanner:
                 else None,
             }
             text = compose_plan(catalog, context)
-            if initial_test:
-                assert isinstance(catalog, CapabilityMethodCatalog)
-                text += (
-                    "\nThis is an unpublished author test. First ground every necessary result, constraint and explicitly requested method in exact question quotes. Match only the supplied draft's PUBLIC declarations; never infer coverage from private methods. Unknown or partial coverage must not run a plan. For full coverage map each necessary requirement to its declared capability, then plan against that mapping. Return this envelope INSTEAD of the plan alone:\n"
-                    + json.dumps(
-                        test_scope.InitialTestPlan.model_json_schema(),
-                        ensure_ascii=False,
-                    )
-                )
-                text += (
-                    "\nPublic draft snapshot:\n"
-                    + test_scope.directory(task, catalog).model_dump_json()
-                )
             try:
                 opened = await led.open_method_plan(
                     task_id, expected_version=task["state_version"]
@@ -316,50 +301,7 @@ class MethodPlanner:
             else:
                 try:
                     document = json.loads(result.final_text or "")
-                    catalog = catalog_for_task(task)
-                    if test_scope.pending(task, catalog):
-                        assert isinstance(catalog, CapabilityMethodCatalog)
-                        initial = test_scope.InitialTestPlan.model_validate(document)
-                        scope_receipt, requirements = test_scope.verify(
-                            task, catalog, initial
-                        )
-                        scope_artifact = await repo.put_artifact(
-                            task_id=task_id,
-                            attempt_id=attempt_id,
-                            name=test_scope.SCOPE_ARTIFACT,
-                            kind="scope_match",
-                            content=scope_receipt.model_dump(mode="json"),
-                        )
-                        if scope_artifact["version"] != 1:
-                            raise MethodPlanInvalid("author scope was already frozen")
-                        if requirements is None:
-                            return (
-                                await led.transition(
-                                    task_id,
-                                    TaskState.FAILED,
-                                    reason={
-                                        "code": "expert_scope_not_covered",
-                                        "message": "测试题未被这份准专家声明完整覆盖",
-                                        "outcome": initial.scope.outcome,
-                                    },
-                                )
-                            )["state"]
-                        await repo.cas_task(
-                            task_id,
-                            expected_version=task["state_version"],
-                            original_input={
-                                **task["original_input"],
-                                "task_requirements_origin": "author_scope",
-                                "task_requirements": requirements.model_dump(
-                                    mode="json"
-                                ),
-                            },
-                        )
-                        task = await repo.get_task(task_id)
-                        proposal = initial.plan
-                        assert proposal is not None
-                    else:
-                        proposal = parse_plan(document)
+                    proposal = parse_plan(document)
                 except ValueError as exc:
                     raise MethodPlanInvalid(str(exc)) from None
                 await led.accept_method_plan(
@@ -403,10 +345,6 @@ def compose_plan(catalog: MethodCatalog, context: dict[str, Any]) -> str:
         "Account for the original question and every necessary task_requirements ID using only its capability_mapping; never invent requirements. "
         "When selection_basis is manual or declaration, that mapping is only the author-allowed choice range, NOT proof of applicability or permission to omit user goals. "
         "Select the appropriate capabilities and their frozen methods for this question; disclose actual mismatch through the existing execution/approval flow, never claim unperformed work succeeded. "
-        "When task_requirements includes method_proposals or a solution, these describe suggested approaches, "
-        "not additional mandatory requirements or permission to invent methods. Preserve user_explicit methods; "
-        "choose among the author's compatible methods to meet the actual requirements. Data conditions must be "
-        "checked through the existing data preparation flow, never treated as confirmed inputs. "
         "Explain each unselected method. Author capability bindings:\n"
         + json.dumps(
             catalog.planning.capability_bindings,

@@ -117,7 +117,6 @@ class Capabilities:
         resource_delegations=(),
         data_function=None,
         task_outputs_url="",
-        review_inputs=None,
         review_policy=None,
     ):
         self.repo, self.remote, self.cipher, self.runtime_url = (
@@ -159,7 +158,6 @@ class Capabilities:
             script_tariff=script_tariff,
             source_licenses=source_licenses,
             business_reviews=business_reviews,
-            review_inputs=review_inputs,
             review_policy=review_policy,
         )
 

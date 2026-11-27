@@ -1781,16 +1781,34 @@
             "$ref": "#/$defs/DataTransfer"
           },
           "required_when": {
-            "const": "always",
             "default": "always",
+            "enum": [
+              "always",
+              "when_selected"
+            ],
             "title": "Required When",
             "type": "string"
           },
           "on_unavailable": {
-            "const": "pause",
             "default": "pause",
+            "enum": [
+              "pause",
+              "fail",
+              "skip_optional"
+            ],
             "title": "On Unavailable",
             "type": "string"
+          },
+          "origin_steps": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Origin Steps",
+            "type": "array"
           }
         },
         "required": [
@@ -2109,7 +2127,22 @@
             "type": "string"
           },
           "binding": {
-            "$ref": "#/$defs/DelegationBinding"
+            "discriminator": {
+              "mapping": {
+                "accepted_plan": "#/$defs/DelegationBinding",
+                "formal_call_tree": "#/$defs/FormalTreeDelegationBinding"
+              },
+              "propertyName": "kind"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/$defs/DelegationBinding"
+              },
+              {
+                "$ref": "#/$defs/FormalTreeDelegationBinding"
+              }
+            ],
+            "title": "Binding"
           }
         },
         "required": [
@@ -2154,6 +2187,57 @@
           "status"
         ],
         "title": "DependencyCandidate",
+        "type": "object"
+      },
+      "FormalTreeDelegationBinding": {
+        "additionalProperties": false,
+        "description": "Explicit multi-hop call-tree binding for frozen formal orchestrations.",
+        "properties": {
+          "kind": {
+            "const": "formal_call_tree",
+            "default": "formal_call_tree",
+            "title": "Kind",
+            "type": "string"
+          },
+          "root_method_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "title": "Root Method Id",
+            "type": "string"
+          },
+          "root_method_version": {
+            "maxLength": 200,
+            "minLength": 1,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+            "title": "Root Method Version",
+            "type": "string"
+          },
+          "root_definition_digest": {
+            "pattern": "^sha256:[a-f0-9]{64}$",
+            "title": "Root Definition Digest",
+            "type": "string"
+          },
+          "allowed_method_ids": {
+            "items": {
+              "maxLength": 200,
+              "minLength": 1,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Allowed Method Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "root_method_id",
+          "root_method_version",
+          "root_definition_digest",
+          "allowed_method_ids"
+        ],
+        "title": "FormalTreeDelegationBinding",
         "type": "object"
       },
       "Issue": {
@@ -6015,16 +6099,34 @@
             "$ref": "#/$defs/DataTransfer"
           },
           "required_when": {
-            "const": "always",
             "default": "always",
+            "enum": [
+              "always",
+              "when_selected"
+            ],
             "title": "Required When",
             "type": "string"
           },
           "on_unavailable": {
-            "const": "pause",
             "default": "pause",
+            "enum": [
+              "pause",
+              "fail",
+              "skip_optional"
+            ],
             "title": "On Unavailable",
             "type": "string"
+          },
+          "origin_steps": {
+            "default": [],
+            "items": {
+              "maxLength": 128,
+              "minLength": 1,
+              "type": "string"
+            },
+            "maxItems": 100,
+            "title": "Origin Steps",
+            "type": "array"
           }
         },
         "required": [

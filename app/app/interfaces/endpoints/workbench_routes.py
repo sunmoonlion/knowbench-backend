@@ -11,7 +11,6 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
-from uuid import UUID
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -44,7 +43,6 @@ from app.application.workbench.provisioning import (
     ProvisioningUnavailable,
     SandboxProvisioning,
 )
-from app.application.workbench.review_decisions import OwnerDecision, decision_page
 from app.application.workbench.run_files import task_dossier
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.tokens import TokenIssuer, exp_of
@@ -1205,40 +1203,6 @@ async def deprovision_sandbox(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **result}
-
-
-@router.get("/tasks/{task_id}/review-decisions")
-async def read_review_decisions(
-    task_id: UUID,
-    response: Response,
-    revision: int | None = Query(default=None, ge=1),
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    response.headers["Cache-Control"] = "private, no-store"
-    try:
-        return await decision_page(
-            workbench_store(session), _actor(principal), str(task_id), revision=revision
-        )
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-
-
-@router.put("/tasks/{task_id}/review-decisions")
-async def save_review_decisions(
-    task_id: UUID,
-    body: OwnerDecision,
-    response: Response,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    response.headers["Cache-Control"] = "private, no-store"
-    try:
-        return await decision_page(
-            workbench_store(session), _actor(principal), str(task_id), command=body
-        )
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
 
 
 # ---------------- settings: prefs & credentials ----------------

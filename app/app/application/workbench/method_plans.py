@@ -9,7 +9,6 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from app.application.workbench import test_scope
 from app.application.workbench.execution_plan import (
     accepted_results,
     execution_for_task,
@@ -70,8 +69,7 @@ async def open_plan(
         task = await repo.get_task(task_id, for_update=True)
         await _ready(repo, task, expected_version)
         catalog = catalog_for_task(task)
-        if not test_scope.pending(task, catalog):
-            task_requirements(task, catalog)
+        task_requirements(task, catalog)
         previous = await read_plan(repo, task)
         attempts = await repo.list_attempts(task_id)
         if any(a["status"] not in ATTEMPT_TERMINAL for a in attempts):

@@ -5,9 +5,6 @@ from decimal import Decimal
 
 import pytest
 from test_capability_method_plan import document, proposal
-from test_expert_match import QUESTION
-from test_expert_match import result as scope_result
-from test_expert_match import validate as match
 from test_method_planner_db import Driver
 from test_workbench_ledger_db import OWNER, handover, seed
 from test_workbench_ledger_db import db as db  # noqa: F401
@@ -20,27 +17,47 @@ from app.application.workbench.plan_receipts import read_plan
 from app.application.workbench.task_requirements import for_task
 from app.application.workbench.turn import TurnResult
 from app.domain.workbench.errors import IdempotencyConflict, MethodPlanInvalid
+from app.domain.workbench.expert_match import digest
 from app.domain.workbench.method_catalog import parse_catalog
 from app.domain.workbench.states import TaskState
-from app.domain.workbench.task_requirements import from_match
+from app.domain.workbench.task_requirements import TaskRequirements
 from app.infrastructure.workbench.repository import (
     SqlWorkbenchStores,
     WorkbenchRepository,
 )
 
 pytestmark = pytest.mark.asyncio
+QUESTION = "核对文件并复核，交付报告。"
 DIGEST = "sha256:" + "a" * 64
 
 
 def requirements():
-    return from_match(
-        match(),
-        match_task_id="synthetic-match",
-        match_artifact_version=1,
-        knowbot_id="synthetic",
-        version="1",
-        expert_digest=DIGEST,
-        question=QUESTION,
+    return TaskRequirements.model_validate(
+        {
+            "question_digest": digest(QUESTION),
+            "expert_digest": DIGEST,
+            "question_revision": 1,
+            "selection_basis": "manual",
+            "match_task_id": None,
+            "match_artifact_version": None,
+            "requirements": [
+                {
+                    "id": "r1",
+                    "kind": "result",
+                    "statement": "核对后复核",
+                    "question_quote": "核对文件并复核",
+                    "required": True,
+                },
+                {
+                    "id": "r2",
+                    "kind": "constraint",
+                    "statement": "提供报告",
+                    "question_quote": "交付报告",
+                    "required": True,
+                },
+            ],
+            "capability_mapping": {"r1": ["double_check"], "r2": ["double_check"]},
+        }
     )
 
 
@@ -126,62 +143,12 @@ async def test_plan_cannot_drop_one_matching_requirement_even_on_retry(db):
         assert task["budget"]["used"] == "0.04"
 
 
-async def test_legacy_author_test_keeps_its_original_scope_contract(db):
-    tid, request = await create(db, claim=False, legacy=True)
-    scope = scope_result()
-    scope["picks"][0]["knowbot_id"] = tid
-    for row in scope["picks"][0]["coverage"]:
-        row["declaration_quote"] = "核对并复核给定文档"
-    output = {"scope": scope, "plan": json.loads(reply().final_text)}
-    driver = Driver(
-        TurnResult("author-scope-plan", json.dumps(output), {}, cost=Decimal("0.03"))
-    )
-    assert (
-        await MethodPlanner(SqlWorkbenchStores(db), driver).run(tid) == TaskState.QUEUED
-    )
-    async with db() as session:
-        repo = WorkbenchRepository(session)
-        task = await repo.get_task(tid)
-        assert (await read_plan(repo, task)).requirements_digest
-        assert task["original_input"]["task_requirements"]["match_task_id"] == tid
-        assert (await repo.get_artifact(task_id=tid, name="_author_test_scope"))[
-            "version"
-        ] == 1
-        assert task["budget"]["used"] == "0.03"
-        assert (await Ledger(repo).handover(request, owner_actor_id=OWNER))[
-            "task_id"
-        ] == tid
-    assert len(driver.calls) == 1
-
-
-async def test_uncovered_author_question_never_executes_a_method(db):
-    tid, _ = await create(db, claim=False, legacy=True)
-    scope = scope_result()
-    scope.update(
-        outcome="none",
-        picks=[],
-        recommend={"action": "incubate", "reason": "需要另一种方法"},
-    )
-    driver = Driver(
-        TurnResult(
-            "uncovered",
-            json.dumps({"scope": scope, "plan": None}),
-            {},
-            cost=Decimal("0.01"),
-        )
-    )
-    assert (
-        await MethodPlanner(SqlWorkbenchStores(db), driver).run(tid) == TaskState.FAILED
-    )
-    async with db() as session:
-        repo = WorkbenchRepository(session)
-        task = await repo.get_task(tid)
-        assert await read_plan(repo, task) is None
-        assert task["budget"]["used"] == "0.01"
-
-
 async def test_missing_author_requirements_cannot_bypass_execution_validation(db):
     tid, _ = await create(db, claim=False, legacy=True)
+    driver = Driver(reply())
+    with pytest.raises(MethodPlanInvalid, match="server-pinned"):
+        await MethodPlanner(SqlWorkbenchStores(db), driver).run(tid)
+    assert not driver.calls
     async with db() as session:
         task = await WorkbenchRepository(session).get_task(tid)
         with pytest.raises(MethodPlanInvalid, match="server-pinned"):
@@ -198,7 +165,7 @@ async def test_same_request_cannot_replay_with_a_different_matching_receipt(db):
                 req, owner_actor_id=OWNER, task_requirements=requirements()
             )
         )["task_id"] == tid
-        different = requirements().model_copy(update={"match_artifact_version": 2})
+        different = requirements().model_copy(update={"question_revision": 2})
         with pytest.raises(IdempotencyConflict):
             await led.handover(req, owner_actor_id=OWNER, task_requirements=different)
 

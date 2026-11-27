@@ -7,11 +7,10 @@ from decimal import Decimal
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationError, field_validator
 
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_method_execution_generated import (
-    ReceiveBranch,
     bounded_json,
 )
 from app.domain.workbench.formal_method_generated import Digest, Strict
@@ -19,7 +18,6 @@ from app.domain.workbench.registry_sources import RegisteredSource
 from app.domain.workbench.script_contract_generated import ScriptExecution
 
 PACK_SOURCE = "registry-source"
-REVIEW_KEY_PREFIX = "branch-review:"
 
 
 class SourceTaskInput(Strict):
@@ -40,20 +38,6 @@ class SourceTaskConfirmation(SourceTaskInput):
     approval_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     idempotency_key: str = Field(min_length=8, max_length=128)
 
-    @field_validator("idempotency_key")
-    @classmethod
-    def user_key(cls, value):
-        if value.startswith(REVIEW_KEY_PREFIX):
-            raise ValueError("Reserved review task identity")
-        return value
-
-
-class ReviewBinding(ReceiveBranch):
-    run_id: UUID
-    review_digest: Digest
-    revision: int = Field(strict=True, ge=1)
-    option_digest: Digest
-
 
 class SourceTask(Strict):
     runtime_contract: Literal["knowbench/registry-source-task/v1"] = (
@@ -63,8 +47,6 @@ class SourceTask(Strict):
     arguments: dict[str, Any]
     budget_limit: Decimal
     quote: dict[str, Any]
-    review_rounds: Literal[1, 2] = Field(default=1, exclude_if=lambda v: v == 1)
-    review: ReviewBinding | None = Field(default=None, exclude_if=lambda v: v is None)
     owner: UUID
     session_id: UUID
 
@@ -87,7 +69,10 @@ class SourceTask(Strict):
             or digest(task["pack_snapshot"]) != task["pack_digest"]
         ):
             raise CapabilityError("Registered source task snapshot changed")
-        snap = cls.model_validate(task["pack_snapshot"])
+        try:
+            snap = cls.model_validate(task["pack_snapshot"])
+        except ValidationError as exc:
+            raise CapabilityError("Invalid registered source task") from exc
         if str(snap.owner) != str(task["owner_actor_id"]) or str(
             snap.session_id
         ) != str(task["session_id"]):

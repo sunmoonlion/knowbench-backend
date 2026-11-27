@@ -6,10 +6,39 @@ import jsonschema
 import pytest
 from pydantic import ValidationError
 from schema_parity import model_vs_provider
-from test_expert_match import directory
 
 from app.domain.workbench.expert_match import DirectorySnapshot, PublicExpert
 from app.domain.workbench.method_catalog import PublicCapability
+
+
+def directory():
+    return {
+        "contract": "knowmart/expert-directory/v2",
+        "complete": True,
+        "experts": [
+            {
+                "knowbot_id": "synthetic",
+                "version": "1",
+                "digest": "sha256:" + "a" * 64,
+                "name": "文档核对",
+                "tagline": "按作者方法核对",
+                "scope": {"does": "核对并复核文档", "does_not": "", "elsewhere": ""},
+                "declaration": "capabilities/v1",
+                "runtime_contract": "knowbench/dynamic-methods/v3",
+                "public_capabilities": [
+                    {
+                        "id": "double_check",
+                        "statement": "核对并复核文档",
+                        "conditions": [],
+                        "exclusions": [],
+                        "delivers": ["报告"],
+                    }
+                ],
+                "free": True,
+                "price": "0.00",
+            }
+        ],
+    }
 
 
 def test_provider_lock_and_consumer_agree_on_the_public_directory():

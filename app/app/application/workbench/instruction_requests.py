@@ -10,7 +10,7 @@ from uuid import UUID
 from app.application.workbench.ledger import Ledger
 from app.application.workbench.tokens import InstructionGateway
 from app.domain.workbench.capabilities import CapabilityError, digest
-from app.domain.workbench.errors import Forbidden, IdempotencyConflict, WorkbenchError
+from app.domain.workbench.errors import Forbidden, IdempotencyConflict
 from app.domain.workbench.formal_execution import FormalTaskSnapshot, host_snapshot
 from app.domain.workbench.instruction_requests import (
     InstructionRoute,
@@ -101,8 +101,7 @@ class InstructionRequests:
             if (
                 caller != "registry-source"
                 or snap.source.kind != "instruction"
-                or snap.review is None
-                and {
+                or {
                     k: v
                     for k, v in quote.items()
                     if k not in ("caller", "snapshot_digest")
@@ -112,63 +111,7 @@ class InstructionRequests:
                 raise CapabilityError(
                     "Registered instruction approval or route changed"
                 )
-            arguments = snap.arguments
-            if snap.review is not None:
-                if not self.formal.review_inputs:
-                    raise CapabilityError("Review revalidation is unavailable")
-                from app.application.workbench.review_comparison import (
-                    COMPARISON_GUIDANCE,
-                    COMPARISON_STEP,
-                )
-
-                attempt = (
-                    await self.repo.get_attempt(str(task["active_attempt_id"]))
-                    if task.get("active_attempt_id")
-                    else None
-                )
-                comparison = (
-                    attempt is not None and attempt["step_id"] == COMPARISON_STEP
-                )
-                try:
-                    option, sandbox, arguments = await self.formal.review_inputs(
-                        self.repo,
-                        owner,
-                        snap.review,
-                        comparison_task=str(task["id"]) if comparison else None,
-                    )
-                except WorkbenchError as exc:
-                    raise CapabilityError(
-                        "Review confirmation is no longer active"
-                    ) from exc
-                if comparison:
-                    content = content + "\n\n" + COMPARISON_GUIDANCE
-                session = await self.repo.get_session(
-                    str(snap.session_id), owner_actor_id=owner
-                )
-                from app.application.workbench.branch_review_route import (
-                    selected_quote,
-                )
-
-                base = {
-                    k: v
-                    for k, v in quote.items()
-                    if k not in ("caller", "snapshot_digest")
-                }
-                planned = selected_quote(option, base)
-                if (
-                    option["rounds"] != snap.review_rounds
-                    or str(session["sandbox_id"]) != sandbox
-                    or planned != snap.quote
-                ):
-                    raise CapabilityError(
-                        "Review budget, destination or connection changed"
-                    )
-                quote = {
-                    **planned,
-                    "caller": caller,
-                    "snapshot_digest": task["pack_digest"],
-                }
-            return quote, instruction_input(content, arguments)
+            return quote, instruction_input(content, snap.arguments)
         snapshot = host_snapshot(task)
         if snapshot.dependencies:
             from app.application.workbench.instruction_leaf import approved_leaf

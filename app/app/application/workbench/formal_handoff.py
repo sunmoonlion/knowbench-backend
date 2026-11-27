@@ -109,13 +109,8 @@ async def transfer(service, owner, task_id, command):
             not attachment or attachment["sketch_digest"] != command.plan_digest
         ):
             raise StaleStateVersion("The saved plan differs from the approved proposal")
-        use_v2 = bool(
-            command.htn_tree is not None or command.draft_contract is not None
-        )
         payload = {
-            "contract": (
-                "knowlab/formal-handoff/v2" if use_v2 else "knowlab/formal-handoff/v1"
-            ),
+            "contract": "knowlab/formal-handoff/v2",
             "owner_subject": subject,
             "project_id": str(task["project_id"]),
             "task_id": task_id,
@@ -149,9 +144,25 @@ async def transfer(service, owner, task_id, command):
             {"new"} if not command.reference else {"author_revision", "user_demand"}
         ):
             raise ValueError("Unexpected handoff mode")
+        if mode == "author_revision" and (
+            UUID(remote["studio_method_id"]) != command.reference.method_id
+            or type(remote["next_version"]) is not int
+            or remote["next_version"] <= command.reference.version
+        ):
+            raise ValueError("Unexpected method revision")
         receipt = {
             "request_id": str(UUID(remote["request_id"])),
             "mode": mode,
+            **(
+                {"studio_method_id": str(UUID(remote["studio_method_id"]))}
+                if mode != "user_demand"
+                else {}
+            ),
+            **(
+                {"next_version": remote["next_version"]}
+                if mode == "author_revision"
+                else {}
+            ),
             "review_digest": command.review_digest,
         }
     except (KeyError, TypeError, ValueError) as exc:

@@ -48,7 +48,11 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
     await register_completed(db, ctx)
     ctx.remote.calls.clear()
     desk = AsyncMock()
-    desk.submit.return_value = {"request_id": str(uuid4()), "handoff": "new"}
+    desk.submit.return_value = {
+        "request_id": str(uuid4()),
+        "handoff": "new",
+        "studio_method_id": str(uuid4()),
+    }
     qualified = {ctx.leaf.reference}
     choice = receipt_proposal()
     async with selected_match(

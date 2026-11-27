@@ -325,18 +325,12 @@ class InstructionRunner:
                             bounded_json,
                         )
 
-                        source, _ = await active_source(
-                            repo, str(task["owner_actor_id"]), task
-                        )
+                        await active_source(repo, str(task["owner_actor_id"]), task)
                         bounded_json(outputs)
                         if (
                             not isinstance(outputs, dict)
                             or set(outputs) != {"result"}
                             or not isinstance(outputs["result"], str)
-                            or (
-                                source.review is not None
-                                and not outputs["result"].strip()
-                            )
                         ):
                             raise CapabilityError(
                                 "Unexpected registered instruction output"
@@ -434,23 +428,6 @@ class InstructionRunner:
                     retryable=False,
                     output_artifacts=versions,
                 )
-                if (
-                    versions
-                    and task.get("pack_source") == "registry-source"
-                    and attempt["step_id"] == "direct"
-                    and task["pack_snapshot"].get("review_rounds") == 2
-                    and not task.get("cancel_requested_at")
-                ):
-                    from app.application.workbench.review_comparison import (
-                        open_comparison,
-                    )
-
-                    try:
-                        await open_comparison(led, task, attempt, versions)
-                    except BudgetExhausted:
-                        code = "review_comparison_budget_insufficient"
-                    else:
-                        return
             await led.transition(
                 task_id,
                 TaskState.FAILED if code else TaskState.SUCCEEDED,
