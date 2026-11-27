@@ -795,13 +795,14 @@ async def test_a2a_dispatch_and_recover_without_duplicate_send(
     p.transport = adapter.OAuthTransport(transport=httpx.MockTransport(respond))
     _, _, sid = await seed(db)
     asset = await p.connect()
+    from test_formal_method_admission_db import validation_request
+
     from app.application.workbench.formal_methods import FormalMethods
     from app.domain.workbench.formal_adapter import (
         host_kind,
         live_registration,
         retained_registration,
     )
-    from test_formal_method_admission_db import validation_request
 
     async with db() as session:
         svc = p.service(session)

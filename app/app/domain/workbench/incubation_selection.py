@@ -576,6 +576,9 @@ def expand(
         if sources and step_exports != sources:
             raise ValueError("selection_export: conflicting delivery bindings")
         sources = dict(step_exports)
+    compose_root = bool(
+        selection.tree or draft_contract is not None or question is not None
+    )
     explicit_delivery = bool(sources)
     caller_slots_seen: dict[str, dict[str, Any]] = {}
     should_clean_names = clean_caller_names or draft_contract is not None
@@ -722,17 +725,27 @@ def expand(
     by_id = {step.id: step for step in selection.steps}
     if not explicit_delivery:
         tail = selection.steps[-1]
-        sources = {
-            port: (tail.id, port) for port in interface_for(tail.method)["outputs"]
+        ports = interface_for(tail.method)["outputs"]
+        if compose_root and len(ports) != 1:
+            raise ValueError("selection_export: bind the public outputs explicitly")
+        sources = {port: (tail.id, port) for port in ports}
+    if draft_contract is not None and draft_contract.expected_deliverables:
+        rule_outputs = {
+            r.promise_id: r.outputs for r in draft_contract.validation_rules
         }
+        declared = {
+            port
+            for promise in draft_contract.expected_deliverables
+            for port in rule_outputs.get(promise.promise_id) or (promise.promise_id,)
+        }
+        if declared != sources.keys():
+            raise ValueError("selection_export: outputs differ from the root contract")
     exports = {}
     for public, (step_id, port) in sources.items():
         step = by_id.get(step_id)
         if step is None:
             raise ValueError(f"selection_export: unknown source step {step_id}")
-        aliases = (
-            step.cases.values() if explicit_delivery and step.cases else (step.method,)
-        )
+        aliases = step.cases.values() if step.cases else (step.method,)
         outputs = [interface_for(alias)["outputs"] for alias in aliases]
         if any(port not in ports for ports in outputs):
             raise ValueError(f"selection_export: missing {step_id}.{port}")
@@ -763,7 +776,14 @@ def expand(
     if selection.object_batch:
         procedure["object_batch"] = selection.object_batch.model_dump()
 
-    if draft_contract is not None:
+    # Authors may select a procedure before completing the other studio elements.
+    # The confirmation saves only the procedure on that partial draft.
+    if (
+        draft_contract is not None
+        and draft_contract.expected_deliverables
+        and draft_contract.applies_when
+        and draft_contract.validation_rules
+    ):
         # Whole governs Part: root Elements 1 & 4 come strictly from author-confirmed
         # MethodDraftV2, never cloned from the tail child tool (resolves M02).
         merged_permissions = {
@@ -807,7 +827,9 @@ def expand(
             ],
         }
         definition = FormalMethodDefinition.model_validate(doc)
-    elif explicit_delivery and (template is not None or question is not None):
+    elif compose_root or explicit_delivery:
+        if template is None and question is None and selection.tree:
+            question = selection.tree.nodes[0].goal
         definition = _compose_delivery(
             procedure,
             permissions.values(),
@@ -830,15 +852,6 @@ def expand(
 
         if template:
             declaration = doc["capability_declaration"]
-            if selection.tree and len(selection.steps) > 1:
-                applies, excludes = scope or ("", "")
-                declaration.update(
-                    applies_when=[applies or template.goal],
-                    excludes=[excludes] if excludes else [],
-                    promises={},
-                    conditions={},
-                )
-                doc["how_to_validate"] = []
             declaration.update(
                 title=title or declaration["title"],
                 purpose=template.goal,
