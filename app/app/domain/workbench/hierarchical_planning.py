@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationInfo, model_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from app.domain.workbench.formal_method_generated import (
     CallerValue,
@@ -120,50 +121,55 @@ class Unresolved(Strict):
     search_goal: Annotated[str, Field(min_length=1, max_length=500)] | None = None
 
 
+class ProposedDelivery(Strict):
+    goal: Short = Field(
+        description="Describe the result you propose for this child in your own words."
+    )
+    request_quote: Short = Field(
+        description="Quote the part of the request, clarification or declared target that motivates this result."
+    )
+
+
 class SeparateDeliveries(ChoiceCheck):
     action: Literal["separate"]
-    goals: (
-        Annotated[list[Name], Field(min_length=2, max_length=15)]
-        | Annotated[dict[Name, Short], Field(min_length=2, max_length=15)]
-    ) = Field(
-        description="Select distinct keys from requested_outputs. For unnamed results, "
-        "map a public name to the user's short source phrase instead.",
+    # Previously recorded model responses contain a single string per output.
+    goals: dict[Name, ProposedDelivery | SkipJsonSchema[Short]] = Field(
+        min_length=2,
+        max_length=15,
+        description="Propose the independent results and choose a public name for each. Preserve any names explicitly required by the user or the method contract.",
     )
-    reason: Short | None = Field(
-        default=None,
-        description="Optional planning explanation, separate from the requested outputs.",
+    reason: Short | None = None
+
+
+def delivery_goal(name, proposal, human_text, targets):
+    summaries = [
+        target["summary"]
+        for target in targets
+        if name in (target.get("outputs") or (target["promise_id"],))
+    ]
+    if isinstance(proposal, ProposedDelivery):
+        if any(proposal.request_quote in text for text in (*summaries, *human_text)):
+            return proposal.goal
+        raise ValueError(
+            f"Provide a source quote for {name} from the request or its declared target"
+        )
+
+    # Replay the string-only responses emitted before the model supplied a separate quote.
+    pattern = re.compile(
+        rf"(?<![A-Za-z0-9_-]){re.escape(name)}[ \t]*"
+        r"(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))"
     )
-
-
-# A user can explicitly name an output in prose as identifier(label).
-NAMED_OUTPUT = re.compile(
-    r"(?<![A-Za-z0-9_-])([A-Za-z][A-Za-z0-9_-]{0,63})[ \t]*"
-    r"(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))"
-)
-
-
-def requested_delivery(
-    name: str, proposal: str, sources: tuple[str, str], known: str | None
-) -> str:
-    if known is not None and proposal in (name, known):
-        return known
-    labels = {
-        m.group()
-        for text in sources
-        for m in NAMED_OUTPUT.finditer(text)
-        if m[1] == name
-    }
-    if len(labels) == 1 and known in labels:
-        label = next(iter(labels))
-        if any(m.group() == label for m in NAMED_OUTPUT.finditer(proposal)):
+    named = {m.group() for text in human_text for m in pattern.finditer(text)}
+    if len(named) == 1:
+        label = next(iter(named))
+        if proposal == label[len(name) :].strip()[1:-1].strip() or any(
+            m.group() == label for m in pattern.finditer(proposal)
+        ):
             return label
-        if proposal == label[len(name) :].strip()[1:-1].strip():
-            return label
-    elif known is None and not labels and any(proposal in text for text in sources):
+    elif not named and any(proposal in text for text in (*summaries, *human_text)):
         return proposal
     raise ValueError(
-        f"Each separate goal must quote a requested deliverable: for {name} copy only "
-        "the exact output phrase, without surrounding instructions"
+        f"Provide a source quote for {name} from the request or its declared target"
     )
 
 
@@ -248,8 +254,9 @@ identified data later is an ordinary input. For a direct caller input, use only 
 and name. Set caller_slot only together with a projection lens. An explicit later answer can settle an earlier choice.
 For reusable methods, a parameter chosen by future callers is different from an author's open decision."""
 DELIVERY_RULE = """When the user requests several independent results, select the separate action at the root.
-For named results, set goals to an array of keys from requested_outputs. For unnamed results,
-map a distinct public name to each short source phrase. Put any explanation in reason.
+Decide which results the request needs. Propose each child's goal in your own words and choose
+a distinct public name for it. Give its source excerpt separately in request_quote.
+The requester need not supply plan steps, output names or a list of deliverables.
 Use each target's public output name when supplied. Plan each child to export its assigned
 name using deliver_as. If a combined report is required, use a real qualified method that
 produces it; listing its ingredients as separate results cannot satisfy that goal."""
@@ -768,11 +775,6 @@ class HierarchicalPlanner:
                 if node.tabu_signatures
                 else {}
             ),
-            **(
-                {"requested_outputs": self.requested_outputs()}
-                if node.id == ROOT
-                else {}
-            ),
             "request": self.brief,
             "goal": node.goal,
             "assigned_delivery": self.nodes[ROOT].delivery_goals.get(node.id),
@@ -860,23 +862,6 @@ class HierarchicalPlanner:
     def human_text(self):
         amendment = "instruction" if self.author else "clarification"
         return (self.nodes[ROOT].goal, self.brief.get(amendment) or "")
-
-    def requested_outputs(self):
-        labels = {}
-        for text in self.human_text():
-            for match in NAMED_OUTPUT.finditer(text):
-                labels.setdefault(match[1], set()).add(match.group())
-        # Five-element drafts already identify each deliverable by its frozen output name.
-        declared = {}
-        for target in self.target_deliverables:
-            for name in target.get("outputs") or (target["promise_id"],):
-                declared.setdefault(name, set()).add(target["summary"])
-        labels.update(declared)
-        return {
-            name: next(iter(values))
-            for name, values in labels.items()
-            if len(values) == 1
-        }
 
     def chosen_method(self):
         return next(
@@ -1016,23 +1001,12 @@ class HierarchicalPlanner:
                 return self.unresolved(
                     node, "gap", "独立交付数量超出本轮规划节点上限。"
                 )
-            requested = self.requested_outputs()
-            if isinstance(decision.goals, list):
-                names = decision.goals
-                if len(set(names)) != len(names) or any(
-                    name not in requested for name in names
-                ):
-                    raise ValueError(
-                        "Select distinct output names from requested_outputs"
-                    )
-                goals = {name: requested[name] for name in names}
-            else:
-                goals = {
-                    name: requested_delivery(
-                        name, quote, self.human_text(), requested.get(name)
-                    )
-                    for name, quote in decision.goals.items()
-                }
+            goals = {
+                name: delivery_goal(
+                    name, proposal, self.human_text(), self.target_deliverables
+                )
+                for name, proposal in decision.goals.items()
+            }
             child_names = {}
             for i, (name, goal) in enumerate(goals.items(), 1):
                 child = PlanningNode(id=f"{ROOT}_{i}", parent=ROOT, goal=goal)
