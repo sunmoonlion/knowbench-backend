@@ -1,31 +1,105 @@
 """A completed two-step trial and an owned, priced instruction for its received artifact."""
 
-import asyncio
+import json
 from contextlib import asynccontextmanager
+from decimal import Decimal
 from functools import partial
 from uuid import uuid4
 
 import httpx
 from formal_plan_support import setup_plan
 from formal_recursive_support import complete
+from sqlalchemy import text
 from test_formal_method_use_routes_db import application
 from test_instruction_requests_db import PRICES, ROUTE
 from test_workbench_ledger_db import OWNER
 
-from app.application.workbench.branch_review_dispatch import review_projection
+from app.application.workbench.branch_review_route import (
+    RoutePreviewRequest,
+    branch_route,
+    review_projection,
+    selected_quote,
+)
 from app.application.workbench.formal_test_runs import FormalExecutions
 from app.application.workbench.instruction_requests import InstructionRequests
 from app.application.workbench.reviewer_choices import ReviewerChoices
+from app.application.workbench.source_tasks import hand_over_source
+from app.domain.workbench.formal_execution import case_key
 from app.domain.workbench.formal_method_execution_generated import (
     PrepareBranchReview,
     ReceiveBranch,
 )
 from app.domain.workbench.instruction_requests import leaf_responses_body
-from app.domain.workbench.registry_sources import SourceDraft
+from app.domain.workbench.registry_sources import RegisteredSource, SourceDraft
 from app.domain.workbench.review_routes import ReviewRoute
-from app.domain.workbench.source_tasks import instruction_input
+from app.domain.workbench.source_tasks import (
+    REVIEW_KEY_PREFIX,
+    ReviewBinding,
+    SourceTask,
+    instruction_input,
+)
 from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints import workbench_routes
+
+
+async def seed_review_route(repo, run_id, case_id, step, revision, scope):
+    await repo.session.execute(
+        text(
+            "INSERT INTO workbench_review_route_confirmations(run_id,case_id,step,revision,scope) "
+            "VALUES (:run,:case,:step,:revision,cast(:scope as jsonb))"
+        ),
+        {
+            "run": run_id,
+            "case": case_id,
+            "step": step,
+            "revision": revision,
+            "scope": json.dumps(scope),
+        },
+    )
+
+
+async def existing_review(
+    executions, policy, owner, run, selector, review_digest, source, sid
+):
+    """Reconstruct an in-flight pre-retirement task with its saved route and price."""
+    repo = executions.repo
+    request = RoutePreviewRequest(**selector.model_dump(), review_digest=review_digest)
+    checked = await branch_route(executions, policy, owner, run, request)
+    option = next(
+        o for o in checked.page["options"] if o["digest"] == checked.page["recommended"]
+    )
+    binding = ReviewBinding(
+        **request.model_dump(), run_id=run, revision=1, option_digest=option["digest"]
+    )
+    async with repo.transaction():
+        await seed_review_route(
+            repo,
+            run,
+            case_key(selector.case_id, selector.repetition),
+            selector.step,
+            1,
+            {"option": option},
+        )
+        base = await (
+            await executions.capabilities.instruction_service(
+                executions.capabilities.formal_sources, owner
+            )
+        ).account_quote(owner, {"sandbox_id": checked.sandbox_id}, "CNY")
+        snap = SourceTask(
+            source=RegisteredSource.model_validate(
+                {k: source[k] for k in RegisteredSource.model_fields}
+            ),
+            arguments={},
+            budget_limit=Decimal(option["maximum"]),
+            review_rounds=option["rounds"],
+            quote=selected_quote(option, base),
+            owner=owner,
+            session_id=sid,
+            review=binding,
+        )
+        return (
+            await hand_over_source(repo, owner, snap, REVIEW_KEY_PREFIX + review_digest)
+        )["task_id"]
 
 
 async def review_case(db, monkeypatch, *, strict=False):
@@ -165,36 +239,26 @@ async def review_case(db, monkeypatch, *, strict=False):
             **selector.model_dump(mode="json"),
             "review_digest": receipt["review"]["digest"],
         }
-        page = (await client.post(url + "route-preview", json=scope)).json()
-        option = page["recommended"]
-        payload = {**scope, "option_digest": option}
-        body = {
-            **payload,
-            "revision": 1,
-            "source_id": str(source["source_id"]),
-            "version": 1,
-            "digest": source["digest"],
-            "session_id": sid,
-        }
-        assert (await client.post(url + "execution", json=body)).status_code == 409
-        confirmation = await client.put(
-            url + "route", json={**payload, "previous_revision": 0}
+        for verb, path in (
+            ("post", "route-preview"),
+            ("put", "route"),
+            ("post", "execution"),
+        ):
+            assert (
+                await getattr(client, verb)(url + path, json=scope)
+            ).status_code == 404
+    async with db() as sql:
+        repo = WorkbenchRepository(sql)
+        task = await existing_review(
+            FormalExecutions(repo, service(repo)),
+            policy,
+            OWNER,
+            run,
+            selector,
+            receipt["review"]["digest"],
+            source,
+            sid,
         )
-        assert confirmation.json()["isolated_execution_available"], confirmation.text
-        assert (
-            await client.post(url + "execution", json={**body, "revision": 2})
-        ).status_code == 409
-        responses = await asyncio.gather(
-            *(client.post(url + "execution", json=body) for _ in range(2))
-        )
-        for r in responses:
-            assert r.status_code == 200, r.text
-        assert responses[0].json() == responses[1].json()
-        task = responses[0].json()["task_id"]
-        resumed = (await client.post(url + "route-preview", json=scope)).json()[
-            "execution"
-        ]
-        assert resumed["task_id"] == task and resumed["session_id"] == sid
     job = instruction_input(text, {"receipt": "test@example.test"})
     wire = leaf_responses_body(job, ROUTE.model, ROUTE.output_tokens)
     wire["input"] = wire["input"][-1:]

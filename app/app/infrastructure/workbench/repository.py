@@ -2230,15 +2230,6 @@ class WorkbenchRepository(
         )
         return result.mappings().first()
 
-    async def record_review_route(self, run_id, case_id, step, revision, scope):
-        await self.session.execute(
-            text(
-                "insert into workbench_review_route_confirmations(run_id,case_id,step,revision,scope) "
-                "values (:r,:c,:s,:v,cast(:scope as jsonb))"
-            ),
-            {"r": run_id, "c": case_id, "s": step, "v": revision, "scope": _j(scope)},
-        )
-
     async def save_branch_review(self, run_id, case_id, step, review):
         # The caller holds the run lock and has compared the previous draft digest.
         await self.session.execute(

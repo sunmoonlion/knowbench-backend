@@ -145,7 +145,7 @@ class InstructionRequests:
                 session = await self.repo.get_session(
                     str(snap.session_id), owner_actor_id=owner
                 )
-                from app.application.workbench.branch_review_dispatch import (
+                from app.application.workbench.branch_review_route import (
                     selected_quote,
                 )
 

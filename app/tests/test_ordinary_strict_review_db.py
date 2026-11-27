@@ -477,15 +477,12 @@ async def test_author_strict_then_ordinary_cross_family(
 
 
 async def check_received_model(db, s, factory, req, run):
-    from app.application.workbench.branch_review_dispatch import (
-        DispatchReview,
-        dispatch_review,
-        review_projection,
-    )
+    from branch_review_support import existing_review
+
     from app.application.workbench.branch_review_route import (
-        RouteConfirmation,
         RoutePreviewRequest,
         branch_route,
+        review_projection,
     )
     from app.application.workbench.ledger import Ledger
     from app.application.workbench.session_service import SessionService
@@ -560,32 +557,9 @@ async def check_received_model(db, s, factory, req, run):
         assert view["verified_producer"]["model"] == ROUTE.model
         from unittest.mock import AsyncMock, patch
 
-        from app.application.workbench.branch_review_dispatch import dispatch_choices
-
         with patch.object(repo, "sealed_artifact_model", AsyncMock(return_value=None)):
             legacy = (await branch_route(executions, policy, OWNER, rid, request)).page
-            saved = await branch_route(
-                executions,
-                policy,
-                OWNER,
-                rid,
-                RouteConfirmation(
-                    **request.model_dump(),
-                    previous_revision=0,
-                    option_digest=legacy["recommended"],
-                ),
-            )
-            assert not saved.page.get("verified_producer")
-            assert await dispatch_choices(executions, OWNER, saved) is None
-        assert not (await branch_route(executions, policy, OWNER, rid, request)).page[
-            "confirmed"
-        ]
-        confirmation = RouteConfirmation(
-            **request.model_dump(),
-            previous_revision=1,
-            option_digest=view["recommended"],
-        )
-        await branch_route(executions, policy, OWNER, rid, confirmation)
+            assert not legacy.get("verified_producer")
         async with repo.transaction():
             sessions = await repo.list_sessions(owner_actor_id=OWNER)
             env = next(x["environment_id"] for x in sessions if x.get("environment_id"))
@@ -611,16 +585,23 @@ async def check_received_model(db, s, factory, req, run):
                 owner_actor_id=OWNER, project_id=project, kind="expert"
             )
         )["session_id"]
-        body = DispatchReview(
-            **request.model_dump(),
-            revision=2,
-            option_digest=view["recommended"],
-            session_id=sid,
-            source_id=source["source_id"],
-            version=1,
-            digest=source["digest"],
+        task = await existing_review(
+            executions,
+            policy,
+            OWNER,
+            rid,
+            selector,
+            receipt["review"]["digest"],
+            source,
+            sid,
         )
-        task = (await dispatch_review(executions, policy, OWNER, rid, body))["task_id"]
+        with patch.object(repo, "sealed_artifact_model", AsyncMock(return_value=None)):
+            from app.domain.workbench.errors import StaleStateVersion
+            from app.domain.workbench.source_tasks import SourceTask
+
+            binding = SourceTask.load(await repo.get_task(task)).review
+            with pytest.raises(StaleStateVersion):
+                await review_projection(executions, policy, OWNER, binding)
         ledger = Ledger(repo)
         await ledger.transition(task, TaskState.VALIDATING)
         await ledger.transition(task, TaskState.QUEUED)

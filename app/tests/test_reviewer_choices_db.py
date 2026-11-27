@@ -100,15 +100,17 @@ async def test_reviewer_settings_are_owner_scoped_and_recheck_each_connection(
         ] is None
 
 
-async def test_confirm_route_on_received_artifact_replays_and_rechecks_v0(
-    db, monkeypatch
-):
-    import asyncio
-
+async def test_saved_route_rechecks_identity_price_credential_and_v0(db, monkeypatch):
+    from branch_review_support import seed_review_route
     from formal_plan_support import setup_plan
     from formal_recursive_support import complete
 
+    from app.application.workbench.branch_review_route import (
+        RoutePreviewRequest,
+        branch_route,
+    )
     from app.application.workbench.formal_test_runs import FormalExecutions
+    from app.domain.workbench.formal_execution import case_key
     from app.domain.workbench.formal_method_execution_generated import (
         PrepareBranchReview,
         ReceiveBranch,
@@ -128,15 +130,18 @@ async def test_confirm_route_on_received_artifact_replays_and_rechecks_v0(
     )
     run_id = str(ctx.request.run_id)
     policy, credential, _ = await configured(db, monkeypatch)
-    monkeypatch.setattr(routes, "reviewer_choices", lambda: policy)
-    app = application(db, lambda repo: None)
-    app.dependency_overrides[routes.require_workbench_enabled] = lambda: None
 
-    async def sessions():
+    async def read_saved(digest):
         async with db() as session:
-            yield session
-
-    app.dependency_overrides[routes.get_db_session] = sessions
+            repo = WorkbenchRepository(session)
+            checked = await branch_route(
+                FormalExecutions(repo, ctx.factory(repo)),
+                policy,
+                OWNER,
+                run_id,
+                RoutePreviewRequest(**scope, review_digest=digest),
+            )
+            return checked.page
 
     async def prepare_review(expected, previous):
         async with db() as session:
@@ -169,72 +174,48 @@ async def test_confirm_route_on_received_artifact_replays_and_rechecks_v0(
         async with repo.transaction():
             await repo.purge_test_run(run_id)
     review = await prepare_review("test@example.test", None)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app), base_url="http://testserver"
-    ) as client:
-        url = f"/api/workbench/reviews/{run_id}/route"
-        payload = {**scope, "review_digest": review}
-        preview = await client.post(url + "-preview", json=payload)
-        assert preview.status_code == 200, preview.text
-        page = preview.json()
-        assert (
-            set(page["handoff"]) == {"receipt"}
-            and page["isolated_execution_available"] is False
-        )
-        assert "test@example.test" not in preview.text
-        choice = page["options"][0]
-        assert (
-            choice["pin"]["credential_id"] == credential
-            and page["recommended"] == choice["digest"]
-        )
-        command = {**payload, "option_digest": choice["digest"], "previous_revision": 0}
-        responses = await asyncio.gather(
-            *(client.put(url, json=command) for _ in range(2))
-        )
-        assert all(
-            r.status_code == 200 and r.json()["revision"] == 1 for r in responses
-        )
-        assert (await client.post(url + "-preview", json=payload)).json()[
-            "confirmed"
-        ] == choice["digest"]
-        original_routes = policy.routes
-        policy.routes = (
-            original_routes[0].model_copy(update={"family": "reclassified"}),
-            *original_routes[1:],
-        )
-        changed = (await client.post(url + "-preview", json=payload)).json()
-        assert changed["confirmed"] is None and changed["recommended"] is None
-        assert changed["options"][0]["planned_producer"]["family"] == "reclassified"
-        assert (await client.put(url, json=command)).status_code == 409
-        policy.routes = original_routes
-        original_tariffs = policy.tariffs
-        policy.tariffs = ()
-        unpriced = (await client.post(url + "-preview", json=payload)).json()
-        assert unpriced["gap"] == "quote_unavailable" and not unpriced["options"]
-        policy.tariffs = original_tariffs
-        app.dependency_overrides[get_web_current_user] = lambda: principal(OTHER)
-        assert (await client.put(url, json=command)).status_code == 404
-        app.dependency_overrides[get_web_current_user] = lambda: principal(OWNER)
-        async with db() as session:
-            repo = WorkbenchRepository(session)
-            async with repo.transaction():
-                await repo.revoke_credential(credential, owner_actor_id=OWNER)
-        assert (await client.put(url, json=command)).status_code == 409
-        assert (await client.post(url + "-preview", json=payload)).json()[
-            "confirmed"
-        ] is None
-        failed = await prepare_review("wrong", review)
-        assert (await client.put(url, json=command)).status_code == 409
-        blocked = (
-            await client.post(
-                url + "-preview", json={**payload, "review_digest": failed}
+    page = await read_saved(review)
+    assert set(page["handoff"]) == {"receipt"} and "test@example.test" not in str(page)
+    choice = page["options"][0]
+    assert choice["pin"]["credential_id"] == credential
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await seed_review_route(
+                repo,
+                run_id,
+                case_key(case["case_id"], case["repetition"]),
+                step["step"],
+                1,
+                {"option": choice},
             )
-        ).json()
-        assert (
-            blocked["gap"] == "v0_failed"
-            and not blocked["handoff"]
-            and not blocked["options"]
-        )
+    assert (await read_saved(review))["confirmed"] == choice["digest"]
+    original_routes = policy.routes
+    policy.routes = (
+        original_routes[0].model_copy(update={"family": "reclassified"}),
+        *original_routes[1:],
+    )
+    changed = await read_saved(review)
+    assert changed["confirmed"] is None
+    assert changed["options"][0]["planned_producer"]["family"] == "reclassified"
+    policy.routes = original_routes
+    tariffs = policy.tariffs
+    policy.tariffs = ()
+    unpriced = await read_saved(review)
+    assert unpriced["gap"] == "quote_unavailable" and not unpriced["options"]
+    policy.tariffs = tariffs
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await repo.revoke_credential(credential, owner_actor_id=OWNER)
+    assert (await read_saved(review))["confirmed"] is None
+    failed = await prepare_review("wrong", review)
+    blocked = await read_saved(failed)
+    assert (
+        blocked["gap"] == "v0_failed"
+        and not blocked["handoff"]
+        and not blocked["options"]
+    )
     assert len(ctx.remote.calls) == 2
 
 

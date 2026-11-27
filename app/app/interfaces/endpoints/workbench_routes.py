@@ -36,16 +36,6 @@ from app.application.workbench.agent_service import (
     AgentServiceUnconfigured,
     validate_path,
 )
-from app.application.workbench.branch_review_dispatch import (
-    DispatchReview,
-    dispatch_choices,
-    dispatch_review,
-)
-from app.application.workbench.branch_review_route import (
-    RouteConfirmation,
-    RoutePreviewRequest,
-    branch_route,
-)
 from app.application.workbench.expert_data import ensure_data_session
 from app.application.workbench.interactions import answer_interaction
 from app.application.workbench.interactions import cancel_task as stop_task
@@ -1215,71 +1205,6 @@ async def deprovision_sandbox(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     return {"contract_version": CONTRACT_VERSION, **result}
-
-
-# ---------------- review of a received trial artifact ----------------
-async def _branch_route(session, principal, run_id, body):
-    from app.application.workbench.formal_test_runs import FormalExecutions
-    from app.bootstrap.workbench import capability_service
-
-    repo = workbench_store(session)
-    try:
-        executions = FormalExecutions(repo, capability_service(repo))
-        owner = _actor(principal)
-        async with repo.transaction():
-            if isinstance(body, DispatchReview):
-                return await dispatch_review(
-                    executions, reviewer_choices(), owner, str(run_id), body
-                )
-            checked = await branch_route(
-                executions, reviewer_choices(), owner, str(run_id), body
-            )
-            execution = await dispatch_choices(executions, owner, checked)
-            return {
-                **checked.page,
-                "isolated_execution_available": bool(
-                    execution and "sessions" in execution
-                ),
-                "execution": execution,
-            }
-    except WorkbenchError as exc:
-        raise _http(exc) from exc
-
-
-@router.post("/reviews/{run_id}/route-preview")
-async def preview_branch_route(
-    run_id: UUID,
-    body: RoutePreviewRequest,
-    response: Response,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    response.headers["Cache-Control"] = "private, no-store"
-    return await _branch_route(session, principal, run_id, body)
-
-
-@router.put("/reviews/{run_id}/route")
-async def confirm_branch_route(
-    run_id: UUID,
-    body: RouteConfirmation,
-    response: Response,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    response.headers["Cache-Control"] = "private, no-store"
-    return await _branch_route(session, principal, run_id, body)
-
-
-@router.post("/reviews/{run_id}/execution")
-async def start_branch_review(
-    run_id: UUID,
-    body: DispatchReview,
-    response: Response,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    response.headers["Cache-Control"] = "private, no-store"
-    return await _branch_route(session, principal, run_id, body)
 
 
 @router.get("/tasks/{task_id}/review-decisions")

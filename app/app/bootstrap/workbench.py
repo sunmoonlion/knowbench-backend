@@ -489,7 +489,7 @@ def build_incubation_folders(
 
 
 async def review_inputs(repo, owner, binding, *, comparison_task=None):
-    from app.application.workbench.branch_review_dispatch import review_projection
+    from app.application.workbench.branch_review_route import review_projection
     from app.application.workbench.formal_test_runs import FormalExecutions
 
     return await review_projection(

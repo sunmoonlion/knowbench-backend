@@ -3,8 +3,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
-from pydantic import Field
-
+from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import NotFound, StaleStateVersion
 from app.domain.workbench.formal_execution import case_key
 from app.domain.workbench.formal_method_execution_generated import (
@@ -13,29 +12,10 @@ from app.domain.workbench.formal_method_execution_generated import (
     fingerprint,
 )
 from app.domain.workbench.review_routes import RouteKey
-from app.domain.workbench.source_tasks import REVIEW_KEY_PREFIX
-
-
-def review_key(review_digest):
-    return REVIEW_KEY_PREFIX + review_digest
-
-
-async def prior_review(repo, owner, review_digest):
-    return await repo.find_task_by_idempotency(
-        tenant="default",
-        owner_actor_id=owner,
-        profile_id="registry-source",
-        idempotency_key=review_key(review_digest),
-    )
 
 
 class RoutePreviewRequest(ReceiveBranch):
     review_digest: Digest
-
-
-class RouteConfirmation(RoutePreviewRequest):
-    previous_revision: int = Field(strict=True, ge=0)
-    option_digest: Digest
 
 
 @dataclass
@@ -147,30 +127,6 @@ async def branch_route(executions, policy, owner, run_id, command):
         previous = last["scope"]["option"]["digest"] if last else None
         valid = {o["digest"]: o for o in options}
         confirmed = previous if previous in valid else None
-        if isinstance(command, RouteConfirmation):
-            option = valid.get(command.option_digest)
-            if not option or (
-                command.previous_revision != revision
-                and not (
-                    confirmed == command.option_digest
-                    and command.previous_revision == revision - 1
-                )
-            ):
-                raise StaleStateVersion(
-                    "Review scope, route, price or confirmation changed"
-                )
-            if not await repo.lock_active_credential(
-                owner, option["pin"]["credential_id"]
-            ):
-                raise StaleStateVersion("Review connection revoked")
-            if confirmed != command.option_digest:
-                if await prior_review(repo, owner, command.review_digest):
-                    raise StaleStateVersion("This review has already been dispatched")
-                revision += 1
-                await repo.record_review_route(
-                    run_id, key, command.step, revision, {**scope, "option": option}
-                )
-                confirmed = command.option_digest
         recommended = next(
             (o["digest"] for o in options if o["pin"] == preference), None
         )
@@ -211,3 +167,41 @@ async def branch_route(executions, policy, owner, run_id, command):
             if scope["deferred"]
             else None,
         )
+
+
+async def review_projection(
+    executions, policy, owner, binding, *, comparison_task=None
+):
+    selector = RoutePreviewRequest.model_validate(
+        binding.model_dump(include=set(RoutePreviewRequest.model_fields))
+    )
+    checked = await branch_route(
+        executions,
+        policy,
+        owner,
+        str(binding.run_id),
+        selector,
+    )
+    option, sandbox, inputs = checked.projection(binding)
+    if comparison_task is not None:
+        from app.application.workbench.review_comparison import comparison_arguments
+
+        if checked.assessment is None:
+            raise CapabilityError("The confirmed review has no deferred assessment")
+        inputs = await comparison_arguments(
+            executions.repo, owner, binding, comparison_task, inputs, checked.assessment
+        )
+    return option, sandbox, inputs
+
+
+def selected_quote(option, base):
+    quote = {**option["quote"], "credential_id": option["pin"]["credential_id"]}
+    if quote != base:
+        quote["review_connection"] = True
+    if producer := option.get("verified_producer"):
+        if not option.get("family") or producer["family"] == option["family"]:
+            raise CapabilityError(
+                "Verified reviewer family must differ from the producer"
+            )
+        quote.update(family=option["family"], producer_family=producer["family"])
+    return quote
