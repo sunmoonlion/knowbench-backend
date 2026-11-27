@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from functools import cache
 from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import Field, model_validator
@@ -58,6 +59,10 @@ class SketchStep(Strict):
     task: Short
     method: Name
     inputs: dict[Name, InputSource] = Field(default_factory=dict, max_length=100)
+    # Map a frozen output port to its public name in this composition.
+    deliver_as: dict[Name, Name] = Field(
+        default_factory=dict, max_length=100, exclude_if=lambda value: not value
+    )
     # Cases map caller values to versioned catalog aliases.
     route_input: Name | None = None
     cases: dict[Short, Name] = Field(default_factory=dict, max_length=8)
@@ -77,6 +82,10 @@ class PlanningNode(Strict):
     goal: Annotated[str, Field(min_length=1, max_length=60000)]
     status: Literal["pending", "hit", "split", "gap", "clarify"] = "pending"
     reason: str = Field(default="", max_length=1500)
+    # A step-less root can group independently requested results. Keys are child IDs.
+    delivery_goals: dict[Name, Name] = Field(
+        default_factory=dict, max_length=15, exclude_if=lambda v: not v
+    )
     operator: Operator | None = None
     step: SketchStep | None = None
     batch: ObjectBatch | None = None
@@ -101,7 +110,16 @@ class PlanningTree(Strict):
                 n.parent not in seen or n.id.rpartition("_")[0] != n.parent
             ):
                 raise ValueError("Missing planning parent")
-            if (n.status in ("split", "hit")) != (n.step is not None) or (
+            if n.delivery_goals and (
+                n.parent is not None
+                or n.status != "split"
+                or n.operator != "parallel_join"
+                or n.step is not None
+                or len(n.delivery_goals) < 2
+                or len(set(n.delivery_goals.values())) != len(n.delivery_goals)
+            ):
+                raise ValueError("Invalid independent delivery group")
+            if (n.status in ("split", "hit")) != bool(n.step or n.delivery_goals) or (
                 n.step and n.step.id != n.id
             ):
                 raise ValueError("A resolved goal requires its bound step")
@@ -115,7 +133,7 @@ class PlanningTree(Strict):
                         bindings.add(b.step)
                     elif b.source == "collect_pack":
                         bindings.update(m.step for m in b.items)
-            if bindings != children:
+            if bindings | n.delivery_goals.keys() != children:
                 raise ValueError("Every planned child must supply its parent's inputs")
         return self
 
@@ -143,6 +161,11 @@ class Selection(Strict):
             )
         if self.status == "ready" and not self.steps:
             raise ValueError("A ready sketch needs an available method")
+        if self.status == "ready" and self.tree:
+            steps = {step.id: step for step in self.steps}
+            for node, name in self.tree.nodes[0].delivery_goals.items():
+                if node not in steps or name not in steps[node].deliver_as.values():
+                    raise ValueError(f"selection_export: missing delivery {name}")
         if self.patterns and len(set(self.patterns)) != len(self.patterns):
             raise ValueError("Duplicate pattern")
         return self
@@ -189,6 +212,9 @@ class TargetDeliverableHint(Strict):
     promise_id: Name
     summary: Short
     expected_domain_id: DomainId
+    outputs: tuple[Name, ...] = Field(
+        default=(), max_length=100, exclude_if=lambda v: not v
+    )
 
 
 class SelectionContext(Strict):
@@ -261,6 +287,7 @@ def annotate_catalog_reachability(
 
 def required_features(selection: Selection) -> set[str]:
     features = {"object_batch"} if selection.object_batch else set()
+    terminal_exports = {step.id for step in selection.steps if step.deliver_as}
     for step in selection.steps:
         if step.step_batch is not None:
             features.add("object_batch")
@@ -270,6 +297,12 @@ def required_features(selection: Selection) -> set[str]:
                 deps.add(b.step)
             elif b.source == "collect_pack":
                 deps.update(m.step for m in b.items)
+        terminal_exports.difference_update(deps)
+        terminal_exports.difference_update(
+            b.step for b in step.inputs.values() if b.source == "object_rows"
+        )
+        if step.artifact_guard is not None:
+            terminal_exports.discard(step.artifact_guard.step)
         if step.cases or step.artifact_guard is not None:
             features.add("conditional")
         if step.reviews:
@@ -278,6 +311,8 @@ def required_features(selection: Selection) -> set[str]:
             features.add("join")
         elif deps:
             features.add("sequence")
+    if len(terminal_exports) > 1:
+        features.add("join")
     return features
 
 
@@ -356,6 +391,24 @@ def normalize_unresolved(value):
     return value
 
 
+def check_delivery_targets(selection, methods, targets):
+    """Recheck named outputs against the request, including replayed handbacks."""
+    if selection.status != "ready" or not targets:
+        return
+    bound = {name for step in selection.steps for name in step.deliver_as.values()}
+    if not bound:
+        tail = methods.get(selection.steps[-1].method, {})
+        bound = set(tail.get("interfaces", tail).get("outputs", {}))
+    missing = [
+        f"{output}（{target['summary']}）"
+        for target in targets
+        for output in target.get("outputs") or (target["promise_id"],)
+        if output not in bound
+    ]
+    if missing:
+        raise ValueError("缺少对外交付来源：" + "、".join(missing))
+
+
 def check_proposal(selection, methods, instructions, enabled):
     """Check the model's draft against the catalog sealed into this round."""
     if issue := review_issue(selection, enabled):
@@ -367,6 +420,7 @@ def check_proposal(selection, methods, instructions, enabled):
         }
         raise ValueError(f"{issue}: {advice[issue]}")
     seen = {}
+    public_names = set()
     for step in selection.steps:
         candidates = set(step.cases.values()) or {step.method}
         if step.method not in candidates or len(candidates) < len(step.cases):
@@ -379,6 +433,7 @@ def check_proposal(selection, methods, instructions, enabled):
                 and step.method in instructions
                 and not (
                     step.inputs
+                    or step.deliver_as
                     or step.reviews
                     or step.route_input
                     or step.cases
@@ -393,6 +448,14 @@ def check_proposal(selection, methods, instructions, enabled):
             raise ValueError(
                 f"{step.id}: method outside the authorized catalog: {sorted(missing)}"
             )
+        for output, public in step.deliver_as.items():
+            if public in public_names:
+                raise ValueError(f"selection_export: duplicate delivery {public}")
+            for alias in candidates:
+                entry = methods[alias]
+                if output not in entry.get("interfaces", entry)["outputs"]:
+                    raise ValueError(f"selection_export: missing {step.id}.{output}")
+            public_names.add(public)
         dependencies: set[str] = set()
         for binding in step.inputs.values():
             if binding.source in ("step", "object_rows"):
@@ -410,6 +473,56 @@ def check_proposal(selection, methods, instructions, enabled):
                 f"{step.id}: independent reviewer needs an isolated instruction method"
             )
         seen[step.id] = step.method
+
+
+def _compose_delivery(
+    procedure,
+    permissions,
+    approvals,
+    *,
+    template=None,
+    question=None,
+    title=None,
+    scope=None,
+) -> FormalMethodDefinition:
+    """Build the caller-facing contract independently of every child declaration."""
+    if (template is None) == (question is None):
+        raise ValueError("A composition needs one confirmed template or one request")
+    if template is not None:
+        purpose = template.goal
+        applies, excludes = scope or ("", "")
+        promise, delivery = "template_delivery", template.deliverable
+        check, evidence = template.check, template.evidence
+    else:
+        purpose = question
+        applies, excludes = "本次委托按已审定计划提供所需输入。", ""
+        promise, delivery = "request_delivery", "交回本次计划中列明的对外结果。"
+        check = "逐项核对已接受步骤的输出与对外结果的绑定。"
+        evidence = "各交付项的来源步骤、输出名称及执行回执。"
+    return FormalMethodDefinition.model_validate(
+        dict(
+            contract="knowlab/formal-method/v1",
+            capability_declaration=dict(
+                title=title or purpose,
+                purpose=purpose,
+                applies_when=[applies or purpose],
+                excludes=[excludes] if excludes else [],
+                promises={promise: delivery},
+            ),
+            access_requirements=list(permissions),
+            what_requires_approval=list(approvals),
+            procedure=procedure,
+            how_to_validate=[
+                dict(
+                    promise_id=promise,
+                    outputs=list(procedure["exports"]),
+                    check=check,
+                    evidence=evidence,
+                    on_failure="fail",
+                )
+            ],
+        )
+    )
 
 
 def _clean_caller_alias(
@@ -435,6 +548,7 @@ def expand(
     enabled: dict[str, bool],
     *,
     required_cases: dict[str, set[str]],
+    question: str | None = None,
     title: str | None = None,
     scope: tuple[str, str] | None = None,
     draft_contract: MethodDraftV2 | None = None,
@@ -452,8 +566,23 @@ def expand(
         raise ValueError(issue)
     dependencies: dict[str, set[str]] = {}
     route_values: dict[str, set[str]] = {}
+    sources = {}
+    for step in selection.steps:
+        for port, public in step.deliver_as.items():
+            if public in sources:
+                raise ValueError(f"selection_export: duplicate delivery {public}")
+            sources[public] = (step.id, port)
+    if step_exports:
+        if sources and step_exports != sources:
+            raise ValueError("selection_export: conflicting delivery bindings")
+        sources = dict(step_exports)
+    explicit_delivery = bool(sources)
     caller_slots_seen: dict[str, dict[str, Any]] = {}
     should_clean_names = clean_caller_names or draft_contract is not None
+
+    @cache
+    def interface_for(alias):
+        return tools[alias].definition.interfaces()
 
     for step in selection.steps:
         aliases = list(step.cases.values()) if step.cases else [step.method]
@@ -463,8 +592,7 @@ def expand(
             or len(aliases) != len(set(aliases))
         ):
             raise ValueError("selection_candidate")
-        chosen = tools[step.method].definition
-        interface = chosen.interfaces()
+        interface = interface_for(step.method)
         inputs = {}
         deps = set()
         if step.artifact_guard is not None:
@@ -591,42 +719,37 @@ def expand(
         or required_cases != route_values
     ):
         raise ValueError("selection_route")
-
-    steps_by_id = {g["id"]: g for g in graph_steps}
-    tail = selection.steps[-1]
-    if step_exports:
-        exports = {
-            export_name: dict(
-                step=src_step,
-                output=src_out,
-                always_present=bool(
-                    steps_by_id[src_step]["always_required"]
-                    and steps_by_id[src_step]["outputs"][src_out]["required"]
-                ),
-            )
-            for export_name, (src_step, src_out) in step_exports.items()
+    by_id = {step.id: step for step in selection.steps}
+    if not explicit_delivery:
+        tail = selection.steps[-1]
+        sources = {
+            port: (tail.id, port) for port in interface_for(tail.method)["outputs"]
         }
-        needed = {src_step for src_step, _ in step_exports.values()}
-    else:
-        final_def = tools[tail.method].definition
-        exports = {
-            n: dict(
-                step=tail.id,
-                output=n,
-                always_present=bool(
-                    steps_by_id[tail.id]["always_required"] and i["always_present"]
-                ),
-            )
-            for n, i in final_def.interfaces()["outputs"].items()
-        }
-        needed = {tail.id}
-
+    exports = {}
+    for public, (step_id, port) in sources.items():
+        step = by_id.get(step_id)
+        if step is None:
+            raise ValueError(f"selection_export: unknown source step {step_id}")
+        aliases = (
+            step.cases.values() if explicit_delivery and step.cases else (step.method,)
+        )
+        outputs = [interface_for(alias)["outputs"] for alias in aliases]
+        if any(port not in ports for ports in outputs):
+            raise ValueError(f"selection_export: missing {step_id}.{port}")
+        exports[public] = dict(
+            step=step_id,
+            output=port,
+            always_present=step.artifact_guard is None
+            and all(ports[port]["always_present"] for ports in outputs),
+        )
+    needed = {ref["step"] for ref in exports.values()}
+    consumed = {dep for deps in dependencies.values() for dep in deps}
+    if len(needed - consumed) > 1 and not enabled.get("join"):
+        raise ValueError("selection_capability")
     for s in reversed(selection.steps):
-        if s.id in needed:
-            needed.update(dependencies[s.id])
-    if any(s.id not in needed for s in selection.steps):
-        raise ValueError("selection_disconnected")
-
+        if s.id not in needed:
+            raise ValueError("selection_disconnected")
+        needed.update(dependencies[s.id])
     procedure: dict[str, Any] = dict(
         kind="orchestration",
         instructions="\n".join(step.task for step in selection.steps),
@@ -683,8 +806,19 @@ def expand(
                 r.model_dump(mode="json") for r in merged_approvals
             ],
         }
+        definition = FormalMethodDefinition.model_validate(doc)
+    elif explicit_delivery and (template is not None or question is not None):
+        definition = _compose_delivery(
+            procedure,
+            permissions.values(),
+            approvals,
+            template=template,
+            question=question,
+            title=title,
+            scope=scope,
+        )
     else:
-        final = tools[tail.method].definition
+        final = tools[selection.steps[-1].method].definition
         doc = final.document()
         doc.update(
             access_requirements=[
@@ -693,6 +827,7 @@ def expand(
             what_requires_approval=[r.model_dump(mode="json") for r in approvals],
             procedure=procedure,
         )
+
         if template:
             declaration = doc["capability_declaration"]
             if selection.tree and len(selection.steps) > 1:
@@ -729,7 +864,9 @@ def expand(
                 ),
             ]
 
-    definition = FormalMethodDefinition.model_validate(doc)
+        elif question is not None:
+            doc["capability_declaration"]["purpose"] = question
+        definition = FormalMethodDefinition.model_validate(doc)
     if roles and isinstance(definition.procedure, Orchestration):
         definition.procedure.validate_collaboration(roles_typed(roles))
         if not review_group(

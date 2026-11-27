@@ -468,7 +468,9 @@ A/B on an incoming record is a runtime choice even when the label is already kno
 Compare requirements against the complete services of individual methods before decomposing.
 Use sequential handoffs for dependent work and joins for separate deliverables.
 A reviewer can consume the independent results directly. Route mutually exclusive methods on a named caller input.
-Ready steps are in dependency order, the last exports its outputs. Each is
+List ready steps in dependency order. For explicit deliverables, use deliver_as on each producing step
+to map its real output ports to distinct public names. Only mapped outputs become public. Include the
+final result when requested. Without a mapping, the last step exports its outputs. Each is
 {id: ASCII name, task: business action in the author's language, method: catalog alias,
 inputs: {actual_input_name: {source:"caller",name:"alias"} or {source:"step",step:"id",output:"name"}}.
 Bind all mandatory inputs; never invent literal business values. An independent reviewer adds reviews:[producer ids]

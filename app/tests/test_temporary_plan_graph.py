@@ -170,3 +170,41 @@ async def test_immediate_planning_rejects_an_unexecutable_secondary_route_at_pre
             host_capabilities(True, True, True),
             ["conditional"],
         )
+
+
+async def test_request_owns_the_delivery_on_every_route():
+    from app.domain.workbench.formal_method_plan_generated import export_outputs
+
+    task, methods = directory()
+    raw = proposal()
+    raw["steps"][0]["deliver_as"] = {"receipt": "evidence"}
+    raw["steps"][1]["deliver_as"] = {"receipt": "difference"}
+    question = "核对原行，交回原行依据和差额。"
+    choice = read_choice(task, raw)
+
+    async def permitted(owner, pins):
+        return {ref: methods[ref] for ref in pins}
+
+    service = SimpleNamespace(
+        formal_registry=SimpleNamespace(planning_definitions=permitted)
+    )
+    _, definition = await compile_choice(
+        service,
+        "caller",
+        str(uuid4()),
+        question,
+        choice,
+        host_capabilities(True, True, True),
+        ["sequence", "conditional"],
+    )
+    assert definition.capability_declaration.purpose == question
+    assert (
+        definition.capability_declaration.applies_when
+        != methods[choice.aliases["a"]].capability_declaration.applies_when
+    )
+    assert definition.how_to_validate[0].outputs == ("evidence", "difference")
+    for label in ("A", "B"):
+        plan = select_plan(definition, {"label": label})
+        assert export_outputs(
+            plan, {"prepare": {"receipt": "第17行"}, "dispatch": {"receipt": "5元"}}
+        ) == {"evidence": "第17行", "difference": "5元"}
