@@ -37,7 +37,15 @@ class StructuredRemote(Remote):
         return {**result, "structuredContent": {"receipt": "expected-never-sent"}}
 
 
-async def setup(db, *, cases=None, remote=None, public_review=False, assessment=False):
+async def setup(
+    db,
+    *,
+    cases=None,
+    remote=None,
+    public_review=False,
+    assessment=False,
+    promise_assessment=False,
+):
     admission, asset = await admission_setup(db, licensed=True)
     env, _, _ = await seed(db)
     doc = admission.model_dump(mode="json", by_alias=True)
@@ -50,6 +58,9 @@ async def setup(db, *, cases=None, remote=None, public_review=False, assessment=
         procedure["outputs"]["self_assessment"] = deepcopy(
             procedure["outputs"]["receipt"]
         )
+    if promise_assessment:
+        definition = doc["draft"]["definition"]
+        definition["how_to_validate"][0]["outputs"].append("self_assessment")
     record = license_record(
         doc["draft"]["source"], rights={"execute": True, "deliver": public_review}
     )
@@ -468,6 +479,32 @@ async def test_final_seal_rechecks_source_and_current_cost_policy(db, withdrawal
     final = await status(db, request, factory)
     assert final["status"] == "failed" and final["admission"]["receipt"] is None
     assert len(remote.calls) == 1
+
+
+async def test_reviewed_suite_with_an_unchecked_public_output_remains_private(db):
+    class WithAssessment(StructuredRemote):
+        async def call(self, *args):
+            result = await super().call(*args)
+            result["structuredContent"]["self_assessment"] = "unchecked"
+            return result
+
+    request, _, _, factory, conductor = await setup(
+        db,
+        public_review=True,
+        assessment=True,
+        promise_assessment=True,
+        remote=WithAssessment(),
+    )
+    await conductor.advance(str(request.run_id))
+    await approve(db, request, factory, await status(db, request, factory))
+    await settle(conductor, request)
+    result = await status(db, request, factory)
+    assert result["status"] == "passed"
+    receipt = result["admission"]["receipt"]
+    assert "business" not in receipt["checks"]
+    assert [r["scenario"] for r in receipt["uncovered"]] == list(
+        request.draft.definition.capability_declaration.promises.values()
+    )
 
 
 async def test_market_candidate_uses_real_execution_and_current_review(db):

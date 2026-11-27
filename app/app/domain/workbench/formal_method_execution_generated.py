@@ -299,7 +299,7 @@ class FormalMethodExecutionRequest(Strict):
     def fingerprint(self) -> str:
         return fingerprint(self.model_dump(mode="json", by_alias=True))
 
-    def validate_promise_coverage(self):
+    def uncovered_promises(self, passed_cases: set[str] | None = None) -> set[str]:
         definition = self.draft.definition
         declaration = definition.capability_declaration
         required_outputs: dict[str, set[str]] = {}
@@ -307,6 +307,10 @@ class FormalMethodExecutionRequest(Strict):
             required_outputs.setdefault(rule.promise_id, set()).update(rule.outputs)
         covered = set()
         for case in self.execution.suite.cases:
+            if case.expected.outcome != "succeeded" or (
+                passed_cases is not None and case.case_id not in passed_cases
+            ):
+                continue
             checked = set()
             for assertion in case.expected.assertions:
                 if assertion.pointer:
@@ -316,6 +320,15 @@ class FormalMethodExecutionRequest(Strict):
                     assertion.value, dict
                 ):
                     checked.update(assertion.value)
+            # A sole unconditional promise has an unambiguous test target.
+            if (
+                not case.covers_promises
+                and not declaration.conditions
+                and len(required_outputs) == 1
+            ):
+                promise, outputs = next(iter(required_outputs.items()))
+                if outputs <= checked:
+                    covered.add(promise)
             for promise in case.covers_promises:
                 if promise not in declaration.promises:
                     raise ValueError("Case refers to an unknown delivery promise")
@@ -325,14 +338,16 @@ class FormalMethodExecutionRequest(Strict):
                 if required_outputs[promise] - checked:
                     raise ValueError("Case needs assertions for every promised output")
                 covered.add(promise)
-        if declaration.conditions and covered != declaration.promises.keys():
+        return declaration.promises.keys() - covered
+
+    @model_validator(mode="after")
+    def supported(self):
+        missing = self.uncovered_promises()
+        if self.draft.definition.capability_declaration.conditions and missing:
             raise ValueError(
                 "Conditional declarations need cases covering every promise"
             )
 
-    @model_validator(mode="after")
-    def supported(self):
-        self.validate_promise_coverage()
         p = self.draft.definition.procedure
         if isinstance(p, ToolProcedure):
             if self.dependencies:

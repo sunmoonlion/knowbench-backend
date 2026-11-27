@@ -707,6 +707,7 @@ class FormalMethodCatalog:
             )
             _require(
                 review is not None
+                and not request.uncovered_promises()
                 and review.fingerprint == evidence.get("business_review_digest"),
                 "The business coverage review has expired or changed",
             )
