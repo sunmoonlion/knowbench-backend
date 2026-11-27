@@ -11,7 +11,6 @@ from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
 from pydantic import Field, TypeAdapter, ValidationInfo, model_validator
-from pydantic.json_schema import SkipJsonSchema
 
 from app.domain.workbench.formal_method_generated import (
     CallerValue,
@@ -121,59 +120,14 @@ class Unresolved(Strict):
     search_goal: Annotated[str, Field(min_length=1, max_length=500)] | None = None
 
 
-class ProposedDelivery(Strict):
-    goal: Short = Field(
-        description="Describe the result you propose for this child in your own words."
-    )
-    request_quote: Short | None = Field(
-        default=None,
-        description="Optional verbatim excerpt when attributing this result to the requester or a declared target.",
-    )
-
-
 class SeparateDeliveries(ChoiceCheck):
     action: Literal["separate"]
-    # Previously recorded model responses contain a single string per output.
-    goals: dict[Name, ProposedDelivery | SkipJsonSchema[Short]] = Field(
+    goals: dict[Name, Short] = Field(
         min_length=2,
         max_length=15,
-        description="Propose the independent results and choose a public name for each. Preserve any names explicitly required by the user or the method contract.",
+        description="Map each proposed public output name to its child goal.",
     )
     reason: Short | None = None
-
-
-def delivery_goal(name, proposal, human_text, targets):
-    summaries = [
-        target["summary"]
-        for target in targets
-        if name in (target.get("outputs") or (target["promise_id"],))
-    ]
-    if isinstance(proposal, ProposedDelivery):
-        if proposal.request_quote is None or any(
-            proposal.request_quote in text for text in (*summaries, *human_text)
-        ):
-            return proposal.goal
-        raise ValueError(
-            f"Provide a source quote for {name} from the request or its declared target"
-        )
-
-    # Replay the string-only responses emitted before the model supplied a separate quote.
-    pattern = re.compile(
-        rf"(?<![A-Za-z0-9_-]){re.escape(name)}[ \t]*"
-        r"(?:（[^()（）\r\n]+）|\([^()（）\r\n]+\))"
-    )
-    named = {m.group() for text in human_text for m in pattern.finditer(text)}
-    if len(named) == 1:
-        label = next(iter(named))
-        if proposal == label[len(name) :].strip()[1:-1].strip() or any(
-            m.group() == label for m in pattern.finditer(proposal)
-        ):
-            return label
-    elif not named and any(proposal in text for text in (*summaries, *human_text)):
-        return proposal
-    raise ValueError(
-        f"Provide a source quote for {name} from the request or its declared target"
-    )
 
 
 class ProposedStep(SketchStep):
@@ -258,7 +212,7 @@ and name. Set caller_slot only together with a projection lens. An explicit late
 For reusable methods, a parameter chosen by future callers is different from an author's open decision."""
 DELIVERY_RULE = """When the user requests several independent results, select the separate action at the root.
 Decide which results the request needs. Propose each child's goal in your own words and choose
-a distinct public name for it. If citing the requester, put the exact excerpt in request_quote.
+a distinct public name for it.
 The requester need not supply plan steps, output names or a list of deliverables.
 Use each target's public output name when supplied. Plan each child to export its assigned
 name using deliver_as. If a combined report is required, use a real qualified method that
@@ -1004,14 +958,8 @@ class HierarchicalPlanner:
                 return self.unresolved(
                     node, "gap", "独立交付数量超出本轮规划节点上限。"
                 )
-            goals = {
-                name: delivery_goal(
-                    name, proposal, self.human_text(), self.target_deliverables
-                )
-                for name, proposal in decision.goals.items()
-            }
             child_names = {}
-            for i, (name, goal) in enumerate(goals.items(), 1):
+            for i, (name, goal) in enumerate(decision.goals.items(), 1):
                 child = PlanningNode(id=f"{ROOT}_{i}", parent=ROOT, goal=goal)
                 self.nodes[child.id] = child
                 child_names[child.id] = name

@@ -802,68 +802,45 @@ def test_direct_binding_accepts_copy_of_frozen_port_but_rejects_contract_changes
     assert artifact["steps"][0]["inputs"][port] == binding
 
 
-def test_separate_recovers_only_user_named_outputs_from_model_explanations():
-    task, _ = setup()
-    src = task["original_input"]["input"]
-    src["text"] = (
-        "独立交付 opening_evidence（期初平衡核验回执）和 cash_difference（现金滚动差额回执）。"
-    )
-    labels = {
-        "opening_evidence": "opening_evidence（期初平衡核验回执）",
-        "cash_difference": "cash_difference（现金滚动差额回执）",
-    }
-    goals = {
-        name: f"按核验目标复算并交付 {label}，再执行额外动作。"
-        for name, label in labels.items()
-    }
-    for bad in (
-        goals | {"cash_difference": goals["opening_evidence"]},
-        goals | {"cash_difference": labels["opening_evidence"]},
-        goals | {"cash_difference": "交付 cash_difference（新增结果）。"},
-        goals | {"cash_difference": "交付 extra_cash_difference（现金滚动差额回执）。"},
-    ):
-        planner = HierarchicalPlanner(task)
-        with pytest.raises(ValueError, match="for cash_difference"):
-            planner.advance({"action": "separate", "goals": bad})
-        assert len(planner.nodes) == 1
-    planner = HierarchicalPlanner(task)
-    assert planner.advance({"action": "separate", "goals": goals}) is None
-    resumed = HierarchicalPlanner(task, planner.snapshot())
-    root = resumed.nodes["n1"]
-    assert {
-        name: resumed.nodes[node].goal for node, name in root.delivery_goals.items()
-    } == labels
-
-
 @pytest.mark.parametrize("author", [False, True])
-def test_model_proposes_delivery_goals_from_an_open_question(author):
+@pytest.mark.parametrize(
+    "question, goals",
+    [
+        (
+            "这次出差花了多少钱？哪些单据还没交？",
+            {
+                "trip_spend": "按币种汇总差旅支出",
+                "missing_docs": "列出未提交凭据的支出记录",
+            },
+        ),
+        (
+            "请交回 opening_evidence（期初平衡核验回执）和 cash_difference（现金滚动差额回执）。",
+            {
+                "opening_evidence": "核验期初资产和负债的平衡关系",
+                "cash_difference": "根据现金流量复算期末余额",
+            },
+        ),
+    ],
+)
+def test_each_child_keeps_the_goal_proposed_by_the_model(author, question, goals):
     task, _ = setup(author=author)
     src = task["original_input"]["input"]
     seed = src["incubation"]["seed"] if author else src
-    question = "这次出差花了多少钱？哪些单据还没交？"
     seed["text"] = question
     planner = HierarchicalPlanner(task)
-    assert "requested_outputs" not in planner.prompt()
     assert not planner.nodes["n1"].delivery_goals
-    goals = {
-        "trip_spend": {"goal": "按币种汇总差旅支出"},
-        "missing_docs": {
-            "goal": "列出未提交凭据的支出记录",
-            "request_quote": "哪些单据还没交",
-        },
-    }
-    raw = {"action": "separate", "goals": goals, "pending_choice": None}
-    bad = deepcopy(raw)
-    bad["goals"]["missing_docs"]["request_quote"] = "预测下月开销"
-    with pytest.raises(ValueError, match="source quote for missing_docs"):
-        planner.advance(bad, require_choice_check=True)
-    assert len(planner.nodes) == 1
-    assert planner.advance(raw, require_choice_check=True) is None
+    assert (
+        planner.advance(
+            {"action": "separate", "goals": goals, "pending_choice": None},
+            require_choice_check=True,
+        )
+        is None
+    )
     resumed = HierarchicalPlanner(task, planner.snapshot())
     assert {
         name: resumed.nodes[node].goal
         for node, name in resumed.nodes["n1"].delivery_goals.items()
-    } == {name: proposal["goal"] for name, proposal in goals.items()}
+    } == goals
 
 
 @pytest.mark.parametrize("author", [False, True])
@@ -890,10 +867,7 @@ async def test_independent_deliveries_keep_both_sources_through_review_and_compi
         ]
     planner = HierarchicalPlanner(task)
     inspect(planner, "first", "a")
-    selection = {
-        name: {"goal": f"生成并交回{label}", "request_quote": label}
-        for name, label in goals
-    }
+    selection = {name: f"生成并交回{label}" for name, label in goals}
     assert planner.advance({"action": "separate", "goals": selection}) is None
     sources = {}
     for name, label in goals:
