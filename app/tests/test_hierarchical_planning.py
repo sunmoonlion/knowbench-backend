@@ -91,32 +91,6 @@ def route(planner):
 
 
 @pytest.mark.parametrize("author", [False, True])
-def test_explicit_delivery_survives_planner_resume(author):
-    task, _ = setup(author=author)
-    planner = HierarchicalPlanner(task)
-    first, branch = proposal()["steps"]
-    branch["deliver_as"] = {"receipt": "difference"}
-    inspect(planner, "a", "b", "first")
-    assert (
-        planner.advance(
-            decision(branch, "branch", children={"prepare": "摘取原表明细"})
-        )
-        is None
-    )
-    resumed = HierarchicalPlanner(task, planner.snapshot())
-    assert resumed.prompt()["public_deliveries"] == {
-        "difference": {"step": "n1", "output": "receipt"}
-    }
-    first["deliver_as"] = {"receipt": "evidence"}
-    result = resumed.advance(decision(first))
-    artifact = result["selection"] if author else result
-    assert [s["deliver_as"] for s in artifact["steps"]] == [
-        {"receipt": "evidence"},
-        {"receipt": "difference"},
-    ]
-
-
-@pytest.mark.parametrize("author", [False, True])
 async def test_both_entries_resume_then_compile_only_the_selected_route(author):
     task, definitions = setup(author=author)
     p = HierarchicalPlanner(task)
@@ -294,19 +268,12 @@ def test_gap_with_search_suggestion_does_not_consume_a_repair():
     assert out["status"] == "gap" and not out.get("search_goal") and not out["steps"]
 
 
-@pytest.mark.parametrize("author", [True, False])
-def test_each_identical_sibling_goal_needs_its_own_model_decision_after_resume(author):
-    task, _ = setup(author=author)
-    src = task["original_input"]["input"]
-    if author:
-        methods = src["incubation"]["selection_context"]["methods"]
-    else:
-        methods = {
-            entry["alias"]: entry["interfaces"] for entry in src["catalog"]["entries"]
-        }
+def test_identical_sibling_goals_reuse_the_decision_but_keep_separate_invocations():
+    task, _ = setup(author=True)
+    p = HierarchicalPlanner(task)
+    methods = p.methods
     sample = methods["first"]["inputs"]["value"]
     methods["a"]["inputs"] = {"left": sample, "right": sample}
-    p = HierarchicalPlanner(task)
     parent = {
         "id": "join",
         "method": "a",
@@ -327,23 +294,7 @@ def test_each_identical_sibling_goal_needs_its_own_model_decision_after_resume(a
         )
         is None
     )
-    first = proposal()["steps"][0]
-    assert set(p.prompt()["required_outputs"]) == {"left"}
-    assert p.advance(decision(first)) is None
-    saved = p.snapshot()
-    p = HierarchicalPlanner(task, saved)
-    clarification = p.advance({"action": "clarify", "reason": "第二份用哪组资料？"})
-    assert (clarification["selection"] if author else clarification)[
-        "status"
-    ] == "clarify"
-    p = HierarchicalPlanner(task, saved)
-    assert p.current.goal == "生成回执" and p.current.step is None
-    assert set(p.prompt()["required_outputs"]) == {"right"}
-    second = {**first, "inputs": {"value": {"source": "caller", "name": "other_rows"}}}
-    handback = p.advance(decision(second))
-    result = handback["selection"] if author else handback
-    assert result["steps"][0]["inputs"]["value"]["name"] == "rows"
-    assert result["steps"][1]["inputs"]["value"]["name"] == "other_rows"
+    result = p.advance(decision(proposal()["steps"][0]))["selection"]
     assert [s["method"] for s in result["steps"]] == ["first", "first", "a"]
     assert result["steps"][0]["id"] != result["steps"][1]["id"]
 
@@ -780,193 +731,3 @@ def test_unsupported_binding_can_be_corrected_without_resetting_parent(author, s
     assert planner.snapshot() == before
     result = planner.advance(child)
     assert (result["selection"] if author else result)["status"] == "ready"
-
-
-def test_direct_binding_accepts_copy_of_frozen_port_but_rejects_contract_changes():
-    task, _ = setup(author=True)
-    planner = HierarchicalPlanner(task)
-    first = proposal()["steps"][0]
-    method = first["method"]
-    inspect(planner, method)
-    port, binding = next(iter(first["inputs"].items()))
-    slot = planner.methods[method]["inputs"][port]
-    first["inputs"][port] = {
-        **binding,
-        "caller_slot": {**slot, "schema": {"type": "null"}},
-    }
-    with pytest.raises(ValueError, match="caller_slot"):
-        planner.advance(decision(first))
-    first["inputs"][port]["caller_slot"] = {**slot, "description": "作者对此输入的说明"}
-    artifact = planner.advance(decision(first))["selection"]
-    assert artifact["status"] == "ready"
-    assert artifact["steps"][0]["inputs"][port] == binding
-
-
-@pytest.mark.parametrize("author", [False, True])
-@pytest.mark.parametrize(
-    "question, goals",
-    [
-        (
-            "这次出差花了多少钱？哪些单据还没交？",
-            {
-                "trip_spend": "按币种汇总差旅支出",
-                "missing_docs": "列出未提交凭据的支出记录",
-            },
-        ),
-        (
-            "请交回 opening_evidence（期初平衡核验回执）和 cash_difference（现金滚动差额回执）。",
-            {
-                "opening_evidence": "核验期初资产和负债的平衡关系",
-                "cash_difference": "根据现金流量复算期末余额",
-            },
-        ),
-    ],
-)
-def test_each_child_keeps_the_goal_proposed_by_the_model(author, question, goals):
-    task, _ = setup(author=author)
-    src = task["original_input"]["input"]
-    seed = src["incubation"]["seed"] if author else src
-    seed["text"] = question
-    planner = HierarchicalPlanner(task)
-    assert not planner.nodes["n1"].delivery_goals
-    assert (
-        planner.advance(
-            {"action": "separate", "goals": goals, "pending_choice": None},
-            require_choice_check=True,
-        )
-        is None
-    )
-    resumed = HierarchicalPlanner(task, planner.snapshot())
-    assert {
-        name: resumed.nodes[node].goal
-        for node, name in resumed.nodes["n1"].delivery_goals.items()
-    } == goals
-
-
-@pytest.mark.parametrize("author", [False, True])
-@pytest.mark.parametrize("reverse", [False, True])
-async def test_independent_deliveries_keep_both_sources_through_review_and_compile(
-    author, reverse
-):
-    from app.domain.workbench.formal_method_plan_generated import export_outputs
-
-    task, definitions = setup(author=author)
-    question = "分别交回原表明细和费用回执。"
-    src = task["original_input"]["input"]
-    if author:
-        src["incubation"]["seed"]["text"] = question
-    else:
-        src["text"] = question
-    goals = [("detail", "原表明细"), ("fees", "费用回执")]
-    if reverse:
-        goals.reverse()
-        ctx = src["incubation"]["selection_context"] if author else src
-        ctx["target_deliverables"] = [
-            {"promise_id": name, "outputs": [name], "summary": label}
-            for name, label in goals
-        ]
-    planner = HierarchicalPlanner(task)
-    inspect(planner, "first", "a")
-    selection = {name: f"生成并交回{label}" for name, label in goals}
-    assert planner.advance({"action": "separate", "goals": selection}) is None
-    sources = {}
-    for name, label in goals:
-        planner = HierarchicalPlanner(task, planner.snapshot())
-        assert planner.prompt()["assigned_delivery"] == name
-        inputs = {"value": {"source": "caller", "name": name + "_rows"}}
-        if name == "fees":
-            inputs["kind"] = {"source": "caller", "name": "basis"}
-        step = dict(
-            id=name,
-            task=label,
-            method="first" if name == "detail" else "a",
-            inputs=inputs,
-            deliver_as={"receipt": name},
-        )
-        node = planner.current.id
-        sources[node] = {"receipt": name}
-        out = planner.advance(decision(step))
-    artifact = out["selection"] if author else out
-    assert artifact["status"] == "ready"
-    assert len(artifact["steps"]) == 2
-    # The consumer reads the same public handback contract produced by both planners.
-    consumer, _ = setup()
-    consumer["original_input"]["input"]["catalog"]["entries"] = (
-        src["catalog"]["entries"]
-        if not author
-        else list(src["incubation"]["selection_context"]["methods"].values())
-    )
-    choice = read_choice(consumer, artifact, check_graph=True)
-
-    async def lookup(owner, pins):
-        return {ref: definitions[ref] for ref in pins}
-
-    _, root = await compile_choice(
-        SimpleNamespace(formal_registry=SimpleNamespace(planning_definitions=lookup)),
-        "fixture",
-        str(uuid4()),
-        question,
-        choice,
-        host_capabilities(True, True, True),
-        ["join"],
-    )
-    assert export_outputs(root, sources) == {"detail": "detail", "fees": "fees"}
-
-
-@pytest.mark.parametrize("author", [False, True])
-def test_named_requirement_and_unbound_parallel_decision_cannot_be_reviewed_as_ready(
-    author,
-):
-    task, _ = setup(author=author)
-    src = task["original_input"]["input"]
-    ctx = src["incubation"]["selection_context"] if author else src
-    ctx["target_deliverables"] = [
-        dict(
-            promise_id="rows_promise",
-            outputs=["detail"],
-            summary="原表明细",
-            expected_domain_id="core.check.receipt",
-        ),
-        dict(
-            promise_id="fees_promise",
-            outputs=["fees"],
-            summary="费用回执",
-            expected_domain_id="core.check.receipt",
-        ),
-    ]
-    step = dict(
-        id="read",
-        method="first",
-        task="提取明细",
-        inputs={"value": {"source": "caller", "name": "rows"}},
-        deliver_as={"receipt": "detail"},
-    )
-    p = HierarchicalPlanner(task)
-    inspect(p, "first")
-    out = p.advance(decision(step))
-    result = out["selection"] if author else out
-    assert result["status"] == "gap" and not result["steps"]
-    assert "费用回执" in result["reason"] and "原表明细" not in result["reason"]
-
-    p = HierarchicalPlanner(task)
-    inspect(p, "first")
-    goals = {"detail": "原表明细", "fees": "费用回执"}
-    assert p.advance({"action": "separate", "goals": goals}) is None
-    assert p.advance(decision(step)) is None
-    resumed = HierarchicalPlanner(task, p.snapshot())
-    out = resumed.advance(decision({**step, "deliver_as": {}}))
-    result = out["selection"] if author else out
-    assert result["status"] == "gap" and not result["steps"]
-    assert "fees（费用回执）" in result["reason"]
-
-    del ctx["target_deliverables"]
-    p = HierarchicalPlanner(task)
-    inspect(p, "first")
-    out = p.advance(
-        decision(
-            step, "parallel_join", children={"detail": "原表明细", "fees": "费用回执"}
-        )
-    )
-    result = out["selection"] if author else out
-    assert result["status"] == "clarify" and not result["steps"]
-    assert "费用回执" in result["reason"]

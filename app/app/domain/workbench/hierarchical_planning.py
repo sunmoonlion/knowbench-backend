@@ -10,7 +10,7 @@ import re
 from collections.abc import Mapping
 from typing import Annotated, Any, Literal
 
-from pydantic import Field, TypeAdapter, ValidationInfo, model_validator
+from pydantic import Field, TypeAdapter
 
 from app.domain.workbench.formal_method_generated import (
     CallerValue,
@@ -21,7 +21,6 @@ from app.domain.workbench.formal_method_generated import (
     ProjectionLens,
     StepValue,
     Strict,
-    ValueSlot,
     project_schema,
     slot_meaning_compatible,
 )
@@ -32,7 +31,6 @@ from app.domain.workbench.incubation_selection import (
     Selection,
     Short,
     SketchStep,
-    check_delivery_targets,
     check_proposal,
 )
 from app.domain.workbench.planning_capabilities import (
@@ -120,16 +118,6 @@ class Unresolved(Strict):
     search_goal: Annotated[str, Field(min_length=1, max_length=500)] | None = None
 
 
-class SeparateDeliveries(ChoiceCheck):
-    action: Literal["separate"]
-    goals: dict[Name, Short] = Field(
-        min_length=2,
-        max_length=15,
-        description="Map each proposed public output name to its child goal.",
-    )
-    reason: Short | None = None
-
-
 class ProposedStep(SketchStep):
     # The planner can wire data from the caller, resolved children or a bounded
     # collection. Other formal-method sources require a separate authoring flow.
@@ -140,34 +128,6 @@ class ProposedStep(SketchStep):
             Field(discriminator="source"),
         ],
     ] = Field(default_factory=dict, max_length=100)
-
-    @model_validator(mode="before")
-    @classmethod
-    def canonical_direct_bindings(cls, step: Any, info: ValidationInfo) -> Any:
-        if not isinstance(step, dict) or not isinstance(step.get("inputs"), dict):
-            return step
-        method = step.get("method")
-        catalog = (info.context or {}).get("methods", {})
-        ports = (
-            catalog.get(method, {}).get("inputs", {}) if isinstance(method, str) else {}
-        )
-        inputs = step["inputs"].copy()
-        for port, binding in inputs.items():
-            if not (
-                isinstance(binding, dict)
-                and binding.get("source") == "caller"
-                and binding.get("lens") is None
-                and binding.get("caller_slot") is not None
-                and port in ports
-            ):
-                continue
-            # A direct binding already inherits this frozen port. The planner may
-            # repeat it with a task-specific description; keep the catalog contract.
-            offered = ValueSlot.model_validate(binding["caller_slot"])
-            frozen = ValueSlot.model_validate(ports[port])
-            if offered.model_copy(update={"description": frozen.description}) == frozen:
-                inputs[port] = {k: v for k, v in binding.items() if k != "caller_slot"}
-        return {**step, "inputs": inputs}
 
 
 class Resolve(ChoiceCheck):
@@ -185,10 +145,7 @@ class Resolve(ChoiceCheck):
 
 
 DECISION = TypeAdapter(
-    Annotated[
-        Inspect | Unresolved | Resolve | SeparateDeliveries,
-        Field(discriminator="action"),
-    ]
+    Annotated[Inspect | Unresolved | Resolve, Field(discriminator="action")]
 )
 
 DIRECTORY_DECISION = TypeAdapter(
@@ -207,18 +164,8 @@ different task, report the capability gap. When the work is supported but respon
 requires a human decision, clarify that decision. Before inspecting or binding, check pending_choice:
 a promise to CHOOSE which alternative to use later is an unresolved decision, even if a target slot
 could store the eventual choice. Quote the user's words there or return clarify. A promise to deliver
-identified data later is an ordinary input. For a direct caller input, use only source="caller"
-and name. Set caller_slot only together with a projection lens. An explicit later answer can settle an earlier choice.
+identified data later is an ordinary input. An explicit later answer can settle an earlier choice.
 For reusable methods, a parameter chosen by future callers is different from an author's open decision."""
-DELIVERY_RULE = """When the user requests several independent results, select the separate action at the root.
-Decide which results the request needs. Propose each child's goal in your own words and choose
-a distinct public name for it.
-The requester need not supply plan steps, output names or a list of deliverables.
-Use each target's public output name when supplied. Plan each child to export its assigned
-name using deliver_as. If a combined report is required, use a real qualified method that
-produces it; listing its ingredients as separate results cannot satisfy that goal."""
-
-
 DIRECTORY_RULES = (
     """Choose the next catalog inspection from the supplied authorized_index. Return an inspect decision to the host to see contracts. Do not call tools to find a directory or a task ID. Never execute business methods or read other data. Do not design steps yet.
 Match the requested deliverable to outputs and supplied materials to input summaries. If one method
@@ -259,18 +206,11 @@ Use the user's language for goals, reasons and descriptions. The host assigns th
 Return the WHOLE decision object including its required action tag, never a bare step.
 Example shape for a direct choice: {"action":"hit","pending_choice":null,"operator":"leaf","reason":"...",
 "step":{"id":"result","task":"...","method":"catalog_alias","inputs":{}}}.
-If the request asks for named public outputs from several steps, put deliver_as on each
-delivering step: map its exact output port to a distinct public name. With any explicit bindings,
-only those outputs are returned. Mark every requested result, including the final result.
-Leave internal working data unexported. In object batches deliver only collector outputs.
-Without explicit bindings the final step's outputs are returned.
 Supply actual required inputs. If a more targeted directory search is needed on a consumer
 request, return clarify with search_goal only when partial=true. If partial=false and the directory lacks a method, return gap. Use clarify without a search goal for questions requiring a human choice. Distinguish unsupported isolation or supplier diversity
 from ordinary separate tasks; a request for distinct model families needs explicit runtime evidence."""
     + "\n"
     + INPUT_RULE
-    + "\n"
-    + DELIVERY_RULE
 )
 
 
@@ -586,14 +526,10 @@ class HierarchicalPlanner:
         return self.max_depth, self.max_nodes
 
     def may_replan(self, parent):
-        return (
-            not parent.delivery_goals
-            and not parent.backtracks
-            and (
-                not self.focus
-                or parent.id == self.focus
-                or parent.id.startswith(self.focus + "_")
-            )
+        return not parent.backtracks and (
+            not self.focus
+            or parent.id == self.focus
+            or parent.id.startswith(self.focus + "_")
         )
 
     @property
@@ -623,10 +559,7 @@ class HierarchicalPlanner:
     def required(self, node):
         if not node.parent:
             return {}
-        parent_node = self.nodes[node.parent]
-        if parent_node.delivery_goals:
-            return {}
-        parent = parent_node.step
+        parent = self.nodes[node.parent].step
         assert parent is not None
         inputs = self.methods[parent.method]["inputs"]
         return {
@@ -726,7 +659,11 @@ class HierarchicalPlanner:
             guidance["table_axes"] = self.table_axes
         return {
             **edit,
-            **({"five_element_guidance": guidance} if guidance else {}),
+            **(
+                {"five_element_guidance": guidance}
+                if guidance
+                else {}
+            ),
             **(
                 {"tabu_methods": list(node.tabu_signatures)}
                 if node.tabu_signatures
@@ -734,7 +671,6 @@ class HierarchicalPlanner:
             ),
             "request": self.brief,
             "goal": node.goal,
-            "assigned_delivery": self.nodes[ROOT].delivery_goals.get(node.id),
             "caller_inputs": {
                 name: [{"goal": n.goal, "port": port} for n, port in uses]
                 for name, uses in self.caller_inputs().items()
@@ -742,12 +678,6 @@ class HierarchicalPlanner:
             "node": node.id,
             "feedback": node.reason,
             "required_outputs": required,
-            "public_deliveries": {
-                public: {"step": n.id, "output": port}
-                for n in self.nodes.values()
-                if n.step
-                for port, public in n.step.deliver_as.items()
-            },
             "value_schemas": types,
             "schema_parts": parts,
             "authorized_index": index,
@@ -843,8 +773,7 @@ class HierarchicalPlanner:
             for child in self.nodes.values():
                 if child.parent == n.id:
                     collect(child)
-            if n.step is not None:
-                steps.append(n.step)
+            steps.append(n.step)
 
         if status == "ready":
             collect(self.nodes[ROOT])
@@ -861,7 +790,6 @@ class HierarchicalPlanner:
             object_batch=self.nodes[ROOT].batch if steps else None,
         )
         try:
-            check_delivery_targets(selection, self.methods, self.target_deliverables)
             check_proposal(selection, self.methods, self.instructions, self.flags)
         except ValueError as exc:
             if status != "ready":
@@ -871,7 +799,7 @@ class HierarchicalPlanner:
             root = self.nodes[ROOT]
             self.reset(root, "")
             return self.unresolved(
-                self.nodes[ROOT], "gap", "当前组合无法确认。" + str(exc)
+                self.nodes[ROOT], "gap", "当前运行器不能核准该组合。" + str(exc)
             )
         result = selection.model_dump(mode="json", by_alias=True)
         if self.author:
@@ -890,7 +818,7 @@ class HierarchicalPlanner:
         if (
             not require_choice_check
             and isinstance(raw, dict)
-            and raw.get("action") in ("inspect", "hit", "split", "separate")
+            and raw.get("action") in ("inspect", "hit", "split")
         ):
             # Previously recorded decisions predate this field. Live rounds require it.
             raw = {"pending_choice": None, **raw}
@@ -905,7 +833,7 @@ class HierarchicalPlanner:
                 "clarify",
                 "目录或目标已变更，请重新确认要修改的目标和方法。",
             )
-        decision = DECISION.validate_python(raw, context={"methods": self.methods})
+        decision = DECISION.validate_python(raw)
         node = self.current
         self.turns += 1
         if isinstance(decision, ChoiceCheck) and decision.pending_choice:
@@ -947,30 +875,6 @@ class HierarchicalPlanner:
                 if decision.action == "gap" and self.partial:
                     reason = "本轮目录仅覆盖部分已获权方法。" + reason
                 return self.unresolved(node, decision.action, reason)
-        elif isinstance(decision, SeparateDeliveries):
-            if (
-                node.id != ROOT
-                or (self.edit and self.edit.get("mode") == "method")
-                or not self.flags.get("join")
-            ):
-                return self.unresolved(node, "gap", "当前目标不能采用独立交付。")
-            if len(decision.goals) + 1 > self.max_nodes:
-                return self.unresolved(
-                    node, "gap", "独立交付数量超出本轮规划节点上限。"
-                )
-            child_names = {}
-            for i, (name, goal) in enumerate(decision.goals.items(), 1):
-                child = PlanningNode(id=f"{ROOT}_{i}", parent=ROOT, goal=goal)
-                self.nodes[child.id] = child
-                child_names[child.id] = name
-            self.nodes[ROOT] = node.model_copy(
-                update={
-                    "status": "split",
-                    "operator": "parallel_join",
-                    "reason": node.goal[:1500],
-                    "delivery_goals": child_names,
-                }
-            )
         elif isinstance(decision, Inspect):
             if set(decision.methods) - self.methods.keys() or set(
                 decision.methods
@@ -1016,20 +920,6 @@ class HierarchicalPlanner:
 
     def resolve(self, node, d):
         step = d.step
-        public = list(step.deliver_as.values())
-        assigned = self.nodes[ROOT].delivery_goals.get(node.id)
-        if assigned and assigned not in public:
-            return self.unresolved(
-                node, "gap", f"缺少对外交付来源：{assigned}（{node.goal}）"
-            )
-        allocated = {
-            name
-            for n in self.nodes.values()
-            if n.step
-            for name in n.step.deliver_as.values()
-        }
-        if len(public) != len(set(public)) or allocated.intersection(public):
-            raise ValueError("Give each requested public output a distinct name")
         if self.edit and self.edit["node"] == node.id:
             if self.edit["mode"] == "split" and d.action != "split":
                 raise ValueError(
@@ -1092,18 +982,6 @@ class HierarchicalPlanner:
             for b in step.inputs.values()
             if b.source == "step" or b.source == "object_rows"
         }
-        if (
-            node.id == ROOT
-            and d.operator == "parallel_join"
-            and len(children) >= 2
-            and not depends
-        ):
-            names = "、".join(children.values())
-            return self.unresolved(
-                node,
-                "clarify",
-                f"这些目标尚未绑定到交付结果：{names}。请确认分别交回，还是由一个方法汇总。",
-            )
         if depends != children.keys() or set(step.reviews) - depends:
             raise ValueError("Each child must feed a named input of its real consumer")
         size = len(children)
@@ -1150,13 +1028,7 @@ class HierarchicalPlanner:
                 raise ValueError("A child must narrow the parent goal")
             ancestor = self.nodes.get(ancestor.parent) if ancestor.parent else None
         if step.method in self.instructions:
-            if (
-                node.parent
-                or size
-                or d.operator != "leaf"
-                or step.inputs
-                or step.deliver_as
-            ):
+            if node.parent or size or d.operator != "leaf" or step.inputs:
                 raise ValueError(
                     "A bare instruction is only available for a direct root"
                 )
@@ -1212,9 +1084,73 @@ class HierarchicalPlanner:
         for key, goal in children.items():
             child = PlanningNode(id=ids[key], parent=node.id, goal=goal)
             self.nodes[child.id] = child
+        self.reuse_completed()
         if all(n.status in ("hit", "split") for n in self.nodes.values()):
             return self.finish("ready", self.nodes[ROOT].reason)
         return None
+
+    def reuse_completed(self):
+        """Copy planning decisions for identical sibling goals; keep separate calls."""
+
+        def requirements(n):
+            return sorted(fingerprint(v) for v in self.required(n).values())
+
+        for pending in list(self.nodes.values()):
+            if pending.status != "pending" or (
+                self.edit and self.edit["node"] == pending.id
+            ):
+                continue
+            for source in list(self.nodes.values()):
+                if (
+                    source.id == pending.id
+                    or source.id.startswith(pending.id + "_")
+                    or pending.id.startswith(source.id + "_")
+                    or source.goal != pending.goal
+                    or source.status not in ("hit", "split")
+                    or requirements(source) != requirements(pending)
+                ):
+                    continue
+                subtree = [
+                    n
+                    for n in self.nodes.values()
+                    if n.id == source.id or n.id.startswith(source.id + "_")
+                ]
+                if (
+                    len(self.nodes) + len(subtree) - 1 > self.max_nodes
+                    or any(
+                        pending.id.count("_") + n.id.count("_") - source.id.count("_")
+                        > self.max_depth
+                        for n in subtree
+                    )
+                    or any(n.status not in ("hit", "split") for n in subtree)
+                ):
+                    continue
+                ids = {n.id: pending.id + n.id[len(source.id) :] for n in subtree}
+                for n in subtree:
+                    assert n.step is not None
+                    inputs = {
+                        k: b.model_copy(update={"step": ids[b.step]})
+                        if b.source == "step" or b.source == "object_rows"
+                        else b
+                        for k, b in n.step.inputs.items()
+                    }
+                    step = n.step.model_copy(
+                        update={
+                            "id": ids[n.id],
+                            "inputs": inputs,
+                            "reviews": tuple(ids[i] for i in n.step.reviews),
+                        }
+                    )
+                    self.nodes[ids[n.id]] = n.model_copy(
+                        update={
+                            "id": ids[n.id],
+                            "parent": ids[n.parent]
+                            if n.parent in ids and n.parent is not None
+                            else pending.parent,
+                            "step": step,
+                        }
+                    )
+                break
 
     def contract_issue(self, node, d):
         step = d.step
@@ -1222,8 +1158,6 @@ class HierarchicalPlanner:
             if alias not in self.methods:
                 return "Every route must use a qualified method"
             m = self.methods[alias]
-            if step.deliver_as.keys() - m["outputs"].keys():
-                return f"{alias}: deliver_as must reference actual output ports"
             slots = m["inputs"]
             if step.cases:
                 route = slots.get(step.route_input) or {}
@@ -1248,7 +1182,6 @@ class HierarchicalPlanner:
                 and m.get("kind") == "orchestration"
                 and d.operator == "leaf"
                 and not step.inputs
-                and not step.deliver_as
             )
             if not whole and (
                 step.inputs.keys() - slots.keys()
