@@ -13,7 +13,7 @@ from __future__ import annotations
 from datetime import date
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
 
 DocType = Literal[
     "disclosure",
@@ -129,11 +129,49 @@ class DataTable(_Strict):
     )
 
 
+_PERIOD_FIELDS = {
+    "fixed": {"start", "end"},
+    "latest": {"count"},
+    "recent": {"months"},
+    "none": set(),
+}
+_PERIOD_ARGS = {"start", "end", "count", "months"}
+
+
 class PeriodRule(_Strict):
     """固定期间（start、end）；定期报告最近 N 个完整的报告期（latest + count，
     可加截至任务日期已披露）；其余类型最近 N 个月内披露的（recent + months），
     或不限期间（none）。定期报告的期间是报告期，其余类型的期间是披露时间窗
     （SDD 0049）。"""
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "kind": {"const": kind},
+                        **{
+                            field: {"not": {"type": "null"}} for field in sorted(fields)
+                        },
+                        **{
+                            field: {"type": "null"}
+                            for field in sorted(_PERIOD_ARGS - fields)
+                        },
+                    },
+                    "required": ["kind", *sorted(fields)],
+                }
+                for kind, fields in _PERIOD_FIELDS.items()
+            ]
+        }
+    )
+
+    @model_validator(mode="after")
+    def check_arguments(self):
+        if {
+            field for field in _PERIOD_ARGS if getattr(self, field) is not None
+        } != _PERIOD_FIELDS[self.kind]:
+            raise ValueError("period arguments must match the selected period kind")
+        return self
 
     kind: Literal["fixed", "latest", "recent", "none"]
     start: date | None = None

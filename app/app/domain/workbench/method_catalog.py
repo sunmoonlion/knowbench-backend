@@ -458,6 +458,16 @@ class CapabilityMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v3"]])
             raise ValueError("public capability ids must be unique")
         if caps != self.planning.capability_bindings.keys():
             raise ValueError("every public capability needs its exact private binding")
+        reachable = set(self.planning.final_units)
+        upstream = list(reachable)
+        while upstream:
+            method = upstream.pop()
+            if method not in units:
+                raise ValueError("unknown final or input method")
+            for source in input_methods(units[method].contract):
+                if source not in reachable:
+                    reachable.add(source)
+                    upstream.append(source)
         for binding in self.planning.capability_bindings.values():
             if not set(binding.required_units) <= units.keys():
                 raise ValueError("capability names an unknown method")
@@ -469,6 +479,8 @@ class CapabilityMethodCatalog(_Catalog[Literal["knowbench/dynamic-methods/v3"]])
                 | set(binding.required_units)
                 | {alias for alias, unit in units.items() if unit.selection.required}
             )
+            if not needed <= reachable:
+                raise ValueError("required methods must contribute to a final output")
             pending = list(needed)
             while pending:
                 for upstream in input_methods(
