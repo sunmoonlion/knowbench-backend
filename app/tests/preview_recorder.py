@@ -6,10 +6,14 @@
 
 from __future__ import annotations
 
+import fcntl
+import hashlib
 import json
+import os
 import re
 import uuid
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 UUID = re.compile(
@@ -61,10 +65,8 @@ class Recorder:
         self.responses.append(
             {
                 "method": method,
-                "path": path,
-                "query": "&".join(
-                    f"{k}={v}" for k, v in sorted((params or {}).items())
-                ),
+                "path": answer.request.url.path,
+                "query": answer.request.url.query.decode("ascii"),
                 "status": answer.status_code,
                 "content_type": kind,
                 "text": answer.text,
@@ -100,10 +102,38 @@ class Recorder:
     def write(self, root: Path) -> Path:
         directory = root / self.scenario
         directory.mkdir(parents=True, exist_ok=True)
-        for old in directory.glob("*.json"):
-            old.unlink()
-        for old in directory.glob("*.md"):
-            old.unlink()
+        with TemporaryDirectory(dir=root, prefix=".recording-") as tmp:
+            stage = Path(tmp)
+            self._write_files(stage)
+            manifest = stage / "manifest.json"
+            # Readers open the manifest after its immutable bodies are installed.
+            lock = os.open(directory, os.O_RDONLY)
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                previous = directory / "manifest.json"
+                old_manifest = (
+                    json.loads(previous.read_bytes()) if previous.exists() else {}
+                )
+                keep = {item.name for item in stage.iterdir()}
+                for item in stage.iterdir():
+                    if item != manifest:
+                        item.replace(directory / item.name)
+                manifest.replace(previous)
+                for key in ("responses", "streams"):
+                    for entry in old_manifest.get(key, []):
+                        name = entry.get("file", "")
+                        if (
+                            re.fullmatch(
+                                r"(stream-)?[0-9]{4,}(-[0-9a-f]{64})?\.(json|md)", name
+                            )
+                            and name not in keep
+                        ):
+                            (directory / name).unlink(missing_ok=True)
+            finally:
+                os.close(lock)
+        return directory
+
+    def _write_files(self, directory: Path) -> None:
         # 先按记下来的先后把编号都认一遍，地址里的编号才和内容里的一致
         kept: dict[tuple[str, str, str], dict[str, Any]] = {}
         for response in self.responses:
@@ -115,11 +145,13 @@ class Recorder:
         manifest_responses = []
         for n, ((method, path, query), response) in enumerate(kept.items(), start=1):
             is_json = "json" in response["content_type"]
-            name = f"{n:04d}.{'json' if is_json else 'md'}"
             body = response["text"]
             if is_json and body:
                 body = json.dumps(json.loads(body), ensure_ascii=False, indent=1)
-            (directory / name).write_text(body + "\n" if body else "")
+            payload = (body + "\n" if body else "").encode()
+            digest = hashlib.sha256(payload).hexdigest()
+            name = f"{n:04d}-{digest}.{'json' if is_json else 'md'}"
+            (directory / name).write_bytes(payload)
             manifest_responses.append(
                 {
                     "method": method,
@@ -132,13 +164,14 @@ class Recorder:
             )
         manifest_streams = []
         for n, stream in enumerate(self.streams, start=1):
-            name = f"stream-{n:04d}.json"
             body = self.steady(
                 json.dumps(stream["events"], ensure_ascii=False, default=str)
             )
-            (directory / name).write_text(
+            payload = (
                 json.dumps(json.loads(body), ensure_ascii=False, indent=1) + "\n"
-            )
+            ).encode()
+            name = f"stream-{n:04d}-{hashlib.sha256(payload).hexdigest()}.json"
+            (directory / name).write_bytes(payload)
             manifest_streams.append({"path": self.steady(stream["path"]), "file": name})
         manifest = {
             "id": self.scenario,
@@ -156,4 +189,3 @@ class Recorder:
         (directory / "manifest.json").write_text(
             json.dumps(manifest, ensure_ascii=False, indent=1) + "\n"
         )
-        return directory
