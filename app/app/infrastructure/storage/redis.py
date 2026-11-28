@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from functools import lru_cache
 
@@ -12,12 +13,12 @@ class RedisClient:
     def __init__(self):
         self._client: Redis | None = None
         self._settings = get_settings()
+        self._lock = asyncio.Lock()
 
     async def init(self) -> None:
-        if self._client:
-            logger.warning("Redis客户端已初始化，无需重复操作")
-            return
-        try:
+        async with self._lock:
+            if self._client is not None:
+                return
             kw: dict = dict(
                 host=self._settings.redis_host,
                 port=self._settings.redis_port,
@@ -27,18 +28,21 @@ class RedisClient:
             )
             if self._settings.redis_user:
                 kw["username"] = self._settings.redis_user
-            self._client = Redis(**kw)
-            await self._client.ping()  # type: ignore[misc]
+            client = Redis(**kw)
+            try:
+                await client.ping()  # type: ignore[misc]
+            except BaseException:
+                await client.aclose()
+                raise
+            self._client = client
             logger.info("Redis初始化成功")
-        except Exception as exc:
-            logger.error("redis_initialization_failed type=%s", type(exc).__name__)
-            raise
 
     async def shutdown(self) -> None:
-        if self._client:
-            await self._client.aclose()
-            self._client = None
-            logger.info("Redis连接已关闭")
+        async with self._lock:
+            if self._client is not None:
+                await self._client.aclose()
+                self._client = None
+                logger.info("Redis连接已关闭")
         get_redis.cache_clear()
 
     @property

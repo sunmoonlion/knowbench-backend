@@ -12,7 +12,7 @@ k8s_write_output() {
       log "kubectl -n ${ns} delete secret ${secret_name} --ignore-not-found"
       return 0
     fi
-    kubectl -n "${ns}" delete secret "${secret_name}" --ignore-not-found >/dev/null || true
+    kubectl -n "${ns}" delete secret "${secret_name}" --ignore-not-found >/dev/null || return 1
     log "Deleted k8s secret if exists: ${ns}/${secret_name}"
     return 0
   fi

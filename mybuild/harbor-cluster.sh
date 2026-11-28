@@ -146,29 +146,6 @@ load_harbor_credentials_for_push() {
     export HARBOR_USER HARBOR_PASSWORD
 }
 
-harbor_artifact_exists_for_push() {
-    local full_image="$1"
-    local registry="${full_image%%/*}"
-    local remainder="${full_image#*/}"
-    local project="${remainder%%/*}"
-    local repo_and_tag="${remainder#*/}"
-    local repo="${repo_and_tag%:*}"
-    local tag="${repo_and_tag##*:}"
-
-    if [[ -z "$registry" || -z "$project" || -z "$repo" || "$repo" == "$repo_and_tag" || "$tag" == "$repo_and_tag" ]]; then
-        return 1
-    fi
-
-    local repo_encoded
-    repo_encoded="$(python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$repo")" || return 1
-
-    local http_code
-    http_code="$(curl -sk -o /dev/null -w "%{http_code}" \
-        -u "${HARBOR_USER}:${HARBOR_PASSWORD}" \
-        "https://${registry}/api/v2.0/projects/${project}/repositories/${repo_encoded}/artifacts/${tag}")"
-    [[ "$http_code" == "200" ]]
-}
-
 push_image_with_harbor_verify() {
     local runtime_cmd="$1"
     local full_image="$2"
@@ -178,11 +155,6 @@ push_image_with_harbor_verify() {
 
     for ((attempt=1; attempt<=retry_count; attempt++)); do
         if $runtime_cmd push "$full_image"; then
-            return 0
-        fi
-
-        if harbor_artifact_exists_for_push "$full_image"; then
-            echo "Harbor 中已存在目标镜像，按推送成功处理: $full_image"
             return 0
         fi
 

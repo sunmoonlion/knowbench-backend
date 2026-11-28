@@ -216,9 +216,9 @@ redis_deprovision() {
 
   if redis_use_k8s_client; then
     local pod_name="dbctl-redis-deprovision-${SERVICE_NAME:-app}-$(date +%s)"
-    redis_run_k8s_client "${pod_name}" <<EOF
+    redis_run_k8s_client "${pod_name}" <<EOF || return 1
 REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' PING >/dev/null
-REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL DELUSER '${APP_DB_USER}' >/dev/null || true
+REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -e -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL DELUSER '${APP_DB_USER}' >/dev/null || exit 1
 if [[ '${DEPROVISION_DROP_DATABASE:-false}' == 'true' || '${DEPROVISION_DROP_DATABASE:-false}' == '1' ]]; then
   if [[ '${REDIS_ALLOW_FLUSH_DB:-false}' == 'true' || '${REDIS_ALLOW_FLUSH_DB:-false}' == '1' ]]; then
     REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' -n '${REDIS_DB_INDEX}' FLUSHDB ASYNC >/dev/null
@@ -237,7 +237,7 @@ EOF
   local auth_args
   auth_args="$(redis_admin_auth_args)"
   # shellcheck disable=SC2086
-  redis-cli -h "${DB_HOST}" -p "${DB_PORT}" ${auth_args} ACL DELUSER "${APP_DB_USER}" >/dev/null || true
+  redis-cli -e -h "${DB_HOST}" -p "${DB_PORT}" ${auth_args} ACL DELUSER "${APP_DB_USER}" >/dev/null || return 1
   log "[redis] dropped ACL user if exists: ${APP_DB_USER}"
   if bool_true "${DEPROVISION_DROP_DATABASE:-false}"; then
     if bool_true "${REDIS_ALLOW_FLUSH_DB:-false}"; then
