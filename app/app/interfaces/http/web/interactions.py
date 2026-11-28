@@ -56,11 +56,14 @@ def _uuid(value: str, *, code: str) -> str:
     return str(parsed)
 
 
-def _snapshot(candidate: object) -> RunSnapshot:
+def _snapshot(candidate: object, expected_id: str | None = None) -> RunSnapshot:
     try:
-        return RunSnapshot.model_validate(candidate)
+        snapshot = RunSnapshot.model_validate(candidate)
     except PydanticValidationError as exc:
         raise BadGatewayError() from exc
+    if expected_id is not None and snapshot.run_id != UUID(expected_id):
+        raise BadGatewayError()
+    return snapshot
 
 
 @router.post("/runs", response_model=RunSnapshot)
@@ -78,10 +81,12 @@ async def get_run(
     principal: Annotated[Principal, Depends(get_web_current_user)],
     interaction: Annotated[WebInteractionPort, Depends(get_web_interaction_port)],
 ) -> RunSnapshot:
+    normalized_run_id = _uuid(run_id, code="resource_invalid")
     return _snapshot(
         await interaction.get_run(
-            _uuid(run_id, code="resource_invalid"), _context(principal)
-        )
+            normalized_run_id, _context(principal)
+        ),
+        normalized_run_id,
     )
 
 
@@ -129,10 +134,12 @@ async def submit_action(
     principal: Annotated[Principal, Depends(get_web_current_user)],
     interaction: Annotated[WebInteractionPort, Depends(get_web_interaction_port)],
 ) -> RunSnapshot:
+    normalized_run_id = _uuid(run_id, code="resource_invalid")
     return _snapshot(
         await interaction.submit_action(
-            _uuid(run_id, code="resource_invalid"), command, _context(principal)
-        )
+            normalized_run_id, command, _context(principal)
+        ),
+        normalized_run_id,
     )
 
 
@@ -143,12 +150,14 @@ async def cancel_run(
     principal: Annotated[Principal, Depends(get_web_current_user)],
     interaction: Annotated[WebInteractionPort, Depends(get_web_interaction_port)],
 ) -> RunSnapshot:
+    normalized_run_id = _uuid(run_id, code="resource_invalid")
     return _snapshot(
         await interaction.cancel_run(
-            _uuid(run_id, code="resource_invalid"),
+            normalized_run_id,
             command,
             _context(principal),
-        )
+        ),
+        normalized_run_id,
     )
 
 
