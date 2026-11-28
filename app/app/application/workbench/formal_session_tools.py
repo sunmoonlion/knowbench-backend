@@ -6,7 +6,7 @@ this frozen spec again before requesting and consuming each owner's approval.
 
 from app.application.workbench.formal_method_catalog import FormalMethodCatalog
 from app.domain.workbench.capabilities import CapabilityError
-from app.domain.workbench.errors import WorkbenchError
+from app.domain.workbench.errors import Forbidden, WorkbenchError
 from app.domain.workbench.formal_execution import direct_procedure
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.formal_slot_schema import slot_object_schema
@@ -20,11 +20,14 @@ class FormalSessionTools:
             self.repo, capabilities.formal_sources, capabilities.operations
         )
 
-    async def resolve(self, owner, reference):
+    async def resolve(self, owner, reference, *, eligible=None):
         reference = MethodRef.model_validate(reference)
-        await self.capabilities.require_formal_use(
-            owner, reference.model_dump(mode="json")
-        )
+        if eligible is None:
+            await self.capabilities.require_formal_use(
+                owner, reference.model_dump(mode="json")
+            )
+        elif reference not in eligible:
+            raise Forbidden("This method version is not listed for the owner")
         resolved = await self.catalog.resolve_owned(owner, reference, caller="model")
         frozen, asset, policy = resolved.frozen, resolved.asset, resolved.policy
         procedure = direct_procedure(frozen.draft, caller="model")
@@ -65,12 +68,14 @@ class FormalSessionTools:
             },
         }
 
-    async def issues(self, owner, references):
+    async def issues(self, owner, references, *, eligible=None):
         issues = []
+        if eligible is None:
+            eligible = await self.capabilities.eligible_formal_refs(owner, references)
         for raw in references:
             reference = MethodRef.model_validate(raw)
             try:
-                await self.resolve(owner, reference)
+                await self.resolve(owner, reference, eligible=eligible)
             except (WorkbenchError, ValueError):
                 issues.append(
                     {

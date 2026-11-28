@@ -62,6 +62,7 @@ async def test_projection_bounds_schema_valid_output_before_public_dto(overflow)
     result = await service._project("owner", "session", root)
     assert result["status"] == "failed" and result["outputs"] is None
     assert result["call"]["status"] == "succeeded"
-    assert result["call"]["detail"]["result"]["structuredContent"]["receipt"] == value
+    assert result["call"]["detail"]["result"] is None
+    assert child["detail"]["result"]["structuredContent"]["receipt"] == value
     assert repo.update_call.await_args.args[2] == "failed"
     assert repo.update_call.await_args.args[3]["projection"]["outputs"] is None

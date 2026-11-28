@@ -56,7 +56,11 @@ from app.bootstrap.workbench import (
     web_workbench_store as workbench_store,
 )
 from app.domain.security import Principal
-from app.domain.workbench.errors import StaleStateVersion, WorkbenchError
+from app.domain.workbench.errors import (
+    StaleStateVersion,
+    UserDataUnavailable,
+    WorkbenchError,
+)
 from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.pack_view import pack_view
 from app.domain.workbench.packs import listed_packs
@@ -103,6 +107,7 @@ class ConfirmData(Strict):
     改过的整份：换主体、改期间、去掉、自己加一样），换一份（条目编号 → 资料与版本）、
     去掉几样（条目编号）。都不给就是照提出的确认。"""
 
+    view_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     picks: dict[str, Pick] = Field(default_factory=dict, max_length=200)
     dropped: list[str] = Field(default_factory=list, max_length=200)
     needs: list[dict[str, Any]] | None = Field(default=None, max_length=20)
@@ -318,22 +323,37 @@ async def task_data(
         }
     detail = row.get("detail") or {}
     try:
-        items = await expert_data().pending_items(row, user_token)
-    except Exception:  # noqa: BLE001 — 看不到候选也照样列出要了什么
-        items = {}
+        items, view_digest = await expert_data().pending_view(row, user_token)
+    except WorkbenchError as exc:
+        raise _http(exc) from exc
+    except Exception as exc:
+        raise _http(UserDataUnavailable("暂时无法读取待确认的资料候选")) from exc
     shown = {
         e["ref"]: e["prematch"]
         for entries in items.values()
         for e in entries
         if e.get("prematch")
     }
-    if shown:
-        # 面板上问到的记下：用户确认时照它进供给条件快照，不再同步问一次
+    if view_digest is not None:
         async with repo.transaction():
-            await repo.set_resolution_prematch(task_id, shown)
+            current = await repo.get_task_resolution(task_id, for_update=True)
+            if current is None or current["detail"].get("requests") != detail.get(
+                "requests"
+            ):
+                raise _http(StaleStateVersion("资料请求已变化，请刷新清单"))
+            if current["detail"].get("view_digest") != view_digest:
+                await repo.update_task_resolution(
+                    task_id,
+                    detail={
+                        **current["detail"],
+                        "view_digest": view_digest,
+                        "prematch": shown,
+                    },
+                )
     return {
         "contract_version": CONTRACT_VERSION,
         "listed": True,
+        "view_digest": view_digest,
         "outputs_not_saved": outputs,
         "status": row["status"],
         # 测试委托：提出的数据由作者在 knowlab 测试页确认（SDD 0046 第三节）
@@ -347,6 +367,8 @@ async def task_data(
             {
                 "id": r.get("id"),
                 "labels": r.get("labels") or [],
+                "review_dropped": r.get("review_dropped") or [],
+                "review_picks": r.get("review_picks") or {},
                 "status": r.get("status"),
                 "requested_at": r.get("requested_at"),
                 "needs": r.get("needs") or [],
@@ -373,7 +395,7 @@ async def task_data(
 @router.post("/tasks/{task_id}/data-requests/confirm")
 async def confirm_data_requests(
     task_id: str,
-    body: ConfirmData | None = None,
+    body: ConfirmData,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
     user_token: Callable[[], Awaitable[str]] = Depends(get_web_knowbase_token_provider),
@@ -381,7 +403,7 @@ async def confirm_data_requests(
     """用户确认专家提出的数据（第 0 步或运行中，0048 第五节）：可以先改、换、去掉；
     齐的签上、钉上，缺的去取。"""
     repo = workbench_store(session)
-    choice = body or ConfirmData()
+    choice = body
     try:
         task = await repo.get_task(task_id, owner_actor_id=_actor(principal))
         try:
@@ -390,6 +412,7 @@ async def confirm_data_requests(
                 task,
                 owner_subject=principal.subject,
                 user_token=user_token,
+                view_digest=choice.view_digest,
                 picks={k: v.model_dump() for k, v in choice.picks.items()},
                 dropped=list(choice.dropped),
                 needs=choice.needs,

@@ -10,6 +10,7 @@ from test_workbench_expert_data_db import (
     asked,
     expert_routes,
     known,
+    reviewed_post,
 )  # noqa: F401
 from test_workbench_expert_data_db import db as db
 from test_workbench_expert_data_db import make_client as make_client
@@ -100,8 +101,8 @@ async def test_unseeded_data_phase_never_looks_like_scope_or_retries_itself(
             else:
                 assert task["waiting_reason"] == "DATA"
         if not failure:
-            response = await http.post(
-                f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+            response = await reviewed_post(
+                http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
             )
             assert response.status_code == 200, response.text
             async with db() as s:

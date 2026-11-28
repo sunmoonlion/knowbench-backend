@@ -89,19 +89,20 @@ def _repoint(
             continue
         except DBAPIError:
             pass
-        values = {k: v for k, v in row.items() if k != "ctid"}
-        values[column] = params["new"]
-        names = ", ".join(f'"{k}"' for k in values)
-        marks = ", ".join(f":{k}" for k in values)
-        with conn.begin_nested():
-            conn.execute(sa.text(f'delete from "{table}" where ctid = :c'), {"c": ctid})
-        try:
-            with conn.begin_nested():
-                conn.execute(
-                    sa.text(f'insert into "{table}" ({names}) values ({marks})'), values
-                )
-        except DBAPIError:
-            pass
+        # Copy values inside PostgreSQL, preserving JSONB, arrays and other types.
+        columns = [key for key in row if key != "ctid"]
+        names = ", ".join(f'"{key}"' for key in columns)
+        projection = ", ".join(
+            ":new" if key == column else f'"{key}"' for key in columns
+        )
+        conn.execute(
+            sa.text(
+                f'WITH moved AS (DELETE FROM "{table}" WHERE ctid = :c RETURNING *) '
+                f'INSERT INTO "{table}" ({names}) SELECT {projection} FROM moved '
+                "ON CONFLICT DO NOTHING"
+            ),
+            {**params, "c": ctid},
+        )
 
 
 def upgrade() -> None:

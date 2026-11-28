@@ -51,7 +51,7 @@ class ExpertContinuityRepositoryMixin:
 
     async def due_duties(self, now):
         rows = await self.session.execute(
-            text("""SELECT d.origin,d.next_at,t.owner_actor_id
+            text("""SELECT d.origin,d.next_at,d.xmin::text AS state_revision,t.owner_actor_id
             FROM workbench_expert_duties d JOIN workbench_tasks t ON t.id=d.origin
             WHERE NOT d.paused AND d.approved IS NOT NULL AND d.next_at<=:now
             AND (d.retry_at IS NULL OR d.retry_at<=:now) ORDER BY d.next_at,d.origin LIMIT 32"""),
@@ -59,12 +59,18 @@ class ExpertContinuityRepositoryMixin:
         )
         return rows.mappings().all()
 
-    async def delay_duty(self, origin, period, retry_at, problem):
+    async def delay_duty(self, origin, period, retry_at, problem, state_revision):
         await self.session.execute(
             text("""UPDATE workbench_expert_duties
             SET retry_at=:retry, problem=:problem WHERE origin=:id AND next_at=:due
-            AND NOT paused AND approved IS NOT NULL"""),
-            {"id": origin, "due": period, "retry": retry_at, "problem": problem},
+            AND xmin::text=:revision AND NOT paused AND approved IS NOT NULL"""),
+            {
+                "id": origin,
+                "due": period,
+                "retry": retry_at,
+                "problem": problem,
+                "revision": state_revision,
+            },
         )
 
     async def handoff_versions(self, request, previous, after):

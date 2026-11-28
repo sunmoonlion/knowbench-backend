@@ -870,3 +870,27 @@ async def test_a2a_dispatch_and_recover_without_duplicate_send(
         "GetTask",
         "CancelTask",
     ]
+
+
+@pytest.mark.parametrize("stage", ["identity", "tools", "capability_insert"])
+async def test_first_connection_returns_issued_tokens_after_local_failure(
+    db, monkeypatch, stage
+):
+    from unittest.mock import AsyncMock
+
+    provider = Provider(db, monkeypatch)
+    async with db() as session:
+        svc = provider.service(session)
+        state = provider.grant(
+            await svc.oauth.start(
+                OWNER, OAuthStart(provider_id="mcp", name="Incomplete")
+            )
+        )
+        target = svc.repo if stage == "capability_insert" else svc.oauth
+        monkeypatch.setattr(
+            target, stage, AsyncMock(side_effect=RuntimeError("fixture unavailable"))
+        )
+        with pytest.raises(RuntimeError, match="fixture unavailable"):
+            await svc.oauth.finish(OWNER, "mcp", state, None, state, False)
+        assert not await svc.assets(OWNER)
+        assert provider.revoked == ["test-refresh-1", "test-access-1"]

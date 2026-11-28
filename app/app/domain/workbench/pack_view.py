@@ -43,7 +43,11 @@ def step_view(step: StepContract, pack: ExpertPack, index: int) -> dict[str, Any
     uses = []
     for name in step.input_refs:
         source = next(
-            ((i, s) for i, s in enumerate(pack.workflow) if s.output_artifact == name),
+            (
+                (i, pack.workflow[i])
+                for i in range(index - 1, -1, -1)
+                if pack.workflow[i].output_artifact == name
+            ),
             None,
         )
         if source is not None:

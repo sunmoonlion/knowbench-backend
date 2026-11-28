@@ -86,7 +86,7 @@ class CallRepositoryMixin:
     async def update_call(self, owner, call_id, status, detail):
         result = await self.session.execute(
             text("""UPDATE workbench_calls SET
-          status=:status,detail=cast(:d as jsonb),updated_at=now()
+          status=:status,detail=cast(:d as jsonb),updated_at=now(),receipt_retry_at=NULL,receipt_problem=NULL
           WHERE owner_actor_id=:o AND id=:id RETURNING id"""),
             {"o": owner, "id": call_id, "status": status, "d": json.dumps(detail)},
         )

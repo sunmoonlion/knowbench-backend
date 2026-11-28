@@ -757,6 +757,18 @@ def _tree_case(
     retained = {}
     for node, raw in zip(plan.nodes, records, strict=True):
         require(raw["path"] == list(node.path), "Tree invocation order changed")
+        if "step_index" in raw:
+            idx = raw["step_index"]
+            require(
+                node.kind == "tool"
+                and set(raw) == {"kind", "path", "step_index"}
+                and raw["kind"] == node.kind
+                and type(idx) is int
+                and 0 <= idx < len(item["steps"]),
+                "Invalid leaf evidence index",
+            )
+            raw = item["steps"][idx]
+            require(raw["path"] == list(node.path), "Leaf evidence index changed")
         retained[node.path] = raw
     leaves = [retained[n.path] for n in plan.leaf_nodes]
     require(item["steps"] == leaves, "Tree leaf evidence projection differs")

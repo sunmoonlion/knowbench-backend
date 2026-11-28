@@ -921,9 +921,9 @@ class FormalMethodCatalog:
                 and governance["operation"] == operation,
                 "Current operation policy differs from the validated operation",
             )
-            if (
-                source.kind in ("skill_script", "registered_script")
-                and result.outcome == "succeeded"
+            if source.kind in ("skill_script", "registered_script") and (
+                result.outcome == "succeeded"
+                or governance.get("script_cost") is not None
             ):
                 from app.application.workbench.script_budget import verify_proof
 
@@ -1035,10 +1035,10 @@ class FormalMethodCatalog:
         )
 
     async def list_owned(
-        self, owner, *, caller: Literal["host", "model"] = "host"
+        self, owner, *, caller: Literal["host", "model"] = "host", eligible=None
     ) -> list[dict]:
         async with self.repo.transaction():
-            rows = await self.repo.list_formal_methods(owner)
+            rows = await self.repo.list_formal_methods(owner, eligible)
         items = []
         documents = []
         for row in rows:
@@ -1056,6 +1056,37 @@ class FormalMethodCatalog:
         definitions = {
             _version_key(doc.reference): doc.draft.definition for doc in documents
         }
+        if eligible is not None:
+            # A listed expert may depend on private leaves. Read only its referenced
+            # versions for the connection preview and never offer these as catalog items.
+            pending = list(documents)
+            seen = set(definitions)
+            while pending:
+                refs = {
+                    r
+                    for doc in pending
+                    if isinstance(doc.draft.definition.procedure, Orchestration)
+                    for step in doc.draft.definition.procedure.steps
+                    for r in step.candidates
+                    if _version_key(r) not in seen
+                }
+                if not refs:
+                    break
+                seen.update(_version_key(r) for r in refs)
+                pending = []
+                async with self.repo.transaction():
+                    for row in await self.repo.list_formal_methods(owner, refs):
+                        try:
+                            dep = FrozenFormalMethod.model_validate(row["document"])
+                        except (ValueError, TypeError, KeyError):
+                            continue
+                        if dep.reference in refs and await self.repo.actor_for_subject(
+                            dep.owner_subject
+                        ) == str(owner):
+                            definitions[_version_key(dep.reference)] = (
+                                dep.draft.definition
+                            )
+                            pending.append(dep)
         for frozen in documents:
             issue = None
             try:

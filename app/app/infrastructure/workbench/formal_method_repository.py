@@ -399,19 +399,28 @@ class FormalMethodRepositoryMixin:
         )
         return result.mappings().all()
 
-    async def list_formal_methods(self, owner):
-        rows = (
-            (
-                await self.session.execute(
-                    text("""SELECT * FROM workbench_formal_methods WHERE owner_actor_id=:owner
-              ORDER BY created_at DESC,method_id,version DESC"""),
-                    {"owner": owner},
-                )
-            )
-            .mappings()
-            .all()
+    async def formal_method_references(self, owner):
+        result = await self.session.execute(
+            text("""
+            SELECT method_id::text,version,digest FROM workbench_formal_methods
+            WHERE owner_actor_id=:owner ORDER BY created_at DESC,method_id,version DESC
+        """),
+            {"owner": owner},
         )
-        return [dict(row) for row in rows]
+        return [dict(row) for row in result.mappings()]
+
+    async def list_formal_methods(self, owner, references=None):
+        sql = "SELECT m.* FROM workbench_formal_methods m WHERE m.owner_actor_id=:owner"
+        params = {"owner": owner}
+        if references is not None:
+            sql += """ AND EXISTS (SELECT 1 FROM jsonb_to_recordset(cast(:refs AS jsonb))
+                AS r(method_id uuid,version int,digest text)
+                WHERE (r.method_id,r.version,r.digest)=(m.method_id,m.version,m.digest))"""
+            params["refs"] = json.dumps([r.model_dump(mode="json") for r in references])
+        result = await self.session.execute(
+            text(sql + " ORDER BY m.created_at DESC,m.method_id,m.version DESC"), params
+        )
+        return [dict(row) for row in result.mappings()]
 
     async def list_formal_session_calls(self, owner, session_id, limit=50):
         from app.infrastructure.workbench.capability_repository import row

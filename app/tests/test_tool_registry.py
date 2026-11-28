@@ -85,6 +85,15 @@ def test_accounts_share_definition_but_frozen_call_cannot_change_schema_or_tool(
         registered_call(asset, {"tool": {**TOOL, "name": "mail_send"}})
 
 
+@pytest.fixture(autouse=True)
+def available_records_limiter(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    monkeypatch.setattr(
+        "app.interfaces.mcp.workbench_mcp.allow_tool_call", AsyncMock(return_value=True)
+    )
+
+
 async def test_native_mcp_lists_the_same_registered_definitions_without_losing_hints():
     response = await handle(
         SimpleNamespace(

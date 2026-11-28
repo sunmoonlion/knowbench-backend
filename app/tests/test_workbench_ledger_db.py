@@ -6,6 +6,7 @@ import asyncio
 import importlib.util
 import os
 import uuid
+from datetime import UTC
 from decimal import Decimal
 from pathlib import Path
 
@@ -491,3 +492,37 @@ async def test_resumed_attempt_is_created_after_its_predecessor_ends(db):
             assert (await repo.get_attempt(previous))["ended_at"] <= (
                 await repo.get_attempt(following)
             )["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_stale_error_after_resume(db):
+    from datetime import datetime, timedelta
+
+    _, _, sid = await seed(db)
+    period = datetime.now(UTC)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        origin = (await Ledger(repo).handover(handover(sid), owner_actor_id=OWNER))[
+            "task_id"
+        ]
+        async with repo.transaction():
+            await repo.create_duty(origin, {}, period)
+            await repo.approve_duty_output(origin, {"sample": True})
+        (observed,) = await repo.due_duties(period)
+        before = await repo.duty(origin)
+        for paused in (True, False):
+            async with repo.transaction():
+                await repo.pause_duty(origin, paused)
+        resumed = await repo.duty(origin)
+        assert resumed["state_revision"] != before["state_revision"]
+        assert resumed["problem"] is None and not resumed["paused"]
+        async with repo.transaction():
+            await repo.delay_duty(
+                origin,
+                observed["next_at"],
+                period + timedelta(minutes=5),
+                "prior_attempt_failed",
+                observed["state_revision"],
+            )
+        assert (await repo.duty(origin))["problem"] is None
+        assert await repo.due_duties(period)

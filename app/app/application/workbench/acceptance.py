@@ -17,7 +17,7 @@ from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
 
 # F-POS-04：对具体证券的评级、目标价、买卖建议措辞，云端确定性拦截并留痕
 _POSITIONING = re.compile(
-    r"(强烈?(买入|卖出|增持|减持|推荐)|目标价|建议(买入|卖出|建仓|清仓|加仓|减仓)|(买入|卖出)评级|必涨|必跌|稳赚|保本收益|strong (buy|sell)|price target|buy rating|sell rating)",
+    r"(强烈?(买入|卖出|增持|减持|推荐)|(?<!采购)(?<!采购的)(?<!成本)(?<!招标)目标价|建议(买入|卖出|建仓|清仓|加仓|减仓)|(买入|卖出)评级|必涨|必跌|稳赚|保本收益|strong (buy|sell)|price target|buy rating|sell rating)",
     re.I,
 )
 # Only a complete, explicit non-advice declaration is exempt. Do not exempt a
@@ -295,7 +295,40 @@ def _each_has(val: Any, rule: AcceptanceRule) -> tuple[bool, str]:
     return not bad, "; ".join(bad[:5])
 
 
-def judge(text: str | None, rules: tuple[AcceptanceRule, ...]) -> Verdict:
+def _output_type_error(value: Any, shape: Any, path: str = "$") -> str | None:
+    if isinstance(shape, dict):
+        if not isinstance(value, dict):
+            return path
+        for field, nested in shape.items():
+            if field not in value:
+                return f"{path}.{field}"
+            error = _output_type_error(value[field], nested, f"{path}.{field}")
+            if error:
+                return error
+    elif isinstance(shape, list):
+        if not isinstance(value, list):
+            return path
+        if len(shape) == 1:
+            for index, item in enumerate(value):
+                if error := _output_type_error(item, shape[0], f"{path}[{index}]"):
+                    return error
+    elif shape == "string" and not isinstance(value, str):
+        return path
+    elif shape == "number" and (
+        isinstance(value, bool) or not isinstance(value, (int, float, Decimal))
+    ):
+        return path
+    elif shape == "boolean" and not isinstance(value, bool):
+        return path
+    return None
+
+
+def judge(
+    text: str | None,
+    rules: tuple[AcceptanceRule, ...],
+    *,
+    output_shape: dict | None = None,
+) -> Verdict:
     v = Verdict(ok=True)
     parsed: Any = None
     needs_json = any(r.kind != "max_chars" for r in rules)
@@ -335,6 +368,20 @@ def judge(text: str | None, rules: tuple[AcceptanceRule, ...]) -> Verdict:
             ]
             return v
     v.parsed = parsed
+    if output_shape and (invalid := _output_type_error(parsed, output_shape)):
+        v.ok = False
+        detail = f"{invalid}: value differs from the declared output type"
+        v.failures.append(detail)
+        v.checks.append(
+            {
+                "rule": "output_schema",
+                "path": invalid,
+                "pass": False,
+                "detail": detail,
+                "label": "交付类型",
+                "message": detail,
+            }
+        )
     for r in rules:
         if r.kind in NUMERIC_RULES:
             continue

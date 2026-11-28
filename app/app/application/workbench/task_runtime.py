@@ -46,7 +46,7 @@ from app.domain.workbench.deliverables import (
     deliverable_seen,
     handback_rules,
     placed,
-    run_folder,
+    task_folder,
 )
 from app.domain.workbench.errors import (
     BudgetExhausted,
@@ -91,8 +91,6 @@ DATA_STEP_TITLE = "定数据"
 DATA_STEP_RESERVE = Decimal("0.05")
 # Preserve the existing method projection until authors provide explicit data hints.
 # A shorter arbitrary prefix is not a summary and can remove input requirements.
-DATA_STEP_METHOD_CHARS = 1200
-DATA_STEP_TOTAL_CHARS = 12000
 
 
 @dataclass
@@ -203,36 +201,38 @@ class TaskRuntime:
                 held = await self._data_hold(repo, led, task_id)
                 if held is not None:
                     return held
-                await repo.cas_task(
-                    task_id,
-                    expected_version=(await repo.get_task(task_id))["state_version"],
-                    workflow_version=pack.version,
-                    expert_pack_version=pack.version,
-                    acceptance_contract={
-                        "pack_id": pack.pack_id,
-                        **(
-                            {"runtime_contract": pack.runtime_contract}
-                            if not isinstance(pack, ExpertPack)
-                            else {"steps": [st.step_id for st in pack.workflow]}
-                        ),
-                    },
-                )
-                await repo.commit()
-                await led.transition(task_id, TaskState.QUEUED)
-                if (
-                    self.fixed_as_plan_owners
-                    and not is_dynamic(task)
-                    and await repo.subject_of_actor(str(task["owner_actor_id"]))
-                    in self.fixed_as_plan_owners
-                ):
-                    # SDD 0050：平台按作者顺序写计划回执，之后按回执走；写不了照旧路
-                    await accept_fixed_plan(
-                        repo,
+                async with repo.transaction():
+                    await repo.cas_task(
                         task_id,
                         expected_version=(await repo.get_task(task_id))[
                             "state_version"
                         ],
+                        workflow_version=pack.version,
+                        expert_pack_version=pack.version,
+                        acceptance_contract={
+                            "pack_id": pack.pack_id,
+                            **(
+                                {"runtime_contract": pack.runtime_contract}
+                                if not isinstance(pack, ExpertPack)
+                                else {"steps": [st.step_id for st in pack.workflow]}
+                            ),
+                        },
                     )
+                    await led.transition(task_id, TaskState.QUEUED)
+                    if (
+                        self.fixed_as_plan_owners
+                        and not is_dynamic(task)
+                        and await repo.subject_of_actor(str(task["owner_actor_id"]))
+                        in self.fixed_as_plan_owners
+                    ):
+                        # SDD 0050：平台按作者顺序写计划回执，之后按回执走；写不了照旧路
+                        await accept_fixed_plan(
+                            repo,
+                            task_id,
+                            expected_version=(await repo.get_task(task_id))[
+                                "state_version"
+                            ],
+                        )
         while True:
             state = await self._step_once(task_id)
             if state != TaskState.QUEUED:
@@ -597,9 +597,7 @@ class TaskRuntime:
                 else None
             )
             # 这一次委托的底稿放在自己那一格，不覆盖别的对话与前几次（所有者 2026-10-14）
-            folder = run_folder(
-                str(task["session_id"]), task["created_at"], pack.name or pack.title
-            )
+            folder = task_folder(task, pack.name or pack.title)
             # 重做：把上一次没过的各条告诉专家（所有者 2026-10-17 定），不然它不知道该改哪里
             rejected = (
                 [
@@ -696,7 +694,11 @@ class TaskRuntime:
                 )
                 if result.timed_out
                 else await judge_numbers(
-                    judge(result.final_text, step.acceptance),
+                    judge(
+                        result.final_text,
+                        step.acceptance,
+                        output_shape=step.output_schema if is_dynamic(task) else None,
+                    ),
                     step.acceptance,
                     repo=repo,
                     task=task,
@@ -2275,14 +2277,9 @@ def compose_data_plan(
     """第 0 步「定数据」给模型的说明（decisions ⑭）：专家的做法、用户的问题、专家自带
     几份；用查主体、提出数据两个工具提要哪些，不开始做第 1 步。"""
     method: list[str] = []
-    room = DATA_STEP_TOTAL_CHARS
     for n, step in enumerate(pack.workflow, start=1):
-        body = step.method_text.strip()[:DATA_STEP_METHOD_CHARS]
+        body = step.method_text.strip()
         chunk = f"{n}. {step.title}\n{body}" if body else f"{n}. {step.title}"
-        if len(chunk) > room:
-            method.append(f"{n}. {step.title}")
-            continue
-        room -= len(chunk)
         method.append(chunk)
     asked = question.get("text") if isinstance(question, dict) else str(question or "")
     scope = pack.intake_scope()

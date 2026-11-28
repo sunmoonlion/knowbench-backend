@@ -228,11 +228,19 @@ class ConnectionOAuth:
             },
         )
         creds, scopes = self.tokens(response, p.scopes)
-        subject, label = await self.identity(p, creds["access"])
-        if ctx["connection_id"] and target["detail"]["oauth"]["account_id"] != subject:
-            await self.revoke(p, creds)
-            raise CapabilityError("Use a new connection for a different account")
-        descriptors = await self.tools(p, creds["access"], scopes)
+        try:
+            subject, label = await self.identity(p, creds["access"])
+            if (
+                ctx["connection_id"]
+                and target["detail"]["oauth"]["account_id"] != subject
+            ):
+                await self.revoke(p, creds)
+                raise CapabilityError("Use a new connection for a different account")
+            descriptors = await self.tools(p, creds["access"], scopes)
+        except Exception:
+            if not ctx["connection_id"]:
+                await self.revoke(p, creds)
+            raise
         detail = {
             "url": p.service_url,
             "account_label": label,
@@ -248,38 +256,51 @@ class ConnectionOAuth:
             },
         }
         creds["binding"] = p.binding()
-        async with self.repo.transaction():
-            if ctx["connection_id"]:
-                asset = await self.repo.capability_asset(
-                    owner, ctx["connection_id"], lock=True
-                )
-                changed = (
-                    asset["revision"] != ctx["revision"]
-                    or asset["status"] == "disconnected"
-                )
-                if not changed:
-                    await self.repo.capability_update(
-                        owner,
-                        asset["id"],
-                        asset["revision"],
-                        status="active",
-                        detail=detail,
-                        secret=self.encrypt(creds),
+        asset_id = ctx["connection_id"] or str(uuid4())
+        try:
+            async with self.repo.transaction():
+                if ctx["connection_id"]:
+                    asset = await self.repo.capability_asset(
+                        owner, ctx["connection_id"], lock=True
                     )
-            else:
-                await self.repo.capability_insert(
-                    {
-                        "id": str(uuid4()),
-                        "owner_actor_id": owner,
-                        "kind": "connection",
-                        "name": ctx["name"],
-                        "status": "active",
-                        "detail": detail,
-                        "secret": self.encrypt(creds),
-                        "request_id": "oauth:" + digest(state),
-                        "request_digest": digest(ctx),
-                    }
-                )
+                    changed = (
+                        asset["revision"] != ctx["revision"]
+                        or asset["status"] == "disconnected"
+                    )
+                    if not changed:
+                        await self.repo.capability_update(
+                            owner,
+                            asset["id"],
+                            asset["revision"],
+                            status="active",
+                            detail=detail,
+                            secret=self.encrypt(creds),
+                        )
+                else:
+                    await self.repo.capability_insert(
+                        {
+                            "id": asset_id,
+                            "owner_actor_id": owner,
+                            "kind": "connection",
+                            "name": ctx["name"],
+                            "status": "active",
+                            "detail": detail,
+                            "secret": self.encrypt(creds),
+                            "request_id": "oauth:" + digest(state),
+                            "request_digest": digest(ctx),
+                        }
+                    )
+        except Exception:
+            if not ctx["connection_id"]:
+                from app.domain.workbench.errors import NotFound
+
+                # A lost commit acknowledgement may leave a usable connection.
+                try:
+                    async with self.repo.transaction():
+                        await self.repo.capability_asset(owner, asset_id)
+                except NotFound:
+                    await self.revoke(p, creds)
+            raise
         if ctx["connection_id"] and changed:
             if asset["status"] == "disconnected":
                 await self.revoke(p, creds)

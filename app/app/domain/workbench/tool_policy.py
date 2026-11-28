@@ -147,9 +147,11 @@ def decide(
     after_decline: bool = False,
 ) -> Tier:
     """三档决定。刚拒绝过的同一步里，随后任何请求都问人（approval.md「被拒之后」）。"""
+    tier = policy.tier_of(category)
+    if tier == "deny":
+        return "deny"
     if after_decline:
         return "ask"
-    tier = policy.tier_of(category)
     if category == CATEGORY_COMMAND and tier == "ask":
         if any(prefix_matches(p, tokens) for p in policy.command_allow):
             return "allow"

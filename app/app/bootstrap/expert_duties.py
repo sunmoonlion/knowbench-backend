@@ -37,6 +37,7 @@ async def poll(sessions, stopping):
                                 row["next_at"],
                                 datetime.now(UTC) + timedelta(minutes=5),
                                 reason,
+                                row["state_revision"],
                             )
         except Exception:
             log.exception("Could not poll expert duties")

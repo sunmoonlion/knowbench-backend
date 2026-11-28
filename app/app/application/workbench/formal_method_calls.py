@@ -23,7 +23,6 @@ from app.domain.workbench.formal_execution import (
 )
 from app.domain.workbench.formal_method_admission_generated import FrozenFormalMethod
 from app.domain.workbench.formal_method_execution_generated import bounded_json
-from app.domain.workbench.formal_method_generated import MethodRef
 from app.domain.workbench.method_authorization import (
     MethodAuthorization,
     PermissionGrant,
@@ -60,25 +59,18 @@ class FormalMethodCalls:
         self, owner, session_id, *, caller: Literal["host", "model"] = "host"
     ):
         async with self.repo.transaction():
-            await self._session(owner, session_id, active=True)
-            # A directory may resolve several sources; match selection/prepare's
-            # stable asset order across concurrent conversations of this owner.
-            await self.repo.capability_assets(owner, lock=True)
-            items = await self._catalog.list_owned(owner, caller=caller)
-        eligible = await self.capabilities.eligible_formal_refs(
-            owner, [item["reference"] for item in items]
-        )
+            await self._session(owner, session_id, active=True, lock=False)
+            references = await self.repo.formal_method_references(owner)
+        eligible = await self.capabilities.eligible_formal_refs(owner, references)
         return {
-            "items": [
-                item
-                for item in items
-                if MethodRef.model_validate(item["reference"]) in eligible
-            ]
+            "items": await self._catalog.list_owned(
+                owner, caller=caller, eligible=eligible
+            )
         }
 
-    async def _session(self, owner, session_id, *, active=False):
+    async def _session(self, owner, session_id, *, active=False, lock=True):
         session = await self.repo.get_session(
-            session_id, owner_actor_id=owner, for_update=True
+            session_id, owner_actor_id=owner, for_update=lock
         )
         if active and (
             session.get("kind") not in ("chat", "work")
@@ -91,10 +83,9 @@ class FormalMethodCalls:
             )
         return session
 
-    async def _intent(self, owner, request, root_id, *, model=None):
-        await self.capabilities.require_formal_use(
-            owner, request.reference.model_dump(mode="json")
-        )
+    async def _intent(self, owner, request, root_id, *, eligible, model=None):
+        if request.reference not in eligible:
+            raise Forbidden("This method version is not listed for the owner")
         caller = "model" if model else "host"
         resolved = await self._catalog.resolve_owned(
             owner, request.reference, caller=caller
@@ -202,7 +193,7 @@ class FormalMethodCalls:
         result = await self._request(owner, session_id, body, model=model)
         return {"call_id": str(result["call"]["id"]), "status": result["status"]}
 
-    async def _check_model(self, owner, session_id, body, model):
+    async def _check_model(self, owner, session_id, body, model, eligible):
         from app.application.workbench.formal_session_tools import FormalSessionTools
 
         session = await self._session(owner, session_id, active=True)
@@ -240,7 +231,7 @@ class FormalMethodCalls:
                 "The model method call no longer belongs to this active user turn"
             )
         current = await FormalSessionTools(self.capabilities).resolve(
-            owner, body.reference
+            owner, body.reference, eligible=eligible
         )
         if runtime.get("tools", {}).get(model["tool_key"]) != current:
             raise Forbidden("The selected method or its current authority changed")
@@ -267,10 +258,18 @@ class FormalMethodCalls:
 
     async def _request(self, owner, session_id, body, *, model=None):
         document = body.model_dump(mode="json", by_alias=True)
+        existing = await self.repo.call_by_key(
+            owner, session_id, _root_key(body.request_id)
+        )
+        eligible = (
+            await self.capabilities.eligible_formal_refs(owner, [document["reference"]])
+            if model or not existing
+            else set()
+        )
         async with self.repo.transaction():
             await self._session(owner, session_id)
             if model:
-                await self._check_model(owner, session_id, body, model)
+                await self._check_model(owner, session_id, body, model, eligible)
             await self.repo.recover_calls(owner, session_id)
             root = await self.repo.call_by_key(
                 owner, session_id, _root_key(body.request_id)
@@ -287,7 +286,9 @@ class FormalMethodCalls:
                 return await self._project(owner, session_id, root)
             await self._session(owner, session_id, active=True)
             root_id, child_id = str(uuid4()), str(uuid4())
-            resolved, intent = await self._intent(owner, body, root_id, model=model)
+            resolved, intent = await self._intent(
+                owner, body, root_id, model=model, eligible=eligible
+            )
             frozen = resolved.frozen
             identity = _intent_digest(intent)
             token = secrets.token_urlsafe(32)
@@ -491,7 +492,9 @@ class FormalMethodCalls:
             "reference": frozen.reference.model_dump(mode="json"),
             "title": frozen.draft.definition.capability_declaration.title,
             "status": state,
-            "call": public_call(child),
+            "call": public_call(
+                {**child, "detail": {**child["detail"], "result": None}}
+            ),
             "outputs": outputs,
             "detail": detail,
         }
@@ -568,6 +571,14 @@ class FormalMethodCalls:
             raise CapabilityError("This formal action requires an exact approval")
         peek = await self.repo.capability_call(owner, child_call_id)
         session_id = peek["session_id"]
+        ref = (peek["detail"].get("formal_method") or {}).get("reference")
+        eligible = (
+            await self.capabilities.eligible_formal_refs(owner, [ref])
+            if ref
+            and peek["status"] == "awaiting_approval"
+            and body.decision == "accept"
+            else set()
+        )
         async with self.repo.transaction():
             await self._session(owner, session_id)
             await self.repo.recover_calls(owner, session_id)
@@ -599,9 +610,9 @@ class FormalMethodCalls:
                 )
                 model = root["detail"].get("model")
                 if model:
-                    await self._check_model(owner, session_id, request, model)
+                    await self._check_model(owner, session_id, request, model, eligible)
                 resolved, current = await self._intent(
-                    owner, request, root["id"], model=model
+                    owner, request, root["id"], model=model, eligible=eligible
                 )
                 if (
                     resolved.frozen != frozen

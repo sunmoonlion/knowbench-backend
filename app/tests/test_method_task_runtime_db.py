@@ -637,3 +637,18 @@ async def test_binding_changed_during_assessment_rejects_result_but_settles_cost
         assert Decimal(row["budget"]["used"]) == Decimal("0.02")
         assert Decimal(row["budget"]["reserved"]) == 0
         assert not await repo.get_artifact(task_id=tid, name=output_name("inspect_1"))
+
+
+async def test_method_outputs_keep_declared_scalar_types_and_procurement_language():
+    from app.application.workbench.acceptance import judge
+    from app.domain.workbench.packs import AcceptanceRule
+
+    rules = (
+        AcceptanceRule(kind="json_object"),
+        AcceptanceRule(kind="no_positioning_advice"),
+    )
+    shape = {"rows": [{"id": "string"}]}
+    assert judge('{"rows":[{"id":"123"}]}', rules, output_shape=shape).ok
+    assert not judge('{"rows":[{"id":123}]}', rules, output_shape=shape).ok
+    assert judge('{"summary":"会议用纸采购目标价为每包二十元。"}', rules).ok
+    assert not judge('{"summary":"该股目标价为二十元。"}', rules).ok

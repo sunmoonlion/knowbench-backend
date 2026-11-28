@@ -62,7 +62,7 @@ async def previous_round(repo, owner, project_id, task_id):
 
 async def directory_for(registry, owner, question, named, *, offset=0):
     if named:
-        refs, more = [named], False
+        refs, more, next_offset = [named], False, None
     else:
         page = await registry.planning_versions(
             owner, 8, offset, query=PlanningQuery(stage="expert", question=question)
@@ -72,22 +72,32 @@ async def directory_for(registry, owner, question, named, *, offset=0):
         refs = [
             MethodRef.model_validate(registry.reference(row)) for row in page["items"]
         ]
-        more = offset > 0 or page["next"] is not None
+        next_offset = page["next"]
+        more = offset > 0 or next_offset is not None
     items = []
     used = 0
-    for ref in refs:
+    for index, ref in enumerate(refs):
         entry = await registry.planning_declaration(owner, ref, experts_only=True)
         size = len(json.dumps(entry, ensure_ascii=False).encode())
-        if used + size > 64000:
-            if not items:
+        if size > 64000:
+            if named:
                 raise StaleStateVersion(
                     "Expert declaration exceeds the matching context"
                 )
+            continue
+        if used + size > 64000:
+            next_offset = offset + index
             more = True
             break
         items.append(entry)
         used += size
-    return {"items": items, "more": more}
+    if not items:
+        return {"items": [], "next": page["next"] if not named else None}
+    return {
+        "items": items,
+        "more": more,
+        **({"next": next_offset} if next_offset is not None else {}),
+    }
 
 
 async def snapshot(repo, task):
@@ -105,6 +115,7 @@ async def verified_result(repo, task, artifact):
         "question": question,
         "match": match.model_dump(mode="json"),
         "more": directory["more"],
+        "next": directory.get("next"),
         "review_digest": digest(
             [
                 str(task["id"]),
@@ -239,9 +250,7 @@ async def review(repo, registry, owner, task, artifact):
                 MethodRef.model_validate(option["reference"])
                 for option in result["options"]
             ]
-            found = await registry.planning_definitions(
-                owner, refs, experts_only=True
-            )
+            found = await registry.planning_definitions(owner, refs, experts_only=True)
             checked_options = []
             for option in result["options"]:
                 ref = MethodRef.model_validate(option["reference"])

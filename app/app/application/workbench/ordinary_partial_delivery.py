@@ -87,16 +87,34 @@ async def partial_delivery(repo, owner, task_id, command=None):
                 for name, ref in graph.exports.items()
                 if ref.step == step and ref.output in values[step]
             }
+            covered = [
+                name
+                for name, required in promises.items()
+                if required and required <= exports
+            ]
+            conditions = definition.capability_declaration.conditions
             options.append(
                 {
                     "artifact": pin,
                     **({"object_id": objects[step]} if step in objects else {}),
                     "output_names": sorted(values[step]),
                     "applicable_promises": [
-                        name
-                        for name, required in promises.items()
-                        if required and required <= exports
+                        name for name in covered if name not in conditions
                     ],
+                    **(
+                        {
+                            "conditional_promises": {
+                                name: {
+                                    **conditions[name].model_dump(mode="json"),
+                                    "status": "unverified",
+                                }
+                                for name in covered
+                                if name in conditions
+                            }
+                        }
+                        if any(name in conditions for name in covered)
+                        else {}
+                    ),
                 }
             )
         scope = fingerprint(

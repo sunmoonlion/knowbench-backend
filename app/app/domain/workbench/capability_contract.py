@@ -276,6 +276,8 @@ class FormalModelCallDetail(CommonCallDetail):
 
 
 class Call(Strict):
+    receipt_retry_at: datetime | None = None
+    receipt_problem: str | None = None
     id: UUID
     owner_actor_id: UUID
     session_id: UUID

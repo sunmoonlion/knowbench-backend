@@ -36,9 +36,10 @@ def test_command_allow_prefix_matches_argument_by_argument():
     assert decide(p, CATEGORY_COMMAND, ("git", "status-x")) == "ask"
 
 
-def test_after_a_decline_everything_asks():
+def test_after_a_decline_permitted_operations_ask_and_prohibitions_hold():
     p = ToolPolicy()
     assert decide(p, CATEGORY_FILE_IN, (), after_decline=True) == "ask"
+    assert decide(p, CATEGORY_FILE_OUT, (), after_decline=True) == "deny"
 
 
 def test_classify_reads_the_request():

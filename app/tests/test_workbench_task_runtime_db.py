@@ -67,7 +67,11 @@ class ScriptedAppServer:
                 {
                     "id": rid,
                     "result": {
-                        "thread": {"id": p["threadId"], "turns": []},
+                        "thread": {
+                            "id": p["threadId"],
+                            "turns": [],
+                            "status": {"type": "idle"},
+                        },
                         "model": MODEL,
                     },
                 }

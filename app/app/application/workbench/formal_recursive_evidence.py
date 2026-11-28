@@ -913,4 +913,18 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
         StopIteration,
     ):
         evidence["errors"].append(f"{stage}:missing_or_invalid_persisted_evidence")
+    if not evidence["errors"]:
+        step_by_path = {
+            tuple(step["path"]): i for i, step in enumerate(evidence["steps"])
+        }
+        evidence["nodes"] = [
+            {
+                "kind": "tool",
+                "path": node["path"],
+                "step_index": step_by_path[tuple(node["path"])],
+            }
+            if node["kind"] == "tool"
+            else node
+            for node in evidence["nodes"]
+        ]
     return evidence

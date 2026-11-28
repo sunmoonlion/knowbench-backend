@@ -67,6 +67,9 @@ def public_result(result, call_id: str):
 def public_call(call: dict) -> dict:
     from app.domain.workbench.call_approval import approval_preview
 
+    if call["detail"].get("execution_kind") in ("formal_method", "formal_method_model"):
+        # Formal results have their own typed, size-limited projection.
+        call = {**call, "detail": {**call["detail"], "result": None}}
     copy = deepcopy(call)
     preview = approval_preview(call)
     if preview:

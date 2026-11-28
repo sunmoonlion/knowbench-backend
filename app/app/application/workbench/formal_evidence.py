@@ -399,7 +399,7 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         if (
             approved
             and source.kind in ("skill_script", "registered_script")
-            and outcome == "succeeded"
+            and (outcome == "succeeded" or await repo.script_budget_entries(call["id"]))
         ):
             from app.application.workbench.script_budget import cost_proof
 

@@ -352,6 +352,14 @@ async def rows(db, sql: str, **params: Any) -> list[dict[str, Any]]:  # noqa: F8
         return [dict(r) for r in (await s.execute(text(sql), params)).mappings().all()]
 
 
+async def reviewed_post(http, url, *, json, view=None):
+    if view is None:
+        shown = await http.get(url.replace("/data-requests/confirm", "/data"))
+        shown.raise_for_status()
+        view = shown.json().get("view_digest")
+    return await http.post(url, json={**json, "view_digest": view})
+
+
 async def asked(http, db, world, key_: str, propose=PROPOSED):  # noqa: F811
     """请专家、起线、跑第 0 步；回委托编号与那一轮的替身。"""
     env = await machine(http)
@@ -397,7 +405,10 @@ async def test_proposal_return_preserves_new_detail_and_respects_cancellation(
         async with db() as other:
             repo = workbench_store(other)
             async with repo.transaction():
-                await repo.set_resolution_prematch(task_id, {"new": "keep"})
+                current = await repo.get_task_resolution(task_id, for_update=True)
+                await repo.update_task_resolution(
+                    task_id, detail={**current["detail"], "prematch": {"new": "keep"}}
+                )
                 if cancelled:
                     await Ledger(repo).request_cancel(task_id, owner_actor_id=A)
         return fresh
@@ -652,8 +663,8 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         assert [p["basis"] for p in shown["pinned"]] == ["frozen_binding"]
 
         # 确认：齐的本人签、钉，缺的交 knowfeed，委托接着等
-        confirmed = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        confirmed = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         assert confirmed.status_code == 200, confirmed.text
         assert confirmed.json()["status"] == "supplying"
@@ -723,8 +734,8 @@ async def test_what_did_not_arrive_waits_for_the_user_to_decide(
     await known(db)
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "k-v2-missing")
-        await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         # 在取：看板上是「等别人」，等数据服务
         [task] = await rows(
@@ -787,12 +798,18 @@ async def test_the_user_changes_the_list_before_confirming(
             "period": {"kind": "fixed", "start": "2025-01-01", "end": "2025-12-31"},
             "reading": "pages",
         }
-        changed = await http.post(
+        changed = await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={"needs": [first, added]},
         )
         assert changed.status_code == 200, changed.text
-        assert changed.json()["status"] == "ready"
+        assert changed.json()["status"] == "review_required"
+        assert not any(c[0] == "confirm" for c in kb.calls)
+        confirmed = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        )
+        assert confirmed.json()["status"] == "ready"
         [(_, revised)] = [c for c in kb.calls if c[0] == "revise_needs"]
         assert [(n["key"], n["subject"]) for n in revised] == [
             ("req1_1", "600519.SH"),
@@ -842,12 +859,14 @@ async def test_dropping_an_item_records_it_and_bad_picks_are_refused(
         task_id, _, _ = await asked(http, db, world, "k-v2-drop")
         shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
         [have, want] = shown["requests"][0]["items"]
-        bad = await http.post(
+        bad = await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={"picks": {have["ref"]: {"material_id": "m-x", "version_no": 1}}},
         )
         assert bad.json()["code"] == "data_choice_invalid"
-        dropped = await http.post(
+        dropped = await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={"dropped": [want["ref"]]},
         )
@@ -868,8 +887,8 @@ async def test_a_cancelled_task_withdraws_its_demand(
     await known(db)
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "k-v2-cancel")
-        await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         cancelled = await http.post(f"/api/workbench/tasks/{task_id}/cancel")
         assert cancelled.status_code in (200, 202), cancelled.text
@@ -919,8 +938,8 @@ async def test_knowfeed_pushing_a_finished_demand_resumes_the_task_at_once(
     await known(db)
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "k-v2-pushed")
-        confirmed = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        confirmed = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         assert confirmed.json()["status"] == "supplying"
     app = make_client.app
@@ -968,8 +987,8 @@ async def test_a_claimed_task_left_unchecked_is_picked_up_by_the_sweep_later(
     await known(db)
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "k-v2-lease")
-        await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
     now = datetime.now(UTC) + timedelta(minutes=1)
     waiter = DataWaiter(workbench_stores(db), kb, supply, now=lambda: now)
@@ -1033,8 +1052,11 @@ async def test_the_list_shows_the_prematch_and_the_confirmation_keeps_it(
                 "readings": ["pages"],
             }
         ]
-        confirmed = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        confirmed = await reviewed_post(
+            http,
+            f"/api/workbench/tasks/{task_id}/data-requests/confirm",
+            json={},
+            view=shown["view_digest"],
         )
         assert confirmed.json()["status"] == "supplying", confirmed.text
     # 确认时不再同步问，快照用面板那次问到的；每项带上问的描述键
@@ -1071,8 +1093,8 @@ async def test_without_knowfeed_the_list_is_shown_without_estimates(
         assert [i["status"] for i in request["items"]] == ["resolved", "to_confirm"]
         assert all("prematch" not in i for i in request["items"])
         assert request["eta_seconds"] is None
-        confirmed = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        confirmed = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         assert confirmed.json()["status"] == "supplying", confirmed.text
     [(_, asked_for)] = [c for c in kb.calls if c[0] == "confirm"]
@@ -1119,7 +1141,8 @@ async def test_switching_to_another_copy_is_written_back_as_a_preference(
         task_id, _, _ = await asked(http, db, world, "k-v2-prefer")
         shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
         have, want = shown["requests"][0]["items"]
-        done = await http.post(
+        done = await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={
                 "picks": {have["ref"]: {"material_id": "m-2025-mine", "version_no": 1}},
@@ -1151,7 +1174,8 @@ async def test_confirming_as_listed_writes_no_preference(
         shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
         have, _want = shown["requests"][0]["items"]
         # 选回 knowbase 挑的那一份，也不算换
-        await http.post(
+        await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={"picks": {have["ref"]: {"material_id": "m-2025", "version_no": 1}}},
         )
@@ -1169,8 +1193,8 @@ async def test_the_push_and_the_sweep_never_resume_the_same_task_twice(
     await known(db)
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "k-v2-race")
-        await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
     supply.status = "ready"
     later = datetime.now(UTC) + timedelta(minutes=5)
@@ -1201,7 +1225,9 @@ async def test_the_push_and_the_sweep_never_resume_the_same_task_twice(
 
 async def _waiting(http, db, world, key_: str) -> str:  # noqa: F811
     task_id, _, _ = await asked(http, db, world, key_)
-    await http.post(f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={})
+    await reviewed_post(
+        http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+    )
     world["supply"].status = "ready"
     return task_id
 
@@ -1422,7 +1448,8 @@ async def test_only_a_missing_required_item_makes_it_incomplete(
         task_id, _, _ = await asked(http, db, world, "k-v2-gaps")
         shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
         _have, want = shown["requests"][0]["items"]
-        await http.post(
+        await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={"dropped": [want["ref"]]},
         )
@@ -1463,7 +1490,8 @@ async def test_a_switched_then_dropped_item_writes_no_preference(
         task_id, _, _ = await asked(http, db, world, "k-v2-switch-drop")
         shown = (await http.get(f"/api/workbench/tasks/{task_id}/data")).json()
         have, want = shown["requests"][0]["items"]
-        await http.post(
+        await reviewed_post(
+            http,
             f"/api/workbench/tasks/{task_id}/data-requests/confirm",
             json={
                 "picks": {have["ref"]: {"material_id": "m-2025-mine", "version_no": 1}},
@@ -1482,7 +1510,9 @@ async def test_missing_data_can_be_reviewed_and_retried_in_the_same_task(
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "k-retry-failed-supply")
         path = f"/api/workbench/tasks/{task_id}/data-requests"
-        assert (await http.post(path + "/confirm", json={})).status_code == 200
+        assert (
+            await reviewed_post(http, path + "/confirm", json={})
+        ).status_code == 200
         first = supply.submitted[0]
         supply.status = "failed"
         waiter = DataWaiter(
@@ -1501,12 +1531,16 @@ async def test_missing_data_can_be_reviewed_and_retried_in_the_same_task(
         assert after["requests"][0]["needs"] == before["requests"][0]["needs"]
         assert len(supply.submitted) == 1  # 重新核对不是代用户确认
         assert (await http.post(path + "/recheck", json={})).status_code == 200
-        assert (await http.post(path + "/confirm", json={})).status_code == 200
+        assert (
+            await reviewed_post(http, path + "/confirm", json={})
+        ).status_code == 200
         second = supply.submitted[1]
         assert second["task_ref"] == first["task_ref"]
         assert second["items"] == first["items"]
         assert second["idempotency_key"] != first["idempotency_key"]
-        assert (await http.post(path + "/confirm", json={})).status_code == 422
+        assert (
+            await reviewed_post(http, path + "/confirm", json={})
+        ).status_code == 422
         assert len(supply.submitted) == 2
 
 
@@ -1524,8 +1558,8 @@ async def test_legacy_confirmation_waiting_cannot_resume_without_a_demand(
         )
         missing["status"] = "waiting"
         grants_before = len([c for c in kb.calls if c[0] == "run_grant"])
-        response = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        response = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         assert response.status_code == 422
         assert "重新核对采单" in response.text
@@ -1547,8 +1581,8 @@ async def test_legacy_confirmation_waiting_cannot_resume_without_a_demand(
         # Once a new provider resolution stops mistaking confirmation for progress,
         # the same explicit confirmation goes through the real demand submit path.
         missing["status"] = "to_confirm"
-        response = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        response = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         assert response.status_code == 200 and response.json()["status"] == "supplying"
         assert len(supply.submitted) == 1
@@ -1567,8 +1601,8 @@ async def test_confirmation_before_planner_return_keeps_supply_waiting(
         async def confirm_before_return(turn, thread_id, prompt, *, timeout=0):  # noqa: ASYNC109
             result = await original(turn, thread_id, prompt, timeout=timeout)
             task_id = prompt.split('task="', 1)[1].split('"', 1)[0]
-            response = await http.post(
-                f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+            response = await reviewed_post(
+                http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
             )
             assert response.status_code == 200, response.text
             assert response.json()["status"] == "supplying"
@@ -1597,8 +1631,8 @@ async def test_existing_confirmed_readings_resume_without_waiting_for_fetch_job(
     await known(db)
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "existing-readings")
-        response = await http.post(
-            f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+        response = await reviewed_post(
+            http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
         )
         assert response.status_code == 200
     if legacy_race:
@@ -1641,8 +1675,8 @@ async def test_legacy_repair_never_invents_confirmation_or_revives_terminal_task
     async with make_client(A) as http:
         task_id, _, _ = await asked(http, db, world, "no-revival")
         assert (
-            await http.post(
-                f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
+            await reviewed_post(
+                http, f"/api/workbench/tasks/{task_id}/data-requests/confirm", json={}
             )
         ).status_code == 200
     async with db() as s, s.begin():
@@ -1674,3 +1708,103 @@ async def test_legacy_repair_never_invents_confirmation_or_revives_terminal_task
     )
     assert await waiter.sweep() == 0
     assert not [c for c in world["kb"].calls if c[0] == "grant_by_confirmation"]
+
+
+async def test_only_the_displayed_materials_and_supply_terms_can_be_confirmed(
+    make_client, db, world
+):
+    await known(db)
+    async with make_client(A) as http:
+        tid, _, _ = await asked(http, db, world, "review-exact-candidates")
+        path = f"/api/workbench/tasks/{tid}/data"
+        confirm = path + "-requests/confirm"
+        assert (await http.post(confirm, json={})).status_code == 422
+        first = (await http.get(path)).json()["view_digest"]
+        world["supply"].answer = None
+        second = (await http.get(path)).json()["view_digest"]
+        assert first and second and first != second
+        assert (
+            await http.post(confirm, json={"view_digest": first})
+        ).status_code == 422
+        world["kb"].revisions[-1]["items"][0]["chosen"][0]["version_no"] += 1
+        assert (
+            await http.post(confirm, json={"view_digest": second})
+        ).status_code == 422
+        assert not world["supply"].submitted
+
+
+async def test_stale_supply_lease_cannot_write_after_reclaim(make_client, db, world):
+    await known(db)
+    async with make_client(A) as http:
+        tid = await _waiting(http, db, world, "review-stale-lease")
+    now = datetime.now(UTC) + timedelta(minutes=5)
+    waiter = DataWaiter(
+        workbench_stores(db), world["kb"], world["supply"], now=lambda: now
+    )
+    [old] = await waiter.claim("d-1", owner_subject=f"sub-{A}")
+    now += CLAIM_LEASE + timedelta(seconds=1)
+    [new] = await waiter.claim("d-1", owner_subject=f"sub-{A}")
+    await waiter._later(old)
+    await waiter._fail(old, "old", {})
+    await waiter._settle(tid, "cancelled", old, {})
+    [r] = await rows(
+        db, "select * from workbench_task_resolution where task_id=:t", t=tid
+    )
+    assert (
+        r["status"] == "waiting"
+        and r["checks"] == old["checks"]
+        and r["checking_until"] == new["checking_until"]
+    )
+    await waiter.check_now([new])
+    assert (
+        await rows(
+            db, "select status from workbench_task_resolution where task_id=:t", t=tid
+        )
+    )[0]["status"] == "ready"
+
+
+@pytest.mark.parametrize("terminal_issue", ["ambiguous", "missing", "rate_limited"])
+async def test_supply_waiter_needs_an_unambiguous_receipt(
+    make_client, db, world, terminal_issue
+):
+    from app.infrastructure.external.knowbase_client import KnowbaseRefused
+
+    await known(db)
+    async with make_client(A) as http:
+        tid = await _waiting(http, db, world, "supply-check-" + terminal_issue)
+    kb, supply = world["kb"], world["supply"]
+    now = datetime.now(UTC) + timedelta(minutes=5)
+    waiter = DataWaiter(workbench_stores(db), kb, supply, now=lambda: now)
+    if terminal_issue == "rate_limited":
+
+        async def limited(*args):
+            raise KnowbaseRefused(429, "temporarily_limited")
+
+        supply.get = limited
+        await waiter.sweep()
+        assert (
+            await rows(
+                db,
+                "select status from workbench_task_resolution where task_id=:t",
+                t=tid,
+            )
+        )[0]["status"] == "waiting"
+        now += timedelta(days=8)
+    else:
+        original = kb.refresh
+
+        async def unresolved(*args):
+            view = await original(*args)
+            if terminal_issue == "missing":
+                view["items"].pop()
+            else:
+                view["items"][-1].update(status="ambiguous", chosen=[])
+            return view
+
+        kb.refresh = unresolved
+    await waiter.sweep()
+    [r] = await rows(
+        db, "select detail from workbench_task_resolution where task_id=:t", t=tid
+    )
+    assert r["detail"]["requests"][0]["status"] == "missing"
+    assert not any(call[0] == "grant_by_confirmation" for call in kb.calls)

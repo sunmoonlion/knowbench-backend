@@ -75,10 +75,19 @@ def run_folder(session_id: str, started: datetime, expert: str) -> str:
     return f"{DOSSIER_ROOT}/对话-{talk}/{when}-{name}"
 
 
+def task_folder(task, expert: str) -> str:
+    folder = run_folder(str(task["session_id"]), task["created_at"], expert)
+    if task.get("dossier_version", 1) == 2:
+        return f"{folder}/任务-{task['id']}"
+    return folder
+
+
 def placed(output_file: str, folder: str | None) -> str:
     """专家包里写的成稿文件名放进这一次的那一格。没有那一格（只拼说明看的时候）就原样。"""
     if not folder:
         return output_file
+    if len(folder.split("/")) == 4 and folder.rsplit("/", 1)[1].startswith("任务-"):
+        return f"{folder}/{output_file}"
     return f"{folder}/{output_file.replace(chr(92), '/').rsplit('/', 1)[-1]}"
 
 

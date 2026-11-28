@@ -176,3 +176,43 @@ async def test_read_pins_the_producing_step_export_kind_and_version(db):
             ):
                 with pytest.raises(CapabilityError, match="planned output version"):
                     await read_artifact(repo, task, ("first",), ref, result)
+
+
+async def test_unknown_receipts(db):
+    from app.application.workbench.delegation_receipts import handoffs
+
+    ctx = await setup_recursive(db)
+    pending = await advance(db, ctx)
+    task_id = pending["cases"][0]["task_id"]
+
+    async def interrupted(*args):
+        raise TimeoutError("synthetic lost response")
+
+    ctx.remote.call = interrupted
+    await approve(db, ctx.request, ctx.factory, pending)
+    final = await advance(db, ctx)
+    assert final["status"] == "failed"
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        [attempt] = await repo.list_attempts(task_id)
+        refs = attempt["refs"]
+        operation = await repo.capability_call(ctx.owner, refs["capability_call_id"])
+        assert operation["status"] == "unknown"
+        assert operation["detail"]["result"]["message"]
+        assert refs["formal_result"]["outcome"] == "unknown"
+        assert (
+            refs["formal_result"]["detail"] == operation["detail"]["result"]["message"]
+        )
+        view = await handoffs(repo, ctx.owner, task_id)
+        receipts = [
+            receipt
+            for parent in view["parents"]
+            for child in parent["children"]
+            for entry in child["rounds"]
+            for receipt in entry["receipts"]
+            if receipt["attempt_id"] is None
+        ]
+        assert any(
+            r["state"] == "UNKNOWN" and r["failure"] == refs["formal_result"]["detail"]
+            for r in receipts
+        )

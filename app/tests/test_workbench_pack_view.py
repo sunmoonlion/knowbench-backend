@@ -280,3 +280,28 @@ def test_the_builtin_experts_are_gone_from_the_product():
     for name in ("DATA_QUERY", "FIN_REVIEW", "FIN_FORECAST"):
         assert not hasattr(packs, name), name
     assert [p.profile_id for p in packs.listed_packs()] == []
+
+
+def test_same_named_intermediate_uses_different_source_in_preview():
+    from app.domain.workbench.fixed_plan import fixed_plan
+    from app.domain.workbench.packs import ExpertPack, StepContract
+
+    steps = tuple(
+        StepContract(
+            step_id=name,
+            title=name,
+            method_text="copy",
+            input_refs=inputs,
+            output_artifact=output,
+        )
+        for name, inputs, output in (
+            ("draft", (), "figures"),
+            ("verified", ("figures",), "figures"),
+            ("report", ("figures",), "result"),
+        )
+    )
+    pack = ExpertPack(
+        pack_id="demo", profile_id="demo", version="1", title="核验", workflow=steps
+    )
+    assert fixed_plan(pack).steps[-1].inputs[0].instance_id == "verified"
+    assert pack_view(pack)["steps"][-1]["uses"][0]["title"] == "verified"

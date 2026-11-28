@@ -26,6 +26,26 @@ async def test_partial_receipt_after_interrupted_join(db, monkeypatch, failure):
     step["depends_on"] = ["first", "other"]
     graph["steps"].append(branch)
     graph.update(max_steps=3, max_expansions=4)
+    definition = document["draft"]["definition"]
+    if failure == "deadline":
+        name = next(iter(definition["capability_declaration"]["promises"]))
+        definition["capability_declaration"]["conditions"] = {
+            name: {"when": "User has verified ownership", "input_slots": ["to"]}
+        }
+        graph["exports"]["final_receipt"]["step"] = "first"
+        from app.domain.workbench.formal_method_execution_generated import (
+            FormalTestSuiteDraft,
+        )
+
+        suite = document["execution"]["suite"]
+        suite["cases"][0]["covers_promises"] = [name]
+        document["execution"]["suite"] = (
+            FormalTestSuiteDraft.model_validate(
+                {k: v for k, v in suite.items() if k != "digest"}
+            )
+            .freeze()
+            .model_dump(mode="json")
+        )
     ctx.request = type(ctx.request).model_validate(document)
     await accept_request(db, ctx)
     expert = await register_completed(db, ctx)
@@ -97,6 +117,12 @@ async def test_partial_receipt_after_interrupted_join(db, monkeypatch, failure):
         step = attempt["step_id"]
         assert len(report["missing_steps"]) == 2 and step not in report["missing_steps"]
         assert report["options"][0]["applicable_promises"] == []
+        if failure == "deadline":
+            assert report["options"][0]["conditional_promises"][name] == {
+                "when": "User has verified ownership",
+                "input_slots": ["to"],
+                "status": "unverified",
+            }
         body = {"step": step, "scope_digest": report["scope_digest"]}
         assert (
             await client.put(

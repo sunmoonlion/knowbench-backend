@@ -440,7 +440,13 @@ class CapabilityRepositoryMixin:
 
     async def pending_metered_scripts(self):
         result = await self.session.execute(
-            text("SELECT c.* " + PENDING_SCRIPTS + " ORDER BY c.updated_at,c.id")
+            text(
+                "SELECT c.* "
+                + PENDING_SCRIPTS
+                + """
+                AND (c.receipt_retry_at IS NULL OR c.receipt_retry_at <= now())
+                ORDER BY c.receipt_retry_at NULLS FIRST, c.updated_at,c.id LIMIT 100"""
+            )
         )
         return [row(r) for r in result.mappings()]
 
@@ -448,9 +454,28 @@ class CapabilityRepositoryMixin:
         result = await self.session.execute(
             text("""SELECT * FROM workbench_calls
             WHERE status='dispatching' AND detail->>'execution_kind'='skill_script'
-            ORDER BY updated_at LIMIT 20""")
+            AND (receipt_retry_at IS NULL OR receipt_retry_at <= now())
+            ORDER BY receipt_retry_at NULLS FIRST,updated_at,id LIMIT 20""")
         )
         return [row(r) for r in result.mappings()]
+
+    async def record_script_poll(self, call, problem=None, delay=0):
+        # A concurrent settlement wins. Polling must never move the dispatch deadline.
+        async with self.transaction():
+            await self.session.execute(
+                text("""
+                UPDATE workbench_calls SET receipt_problem=:problem,
+                    receipt_retry_at=clock_timestamp() + make_interval(secs => :delay)
+                WHERE id=:id AND status=:state AND updated_at=:observed
+            """),
+                {
+                    "id": call["id"],
+                    "state": call["status"],
+                    "observed": call["updated_at"],
+                    "problem": problem,
+                    "delay": delay,
+                },
+            )
 
     async def capability_call(self, owner, call_id, *, lock=False):
         r = (

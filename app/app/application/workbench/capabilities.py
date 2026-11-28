@@ -520,7 +520,7 @@ class Capabilities:
             call["session_id"], owner_actor_id=owner, for_update=True
         )
 
-    async def view(self, owner, session_id, selected):
+    async def view(self, owner, session_id, selected, *, eligible=None):
         session = await self.repo.get_session(session_id, owner_actor_id=owner)
         assets = await self.repo.capability_assets(owner)
         detail = selected["detail"]
@@ -544,7 +544,11 @@ class Capabilities:
                 FormalSessionTools,
             )
 
-            issues.extend(await FormalSessionTools(self).issues(owner, formal_methods))
+            issues.extend(
+                await FormalSessionTools(self).issues(
+                    owner, formal_methods, eligible=eligible
+                )
+            )
         by_tool = {
             tool_key(a["id"], t["name"]): (a, t)
             for a in assets
@@ -727,6 +731,9 @@ class Capabilities:
         return options
 
     async def save_selection(self, owner, session_id, body):
+        eligible = await self.eligible_formal_refs(
+            owner, [r.model_dump(mode="json") for r in body.formal_methods]
+        )
         async with self.repo.transaction():
             session = await self._locked_session(owner, session_id)
             selected = await self.repo.capability_selection(
@@ -764,7 +771,9 @@ class Capabilities:
                 )
 
                 for reference in body.formal_methods:
-                    await FormalSessionTools(self).resolve(owner, reference)
+                    await FormalSessionTools(self).resolve(
+                        owner, reference, eligible=eligible
+                    )
             if scope and selection_issues(scope, body.model_dump(), assets):
                 raise CapabilityError(
                     "Bind exactly the declared method capabilities",
@@ -1056,6 +1065,9 @@ class Capabilities:
                 "Selected capabilities need attention before this turn",
                 issues=current["issues"],
             )
+        eligible = await self.eligible_formal_refs(
+            owner, current.get("formal_methods") or []
+        )
         async with self.repo.transaction():
             if scene == ExecutionScene.CONVERSATION:
                 await self._conversation_session(owner, session_id)
@@ -1068,7 +1080,7 @@ class Capabilities:
                 raise CapabilityError("Selection changed during preparation")
             assets = await self.repo.capability_assets(owner, lock=True)
             # Recheck under row locks, after any concurrent disable/refresh completed.
-            fresh = await self.view(owner, session_id, selected)
+            fresh = await self.view(owner, session_id, selected, eligible=eligible)
             if fresh["issues"] and scene == ExecutionScene.METHOD:
                 raise CapabilityError(
                     "Capability changed during preparation", issues=fresh["issues"]
@@ -1198,7 +1210,9 @@ class Capabilities:
                 )
 
                 for reference in formal_methods:
-                    spec = await FormalSessionTools(self).resolve(owner, reference)
+                    spec = await FormalSessionTools(self).resolve(
+                        owner, reference, eligible=eligible
+                    )
                     if spec["tool"]["name"] in tools:
                         raise CapabilityError("Formal method tool identity collided")
                     tools[spec["tool"]["name"]] = spec
@@ -2481,104 +2495,105 @@ class Capabilities:
 
         await reconcile(self)
         for call in await self.repo.capability_pending_scripts():
-            owner, call_id, intent = call["owner_actor_id"], call["id"], call["detail"]
-            status, result = None, None
-            async with self.repo.transaction():
-                selected = await self.repo.capability_selection(
-                    owner, call["session_id"]
-                )
-                asset = await self.repo.capability_asset(owner, call["source_asset_id"])
-                runtime = selected["runtime"]
-                valid = (
-                    asset["status"] == "active"
-                    and asset["revision"] == intent["revision"]
-                    and runtime.get("token_hash") == intent["runtime"]
-                    and selected["revision"] == intent["selection_revision"]
-                    and not runtime.get("aborted")
-                    and datetime.fromisoformat(
-                        runtime.get("expires_at", "1970-01-01T00:00:00+00:00")
-                    )
-                    > datetime.now(UTC)
-                )
-                if valid and intent.get("method"):
-                    session = await self.repo.get_session(
-                        call["session_id"], owner_actor_id=owner
-                    )
-                    try:
-                        await check_runtime_method(
-                            self.repo,
-                            owner,
-                            session,
-                            runtime,
-                            resource_delegations=self.resource_delegations,
-                        )
-                    except CapabilityError:
-                        valid = False
             try:
-                if not valid:
-                    await self.script_executor.cancel(owner, call_id)
-                    status, result = (
-                        "failed",
-                        {
-                            "isError": True,
-                            "message": "Script stopped: execution authorization was revoked or the task ended",
-                        },
+                await self._collect_skill_receipt(call)
+            except Exception as exc:
+                await self.repo.record_script_poll(
+                    call, "collector_unavailable:" + type(exc).__name__[:80], 15
+                )
+
+    async def _collect_skill_receipt(self, call):
+        owner, call_id, intent = call["owner_actor_id"], call["id"], call["detail"]
+        status, result = None, None
+        async with self.repo.transaction():
+            selected = await self.repo.capability_selection(owner, call["session_id"])
+            asset = await self.repo.capability_asset(owner, call["source_asset_id"])
+            runtime = selected["runtime"]
+            valid = (
+                asset["status"] == "active"
+                and asset["revision"] == intent["revision"]
+                and runtime.get("token_hash") == intent["runtime"]
+                and selected["revision"] == intent["selection_revision"]
+                and not runtime.get("aborted")
+                and datetime.fromisoformat(
+                    runtime.get("expires_at", "1970-01-01T00:00:00+00:00")
+                )
+                > datetime.now(UTC)
+            )
+            if valid and intent.get("method"):
+                session = await self.repo.get_session(
+                    call["session_id"], owner_actor_id=owner
+                )
+                try:
+                    await check_runtime_method(
+                        self.repo,
+                        owner,
+                        session,
+                        runtime,
+                        resource_delegations=self.resource_delegations,
                     )
-                else:
-                    receipt = await self.script_executor.status(owner, call_id)
-                    if receipt["state"] == "finished":
-                        result = receipt["result"]
-                        result["isError"] = (
-                            result["exit_code"] != 0 or result["timed_out"]
-                        )
-                        status = "failed" if result["isError"] else "succeeded"
-                    elif receipt["state"] == "failed":
-                        status, result = (
-                            "failed",
-                            {"isError": True, "message": receipt.get("error")},
-                        )
-                    elif receipt["state"] == "absent" and datetime.now(UTC) - call[
-                        "updated_at"
-                    ] > timedelta(seconds=30):
-                        status, result = (
-                            "unknown",
-                            {
-                                "isError": True,
-                                "message": "Script receipt is unavailable; execution was not retried",
-                            },
-                        )
-                    if not status and datetime.now(UTC) - call[
-                        "updated_at"
-                    ] > timedelta(minutes=2):
-                        await self.script_executor.cancel(owner, call_id)
-                        status, result = (
-                            "unknown",
-                            {
-                                "isError": True,
-                                "message": "Script execution deadline exceeded; execution was not retried",
-                            },
-                        )
-            except Exception:
-                # A temporary provider outage does not grant execution or restart work.
-                continue
-            if not status:
-                continue
-            async with self.repo.transaction():
-                await self._locked_call_session(owner, call)
-                current = await self.repo.capability_call(owner, call_id, lock=True)
-                if current["status"] != "dispatching":
-                    continue
-                await self.repo.update_call(
-                    owner, call_id, status, {**intent, "result": result}
+                except CapabilityError:
+                    valid = False
+        if not valid:
+            await self.script_executor.cancel(owner, call_id)
+            status, result = (
+                "failed",
+                {
+                    "isError": True,
+                    "message": "Script stopped: execution authorization was revoked or the task ended",
+                },
+            )
+        else:
+            receipt = await self.script_executor.status(owner, call_id)
+            if receipt["state"] == "finished":
+                result = receipt["result"]
+                result["isError"] = result["exit_code"] != 0 or result["timed_out"]
+                status = "failed" if result["isError"] else "succeeded"
+            elif receipt["state"] == "failed":
+                status, result = (
+                    "failed",
+                    {"isError": True, "message": receipt.get("error")},
                 )
-                await self.repo.append_event(
-                    session_id=call["session_id"],
-                    kind="tool",
-                    event_type="capability/action_completed",
-                    payload={"call_id": call_id, "status": status},
+            elif receipt["state"] == "absent" and datetime.now(UTC) - call[
+                "updated_at"
+            ] > timedelta(seconds=30):
+                status, result = (
+                    "unknown",
+                    {
+                        "isError": True,
+                        "message": "Script receipt is unavailable; execution was not retried",
+                    },
                 )
-            # The immutable result is durable before removal of temporary input/output.
-            try:
+            if not status and datetime.now(UTC) - call["updated_at"] > timedelta(
+                minutes=2
+            ):
                 await self.script_executor.cancel(owner, call_id)
-            except Exception:
-                pass  # Job TTL removes leftovers; no user data outside this run is touched.
+                status, result = (
+                    "unknown",
+                    {
+                        "isError": True,
+                        "message": "Script execution deadline exceeded; execution was not retried",
+                    },
+                )
+        if not status:
+            await self.repo.record_script_poll(call)
+            return
+        async with self.repo.transaction():
+            await self._locked_call_session(owner, call)
+            current = await self.repo.capability_call(owner, call_id, lock=True)
+            if current["status"] != "dispatching":
+                return
+            await self.repo.update_call(
+                owner, call_id, status, {**intent, "result": result}
+            )
+            await self.repo.append_event(
+                session_id=call["session_id"],
+                kind="tool",
+                event_type="capability/action_completed",
+                payload={"call_id": call_id, "status": status},
+            )
+        # The immutable result is durable before removal of temporary input/output.
+        try:
+            await self.script_executor.cancel(owner, call_id)
+        except Exception:
+            pass  # Job TTL removes leftovers; no user data outside this run is touched.

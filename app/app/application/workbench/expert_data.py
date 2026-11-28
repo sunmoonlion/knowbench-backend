@@ -36,6 +36,7 @@ from pydantic import ValidationError
 
 from app.application.ports.workbench import WorkbenchStore, WorkbenchStores
 from app.application.workbench.catalog import PinnedPack
+from app.domain.workbench.capabilities import digest
 from app.domain.workbench.data_plan import Plan, gap, item_ref, plan
 from app.domain.workbench.data_request import (
     AnyDataRequest,
@@ -259,6 +260,7 @@ class ExpertData:
         *,
         owner_subject: str,
         user_token: UserToken,
+        view_digest: str,
         picks: dict[str, dict[str, Any]] | None = None,
         dropped: list[str] | None = None,
         needs: list[dict[str, Any]] | None = None,
@@ -268,7 +270,8 @@ class ExpertData:
         （`picks`）、去掉几样（`dropped`）。齐的本人签一条授权、钉住，缺的交 knowfeed
         （委托接着等）；去掉的、补采不了的记「数据不全」，照做。"""
         task_id = str(task["id"])
-        row = await repo.get_task_resolution(task_id)
+        await repo.get_task(task_id, for_update=True)
+        row = await repo.get_task_resolution(task_id, for_update=True)
         pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
         if row is None or not pending:
             raise DataChoiceInvalid("nothing is waiting for your confirmation")
@@ -280,6 +283,10 @@ class ExpertData:
         detail = dict(row.get("detail") or {})
         ids = {r["id"] for r in pending}
         asked = [n for r in pending for n in request_needs(r)]
+        latest = await self.knowbase.resolution(token, str(row["resolution_id"]))
+        reviewed = material_view(row, latest, detail.get("prematch") or {})
+        if reviewed != view_digest or detail.get("view_digest") != reviewed:
+            raise DataChoiceInvalid("资料清单已变化，请重新核对候选与供给条件")
         if needs is not None:
             asked = _revised(needs, pending[0]["id"])
             earlier = [
@@ -294,8 +301,26 @@ class ExpertData:
                 [n.model_dump(mode="json") for n in earlier + asked],
             )
             detail["requests"] = _replace_needs(detail, pending, asked)
-        else:
-            latest = await self.knowbase.resolution(token, str(row["resolution_id"]))
+            detail.update(prematch={}, view_digest=None)
+            first = next(r for r in detail["requests"] if r["id"] == pending[0]["id"])
+            entries = _scoped(latest, asked).get("items") or []
+            first["review_dropped"] = [
+                item_ref(i) for i in entries if item_ref(i) in (dropped or [])
+            ]
+            first["review_picks"] = {
+                item_ref(i): pick
+                for i in entries
+                if (pick := (picks or {}).get(item_ref(i)))
+                and any(
+                    all(c.get(k) == v for k, v in pick.items())
+                    for c in [*(i.get("chosen") or []), *(i.get("candidates") or [])]
+                )
+            }
+            async with repo.transaction():
+                await repo.update_task_resolution(
+                    task_id, revision=int(latest["revision"]), detail=detail
+                )
+            return {"status": "review_required"}
         draft = plan(
             _scoped(latest, asked),
             asked,
@@ -450,14 +475,14 @@ class ExpertData:
                 await Ledger(repo).resume_data(task_id)
         return {"status": "declined"}
 
-    async def pending_items(
+    async def pending_view(
         self, row: dict[str, Any] | None, user_token: UserToken
-    ) -> dict[str, list[dict[str, Any]]]:
+    ) -> tuple[dict[str, list[dict[str, Any]]], str | None]:
         """等用户确认的几张请求，每一样解析到哪、候选有哪些（页面上换、改、去掉用）；
         条目带编号（由这里算，页面不照算）。"""
         pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
         if row is None or not pending or row.get("resolution_id") is None:
-            return {}
+            return {}, None
         latest = await self.knowbase.resolution(
             await user_token(), str(row["resolution_id"])
         )
@@ -481,7 +506,11 @@ class ExpertData:
         for entry in entries:
             if entry["ref"] in answers:
                 entry["prematch"] = answers[entry["ref"]]
-        return out
+        if {n.key for n in needs} - {e["need_key"] for e in entries}:
+            raise UserDataUnavailable("资料服务尚未返回完整候选清单")
+        return out, material_view(
+            row, latest, {e["ref"]: e["prematch"] for e in entries if e.get("prematch")}
+        )
 
     async def _prematch(
         self, entries: list[dict[str, Any]], needs: list[AnyDataRequest]
@@ -696,6 +725,28 @@ def request_needs(request: dict[str, Any]) -> list[AnyDataRequest]:
     return [parse_need(n) for n in request.get("needs") or []]
 
 
+def material_view(row, resolution, prematch):
+    pending = [r for r in pending_requests(row) if r.get("status") == "pending"]
+    needs = [n for r in pending for n in request_needs(r)]
+    return digest(
+        [
+            str(row["task_id"]),
+            str(row["resolution_id"]),
+            resolution["revision"],
+            [(r["id"], r["needs"]) for r in pending],
+            _scoped(resolution, needs)["items"],
+            prematch,
+        ]
+    )
+
+
+def _need_status(key, items):
+    states = {str(i["status"]) for i in items if i.get("need_key") == key}
+    if len(states) == 1:
+        return states.pop()
+    return "mixed" if states else "missing"
+
+
 async def request_data(
     repo: WorkbenchStore,
     knowbase: KnowbaseData,
@@ -745,7 +796,7 @@ async def request_data(
         "revision": int(fresh["revision"]),
         "needs": [n.model_dump(mode="json") for n in needs],
         "labels": [n.name for n in needs],
-        "statuses": [str(i.get("status")) for i in items],
+        "statuses": [_need_status(n.key, items) for n in needs],
         "status": "pending",
         "requested_at": (now or datetime.now(UTC)).isoformat(),
     }
@@ -1064,6 +1115,15 @@ def _parse_time(value: object) -> datetime | None:
     return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
 
 
+def _owns_resolution(current, row):
+    return (
+        current is not None
+        and current["status"] == "waiting"
+        and current.get("demand_id") == row.get("demand_id")
+        and current.get("checking_until") == row.get("checking_until")
+    )
+
+
 class DataWaiter:
     """等数据的委托（runner 里一条线，隔一会儿扫一遍到点该查的）。"""
 
@@ -1143,7 +1203,11 @@ class DataWaiter:
     async def _on_error(self, row: dict[str, Any], exc: Exception) -> None:
         status = int(getattr(exc, "status", 0) or 0)
         code = str(getattr(exc, "code", "") or type(exc).__name__)
-        if 400 <= status < 500:
+        if row.get("deadline") is not None and self.now() >= row["deadline"]:
+            await self._fail(
+                row, "确认已过 7 天，数据服务尚未确认交付", row.get("detail") or {}
+            )
+        elif 400 <= status < 500 and status not in (408, 429):
             # knowbase、knowfeed 明说不行（确认对不上、清单不是他的……）：不再等
             log.warning("data wait refused task=%s code=%s", row["task_id"], code)
             await self._fail(row, f"数据服务拒绝了：{code}", row.get("detail") or {})
@@ -1196,6 +1260,9 @@ class DataWaiter:
                 return
             async with self.stores() as repo:
                 async with repo.transaction():
+                    current = await repo.get_task_resolution(task_id, for_update=True)
+                    if not _owns_resolution(current, row):
+                        return
                     await repo.update_task_resolution(
                         task_id,
                         detail=detail,
@@ -1239,10 +1306,21 @@ class DataWaiter:
             after_supply=True,
         )
         fresh_items = _scoped(fresh, needs).get("items", [])
+        absent = [
+            n.name
+            for n in needs
+            if n.key not in {i.get("need_key") for i in fresh_items}
+        ]
+        if not require_complete and (done.problems or absent):
+            reasons = done.problems + [
+                f"{name}：资料服务未返回解析结果" for name in absent
+            ]
+            await self._fail(row, "；".join(reasons), detail)
+            return False
         if require_complete and (
             done.missing
             or done.problems
-            or {n.key for n in needs} - {i.get("need_key") for i in fresh_items}
+            or absent
             or any(
                 item_ref(i) not in dropped
                 and (i.get("status") != "resolved" or not i.get("chosen"))
@@ -1323,10 +1401,10 @@ class DataWaiter:
                 task = await repo.get_task(task_id, for_update=True)
                 current = await repo.get_task_resolution(task_id, for_update=True)
                 ended = task["state"] in TASK_TERMINAL
-                if current is None or current["status"] != "waiting" or ended:
+                if not _owns_resolution(current, row) or ended:
                     # 别处已经办过（重复、乱序的检查不重复开跑），或委托在续签的时候结束了
                     # （交还那条线可能已经按 ref 交还过）：刚签的那条不钉、马上交还
-                    if ended and current is not None and current["status"] == "waiting":
+                    if ended and _owns_resolution(current, row):
                         await repo.update_task_resolution(
                             task_id, status="cancelled", next_check_at=None
                         )
@@ -1344,7 +1422,9 @@ class DataWaiter:
                     )
                     if not done.missing:
                         await Ledger(repo).resume_data(task_id)
-        if not kept and grant_id is not None:
+        # The confirmation and grant ref can be shared by two holders of successive
+        # leases. Only an ended task can safely hand back that idempotent grant.
+        if not kept and ended and grant_id is not None:
             try:
                 await self.knowbase.release_run_grant(grant_id)
             except Exception:  # noqa: BLE001 — 交还不成，到期也自己失效
@@ -1359,7 +1439,7 @@ class DataWaiter:
         async with self.stores() as repo:
             async with repo.transaction():
                 current = await repo.get_task_resolution(task_id, for_update=True)
-                if current is None or current["status"] != "waiting":
+                if not _owns_resolution(current, row):
                     return
                 await repo.update_task_resolution(
                     task_id,
@@ -1395,6 +1475,11 @@ class DataWaiter:
     ) -> None:
         async with self.stores() as repo:
             async with repo.transaction():
+                current = await repo.get_task_resolution(
+                    str(row["task_id"]), for_update=True
+                )
+                if not _owns_resolution(current, row):
+                    return
                 await repo.update_task_resolution(
                     task_id,
                     status=status,
@@ -1405,6 +1490,11 @@ class DataWaiter:
     async def _later(self, row: dict[str, Any]) -> None:
         async with self.stores() as repo:
             async with repo.transaction():
+                current = await repo.get_task_resolution(
+                    str(row["task_id"]), for_update=True
+                )
+                if not _owns_resolution(current, row):
+                    return
                 await repo.update_task_resolution(
                     str(row["task_id"]),
                     checks=int(row["checks"]) + 1,

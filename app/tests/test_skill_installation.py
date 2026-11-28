@@ -14,7 +14,7 @@ from app.domain.workbench.skill_installation import (
     metadata,
     repository_packages,
 )
-from app.infrastructure.workbench.skill_sources import GitHubSkills
+from app.infrastructure.workbench.skill_sources import GitHubSkills, RevisionNotFound
 
 COMMIT = "a" * 40
 CONTENT = "---\nname: notice\ndescription: >\n  Prepare a notice\n  and validate recipients.\n---\nRead references/guide.md before drafting.\n"
@@ -102,11 +102,16 @@ def test_symlinks_and_yaml_aliases_are_rejected():
 async def test_download_pins_preview_commit_and_uses_no_client_supplied_download_url():
     remote = GitHubSkills()
     remote.download = AsyncMock(
-        side_effect=[('{"sha":"' + COMMIT + '"}').encode(), archive()]
+        side_effect=[
+            RevisionNotFound("absent"),
+            ('{"sha":"' + COMMIT + '"}').encode(),
+            archive(),
+        ]
     )
     result = await remote.fetch("https://github.com/owner/repo/tree/main/skills")
     assert result["commit"] == COMMIT and result["prefix"] == "skills"
     assert [call.args[0] for call in remote.download.await_args_list] == [
+        "https://api.github.com/repos/owner/repo/commits/main%2Fskills",
         "https://api.github.com/repos/owner/repo/commits/main",
         f"https://codeload.github.com/owner/repo/zip/{COMMIT}",
     ]
@@ -114,4 +119,22 @@ async def test_download_pins_preview_commit_and_uses_no_client_supplied_download
     await remote.fetch("https://github.com/owner/repo", COMMIT)
     remote.download.assert_awaited_once_with(
         f"https://codeload.github.com/owner/repo/zip/{COMMIT}", limit=20 * 1024 * 1024
+    )
+
+
+async def test_repository_branch_with_slash_prefers_the_longest_revision():
+    remote = GitHubSkills()
+    remote.download = AsyncMock(
+        side_effect=[
+            RevisionNotFound("not a revision"),
+            ('{"sha":"' + COMMIT + '"}').encode(),
+            archive(),
+        ]
+    )
+    source = await remote.fetch(
+        "https://github.com/o/r/blob/feature/topic/skills/SKILL.md"
+    )
+    assert source["prefix"] == "skills" and source["commit"] == COMMIT
+    assert (
+        remote.download.await_args_list[1].args[0].endswith("/commits/feature%2Ftopic")
     )

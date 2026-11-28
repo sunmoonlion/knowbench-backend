@@ -112,3 +112,21 @@ def test_generating_a_translation_respects_the_authors_requested_format():
     assert step.method_text in prompt
     assert "Sections, in this order" not in prompt
     assert "buy/sell recommendation" not in prompt
+
+
+def test_tasks_created_in_the_same_second_keep_their_own_relative_paths():
+    from uuid import uuid4
+
+    from app.domain.workbench.deliverables import task_folder
+
+    first = {
+        "id": uuid4(),
+        "session_id": uuid4(),
+        "created_at": datetime.now(UTC),
+        "dossier_version": 2,
+    }
+    a = task_folder(first, "核对")
+    b = task_folder({**first, "id": uuid4()}, "核对")
+    assert a != b and placed("甲/结果.md", a) != placed("乙/结果.md", a)
+    old = task_folder({**first, "dossier_version": 1}, "核对")
+    assert placed("甲/结果.md", old) == old + "/结果.md"

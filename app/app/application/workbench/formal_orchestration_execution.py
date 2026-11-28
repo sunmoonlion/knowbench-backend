@@ -797,6 +797,9 @@ class FormalOrchestrationExecution:
                 str(active),
                 outcome,
                 outputs=outputs,
+                detail=str((call["detail"].get("result") or {}).get("message") or "")
+                if outcome == "unknown"
+                else "",
                 rejection_code="approval_denied" if outcome == "rejected" else None,
                 observed=call,
             )

@@ -103,12 +103,16 @@ async def reconcile(svc):
     for call in await svc.repo.pending_metered_scripts():
         try:
             await _collect(svc, call)
-        except (WorkbenchError, ValueError):
-            # Incomplete/conflicting evidence cannot authorize a debit or release.
-            continue
-        except Exception:
-            # A temporary provisioner outage leaves this exact call recoverable.
-            continue
+        except (WorkbenchError, ValueError) as exc:
+            await svc.repo.record_script_poll(
+                call, "receipt_conflict:" + type(exc).__name__[:80], 3600
+            )
+        except Exception as exc:
+            await svc.repo.record_script_poll(
+                call, "collector_unavailable:" + type(exc).__name__[:80], 15
+            )
+        else:
+            await svc.repo.record_script_poll(call)
 
 
 async def _collect(svc, call):

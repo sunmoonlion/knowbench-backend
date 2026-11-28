@@ -12,6 +12,7 @@ from test_workbench_expert_data_db import (
     asked,
     candidate,
     known,
+    reviewed_post,
     rows,
     workbench_stores,
 )
@@ -80,8 +81,8 @@ async def test_source_query_is_not_called_before_confirmation_and_resumes_only_w
         response = await http.get(f"/api/workbench/tasks/{tid}/data")
         item = response.json()["requests"][0]["items"][0]
         assert item["key"]["source_query"] == issued
-        response = await http.post(
-            f"/api/workbench/tasks/{tid}/data-requests/confirm", json={}
+        response = await reviewed_post(
+            http, f"/api/workbench/tasks/{tid}/data-requests/confirm", json={}
         )
         assert response.status_code == 200, response.text
         assert response.json()["status"] == "supplying"

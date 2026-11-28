@@ -511,3 +511,93 @@ def test_frozen_scope_exposes_the_declared_output_presence():
     assert not optional.interfaces()["outputs"][name]["always_present"]
     assert frozen_scope(baseline)["outputs"][0]["always_present"] is True
     assert frozen_scope(optional)["outputs"][0]["always_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_oversize_candidate_leaves_room_for_other_methods():
+    from app.application.workbench.formal_expert_intake import directory_for
+
+    registry = Registry()
+    original, later = list(registry.definitions)
+    definition = registry.definitions.pop(original)
+    doc = definition.document()
+    doc["capability_declaration"].update(
+        purpose="逐项核对有来源的明细并列出差异。" * 1100,
+        applies_when=["用户提供原始明细。" * 900],
+    )
+    definition = type(definition).model_validate(doc)
+    large = original.model_copy(update={"digest": definition.digest()})
+    registry.definitions[large] = definition
+    registry.entries = {
+        large: registry.public_declaration(large, definition),
+        later: registry.entries[later],
+    }
+    page = await directory_for(registry, OWNER, "需要差异表", None)
+    assert [entry["reference"] for entry in page["items"]] == [
+        later.model_dump(mode="json")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_remaining_candidate_can_be_selected_after_withdrawal(db, monkeypatch):
+    registry = Registry()
+    available, withdrawn = registry.entries
+    model = ScriptedAppServer([json.dumps(proposal(registry))])
+    await model.start()
+    runner = runner_for(db)
+    try:
+        await setup_test_computer(db, model)
+        project = await _project(db)
+        async with AsyncClient(
+            transport=ASGITransport(app=web_app(db, registry, monkeypatch)),
+            base_url="http://testserver",
+        ) as client:
+            made = await client.post(
+                f"/api/workbench/projects/{project}/find-expert",
+                json={
+                    "question": "需要差异表",
+                    "idempotency_key": "withdraw-one-match",
+                    "match_contract": "knowbench/expert-match/v5",
+                },
+            )
+            assert made.status_code == 201
+            path = "/api/workbench/find-expert/" + made.json()["task_id"]
+            await drive(runner)
+            before = await client.get(path)
+            assert before.status_code == 200
+            review = before.json()["formal"]
+            assert len(review["options"]) == 2
+            del registry.entries[withdrawn]
+            after = await client.get(path)
+            assert after.status_code == 200
+            assert any(
+                row.get("unavailable") for row in after.json()["formal"]["options"]
+            )
+            selected = await client.put(
+                path + "/selection",
+                json={
+                    "reference": available.model_dump(mode="json"),
+                    "review_digest": review["review_digest"],
+                },
+            )
+            assert selected.status_code == 200
+            assert (await client.get(path)).status_code == 200
+            assert len(model.turn_inputs) == 1
+    finally:
+        await close(runner)
+        await model.close()
+
+
+async def test_populated_partial_directory_exposes_the_next_page():
+    from app.application.workbench.formal_expert_intake import directory_for
+
+    registry = Registry()
+    original = registry.planning_versions
+
+    async def paged(*args, **kwargs):
+        page = await original(*args, **kwargs)
+        return {**page, "next": 8}
+
+    registry.planning_versions = paged
+    page = await directory_for(registry, OWNER, "需要差异表", None)
+    assert page["items"] and page["next"] == 8

@@ -36,6 +36,12 @@ async def finished(db):
     assert evidence["validated"], evidence["errors"]
     assert evidence["adapter"] == TREE_ADAPTER
     assert len(evidence["nodes"]) == 6 and len(evidence["steps"]) == 4
+    leaves = [node for node in evidence["nodes"] if node["kind"] == "tool"]
+    assert all(set(node) == {"kind", "path", "step_index"} for node in leaves)
+    assert [evidence["steps"][node["step_index"]]["path"] for node in leaves] == [
+        node["path"] for node in leaves
+    ]
+
     assert all(step["governance"]["approved"] for step in evidence["steps"])
     assert len(ctx.remote.calls) == 4
     return ctx, evidence

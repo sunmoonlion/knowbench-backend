@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+
+from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
 
 PAGE_ENTRIES = 40
 TEXT_CHARS = 2000
@@ -118,15 +121,26 @@ def record_of(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def page_of(entries: list[dict[str, Any]], page: Any) -> dict[str, Any]:
     """分页，每页有上限。页码不对就给第一页，不报错：模型常常乱填。"""
-    pages = max(1, -(-len(entries) // PAGE_ENTRIES))
+    blocks: list[list[dict[str, Any]]] = [[]]
+    used = 0
+    for entry in entries:
+        size = len(json.dumps(entry, ensure_ascii=False, default=str).encode()) + 2
+        if blocks[-1] and (
+            len(blocks[-1]) >= PAGE_ENTRIES
+            or used + size > TOOL_RESULT_MAX_BYTES - 4096
+        ):
+            blocks.append([])
+            used = 0
+        blocks[-1].append(entry)
+        used += size
+    pages = len(blocks)
     try:
         number = int(page)
     except (TypeError, ValueError):
         number = 1
     number = min(max(1, number), pages)
-    start = (number - 1) * PAGE_ENTRIES
     return {
         "page": number,
         "pages": pages,
-        "entries": entries[start : start + PAGE_ENTRIES],
+        "entries": blocks[number - 1],
     }

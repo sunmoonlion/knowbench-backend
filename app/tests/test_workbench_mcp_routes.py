@@ -29,7 +29,7 @@ from app.interfaces.endpoints.workbench_routes import (
     require_workbench_enabled,
     token_issuer,
 )
-from app.interfaces.mcp.workbench_mcp import limiter, records_enabled, records_rate
+from app.interfaces.mcp.workbench_mcp import records_enabled, records_rate
 from core.config import Settings
 
 pytestmark = pytest.mark.usefixtures("builtin_packs_on_offer")
@@ -69,7 +69,13 @@ async def served(db, monkeypatch):  # noqa: F811
     app.dependency_overrides[token_issuer] = lambda: ISSUER
     app.dependency_overrides[records_enabled] = lambda: True
     app.dependency_overrides[records_rate] = lambda: 60
-    limiter.calls.clear()
+    counts = {}
+
+    async def allow(owner, limit):
+        counts[owner] = counts.get(owner, 0) + 1
+        return counts[owner] <= limit
+
+    monkeypatch.setattr("app.interfaces.mcp.workbench_mcp.allow_tool_call", allow)
     return app
 
 

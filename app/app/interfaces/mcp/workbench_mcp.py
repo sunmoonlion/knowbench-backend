@@ -9,8 +9,6 @@ from __future__ import annotations
 
 import json
 import logging
-import time
-from collections import defaultdict, deque
 from typing import Any
 
 from fastapi import APIRouter, Depends, Header, Request, Response
@@ -56,22 +54,17 @@ PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 SERVER_KNOWFEED = {"name": "sunmoon-workbench", "version": "0.1.0"}
 
 
-class RateLimiter:
-    def __init__(self) -> None:
-        self.calls: dict[str, deque[float]] = defaultdict(deque)
+async def allow_tool_call(owner: str, per_minute: int) -> bool:
+    from redis.exceptions import RedisError
 
-    def allow(self, key: str, per_minute: int) -> bool:
-        now = time.monotonic()
-        q = self.calls[key]
-        while q and now - q[0] > 60:
-            q.popleft()
-        if len(q) >= per_minute:
-            return False
-        q.append(now)
-        return True
+    from app.infrastructure.storage.redis import get_redis
+    from app.infrastructure.workbench.agent_limiter import allow_records_call
 
-
-limiter = RateLimiter()
+    try:
+        return await allow_records_call(get_redis().client, owner, per_minute)
+    except RedisError:
+        log.warning("records rate limiter unavailable")
+        return False
 
 
 def records_enabled() -> bool:
@@ -149,7 +142,7 @@ async def handle(
         return _err(mid, -32602, f"unknown tool: {name}")
     if not isinstance(args, dict):
         return _err(mid, -32602, "arguments must be an object")
-    if not limiter.allow(owner, per_minute):
+    if not await allow_tool_call(owner, per_minute):
         return _tool_error(mid, "rate limit exceeded; retry later")
     if name == "compute" and (
         not isinstance(args.get("task"), str) or not args["task"].strip()

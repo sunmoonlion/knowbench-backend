@@ -8,7 +8,7 @@ from pydantic import ValidationError
 from app.application.workbench.acceptance import out_of_scope
 from app.application.workbench.task_runtime import TaskRuntime, compose_data_plan
 from app.domain.workbench.match_requirements import Requirement
-from app.domain.workbench.packs import SMOKE, Scope
+from app.domain.workbench.packs import SMOKE, ExpertPack, Scope
 
 
 def test_declared_scope_precedes_data_discovery_and_partial_fit_is_not_permission():
@@ -113,3 +113,13 @@ async def test_only_explicit_proceed_carries_concrete_scope_to_later_steps(decis
         assert "disclose omitted results" in answer["change_request"]
     else:
         assert answer["change_request"] is None
+
+
+def test_late_requirement_is_included_in_step_zero():
+    data = SMOKE.model_dump(mode="json")
+    requirement = "取上一年度审定期初余额及原始页码。"
+    data["workflow"][0]["method_text"] = "核对当期记录。" * 201 + requirement
+    pack = ExpertPack.model_validate(data)
+    assert requirement in pack.workflow[0].method_text
+    prompt = compose_data_plan(pack, {"text": "请核对期初余额"}, "task-review", 0)
+    assert requirement in prompt

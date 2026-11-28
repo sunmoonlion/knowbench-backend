@@ -43,8 +43,12 @@ def _require(condition, detail):
         raise CapabilityError(detail)
 
 
-def _node(snapshot, path):
-    return next(n for n in expanded_plan(snapshot).nodes if n.path == tuple(path))
+class _PlanIndex:
+    def __init__(self, snapshot):
+        plan = expanded_plan(snapshot)
+        self.leaves = plan.leaf_nodes
+        self.nodes = {node.path: node for node in plan.nodes}
+        self.leaf_index = {node.path: index for index, node in enumerate(self.leaves)}
 
 
 async def scope_deadline(repo, task, snapshot):
@@ -153,9 +157,11 @@ async def read_artifact(
     return artifact["content"]
 
 
-async def accepted_children(repo, task, snapshot, parent, parent_path, before=None):
+async def accepted_children(
+    repo, task, snapshot, parent, parent_path, index, before=None
+):
     definition = (
-        _node(snapshot, parent_path).definition
+        index.nodes[parent_path].definition
         if parent_path
         else invocation_definition(snapshot)
     )
@@ -164,7 +170,7 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
         if step.id == before:
             break
         path = (*parent_path, step.id)
-        node = _node(snapshot, path)
+        node = index.nodes[path]
         call = await repo.call_by_key(
             str(task["owner_actor_id"]),
             str(task["session_id"]),
@@ -199,18 +205,14 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
             )
             attempt = await repo.get_attempt(attempt_id)
             refs = attempt.get("refs") or {}
-            index = next(
-                i
-                for i, leaf in enumerate(expanded_plan(snapshot).leaf_nodes)
-                if leaf.path == path
-            )
+            step_index = index.leaf_index[path]
             _require(
                 str(attempt["task_id"]) == str(task["id"])
                 and attempt["status"] == AttemptState.COMPLETED
                 and attempt["step_id"] == node_slot(path)
                 and attempt["step_version"] == digest(node_identity(task, node))
                 and refs.get("kind") == "formal_orchestration_step"
-                and refs.get("step_index") == index
+                and refs.get("step_index") == step_index
                 and refs.get("path") == list(path)
                 and refs.get("method_call_id") == call["id"]
                 and refs.get("parent_method_call_id") == parent["id"]
@@ -251,7 +253,9 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
             full = await read_artifact(
                 repo, task, path, detail.get("exports_artifact"), exports, exports=True
             )
-            children, _ = await accepted_children(repo, task, snapshot, call, path)
+            children, _ = await accepted_children(
+                repo, task, snapshot, call, path, index
+            )
             _require(
                 exports.get("outcome") == "succeeded"
                 and export_outputs(node.definition, children) == full
@@ -272,7 +276,8 @@ async def accepted_children(repo, task, snapshot, parent, parent_path, before=No
 
 async def resolve_leaf(repo, task, snapshot, *, create=False):
     """Rebuild inputs from each real parent's own accepted sibling outputs."""
-    leaf = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])]
+    index = _PlanIndex(snapshot)
+    leaf = index.leaves[int(task["current_step"])]
     owner, session = str(task["owner_actor_id"]), str(task["session_id"])
     parent = (
         await root_call(repo, task)
@@ -300,9 +305,9 @@ async def resolve_leaf(repo, task, snapshot, *, create=False):
     root_id = parent["id"]
     for length in range(1, len(leaf.path) + 1):
         path = leaf.path[:length]
-        node = _node(snapshot, path)
+        node = index.nodes[path]
         accepted, artifacts = await accepted_children(
-            repo, task, snapshot, parent, node.parent_path, before=node.step.id
+            repo, task, snapshot, parent, node.parent_path, index, before=node.step.id
         )
         arguments = bind_step_inputs(node.step, inputs, accepted)
         bindings = [a for a in artifacts if a["step_id"] in node.step.depends_on]
@@ -396,7 +401,8 @@ async def resolve_leaf(repo, task, snapshot, *, create=False):
 async def execution_scopes(repo, task, snapshot, *, create=False):
     """Scopes only restrict execution; intermediate scopes carry no resource grants."""
     owner, session = str(task["owner_actor_id"]), str(task["session_id"])
-    leaf = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])]
+    index = _PlanIndex(snapshot)
+    leaf = index.leaves[int(task["current_step"])]
     deadline = await scope_deadline(repo, task, snapshot)
     root = await repo.call_by_key(owner, session, "task:" + str(task["id"]))
     _require(root is not None, "Formal root call is missing")
@@ -406,7 +412,7 @@ async def execution_scopes(repo, task, snapshot, *, create=False):
     previous = root
     for length in range(1, len(leaf.path)):
         path = leaf.path[:length]
-        node = _node(snapshot, path)
+        node = index.nodes[path]
         call = await repo.call_by_key(owner, session, node_key(task["id"], path))
         _require(
             call is not None
@@ -448,7 +454,8 @@ def _result(outputs):
 
 async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
     """Return exports one level at a time, or stop only unfinished ancestors."""
-    leaf = expanded_plan(snapshot).leaf_nodes[int(task["current_step"])]
+    index = _PlanIndex(snapshot)
+    leaf = index.leaves[int(task["current_step"])]
     owner, session = str(task["owner_actor_id"]), str(task["session_id"])
     for length in reversed(range(len(leaf.path) + (outcome != "succeeded"))):
         path = leaf.path[:length]
@@ -481,16 +488,18 @@ async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
                         "result": {"outcome": outcome, "detail": detail[:2000]},
                     },
                 )
-                if call["detail"].get("path") and _node(snapshot, path).kind != "tool":
+                if call["detail"].get("path") and index.nodes[path].kind != "tool":
                     await return_subtree(
                         repo,
                         task,
                         call,
-                        "CANCELLED" if outcome == "cancelled" else "FAILED",
+                        {"cancelled": "CANCELLED", "unknown": "UNKNOWN"}.get(
+                            outcome, "FAILED"
+                        ),
                         failure=detail[:500],
                     )
             continue
-        node = _node(snapshot, path) if path else None
+        node = index.nodes[path] if path else None
         definition = node.definition if node else invocation_definition(snapshot)
         # A parent is ready only after all of its actual direct child calls finish.
         children = [
@@ -499,7 +508,7 @@ async def settle_ancestors(repo, task, snapshot, *, outcome, detail=""):
         ]
         if any(c is None or c["status"] != "succeeded" for c in children):
             return None
-        accepted, _ = await accepted_children(repo, task, snapshot, call, path)
+        accepted, _ = await accepted_children(repo, task, snapshot, call, path, index)
         exports = _result(export_outputs(definition, accepted))
         from app.domain.workbench.formal_method_plan_generated import evaluate_v0_checks
         from app.domain.workbench.ordinary_expert import ConsumerPlan

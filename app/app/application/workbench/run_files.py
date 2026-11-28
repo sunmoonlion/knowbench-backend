@@ -10,7 +10,7 @@ from typing import Any
 
 from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.execution_plan import display_for_task
-from app.domain.workbench.deliverables import run_files, run_folder
+from app.domain.workbench.deliverables import run_files, task_folder
 
 
 async def task_dossier(
@@ -21,7 +21,7 @@ async def task_dossier(
     if pack is None or not pack.deliverable_files() or not task.get("created_at"):
         return None
     expert = pack.name or pack.title
-    folder = run_folder(str(task["session_id"]), task["created_at"], expert)
+    folder = task_folder(task, expert)
     return {
         "folder": folder,
         "expert": expert,

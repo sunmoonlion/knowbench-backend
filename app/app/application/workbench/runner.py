@@ -1612,7 +1612,7 @@ class SandboxLink:
                 )
             ):
                 tier = "deny"
-            if granted and not after_decline and not (dynamic and tier == "deny"):
+            if granted and not after_decline and tier != "deny":
                 tier, source = "allow", "task_grant"
             elif tier == "allow":
                 source = "policy"

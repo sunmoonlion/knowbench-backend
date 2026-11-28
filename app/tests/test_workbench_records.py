@@ -195,3 +195,20 @@ def test_registered_page_covers_record_variants_and_rejects_internal_fields():
     check = schema_validator(project_read_revision().contract.output_schema)
     check.validate(page)
     assert not check.is_valid(page | {"entries": [entries[0] | {"token": "internal"}]})
+
+
+def test_all_record_entries_fit_the_declared_tool_byte_budget():
+    import json
+
+    from app.domain.workbench.projects import TOOL_RESULT_MAX_BYTES
+    from app.domain.workbench.records import page_of
+
+    entries = [{"text": str(i) + "数" * 1000} for i in range(40)]
+    first = page_of(entries, 1)
+    pages = [page_of(entries, i) for i in range(1, first["pages"] + 1)]
+    assert first["pages"] > 1
+    assert [entry for page in pages for entry in page["entries"]] == entries
+    assert all(
+        len(json.dumps(p, ensure_ascii=False).encode()) < TOOL_RESULT_MAX_BYTES
+        for p in pages
+    )

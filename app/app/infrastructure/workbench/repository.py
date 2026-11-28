@@ -2201,21 +2201,6 @@ class WorkbenchRepository(
             {"t": task_id, "mine": until},
         )
 
-    async def set_resolution_prematch(
-        self, task_id: str, answers: dict[str, Any]
-    ) -> None:
-        """面板上问到的预切合记进 detail.prematch（按条目编号）：确认时照它进快照，不再问。
-        只改这一格，不碰 detail 的别处。"""
-        await self.session.execute(
-            text(
-                """update workbench_task_resolution
-                   set detail = jsonb_set(coalesce(detail, '{}'::jsonb), '{prematch}',
-                                          cast(:p as jsonb))
-                   where task_id = :t"""
-            ),
-            {"t": task_id, "p": json.dumps(answers, ensure_ascii=False, default=str)},
-        )
-
     async def claim_task_resolution(
         self, task_id: str, *, now: datetime, until: datetime
     ) -> dict[str, Any] | None:
