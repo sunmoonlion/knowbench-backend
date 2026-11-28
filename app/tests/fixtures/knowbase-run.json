@@ -7,7 +7,7 @@
       "project_id": "55cc5808-4388-544c-a6fb-76786ad433a6",
       "expert": {
         "id": "knowbot:e52bc48b-549d-5f39-891a-c87d1866e6cf@1",
-        "name": "我的方法",
+        "name": "文档核对",
         "version": "1"
       },
       "question": "分析茅台",
@@ -29,11 +29,11 @@
       "budget": {
         "currency": "CNY",
         "limit": null,
-        "used": "0.00",
+        "used": "0.02",
         "reserved": "0.00",
         "left": null,
         "running": "0.00",
-        "spent": "0.00",
+        "spent": "0.02",
         "estimated": true
       },
       "data": null,
@@ -47,7 +47,18 @@
       "started_at": "2026-01-01T00:00:00+00:00",
       "ended_at": null,
       "seconds": 0,
-      "active_interaction_id": null
+      "active_interaction_id": null,
+      "plan": {
+        "version": 1,
+        "planning": false,
+        "reason": "依据用户问题组合作者方法",
+        "history": [
+          {
+            "version": 1,
+            "reason": "依据用户问题组合作者方法"
+          }
+        ]
+      }
     },
     "now": {
       "step": {
@@ -70,63 +81,24 @@
     "steps": [
       {
         "index": 1,
-        "step_id": "plan",
-        "title": "拆步",
-        "summary": "把问题拆成不超过三步",
+        "step_id": "inspect_1",
+        "title": "核对",
+        "summary": "只依据给定文档核对，不补充未提供的文字。",
         "why": "",
         "uses": [],
-        "tools": [],
-        "returns": "plan",
+        "tools": [
+          "read_input"
+        ],
+        "returns": "__method_output__:inspect_1",
         "checks": [
           {
-            "label": "交回的格式对"
+            "label": "交回的是一个 JSON"
           },
           {
-            "label": "有计划"
+            "label": "交回项都在：「rows」"
           },
           {
-            "label": "计划不是空的"
-          }
-        ],
-        "after_rejection": {
-          "reworks": 1,
-          "then": "human",
-          "back_to": null,
-          "backs": 0,
-          "text": "重做，最多 1 次；仍不过，停下来问你"
-        },
-        "reserve": "0.05",
-        "status": "pending",
-        "attempts": [],
-        "times": 0,
-        "rejected": 0,
-        "spent": "0.00",
-        "data": null
-      },
-      {
-        "index": 2,
-        "step_id": "answer",
-        "title": "按计划作答",
-        "summary": "按计划作答，每个说法带出处",
-        "why": "",
-        "uses": [
-          {
-            "artifact": "plan",
-            "step": 1,
-            "title": "拆步"
-          }
-        ],
-        "tools": [],
-        "returns": "answer",
-        "checks": [
-          {
-            "label": "交回的格式对"
-          },
-          {
-            "label": "有回答和出处"
-          },
-          {
-            "label": "回答不是空的"
+            "label": "「rows」至少 1 项"
           },
           {
             "label": "没有评级、目标价、买卖建议"
@@ -145,7 +117,57 @@
         "times": 0,
         "rejected": 0,
         "spent": "0.00",
-        "data": null
+        "data": null,
+        "selection_reason": "核对给定文档",
+        "method_instance": "inspect_1",
+        "current_result": null
+      },
+      {
+        "index": 2,
+        "step_id": "report_1",
+        "title": "汇总",
+        "summary": "列出每一条的核对结果。",
+        "why": "",
+        "uses": [
+          {
+            "artifact": "__method_output__:inspect_1",
+            "step": 1,
+            "title": "核对"
+          }
+        ],
+        "tools": [],
+        "returns": "__method_output__:report_1",
+        "checks": [
+          {
+            "label": "交回的是一个 JSON"
+          },
+          {
+            "label": "交回项都在：「rows」"
+          },
+          {
+            "label": "「rows」与第「核对」步一一对上"
+          },
+          {
+            "label": "没有评级、目标价、买卖建议"
+          }
+        ],
+        "after_rejection": {
+          "reworks": 1,
+          "then": "back",
+          "back_to": 1,
+          "backs": 1,
+          "text": "重做，最多 1 次；仍不过，退回第 1 步，最多 1 次；仍不过，停下来问你"
+        },
+        "reserve": "0.05",
+        "status": "pending",
+        "attempts": [],
+        "times": 0,
+        "rejected": 0,
+        "spent": "0.00",
+        "data": null,
+        "selection_reason": "交回作者规定的最终成果",
+        "method_instance": "report_1",
+        "current_result": null
       }
     ]
   },

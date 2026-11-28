@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from knowbot_fixtures import manifest
 from sqlalchemy import text
+from test_referenced_method_catalog import manifest
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 
@@ -27,8 +27,6 @@ ROOT = "/home/me/work"
 async def test_dynamic_intake_uses_deployment_owner_list(
     client, db, monkeypatch, allowed
 ):
-    from test_referenced_method_catalog import manifest as dynamic_manifest
-
     from app.bootstrap import workbench
 
     client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
@@ -40,7 +38,7 @@ async def test_dynamic_intake_uses_deployment_owner_list(
     )
     monkeypatch.setattr(workbench, "get_settings", lambda: config)
     await authors_computer(db)
-    request = body("dynamic-route") | {"manifest": dynamic_manifest()}
+    request = body("dynamic-route")
     async with AsyncClient(
         transport=ASGITransport(app=client), base_url="http://127.0.0.1"
     ) as http:
@@ -71,6 +69,14 @@ def test_dynamic_owner_configuration_rejects_ambiguous_subjects(owners):
 
     with pytest.raises(ValidationError):
         Settings(KNOWBOT_DYNAMIC_TEST_OWNERS=owners)
+
+
+@pytest.fixture
+def owner_test_intake(monkeypatch):
+    from app.bootstrap import workbench
+
+    settings = Settings(KNOWBOT_DYNAMIC_TEST_OWNERS=["user-123"])
+    monkeypatch.setattr(workbench, "get_settings", lambda: settings)
 
 
 def body(run_id="knowlab-run-0100"):
@@ -146,7 +152,7 @@ async def test_without_the_relation_configured_everything_is_refused(
         assert hidden.status_code == 404
 
 
-async def test_knowlab_submits_reads_and_answers(client, db):  # noqa: F811
+async def test_knowlab_submits_reads_and_answers(client, db, owner_test_intake):  # noqa: F811
     client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
         caller="knowlab",
         principal=None,  # type: ignore[arg-type]
@@ -230,7 +236,9 @@ async def test_knowlab_asks_whether_the_user_has_a_model_key(client, db):  # noq
         assert (await h.get(bad)).status_code == 422
 
 
-async def test_knowlab_cancels_a_test_and_again_gets_the_same(client, db):  # noqa: F811
+async def test_knowlab_cancels_a_test_and_again_gets_the_same(
+    client, db, owner_test_intake
+):  # noqa: F811
     """cancel（10-30 加）：走 testrun 关系；没有这次测试 404；停下记成取消，重复调幂等。"""
     client.dependency_overrides[require_testrun_service] = lambda: ServiceCaller(
         caller="knowlab",

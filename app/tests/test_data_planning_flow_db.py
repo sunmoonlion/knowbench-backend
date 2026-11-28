@@ -1,7 +1,8 @@
 from decimal import Decimal
 
 import pytest
-from knowbot_fixtures import FakeSummoner, manifest
+from knowbot_fixtures import FakeSummoner
+from test_referenced_method_catalog import manifest
 from test_workbench_expert_data_db import (
     PROPOSED,
     A,
@@ -19,6 +20,7 @@ from app.application.workbench.ledger import Ledger
 from app.application.workbench.task_runtime import TaskRuntime
 from app.application.workbench.turn import TurnResult
 from app.bootstrap.workbench import workbench_store, workbench_stores
+from app.domain.workbench.method_plan import PLAN_ARTIFACT, PLAN_STEP
 
 
 @pytest.mark.parametrize(
@@ -32,9 +34,7 @@ async def test_unseeded_data_phase_never_looks_like_scope_or_retries_itself(
     failure,
 ):
     summoner = FakeSummoner()
-    summoner.give(
-        f"sub-{A}", {**manifest(), "schema": "knowbot-manifest/v2", "bindings": []}
-    )
+    summoner.give(f"sub-{A}", {**manifest(), "bindings": []})
     monkeypatch.setattr(expert_routes, "knowmart_summoner", lambda: summoner)
     original = StepZero.run_turn
     seen = []
@@ -80,9 +80,14 @@ async def test_unseeded_data_phase_never_looks_like_scope_or_retries_itself(
             repo = workbench_store(s)
             task = await repo.get_task(task_id)
             assert task["current_step"] == 0
-            assert len(await repo.list_attempts(task_id)) == 1
+            assert sorted(a["step_id"] for a in await repo.list_attempts(task_id)) == [
+                PLAN_STEP,
+                "data-plan",
+            ]
             if failure:
-                assert Decimal(str(task["budget"]["used"])) == Decimal("0.05")
+                assert Decimal(str(task["budget"]["used"])) == Decimal(
+                    "0.02"
+                ) + Decimal("0.05")
                 if failure == "stop_unconfirmed":
                     assert task["original_input"]["client_context"]["turn_open"]
                 else:
@@ -173,13 +178,15 @@ async def test_scope_mismatch_pauses_before_data_and_does_not_accept_empty_plan(
             task = await repo.get_task(task_id)
             assert task["waiting_reason"] == "INPUT"
             assert task["current_step"] == 0
-            assert Decimal(str(task["budget"]["used"])) == Decimal("0.02")
+            assert Decimal(str(task["budget"]["used"])) == Decimal("0.02") * 2
             assert (await repo.get_task_resolution(task_id))["status"] == "planning"
             item = await repo.get_interaction(str(task["active_interaction_id"]))
             options = [o["id"] for o in item["prompt"]["options"]]
             assert options == (["proceed", "stop"] if proposal else ["stop"])
             assert item["prompt"]["subject"]["proposed_question"] == proposal
-            assert not await repo.list_artifacts_with_content(task_id)
+            assert [
+                row["name"] for row in await repo.list_artifacts_with_content(task_id)
+            ] == [PLAN_ARTIFACT]
         await TaskRuntime(workbench_stores(db), driver, records=True).drive(task_id)
         assert (
             len(driver.texts) == 1

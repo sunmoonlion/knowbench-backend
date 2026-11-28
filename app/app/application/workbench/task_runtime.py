@@ -176,8 +176,7 @@ class TaskRuntime:
                     # 分身的委托自带快照，不会走到这里
                     gone = (
                         task.get("pack_source") not in SNAPSHOT_SOURCES
-                        and find_pack(task["profile_id"], task["profile_version"])
-                        is not None
+                        and find_pack(task["profile_id"]) is not None
                     )
                     await led.transition(
                         task_id,

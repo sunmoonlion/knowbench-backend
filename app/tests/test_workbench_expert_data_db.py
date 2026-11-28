@@ -1,4 +1,4 @@
-"""清单 v2 的专家请来用数据（SDD 0043 块 6a，decisions ⑭）：真数据库、经网页接口，
+"""动态专家清单在真实工作台使用数据（SDD 0043 块 6a，decisions ⑭）：真数据库、经网页接口，
 knowbase、knowfeed 与模型的那一轮用替身。
 
 请专家只建一张空清单（作者挑选的数据当场本人签、钉）；委托第 0 步模型用 request_data
@@ -20,8 +20,10 @@ from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from knowbot_fixtures import KNOWBOT, FakeSummoner, manifest
+from knowbot_fixtures import KNOWBOT, FakeSummoner
 from sqlalchemy import text
+from test_method_planner_db import Driver as PlanningTurn
+from test_referenced_method_catalog import manifest as dynamic_manifest
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_project_routes import machine, project
 from test_workbench_routes import A
@@ -42,6 +44,7 @@ from app.application.workbench.turn import TurnResult
 from app.bootstrap.workbench import workbench_store, workbench_stores
 from app.domain.workbench.data_plan import item_ref
 from app.domain.workbench.errors import DataChoiceInvalid
+from app.domain.workbench.method_plan import PLAN_STEP
 from app.infrastructure.security.relation_auth import (
     ServiceCaller,
     require_supply_status_service,
@@ -283,14 +286,32 @@ class StepZero:
         return TurnResult(turn_id="turn-0", final_text="提了两样", tokens={}, cost=None)
 
 
-def v2_manifest() -> dict[str, Any]:
-    return {**manifest(), "schema": "knowbot-manifest/v2", "bindings": [BOUND]}
+class DataPreparationDriver:
+    """Supply a catalog-valid model response for planning before the data turn under test."""
+
+    def __init__(self, data_turn):
+        self.planning = PlanningTurn()
+        self.data_turn = data_turn
+
+    async def run_turn(self, thread_id, text, *, timeout):  # noqa: ASYNC109
+        if text.startswith("Plan this task"):
+            return await self.planning.run_turn(thread_id, text, timeout=timeout)
+        return await self.data_turn.run_turn(thread_id, text, timeout=timeout)
+
+
+def data_manifest() -> dict[str, Any]:
+    return {**dynamic_manifest(), "bindings": [BOUND]}
 
 
 @pytest.fixture
 def world(make_client, monkeypatch):  # noqa: F811
     summoner = FakeSummoner()
-    summoner.give(f"sub-{A}", v2_manifest())
+    from app.bootstrap import workbench
+    from core.config import Settings
+
+    config = Settings(KNOWBOT_DYNAMIC_MARKET_OWNERS=[f"sub-{A}"])
+    monkeypatch.setattr(workbench, "get_settings", lambda: config)
+    summoner.give(f"sub-{A}", data_manifest())
     monkeypatch.setattr(expert_routes, "knowmart_summoner", lambda: summoner)
     state: dict[str, Any] = {"kb": FakeKnowbase(), "supply": FakeSupply()}
     monkeypatch.setattr(
@@ -348,7 +369,9 @@ async def asked(http, db, world, key_: str, propose=PROPOSED):  # noqa: F811
             {"t": task_id},
         )
     turn = StepZero(db, world["kb"], propose)
-    state = await TaskRuntime(workbench_stores(db), turn, records=True).drive(task_id)
+    state = await TaskRuntime(
+        workbench_stores(db), DataPreparationDriver(turn), records=True
+    ).drive(task_id)
     return task_id, turn, state
 
 
@@ -542,7 +565,10 @@ async def test_incomplete_data_turn_never_advances_even_with_text_or_proposals(
     [task] = await rows(db, "select * from workbench_tasks where id=:t", t=task_id)
     assert task["current_step"] == 0
     [attempt] = await rows(
-        db, "select * from workbench_attempts where task_id=:t", t=task_id
+        db,
+        "select * from workbench_attempts where task_id=:t and step_id=:step",
+        t=task_id,
+        step=DATA_STEP_ID,
     )
     assert attempt["status"] == "FAILED"
     async with db() as s:
@@ -565,7 +591,7 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         await http.post("/api/workbench/knowbots/pin", json={"knowbot": f"{KNOWBOT}@1"})
         needs = await http.get(f"/api/workbench/packs/{PROFILE}/data-needs")
         assert (needs.json()["contract"], needs.json()["bound"]) == (
-            "knowbot-manifest/v2",
+            "knowbot-manifest/v3",
             1,
         )
         assert set(needs.json()) == {
@@ -595,8 +621,9 @@ async def test_asking_lists_nothing_and_step_zero_proposes_the_data(
         assert (task["waiting_reason"], task["current_step"]) == ("DATA", 0)
         [attempt] = await rows(
             db,
-            "select step_id, status from workbench_attempts where task_id = :t",
+            "select step_id, status from workbench_attempts where task_id = :t and step_id=:step",
             t=task_id,
+            step=DATA_STEP_ID,
         )
         assert (attempt["step_id"], attempt["status"]) == (DATA_STEP_ID, "COMPLETED")
         [(_, proposed)] = [c for c in kb.calls if c[0] == "add_needs"]
@@ -802,7 +829,7 @@ async def test_no_data_needed_goes_straight_to_step_one_and_a_drop_is_recorded(
             "select step_id from workbench_attempts where task_id = :t order by started_at",
             t=task_id,
         )
-        assert attempts[0]["step_id"] == DATA_STEP_ID
+        assert [a["step_id"] for a in attempts[:2]] == [PLAN_STEP, DATA_STEP_ID]
 
 
 async def test_dropping_an_item_records_it_and_bad_picks_are_refused(

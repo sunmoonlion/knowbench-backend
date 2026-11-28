@@ -69,8 +69,8 @@ async def setup(db, *, method=False):
             from test_workbench_ledger_db import handover
 
             from app.application.workbench.ledger import Ledger
-            from app.domain.workbench.capabilities import SelectionPut, digest
-            from app.domain.workbench.packs import SMOKE
+            from app.domain.workbench.capabilities import SelectionPut
+            from app.domain.workbench.packs import BUILTIN_PACKS, SMOKE
             from app.domain.workbench.states import TaskState
 
             repo = svc.repo
@@ -89,17 +89,10 @@ async def setup(db, *, method=False):
                     }
                 ],
             }
-            async with repo.transaction():
-                await s.execute(
-                    text(
-                        "UPDATE workbench_tasks SET pack_source='knowmart', pack_snapshot=cast(:p as jsonb), pack_digest=:d WHERE id=:id"
-                    ),
-                    {
-                        "p": json.dumps(pack),
-                        "d": "sha256:" + digest(pack),
-                        "id": task_id,
-                    },
-                )
+            profile = (await repo.get_task(task_id))["profile_id"]
+            BUILTIN_PACKS[profile] = type(SMOKE).model_validate(
+                {**pack, "profile_id": profile, "version": "1"}
+            )
             selection = await svc.selection(OWNER, sid)
             await svc.save_selection(
                 OWNER,
