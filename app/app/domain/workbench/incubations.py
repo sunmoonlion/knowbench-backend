@@ -25,7 +25,7 @@ from app.domain.workbench.incubation_selection import (
     normalize_unresolved,
 )
 from app.domain.workbench.method_catalog import PlanningContract
-from app.domain.workbench.test_runs import Runner
+from app.domain.workbench.test_runs import RowSelection, Runner
 
 CONTRACT = "knowbot-incubation/v1"
 INCUBATION_ID = r"^[A-Za-z0-9._:-]{8,128}$"
@@ -131,6 +131,9 @@ class LatestTestExpectation(Strict):
     artifact: str = Field(min_length=1, max_length=128)
     path: str = Field(min_length=1, max_length=256)
     kind: Literal["equals", "approx", "contains"]
+    row: RowSelection | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
     passed: bool
 
 
