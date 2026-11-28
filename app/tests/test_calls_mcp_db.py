@@ -147,9 +147,8 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
         args["conversation"] = ids["chat"]
     elif operation == COMPUTE:
         args.update(name="reuse", expression="x", inputs={"x": "c1"})
-
     elif operation == "request_data":
-        args["needs"] = [{"reason": "test"}]
+        args["needs"] = [{"reason": "test", "doc_type": "annual_report"}]
     elif operation == "find_subject":
         args["name"] = "test"
 
@@ -157,9 +156,9 @@ async def test_removed_local_registration_blocks_listing_and_inflight_dispatch(
         async with db() as session, session.begin():
             await session.execute(
                 text(
-                    "DELETE FROM workbench_registry_service_functions WHERE provider='knowbench' AND name=:name AND version=1"
+                    "DELETE FROM workbench_registry_service_functions WHERE provider='knowbench' AND name=:name AND version=:version"
                 ),
-                {"name": operation},
+                {"name": operation, "version": LOCAL_REVISIONS[operation]().version},
             )
         return await original(*args, **kwargs)
 

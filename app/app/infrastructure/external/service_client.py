@@ -10,8 +10,8 @@ ServiceUnavailableError，回 4xx 抛 BadGatewayError（带目标给的 code）�
 from __future__ import annotations
 
 import asyncio
-import sys
 import os
+import sys
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -117,7 +117,10 @@ class ServiceClient:
                 raise ServiceUnavailableError(
                     "The service token is missing", code="service_token_unavailable"
                 )
-            if type(expires_in) not in (int, float) or not 0 < expires_in <= sys.float_info.max:
+            if (
+                type(expires_in) not in (int, float)
+                or not 0 < expires_in <= sys.float_info.max
+            ):
                 raise ServiceUnavailableError(
                     "The service token expiry is invalid",
                     code="service_token_unavailable",
