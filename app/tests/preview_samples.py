@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import Any
 
 SAMPLE_NOTE = "样例数据：数字是为了预览编的，不是这家公司的真实数据"
@@ -314,6 +315,17 @@ class Company:
         first, middle, last = self.years
         gross = "、".join(self.percent(y, "gross") for y in self.years)
         net = "、".join(self.percent(y, "net") for y in self.years)
+        income = [self.figures[y]["operate_income"] for y in self.years]
+        if all(b > a for a, b in pairwise(income)):
+            revenue_note = "逐年增加"
+        elif all(b < a for a, b in pairwise(income)):
+            revenue_note = "逐年下降"
+        elif income.count(income[0]) == len(income):
+            revenue_note = "保持不变"
+        else:
+            revenue_note = "并非逐年同向变化"
+        first_margin = self.percent(first, "gross")
+        last_margin = self.percent(last, "gross")
         return {
             "answer": (
                 f"{self.name} {first} 到 {last} 年年报：毛利率分别为 {gross}，"
@@ -323,9 +335,15 @@ class Company:
             ),
             "tables": [],
             "observations": [
-                f"营业收入 {first} 到 {last} 年逐年增加",
-                f"毛利率 {last} 年高于 {first} 年",
-                "经营活动现金流量净额三年都高于净利润",
+                f"营业收入 {first} 到 {last} 年{revenue_note}",
+                f"毛利率 {first} 年为 {first_margin}，{last} 年为 {last_margin}",
+                "经营活动现金流量净额高于净利润的年数为 "
+                + str(
+                    sum(
+                        row["net_operate_cash_flow"] > row["net_profit"]
+                        for row in self.figures.values()
+                    )
+                ),
             ],
             "caveats": [
                 SAMPLE_NOTE,

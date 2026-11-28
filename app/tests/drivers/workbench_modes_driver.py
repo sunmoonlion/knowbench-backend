@@ -127,10 +127,10 @@ async def main() -> int:
         environment_key=env_key,
         poll_seconds=0.2,
     )
-    ts = int(time.time())
-    folder = f"modes-{ts}"
+    run_id = uuid.uuid4().hex
+    folder = f"modes-{run_id}"
     directory = Path(root) / folder
-    directory.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
+    directory.mkdir(parents=True)  # noqa: ASYNC240
     fact = f"FACT-{uuid.uuid4().hex[:10]}"
     (directory / "FACT.txt").write_text(fact + "\n")  # noqa: ASYNC240
     try:
@@ -179,7 +179,7 @@ async def main() -> int:
             factory, runner, sandbox, sid, "Reply with exactly the single word PONG."
         )
         verdict("聊天能得到回答", "PONG" in said.upper(), said[:80].replace("\n", " "))
-        loose = f"CHAT_FREE_{ts}.txt"
+        loose = f"CHAT_FREE_{run_id}.txt"
         said, fresh = await say(
             factory,
             runner,
@@ -208,7 +208,7 @@ async def main() -> int:
             "Read the file FACT.txt in the current directory and reply with its exact content only.",
         )
         verdict("项目里的聊天读得到文件", fact in said, brief(fresh))
-        held = f"CHAT_IN_PROJECT_{ts}.txt"
+        held = f"CHAT_IN_PROJECT_{run_id}.txt"
         # 模型知道自己在只读里，常常不去试。两种说法都发，看有没有一次真的执行了
         attempts = (
             f"Run exactly `cat FACT.txt | tee {held}` and report the output verbatim.",
@@ -234,7 +234,7 @@ async def main() -> int:
             await SessionService(WorkbenchRepository(s)).to_work(
                 sid, owner_actor_id=OWNER
             )
-        made = f"WORK_{ts}.txt"
+        made = f"WORK_{run_id}.txt"
         said, fresh = await say(
             factory,
             runner,

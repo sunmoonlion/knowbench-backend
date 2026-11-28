@@ -12,9 +12,12 @@ import getpass
 import json
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import uuid
+from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +141,38 @@ async def decline_pending(factory, runner, sandbox, sid) -> int:
     return answered
 
 
+def turn_outcome(events: list[dict]) -> str | None:
+    if any(e["type"] == "command/failed" for e in events):
+        return "failed"
+    for event in events:
+        if event["type"] == "turn/completed":
+            turn = event["payload"].get("turn") or {}
+            return (
+                "completed"
+                if turn.get("status") == "completed" and not turn.get("error")
+                else "failed"
+            )
+    return None
+
+
+def store_recording(out: Path, body: str, conversations: dict) -> bool:
+    if not conversations or any(
+        not chat["turns"]
+        or any(turn["outcome"] != "completed" for turn in chat["turns"])
+        for chat in conversations.values()
+    ):
+        return False
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=out.parent, delete=False) as stream:
+        tmp = Path(stream.name)
+    try:
+        tmp.write_text(body, encoding="utf-8")
+        tmp.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)
+    return True
+
+
 async def say(factory, runner, sandbox, sid, prompt, *, timeout=300) -> dict[str, Any]:  # noqa: ASYNC109
     seen = await events_of(factory, sid)
     mark = int(seen[-1]["cursor"]) if seen else 0
@@ -156,13 +191,13 @@ async def say(factory, runner, sandbox, sid, prompt, *, timeout=300) -> dict[str
                 payload={"text": prompt, "request_id": request_id, "by": "user"},
             )
     deadline = time.time() + timeout
-    ended = False
+    outcome = None
     declined = 0
-    while time.time() < deadline and not ended:
+    while time.time() < deadline and outcome is None:
         await pump(runner, 1)
         fresh = await events_of(factory, sid, mark)
-        ended = any(e["type"] in ("turn/completed", "command/failed") for e in fresh)
-        if not ended:
+        outcome = turn_outcome(fresh)
+        if outcome is None:
             declined += await decline_pending(factory, runner, sandbox, sid)
     await pump(runner, 1)  # 用量的通知可能晚于这一轮结束
     messages = tape[start:]
@@ -173,13 +208,14 @@ async def say(factory, runner, sandbox, sid, prompt, *, timeout=300) -> dict[str
     ]
     asked = [m["method"] for m in messages if m["kind"] == "request"]
     print(
-        f"  {'完成' if ended else '超时'} {prompt[:24]}… 消息 {len(messages)} "
+        f"  {outcome or '超时'} {prompt[:24]}… 消息 {len(messages)} "
         f"动作 {kinds} 请求 {asked} 拒绝 {declined}",
         flush=True,
     )
     return {
         "prompt": prompt,
-        "ended": ended,
+        "ended": outcome is not None,
+        "outcome": outcome or "timeout",
         "declined": declined,
         "messages": messages,
     }
@@ -192,134 +228,146 @@ async def main() -> int:
     root = os.environ["ROOT"]
     out = Path(os.environ["TAPE_OUT"])
     env_key = os.environ.get("ENV_KEY", "user-pc")
-    schema = "wb_tape_" + uuid.uuid4().hex[:8]
-    sync = create_engine(url.replace("postgresql://", "postgresql+psycopg://"))
-    with sync.begin() as c:
-        c.execute(text(f'CREATE SCHEMA "{schema}"'))
-        c.execute(text(f'SET LOCAL search_path TO "{schema}"'))
-        migrate(c)
-    engine = create_async_engine(
-        url.replace("postgresql://", "postgresql+asyncpg://"),
-        connect_args={"server_settings": {"search_path": schema}},
-    )
-    factory = make_session_factory(engine)
-    runner = build_runner(
-        factory,
-        publisher=RedisPublisher(None, "it"),
-        runner_id="tape-driver",
-        environment_key=env_key,
-        poll_seconds=0.2,
-    )
-    folder = PROJECT
-    directory = Path(root) / folder
-    if directory.exists():  # noqa: ASYNC240
-        print(f"--- {directory} 已经在了，不动它。换一个 ROOT，或者先把它挪走")
-        return 3
-    directory.mkdir(parents=True)  # noqa: ASYNC240
-    for name, body in FILES.items():
-        (directory / name).write_text(body)  # noqa: ASYNC240
-    start_taping()
-    recorded: dict[str, Any] = {}
-    try:
-        async with factory() as s:
-            repo = WorkbenchRepository(s)
-            async with repo.transaction():
-                env = await repo.register_environment(
-                    owner_actor_id=OWNER,
-                    name="this-box",
-                    agent_version="0.1.0",
-                    codex_version="0.155.1",
-                    roots=[root],
-                    ceiling={"sandbox": "workspace-write", "network": False},
-                )
-                sandbox = await repo.register_sandbox(
-                    owner_actor_id=OWNER,
-                    app_server_url=app_url,
-                    token_ref=f"inline:{token}",
-                    codex_version="0.155.1",
-                )
-                await repo.put_prefs(OWNER, model=None, approval_policy="on-request")
-            project = await ProjectService(repo).create(
-                owner_actor_id=OWNER,
-                environment_id=env,
-                workspace_root=root,
-                path=folder,
-            )
-        for name, spec in CONVERSATIONS.items():
-            print(f"--- {name}", flush=True)
+    async with AsyncExitStack() as cleanup:
+        folder = PROJECT
+        directory = Path(root) / folder
+        try:
+            directory.mkdir(parents=True)  # noqa: ASYNC240
+        except FileExistsError:
+            print(f"--- {directory} 已经在了，不动它。换一个 ROOT，或者先把它挪走")
+            return 3
+        cleanup.callback(shutil.rmtree, directory)
+        schema = "wb_tape_" + uuid.uuid4().hex[:8]
+        sync = create_engine(url.replace("postgresql://", "postgresql+psycopg://"))
+        cleanup.callback(sync.dispose)
+        with sync.begin() as c:
+            c.execute(text(f'CREATE SCHEMA "{schema}"'))
+            c.execute(text(f'SET LOCAL search_path TO "{schema}"'))
+            migrate(c)
+
+        def drop_schema():
+            with sync.begin() as connection:
+                connection.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
+
+        cleanup.callback(drop_schema)
+        engine = create_async_engine(
+            url.replace("postgresql://", "postgresql+asyncpg://"),
+            connect_args={"server_settings": {"search_path": schema}},
+        )
+        cleanup.push_async_callback(engine.dispose)
+        factory = make_session_factory(engine)
+        runner = build_runner(
+            factory,
+            publisher=RedisPublisher(None, "it"),
+            runner_id="tape-driver",
+            environment_key=env_key,
+            poll_seconds=0.2,
+        )
+        for name, body in FILES.items():
+            (directory / name).write_text(body)  # noqa: ASYNC240
+        cleanup.callback(
+            setattr, SandboxLink, "on_notification", SandboxLink.on_notification
+        )
+        cleanup.callback(
+            setattr, SandboxLink, "on_server_request", SandboxLink.on_server_request
+        )
+        tape.clear()
+        start_taping()
+        recorded: dict[str, Any] = {}
+        try:
             async with factory() as s:
                 repo = WorkbenchRepository(s)
-                sid = (
-                    await SessionService(repo).start(
-                        owner_actor_id=OWNER,
-                        kind=spec["kind"],
-                        project_id=project["id"] if spec["in_project"] else None,
-                    )
-                )["session_id"]
                 async with repo.transaction():
-                    await repo.enqueue_command(
-                        session_id=sid,
-                        sandbox_id=sandbox,
-                        kind="session.start_thread",
-                        payload={},
+                    env = await repo.register_environment(
+                        owner_actor_id=OWNER,
+                        name="this-box",
+                        agent_version="0.1.0",
+                        codex_version="0.155.1",
+                        roots=[root],
+                        ceiling={"sandbox": "workspace-write", "network": False},
                     )
-            await pump(runner, 2)
-            turns = []
-            for prompt in spec["prompts"]:
-                turns.append(await say(factory, runner, sandbox, sid, prompt))
-            recorded[name] = {
-                "kind": spec["kind"],
-                "in_project": spec["in_project"],
-                "turns": turns,
-            }
-        made = sorted(
-            str(p.relative_to(directory))
-            for p in directory.rglob("*")  # noqa: ASYNC240
-            if p.is_file()
-        )
-        print(f"--- 项目目录里现在有：{made}")
-        body = anonymous(
-            json.dumps(
-                {
-                    "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "codex": "0.155.1",
-                    "model": "kimi-k3",
-                    "directory": str(directory),
-                    "workspace": root,
-                    "files_after": made,
-                    "conversations": recorded,
-                },
-                ensure_ascii=False,
-                indent=1,
-                default=str,
-            ),
-            root=root,
-        )
-        left = [w for w in (getpass.getuser(), str(Path.home())) if w in body]
-        if left:
-            print(f"--- 磁带里还有这台机器的东西 {left}，没有写文件")
-            return 2
-        if "sk-" in body:
-            # 不该有。有就不写，先看是什么
-            hits = [line for line in body.splitlines() if "sk-" in line]
-            print(f"--- 磁带里有疑似密钥的内容，共 {len(hits)} 行，没有写文件")
-            return 2
-        out.parent.mkdir(parents=True, exist_ok=True)  # noqa: ASYNC240
-        out.write_text(body)  # noqa: ASYNC240
-        print(f"--- 写到 {out}（{len(body)} 字）")
-    finally:
-        for link in runner.links.values():
-            if link.client:
-                await link.client.close()
-        await engine.dispose()
-        with sync.begin() as c:
-            c.execute(text(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'))
-        sync.dispose()
-        for leftover in sorted(directory.rglob("*"), reverse=True):  # noqa: ASYNC240
-            leftover.unlink() if leftover.is_file() else leftover.rmdir()
-        directory.rmdir()  # noqa: ASYNC240
-    ok = all(t["ended"] for c in recorded.values() for t in c["turns"])
-    return 0 if ok else 1
+                    sandbox = await repo.register_sandbox(
+                        owner_actor_id=OWNER,
+                        app_server_url=app_url,
+                        token_ref=f"inline:{token}",
+                        codex_version="0.155.1",
+                    )
+                    await repo.put_prefs(
+                        OWNER, model=None, approval_policy="on-request"
+                    )
+                project = await ProjectService(repo).create(
+                    owner_actor_id=OWNER,
+                    environment_id=env,
+                    workspace_root=root,
+                    path=folder,
+                )
+            for name, spec in CONVERSATIONS.items():
+                print(f"--- {name}", flush=True)
+                async with factory() as s:
+                    repo = WorkbenchRepository(s)
+                    sid = (
+                        await SessionService(repo).start(
+                            owner_actor_id=OWNER,
+                            kind=spec["kind"],
+                            project_id=project["id"] if spec["in_project"] else None,
+                        )
+                    )["session_id"]
+                    async with repo.transaction():
+                        await repo.enqueue_command(
+                            session_id=sid,
+                            sandbox_id=sandbox,
+                            kind="session.start_thread",
+                            payload={},
+                        )
+                await pump(runner, 2)
+                turns = []
+                for prompt in spec["prompts"]:
+                    turns.append(await say(factory, runner, sandbox, sid, prompt))
+                recorded[name] = {
+                    "kind": spec["kind"],
+                    "in_project": spec["in_project"],
+                    "turns": turns,
+                }
+            made = sorted(
+                str(p.relative_to(directory))
+                for p in directory.rglob("*")  # noqa: ASYNC240
+                if p.is_file()
+            )
+            print(f"--- 项目目录里现在有：{made}")
+            body = anonymous(
+                json.dumps(
+                    {
+                        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "codex": "0.155.1",
+                        "model": "kimi-k3",
+                        "directory": str(directory),
+                        "workspace": root,
+                        "files_after": made,
+                        "conversations": recorded,
+                    },
+                    ensure_ascii=False,
+                    indent=1,
+                    default=str,
+                ),
+                root=root,
+            )
+            left = [w for w in (getpass.getuser(), str(Path.home())) if w in body]
+            if left:
+                print(f"--- 磁带里还有这台机器的东西 {left}，没有写文件")
+                return 2
+            if "sk-" in body:
+                # 不该有。有就不写，先看是什么
+                hits = [line for line in body.splitlines() if "sk-" in line]
+                print(f"--- 磁带里有疑似密钥的内容，共 {len(hits)} 行，没有写文件")
+                return 2
+            if not store_recording(out, body, recorded):
+                return 1
+            print(f"--- 写到 {out}（{len(body)} 字）")
+        finally:
+            for link in runner.links.values():
+                if link.client:
+                    await link.client.close()
+        return 0
 
 
 if __name__ == "__main__":

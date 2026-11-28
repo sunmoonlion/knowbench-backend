@@ -121,7 +121,7 @@ async def main() -> int:
         environment_key=env_key,
         poll_seconds=0.2,
     )
-    ts = int(time.time())
+    run_id = uuid.uuid4().hex
     try:
         print("--- 1. 登记环境、沙箱，建会话")
         async with factory() as s:
@@ -170,7 +170,7 @@ async def main() -> int:
         )
 
         print("--- 2. 用户自驾：在白名单目录写文件（命令在本机执行）")
-        fname = f"PROBE_WB_{ts}.txt"
+        fname = f"PROBE_WB_{run_id}.txt"
         async with factory() as s:
             repo = WorkbenchRepository(s)
             await SessionService(repo).record_user_turn_requested(
@@ -206,7 +206,7 @@ async def main() -> int:
         print(
             "--- 3. 用户自驾：写白名单外 → Codex 请求审批 → 工作台开 Interaction → 我们批准 → 本地上限仍然拒绝"
         )
-        outside = f"/home/zym/probe-wb-outside-{ts}.txt"
+        outside = f"/home/zym/probe-wb-outside-{run_id}.txt"
         async with factory() as s:
             repo = WorkbenchRepository(s)
             async with repo.transaction():
@@ -336,7 +336,7 @@ async def main() -> int:
             t_smoke = (
                 await led.handover(
                     HandoverRequest(
-                        idempotency_key=f"smoke-{ts}",
+                        idempotency_key=f"smoke-{run_id}",
                         session_id=sid,
                         profile_id="SMOKE",
                         original_input={
@@ -438,7 +438,7 @@ async def main() -> int:
             t = (
                 await led.handover(
                     HandoverRequest(
-                        idempotency_key=f"chain2-{ts}",
+                        idempotency_key=f"chain2-{run_id}",
                         session_id=sid,
                         profile_id="SMOKE",
                         original_input={"text": "核对"},
@@ -553,7 +553,7 @@ async def main() -> int:
             t_stop = (
                 await led.handover(
                     HandoverRequest(
-                        idempotency_key=f"stop-{ts}",
+                        idempotency_key=f"stop-{run_id}",
                         session_id=sid,
                         profile_id="SMOKE",
                         original_input={
