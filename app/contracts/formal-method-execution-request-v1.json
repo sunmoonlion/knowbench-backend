@@ -166,8 +166,15 @@
           "type": "string"
         },
         "value": {
-          "title": "Value",
-          "type": "number"
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            }
+          ],
+          "title": "Value"
         },
         "absolute_tolerance": {
           "minimum": 0,

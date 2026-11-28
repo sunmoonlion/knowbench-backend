@@ -74,3 +74,9 @@ def test_malformed_rows_remain_for_normal_validation(rows):
     assert judge('{"rows":' + rows + "}", (rule,)).parsed == json.loads(
         '{"rows":' + rows + "}"
     )
+
+
+def test_all_equal_distinguishes_adjacent_long_integer_ids():
+    rule = AcceptanceRule(kind="all_equal", path="rows", field="id", equals=2**53)
+    assert judge(json.dumps({"rows": [{"id": 2**53}]}), (rule,)).ok
+    assert not judge(json.dumps({"rows": [{"id": 2**53 + 1}]}), (rule,)).ok

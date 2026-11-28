@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 from datetime import datetime
+from fractions import Fraction
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
@@ -55,7 +56,9 @@ def fingerprint(value: Any) -> str:
 
 
 def bounded_json(value: Any) -> None:
-    encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
+    encoded = json.dumps(
+        value, ensure_ascii=False, allow_nan=False, separators=(",", ":")
+    )
     if len(encoded.encode()) > 64000:
         raise ValueError("Case JSON exceeds 64000 bytes")
 
@@ -86,7 +89,10 @@ class EqualsAssertion(Strict):
 class ApproxAssertion(Strict):
     kind: Literal["approx"]
     pointer: Pointer
-    value: Annotated[float, Field(strict=True, allow_inf_nan=False)]
+    value: (
+        Annotated[int, Field(strict=True)]
+        | Annotated[float, Field(strict=True, allow_inf_nan=False)]
+    )
     absolute_tolerance: Annotated[float, Field(strict=True, ge=0, allow_inf_nan=False)]
 
 
@@ -209,7 +215,17 @@ class FormalTestSuite(FormalTestSuiteDraft):
             raise ValueError("A suite requires a positive business execution case")
         if self.content_digest() != self.digest:
             raise ValueError("Test suite digest differs from its immutable contents")
-        if len(json.dumps(self.model_dump(mode="json")).encode()) > 1000000:
+        if (
+            len(
+                json.dumps(
+                    self.model_dump(mode="json", exclude={"digest"}),
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ).encode()
+            )
+            > 1000000
+        ):
             raise ValueError("Test suite exceeds 1000000 bytes")
         return self
 
@@ -776,8 +792,9 @@ def check_output_assertions(
             elif isinstance(assertion, ApproxAssertion):
                 passed = (
                     type(actual) in (int, float)
-                    and math.isfinite(actual)
-                    and abs(actual - assertion.value) <= assertion.absolute_tolerance
+                    and (type(actual) is int or math.isfinite(actual))
+                    and abs(Fraction(str(actual)) - Fraction(str(assertion.value)))
+                    <= Fraction(str(assertion.absolute_tolerance))
                 )
             else:
                 passed = isinstance(actual, str) and assertion.value in actual

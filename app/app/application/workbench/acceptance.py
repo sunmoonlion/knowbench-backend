@@ -169,7 +169,7 @@ def _same(left: Any, right: Any) -> bool:
     if isinstance(left, bool) or isinstance(right, bool):
         return isinstance(left, bool) and isinstance(right, bool) and left == right
     if isinstance(left, int | float) and isinstance(right, int | float):
-        return float(left) == float(right)
+        return left == right
     return type(left) is type(right) and left == right
 
 
