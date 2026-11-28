@@ -54,12 +54,18 @@ def _body(
 
 
 def _response(
-    request: Request, *, status: int, code: str, message: str
+    request: Request,
+    *,
+    status: int,
+    code: str,
+    message: str,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     return JSONResponse(
         status_code=status,
         content=_body(request, status=status, code=code, message=message),
         media_type="application/problem+json",
+        headers=headers,
     )
 
 
@@ -112,6 +118,11 @@ def register_exception_handlers(app: FastAPI) -> None:
         return _response(
             request,
             status=error.status_code,
+            headers={
+                k: v
+                for k, v in (error.headers or {}).items()
+                if k.lower() not in {"content-type", "content-length"}
+            },
             code="not_found" if error.status_code == 404 else "request_invalid",
             message=(
                 "Resource not found" if error.status_code == 404 else "Request rejected"

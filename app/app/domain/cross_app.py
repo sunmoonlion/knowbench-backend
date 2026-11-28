@@ -125,7 +125,7 @@ def parse_sources(
         rest = template.replace(REF_SLOT, "", 1)
         if "{" in rest or "}" in rest:
             raise ValueError(f"{field} return_url of {name} holds more than {{ref}}")
-        _absolute_url(template.replace(REF_SLOT, "x"), field=field)
+        _absolute_url(template.replace(REF_SLOT, "%3A" * 128), field=field)
         # {ref} 只能出现在地址的路径或参数里，不能出现在主机名里
         if REF_SLOT in (urlsplit(template).netloc or ""):
             raise ValueError(f"{field} return_url of {name} is invalid")

@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 from joserfc import jwt
@@ -16,6 +16,16 @@ from app.application.errors.exceptions import (
     UnauthorizedError,
 )
 from core.config import BrowserSurfaceProfile, Settings
+
+
+def _navigation_url(endpoint: str, parameters: dict[str, str]) -> str:
+    parts = urlsplit(endpoint)
+    existing = [
+        (key, value)
+        for key, value in parse_qsl(parts.query, keep_blank_values=True)
+        if key not in parameters
+    ]
+    return urlunsplit(parts._replace(query=urlencode([*existing, *parameters.items()])))
 
 
 @dataclass(frozen=True)
@@ -202,20 +212,18 @@ class OidcProviderClient:
         mode: str = "login",
     ) -> str:
         metadata = await self.get_metadata()
-        params = urlencode(
-            {
-                "response_type": "code",
-                "client_id": self._profile.client_id,
-                "redirect_uri": self._profile.redirect_uri,
-                "scope": " ".join(
-                    ("openid", "profile", "email", *self._profile.required_scopes)
-                ),
-                "state": state,
-                "nonce": nonce,
-                "code_challenge": code_challenge,
-                "code_challenge_method": "S256",
-            }
-        )
+        params = {
+            "response_type": "code",
+            "client_id": self._profile.client_id,
+            "redirect_uri": self._profile.redirect_uri,
+            "scope": " ".join(
+                ("openid", "profile", "email", *self._profile.required_scopes)
+            ),
+            "state": state,
+            "nonce": nonce,
+            "code_challenge": code_challenge,
+            "code_challenge_method": "S256",
+        }
         endpoint = metadata.authorization_endpoint
         if mode == "signup":
             if self._profile.surface != "web":
@@ -227,7 +235,7 @@ class OidcProviderClient:
                 f"{self._settings.casdoor_endpoint.rstrip('/')}/signup/oauth/authorize",
                 "signup_endpoint",
             )
-        return f"{endpoint}?{params}"
+        return _navigation_url(endpoint, params)
 
     async def exchange_authorization_code(
         self,
@@ -269,6 +277,8 @@ class OidcProviderClient:
                 )
         except httpx.HTTPError as exc:
             raise ServiceUnavailableError("OIDC token endpoint unavailable") from exc
+        if response.status_code == 429 or response.status_code >= 500:
+            raise ServiceUnavailableError("OIDC token endpoint unavailable")
         if response.status_code != 200:
             raise UnauthorizedError(
                 "The identity token is invalid", code="token_invalid"
@@ -352,14 +362,12 @@ class OidcProviderClient:
         metadata = await self.get_metadata()
         if metadata.end_session_endpoint is None:
             return None
-        params = urlencode(
-            {
-                "client_id": self._profile.client_id,
-                "post_logout_redirect_uri": post_logout_redirect_uri,
-                "state": state,
-            }
-        )
-        return f"{metadata.end_session_endpoint}?{params}"
+        params = {
+            "client_id": self._profile.client_id,
+            "post_logout_redirect_uri": post_logout_redirect_uri,
+            "state": state,
+        }
+        return _navigation_url(metadata.end_session_endpoint, params)
 
     async def exchange_client_credentials(
         self,
