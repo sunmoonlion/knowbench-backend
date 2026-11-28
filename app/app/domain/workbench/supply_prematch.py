@@ -60,13 +60,27 @@ class PrematchKey(BaseModel):
     source_query: dict[str, object] | None = None
 
 
+class FactKey(BaseModel):
+    """要哪些数的一条（knowbase 的 FactKey，SDD 0051）：只说要什么，渠道与取法由 knowfeed 定。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["facts"]
+    subject: str = Field(min_length=1, max_length=64)
+    period_end: date
+    codes: list[str] = Field(min_length=1, max_length=30)
+    consolidation: Literal["consolidated", "parent"] = "consolidated"
+    duration: Literal["year", "half", "quarter", "ytd", "instant"] = "year"
+    disclosure: Literal["first", "latest"] = "first"
+
+
 class PrematchItem(BaseModel):
     """问的一项。请专家只问描述，不问网址（给网址的需求不从这里来）。"""
 
     model_config = ConfigDict(extra="forbid")
 
     ref: str = Field(min_length=1, max_length=64)
-    key: PrematchKey | None = None
+    key: PrematchKey | FactKey | None = None
     url: str | None = Field(default=None, max_length=2000)
     readings: list[Reading] = Field(default_factory=list, max_length=4)
 
@@ -129,7 +143,9 @@ def request_items(
         try:
             item = PrematchItem(
                 ref=str(entry["ref"]),
-                key=PrematchKey.model_validate(given),
+                key=FactKey.model_validate(key)
+                if key.get("kind") == "facts"
+                else PrematchKey.model_validate(given),
                 readings=[getattr(need, "reading", "table")]
                 if need is not None
                 else [],

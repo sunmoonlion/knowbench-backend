@@ -256,3 +256,20 @@ async def test_an_answer_off_contract_or_a_failure_is_unavailable() -> None:
     with pytest.raises(ServiceUnavailableError) as err:
         await KnowfeedSupply({}).prematch([], CONDITIONS)
     assert err.value.code == "knowfeed_unconfigured"
+
+
+def test_fact_request_keeps_its_original_codes_and_basis():
+    key = {
+        "kind": "facts",
+        "subject": "000858.SZ",
+        "period_end": "2025-12-31",
+        "codes": ["revenue"],
+        "consolidation": "parent",
+        "duration": "year",
+        "disclosure": "latest",
+    }
+    items = request_items(
+        [{"ref": "c1", "need_key": "facts", "status": "to_confirm", "key": key}], []
+    )
+    assert len(items) == 1 and items[0]["key"] == key
+    assert PrematchRequest.model_validate({"items": items}).items[0].ref == "c1"
