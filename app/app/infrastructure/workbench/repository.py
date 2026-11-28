@@ -1803,7 +1803,7 @@ class WorkbenchRepository(
                     f"cast(:{c} as jsonb)" if c in INCUBATION_JSON else f":{c}"
                     for c in cols
                 )
-                + ")"
+                + ") on conflict (incubation_id) do nothing"
             ),
             {c: (_j(row[c]) if c in INCUBATION_JSON else row[c]) for c in cols},
         )
@@ -1854,7 +1854,7 @@ class WorkbenchRepository(
         await self.session.execute(
             text(
                 f"update workbench_incubations set {sets}"
-                " where incubation_id = :incubation_id"
+                " where incubation_id = :incubation_id and status in ('queued','running')"
             ),
             {
                 **{

@@ -120,28 +120,33 @@ class IncubationService:
     async def accept(
         self, request: IncubationRequest, *, caller: str
     ) -> dict[str, Any]:
-        await authors_computer(self.repo, request)
-        prior = await self.repo.get_incubation(request.incubation_id)
-        if prior is not None:
-            if prior["digest"] != request.digest():
+        async with self.repo.transaction():
+            prior = await self.repo.get_incubation(request.incubation_id)
+            if prior is None:
+                await authors_computer(self.repo, request)
+                await self.repo.insert_incubation(
+                    {
+                        "incubation_id": request.incubation_id,
+                        "caller": caller,
+                        "owner_subject": request.owner_subject,
+                        "digest": request.digest(),
+                        "request": request.model_dump(mode="json", by_alias=True),
+                        "budget_limit": Decimal(request.budget.limit),
+                        "timeout_seconds": request.timeout_seconds,
+                    }
+                )
+                prior = await self.repo.get_incubation(request.incubation_id)
+            assert prior is not None
+            if (
+                prior["digest"] != request.digest()
+                or prior["caller"] != caller
+                or prior["owner_subject"] != request.owner_subject
+            ):
                 raise IncubationConflict(
                     "this incubation id was submitted with other content",
                     incubation_id=request.incubation_id,
                 )
-            return await self.status(request.incubation_id)
-        async with self.repo.transaction():
-            await self.repo.insert_incubation(
-                {
-                    "incubation_id": request.incubation_id,
-                    "caller": caller,
-                    "owner_subject": request.owner_subject,
-                    "digest": request.digest(),
-                    "request": request.model_dump(mode="json", by_alias=True),
-                    "budget_limit": Decimal(request.budget.limit),
-                    "timeout_seconds": request.timeout_seconds,
-                }
-            )
-        return await self.status(request.incubation_id)
+            return await view(self.repo, prior)
 
     async def status(self, incubation_id: str) -> dict[str, Any]:
         row = await self.repo.get_incubation(incubation_id)
@@ -155,7 +160,7 @@ class IncubationService:
             row = await self.repo.get_incubation(incubation_id, for_update=True)
             if row is None:
                 raise NotFound("no such incubation", incubation_id=incubation_id)
-            if row["status"] in FINAL:
+            if row["status"] in FINAL and row["status"] != "cancelled":
                 return await view(self.repo, row)
             spent = Decimal(str(row["spent"]))
             task = (
@@ -172,10 +177,12 @@ class IncubationService:
                 waiting_for=None,
                 spent=spent,
             )
-        if task is not None and TaskState(task["state"]) not in TASK_TERMINAL:
-            await cancel_task(
-                self.repo, str(task["id"]), owner_actor_id=str(task["owner_actor_id"])
-            )
+            if task is not None and TaskState(task["state"]) not in TASK_TERMINAL:
+                await cancel_task(
+                    self.repo,
+                    str(task["id"]),
+                    owner_actor_id=str(task["owner_actor_id"]),
+                )
         log.info("incubation cancelled id=%s", incubation_id)
         found = await self.repo.get_incubation(incubation_id)
         assert found is not None
@@ -332,80 +339,79 @@ class IncubationConductor:
                     error="the computer could not make the folder",
                 )
             return
-        project = await repo.find_project(
-            owner_actor_id=actor,
-            environment_id=str(env["id"]),
-            workspace_root=root,
-            path=FOLDER,
-        )
-        if project is None:
+        try:
             async with repo.transaction():
-                project_id = await repo.create_project(
+                fresh = await repo.get_incubation(row["incubation_id"], for_update=True)
+                if fresh is None or fresh["status"] != "queued":
+                    return
+                project = await repo.find_project(
                     owner_actor_id=actor,
                     environment_id=str(env["id"]),
                     workspace_root=root,
                     path=FOLDER,
-                    title=FOLDER,
                 )
-        else:
-            project_id = str(project["id"])
-        # 取消可能刚到：开委托前再看一眼，已经不是排队中就不开
-        fresh = await repo.get_incubation(row["incubation_id"])
-        if fresh is None or fresh["status"] != "queued":
-            return
-        try:
-            started = await SessionService(repo).start(
-                owner_actor_id=actor,
-                kind="expert",
-                project_id=project_id,
-                title=label(request),
-            )
-            made = await Ledger(repo).handover(
-                HandoverRequest(
-                    idempotency_key=task_key(request.incubation_id),
-                    session_id=started["session_id"],
-                    profile_id=INCUBATE.profile_id,
-                    profile_version="2" if request.selection_context else None,
-                    original_input={
-                        "text": label(request),
-                        **(
-                            {"planner": htn.PROTOCOL}
-                            if request.selection_context
-                            else {}
-                        ),
-                        # 契约列死的材料：模型只看这些（0029 第 6.4 节）
-                        "incubation": material(request),
-                    },
-                    budget_limit=Decimal(request.budget.limit),
-                    client_context={
-                        "entry": "knowlab-incubation",
-                        "incubation_id": request.incubation_id,
-                    },
-                ),
-                owner_actor_id=actor,
-            )
+                if project is None:
+                    async with repo.transaction():
+                        project_id = await repo.create_project(
+                            owner_actor_id=actor,
+                            environment_id=str(env["id"]),
+                            workspace_root=root,
+                            path=FOLDER,
+                            title=FOLDER,
+                        )
+                else:
+                    project_id = str(project["id"])
+                started = await SessionService(repo).start(
+                    owner_actor_id=actor,
+                    kind="expert",
+                    project_id=project_id,
+                    title=label(request),
+                )
+                made = await Ledger(repo).handover(
+                    HandoverRequest(
+                        idempotency_key=task_key(request.incubation_id),
+                        session_id=started["session_id"],
+                        profile_id=INCUBATE.profile_id,
+                        profile_version="2" if request.selection_context else None,
+                        original_input={
+                            "text": label(request),
+                            **(
+                                {"planner": htn.PROTOCOL}
+                                if request.selection_context
+                                else {}
+                            ),
+                            # 契约列死的材料：模型只看这些（0029 第 6.4 节）
+                            "incubation": material(request),
+                        },
+                        budget_limit=Decimal(request.budget.limit),
+                        client_context={
+                            "entry": "knowlab-incubation",
+                            "incubation_id": request.incubation_id,
+                        },
+                    ),
+                    owner_actor_id=actor,
+                )
+                session = await repo.get_session(started["session_id"])
+                async with repo.transaction():
+                    if not made.get("queued_behind"):
+                        await repo.enqueue_command(
+                            session_id=started["session_id"],
+                            sandbox_id=str(session["sandbox_id"]),
+                            kind="task.drive",
+                            payload={"task_id": made["task_id"]},
+                        )
+                    await repo.update_incubation(
+                        row["incubation_id"],
+                        status="running",
+                        started_at=now,
+                        waiting_for=None,
+                        project_id=project_id,
+                        session_id=started["session_id"],
+                        task_id=made["task_id"],
+                    )
         except WorkbenchError as exc:
-            # 没有沙箱（没填模型 key）这类：说清缺什么，knowlab 在 web端提示作者
             await self._finish(repo, row, status="failed", error=exc.message)
             return
-        session = await repo.get_session(started["session_id"])
-        async with repo.transaction():
-            if not made.get("queued_behind"):
-                await repo.enqueue_command(
-                    session_id=started["session_id"],
-                    sandbox_id=str(session["sandbox_id"]),
-                    kind="task.drive",
-                    payload={"task_id": made["task_id"]},
-                )
-            await repo.update_incubation(
-                row["incubation_id"],
-                status="running",
-                started_at=now,
-                waiting_for=None,
-                project_id=project_id,
-                session_id=started["session_id"],
-                task_id=made["task_id"],
-            )
         log.info(
             "incubation started id=%s task=%s", row["incubation_id"], made["task_id"]
         )
@@ -464,7 +470,8 @@ class IncubationConductor:
             await self._finish(repo, row, status="cancelled", spent=spent)
             return
         if state != TaskState.SUCCEEDED:
-            reason = task.get("reason") or {}
+            event = await repo.latest_task_payload(str(task["id"]), "task/state") or {}
+            reason = task.get("rejection") or event.get("reason") or {}
             why = next(
                 (str(reason[k]) for k in ("error", "message", "code") if reason.get(k)),
                 "no reason recorded",
@@ -478,9 +485,31 @@ class IncubationConductor:
             )
             return
         step = INCUBATE.workflow[0]
-        found = await repo.get_artifact(
-            task_id=str(task["id"]), name=step.output_artifact
-        )
+        found = None
+        for attempt in reversed(await repo.list_attempts(str(task["id"]))):
+            if attempt["status"] != "COMPLETED":
+                continue
+            ref = next(
+                (
+                    ref
+                    for ref in attempt["output_artifacts"]
+                    if ref["name"] == step.output_artifact
+                ),
+                None,
+            )
+            if ref is not None:
+                artifact = await repo.get_artifact(
+                    task_id=str(task["id"]),
+                    name=step.output_artifact,
+                    version=ref["version"],
+                )
+                if (
+                    artifact
+                    and str(artifact["attempt_id"]) == str(attempt["id"])
+                    and str(artifact["id"]) == str(ref["id"])
+                ):
+                    found = artifact
+                break
         try:
             content = (found or {}).get("content")
             handback = read_handback(content, row["request"].get("selection_context"))
