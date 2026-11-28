@@ -106,7 +106,7 @@ def plan(
     gone = set(dropped or ())
     by_key = {n.key: n for n in needs}
     out = Plan()
-    seen: set[tuple[str, int]] = set()
+    seen: set[tuple[str, int, str | None, int | None]] = set()
     known_refs = {item_ref(i) for i in resolution.get("items") or []}
     for ref in list(picks) + list(gone):
         if ref not in known_refs:
@@ -131,7 +131,12 @@ def plan(
         if status == "resolved" or (status == "ambiguous" and chosen):
             for candidate in chosen:
                 pin = _pin(need.key, candidate)
-                key = (pin["item_id"], pin["version_no"])
+                key = (
+                    pin["item_id"],
+                    pin["version_no"],
+                    pin["rendition_kind"],
+                    pin["rendition_no"],
+                )
                 if key not in seen:
                     seen.add(key)
                     out.pins.append(pin)
@@ -166,7 +171,12 @@ def plan(
             out.incomplete.append(f"{label}：{reason}")
             out.gaps.append(gap(f"{label}：{reason}", need.required))
     for binding in bindings:
-        key = (binding.material_id, binding.version_no)
+        key = (
+            binding.material_id,
+            binding.version_no,
+            binding.rendition_kind,
+            binding.rendition_no,
+        )
         if key in seen:
             continue
         seen.add(key)

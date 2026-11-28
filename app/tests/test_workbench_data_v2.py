@@ -187,3 +187,46 @@ def test_legacy_waiting_is_not_silently_accepted_as_incomplete(supply_enabled):
     # A tracked supply operation has ended: ask about the missing result.
     ended = plan({"items": [item]}, NEEDS, after_supply=True)
     assert ended.missing and ended.missing_gaps[0]["required"]
+
+
+@pytest.mark.parametrize("readings", [("pages", "table"), ("table", "pages")])
+def test_one_document_preserves_each_requested_rendition_in_the_grant(readings):
+    from app.domain.workbench.data_plan import plan
+    from app.domain.workbench.data_request import DataRequest
+
+    needs = [
+        DataRequest.model_validate(
+            {
+                "key": r,
+                "name": r,
+                "reading": r,
+                "period": {"kind": "none"},
+                "doc_type": "other",
+                "formats": ["pdf"],
+            }
+        )
+        for r in readings
+    ]
+    items = [
+        {
+            "need_key": r,
+            "status": "resolved",
+            "key": {"doc_type": "other"},
+            "chosen": [
+                {
+                    "material_id": "m",
+                    "version_no": 1,
+                    "sha256": "a" * 64,
+                    "rendition_kind": r,
+                    "rendition_no": 1,
+                    "rendition_sha256": ("b" if r == "pages" else "c") * 64,
+                }
+            ],
+        }
+        for r in readings
+    ]
+    result = plan({"items": [*items, items[0]]}, needs)
+    assert [
+        (v["rendition_kind"], v["rendition_sha256"]) for v in result.grant_items
+    ] == [(r, ("b" if r == "pages" else "c") * 64) for r in readings]
+    assert not result.missing and not result.problems
