@@ -440,3 +440,33 @@ async def test_self_review_samples_for_registered_versions_outlive_temporary_cas
         future = datetime.now(UTC) + timedelta(days=31)
         await KnowbotTestConductor(workbench_stores(db), now=lambda: future).cleanup()
         assert await service.self_review_outputs("author", frozen.reference) == before
+
+
+@pytest.mark.parametrize("action", ["catalog", "request", "approve"])
+async def test_remote_qualification_leaves_session_writable(db, monkeypatch, action):
+    factory, _, sid, body, _, _ = await setup_registered(db)
+    async with db() as session:
+        caps = factory(WorkbenchRepository(session))
+        calls = FormalMethodCalls(caps)
+        if action == "approve":
+            staged = await calls.request(OWNER, sid, body)
+            child = await caps.repo.capability_call(OWNER, staged["call"]["id"])
+        qualified = caps.eligible_formal_refs
+
+        async def checked(owner, references):
+            async with db() as writer, writer.begin():
+                await writer.execute(
+                    text(
+                        "SELECT id FROM workbench_sessions WHERE id=:id FOR UPDATE NOWAIT"
+                    ),
+                    {"id": sid},
+                )
+            return await qualified(owner, references)
+
+        monkeypatch.setattr(caps, "eligible_formal_refs", checked)
+        if action == "catalog":
+            assert (await calls.catalog(OWNER, sid))["items"]
+        elif action == "request":
+            await calls.request(OWNER, sid, body)
+        else:
+            await calls.decide(OWNER, child["id"], approval(child))

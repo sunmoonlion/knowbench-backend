@@ -467,11 +467,13 @@ class CapabilityRepositoryMixin:
                 UPDATE workbench_calls SET receipt_problem=:problem,
                     receipt_retry_at=clock_timestamp() + make_interval(secs => :delay)
                 WHERE id=:id AND status=:state AND updated_at=:observed
+                AND receipt_retry_at IS NOT DISTINCT FROM CAST(:prior AS timestamptz)
             """),
                 {
                     "id": call["id"],
                     "state": call["status"],
                     "observed": call["updated_at"],
+                    "prior": call.get("receipt_retry_at"),
                     "problem": problem,
                     "delay": delay,
                 },

@@ -208,3 +208,78 @@ async def test_request_owns_the_delivery_on_every_route():
         assert export_outputs(
             plan, {"prepare": {"receipt": "第17行"}, "dispatch": {"receipt": "5元"}}
         ) == {"evidence": "第17行", "difference": "5元"}
+
+
+async def test_shared_caller_slot_allows_distinct_display_descriptions():
+    from test_hierarchical_planning import decision, inspect, setup
+
+    from app.domain.workbench.hierarchical_planning import HierarchicalPlanner
+
+    task, definitions = setup()
+    ctx = task["original_input"]["input"]
+    goal = "用同一份明细分别核两遍，再合并核验结果。"
+    ctx["text"] = goal
+    for entry in ctx["catalog"]["entries"]:
+        alias = entry["alias"]
+        old = MethodRef.model_validate(entry["reference"])
+        definition = definitions.pop(old)
+        doc = definition.document()
+        port = doc["procedure"]["inputs"]["value"]
+        if alias == "a":
+            port = {**port, "description": "另一位作者对同一输入的说明"}
+        doc["procedure"]["inputs"] = (
+            {"value": port} if alias != "b" else {"left": port, "right": port}
+        )
+        definition = FormalMethodDefinition.model_validate(doc)
+        ref = old.model_copy(update={"digest": definition.digest()})
+        definitions[ref] = definition
+        entry.update(
+            interfaces=definition.interfaces(), reference=ref.model_dump(mode="json")
+        )
+    planner = HierarchicalPlanner(task)
+    inspect(planner, "first", "a", "b")
+    root = dict(
+        method="b",
+        id="join",
+        task="合并",
+        inputs={
+            name: dict(source="step", step=name, output="receipt")
+            for name in ("left", "right")
+        },
+    )
+    assert (
+        planner.advance(
+            decision(
+                root,
+                "parallel_join",
+                children={"left": "核对明细", "right": "复算明细"},
+            )
+        )
+        is None
+    )
+
+    def child(alias):
+        return decision(
+            dict(
+                method=alias,
+                id="review",
+                task="核验",
+                inputs={"value": dict(source="caller", name="rows")},
+            ),
+            shared_inputs=["value"],
+        )
+
+    assert planner.advance(child("first")) is None
+    sketch = planner.advance(child("a"))
+    assert sketch["status"] == "ready"
+    choice = read_choice(task, sketch, check_graph=True)
+
+    async def lookup(owner, refs):
+        return {ref: definitions[ref] for ref in refs}
+
+    svc = SimpleNamespace(formal_registry=SimpleNamespace(planning_definitions=lookup))
+    _, root = await compile_choice(
+        svc, "fixture", str(uuid4()), goal, choice, ctx["runtime"], ["join"]
+    )
+    exposed = root.interfaces()["inputs"]
+    assert len(exposed) == 1 and len(next(iter(exposed.values()))["used_by"]) == 2

@@ -390,3 +390,56 @@ async def test_successful_script_download_uses_owners_call_and_requires_completi
         call_id, 0, principal(OWNER), SimpleNamespace(repo=repo)
     )
     assert refused.status_code == 404
+
+
+async def test_twenty_unavailable_script_receipts_do_not_starve_the_next_one(
+    db, monkeypatch
+):
+    from uuid import uuid4
+
+    sid, executor, _, key, token = await setup(db)
+    async with db() as session:
+        svc = service(WorkbenchRepository(session))
+        svc.script_executor = executor
+        call, _ = await approve(svc, sid, key, token)
+        # Clone the accepted dispatch for separate operations in this disposable database.
+        async with svc.repo.transaction():
+            for n in range(20):
+                await session.execute(
+                    text("""INSERT INTO workbench_calls SELECT
+                    (jsonb_populate_record(NULL::workbench_calls,to_jsonb(c) || jsonb_build_object(
+                    'id',CAST(:new_id AS text),'call_key',CAST(:key AS text),'digest',md5(CAST(:key AS text)) || md5(CAST(:new_id AS text)),
+                    'updated_at',c.updated_at-interval '1 minute'))).* FROM workbench_calls c WHERE c.id=:id"""),
+                    {"new_id": str(uuid4()), "key": f"older-{n}", "id": call["id"]},
+                )
+
+        async def status(owner, run):
+            if str(run) != str(call["id"]):
+                raise RuntimeError("provider unavailable")
+            return {
+                "state": "finished",
+                "result": {
+                    "exit_code": 0,
+                    "stdout": "42",
+                    "stderr": "",
+                    "timed_out": False,
+                    "output_truncated": False,
+                    "artifacts": [],
+                },
+            }
+
+        monkeypatch.setattr(executor, "status", status)
+        await svc.reconcile_scripts()
+        assert (await svc.repo.capability_call(OWNER, call["id"]))[
+            "status"
+        ] == "dispatching"
+        await svc.reconcile_scripts()
+        assert (await svc.repo.capability_call(OWNER, call["id"]))[
+            "status"
+        ] == "succeeded"
+        pending = await session.scalar(
+            text(
+                "SELECT count(*) FROM workbench_calls WHERE receipt_retry_at IS NOT NULL AND receipt_problem LIKE 'collector_unavailable:%'"
+            )
+        )
+        assert pending == 20

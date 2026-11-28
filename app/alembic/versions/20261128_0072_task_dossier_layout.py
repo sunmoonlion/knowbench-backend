@@ -16,4 +16,14 @@ def upgrade():
 
 
 def downgrade():
+    if (
+        op.get_bind()
+        .exec_driver_sql(
+            "SELECT 1 FROM workbench_tasks WHERE dossier_version=2 LIMIT 1"
+        )
+        .first()
+    ):
+        raise RuntimeError(
+            "Preserve task-specific dossier paths before downgrading migration 0072"
+        )
     op.execute("ALTER TABLE workbench_tasks DROP COLUMN dossier_version")

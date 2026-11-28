@@ -216,3 +216,29 @@ async def test_unknown_receipts(db):
             r["state"] == "UNKNOWN" and r["failure"] == refs["formal_result"]["detail"]
             for r in receipts
         )
+
+
+async def test_four_leaf_tree(db, monkeypatch):
+    from collections import Counter
+    from inspect import currentframe
+
+    from app.application.workbench import formal_recursive_runtime as runtime
+
+    calls = Counter()
+    expand = runtime.expanded_plan
+
+    def counted(snapshot):
+        calls[currentframe().f_back.f_code.co_name] += 1
+        return expand(snapshot)
+
+    ctx = await setup_recursive(db)
+    monkeypatch.setattr(runtime, "expanded_plan", counted)
+    pending = await advance(db, ctx)
+    for _ in range(4):
+        await approve(db, ctx.request, ctx.factory, pending)
+        pending = await advance(db, ctx)
+    assert pending["status"] == "passed"
+    assert len(ctx.remote.calls) == 4
+    print("Full plan expansions by caller:", dict(calls))
+    assert calls["_node"] == 0
+    assert 0 < sum(calls.values()) < 100

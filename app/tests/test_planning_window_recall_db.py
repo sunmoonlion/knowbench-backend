@@ -314,12 +314,15 @@ async def test_late_tool_in_ten_thousand_and_unauthorized_exact_title(db):
                 and first["next"] == 30
                 and first["items"][0]["method_id"].int == count
             )
+            before = market.windows
             last = await browse(
                 registry,
                 "author",
                 scene,
                 query.model_copy(update={"category": "data.check", "offset": 30}),
             )
+            if scene == "planning":
+                assert market.windows == before
             assert len(last["items"]) == 1 and last["next"] is None
             assert len({r["method_id"] for r in first["items"] + last["items"]}) == 31
         # Equal lexical scores alternate two class hits and one cross-class candidate.

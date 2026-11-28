@@ -1808,3 +1808,18 @@ async def test_supply_waiter_needs_an_unambiguous_receipt(
     )
     assert r["detail"]["requests"][0]["status"] == "missing"
     assert not any(call[0] == "grant_by_confirmation" for call in kb.calls)
+
+
+def test_per_need_status_tracks_key_across_expanded_and_missing_rows():
+    from app.application.workbench.expert_data import _need_status
+
+    items = [
+        {"need_key": "second", "status": "resolved"},
+        {"need_key": "first", "status": "resolved"},
+        {"need_key": "first", "status": "ambiguous"},
+    ]
+    assert [_need_status(key, items) for key in ["first", "absent", "second"]] == [
+        "mixed",
+        "missing",
+        "resolved",
+    ]

@@ -114,6 +114,7 @@ def test_one_linear_canonical_migration_chain() -> None:
         "20261128_0070_sandbox_revision_and_permission_lookup.py",
         "20261128_0071_script_receipt_retries.py",
         "20261128_0072_task_dossier_layout.py",
+        "20261128_0073_directory_pages.py",
     ]
     contents = [path.read_text() for path in revisions]
     assert sum("down_revision = None" in content for content in contents) == 1

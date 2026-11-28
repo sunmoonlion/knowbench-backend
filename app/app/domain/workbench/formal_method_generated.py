@@ -1247,7 +1247,11 @@ class FormalMethodDefinition(Strict):
                         "uniqueItems": True,
                         "items": {"type": "string", "minLength": 1},
                     }
-                if key in inputs and inputs[key]["slot"] != slot:
+                if key in inputs and any(
+                    inputs[key]["slot"][field] != value
+                    for field, value in slot.items()
+                    if field != "description"
+                ):
                     raise ValueError(
                         "External aliases cannot merge different meanings or shapes"
                     )

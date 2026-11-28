@@ -104,3 +104,53 @@ async def test_a_changed_receipt_no_longer_reads(db):
     finally:
         await close(runner)
         await fake.close()
+
+
+async def test_queue_and_fixed_receipt_rollback_together(db, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.application.workbench import task_runtime
+    from app.domain.workbench.states import TaskState
+    from app.infrastructure.workbench.repository import SqlWorkbenchStores
+
+    fake, runner, tid = await _seeded(db)
+    try:
+        runtime = task_runtime.TaskRuntime(
+            SqlWorkbenchStores(db),
+            None,
+            fixed_as_plan_owners=frozenset({"fixed-owner"}),
+        )
+        monkeypatch.setattr(
+            WorkbenchRepository,
+            "subject_of_actor",
+            AsyncMock(return_value="fixed-owner"),
+        )
+
+        async def interrupted(repo, tid, **kwargs):
+            assert (await repo.get_task(tid))["state"] == TaskState.QUEUED
+            raise RuntimeError("interrupted before receipt")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(task_runtime, "accept_fixed_plan", interrupted)
+            with pytest.raises(RuntimeError, match="interrupted before receipt"):
+                await runtime.drive(tid)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            task = await repo.get_task(tid)
+            assert (
+                task["state"] == TaskState.VALIDATING
+                and task["accepted_plan_version"] is None
+            )
+        monkeypatch.setattr(
+            runtime, "_step_once", AsyncMock(return_value=TaskState.WAITING)
+        )
+        await runtime.drive(tid)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            task = await repo.get_task(tid)
+            assert task["state"] == TaskState.QUEUED and (
+                await read_plan(repo, task)
+            ).proposal == fixed_plan(SMOKE)
+    finally:
+        await close(runner)
+        await fake.close()

@@ -690,6 +690,8 @@
     "title": "Validated private notice",
     "status": "awaiting_approval",
     "call": {
+      "receipt_retry_at": null,
+      "receipt_problem": null,
       "id": "77777777-7777-4777-8777-777777777777",
       "owner_actor_id": "55555555-5555-4555-8555-555555555555",
       "session_id": "22222222-2222-4222-8222-222222222222",
@@ -748,6 +750,8 @@
         "title": "Validated private notice",
         "status": "awaiting_approval",
         "call": {
+          "receipt_retry_at": null,
+          "receipt_problem": null,
           "id": "77777777-7777-4777-8777-777777777777",
           "owner_actor_id": "55555555-5555-4555-8555-555555555555",
           "session_id": "22222222-2222-4222-8222-222222222222",
@@ -804,6 +808,8 @@
         "title": "Validated private notice",
         "status": "awaiting_approval",
         "call": {
+          "receipt_retry_at": null,
+          "receipt_problem": null,
           "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
           "owner_actor_id": "55555555-5555-4555-8555-555555555555",
           "session_id": "22222222-2222-4222-8222-222222222222",
@@ -1209,6 +1215,8 @@
     "title": "Validated private notice",
     "status": "awaiting_approval",
     "call": {
+      "receipt_retry_at": null,
+      "receipt_problem": null,
       "id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
       "owner_actor_id": "55555555-5555-4555-8555-555555555555",
       "session_id": "22222222-2222-4222-8222-222222222222",

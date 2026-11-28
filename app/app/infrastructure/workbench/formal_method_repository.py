@@ -208,6 +208,49 @@ class FormalMethodRepositoryMixin:
             .one()
         )
 
+    async def directory_page(self, owner, kind, query_digest, offset, limit):
+        row = (
+            (
+                await self.session.execute(
+                    text("""
+            SELECT counts, jsonb_array_length(entries) AS total,
+                ARRAY(SELECT entries->index FROM generate_series(
+                    CAST(:offset AS integer), least(CAST(:offset AS bigint) + :limit - 1, jsonb_array_length(entries)-1)::int
+                ) AS index) AS items
+            FROM workbench_directory_pages WHERE owner_id=:owner AND kind=:kind
+                AND query_digest=:query AND expires_at > now()"""),
+                    dict(
+                        owner=owner,
+                        kind=kind,
+                        query=query_digest,
+                        offset=offset,
+                        limit=limit,
+                    ),
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        return dict(row) if row else None
+
+    async def save_directory_pages(self, owner, kind, query_digest, entries, counts):
+        await self.session.execute(
+            text("DELETE FROM workbench_directory_pages WHERE expires_at <= now()")
+        )
+        await self.session.execute(
+            text("""INSERT INTO workbench_directory_pages
+            VALUES (:owner,:kind,:query,CAST(:entries AS jsonb),CAST(:counts AS jsonb),now()+interval '5 minutes')
+            ON CONFLICT(owner_id,kind) DO UPDATE SET query_digest=EXCLUDED.query_digest, entries=EXCLUDED.entries,
+                counts=EXCLUDED.counts, expires_at=EXCLUDED.expires_at"""),
+            dict(
+                owner=owner,
+                kind=kind,
+                query=query_digest,
+                entries=json.dumps(entries),
+                counts=json.dumps(counts),
+            ),
+        )
+
     async def registry_method_candidates(
         self,
         owner,

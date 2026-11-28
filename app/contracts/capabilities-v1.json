@@ -4323,6 +4323,31 @@
     },
     "additionalProperties": false,
     "properties": {
+      "receipt_retry_at": {
+        "anyOf": [
+          {
+            "format": "date-time",
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Receipt Retry At"
+      },
+      "receipt_problem": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null,
+        "title": "Receipt Problem"
+      },
       "id": {
         "format": "uuid",
         "title": "Id",
@@ -4512,6 +4537,31 @@
       "Call": {
         "additionalProperties": false,
         "properties": {
+          "receipt_retry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Retry At"
+          },
+          "receipt_problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Problem"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -6532,6 +6582,31 @@
       "Call": {
         "additionalProperties": false,
         "properties": {
+          "receipt_retry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Retry At"
+          },
+          "receipt_problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Problem"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
@@ -8125,6 +8200,31 @@
       "Call": {
         "additionalProperties": false,
         "properties": {
+          "receipt_retry_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Retry At"
+          },
+          "receipt_problem": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Receipt Problem"
+          },
           "id": {
             "format": "uuid",
             "title": "Id",
