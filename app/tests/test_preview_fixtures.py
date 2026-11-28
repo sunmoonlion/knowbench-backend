@@ -268,13 +268,8 @@ class World:
             },
         )
         self.environment = made["environment_id"]
-        await self.http.post(
-            "/api/workbench/sandboxes",
-            json={
-                "app_server_url": f"ws://127.0.0.1:{self.fake.port}",
-                "token_ref": "inline:preview",
-                "codex_version": "0.155.1",
-            },
+        await self.http.seed_sandbox(
+            f"ws://127.0.0.1:{self.fake.port}", "inline:preview", "0.155.1"
         )
         await self.rec.call(
             self.http,

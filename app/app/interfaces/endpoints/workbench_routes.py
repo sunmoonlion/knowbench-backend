@@ -110,12 +110,6 @@ class RegisterEnvironment(Strict):
     )
 
 
-class RegisterSandbox(Strict):
-    app_server_url: str = Field(pattern=r"^wss?://")
-    token_ref: str = Field(pattern=r"^(env|file|inline):")
-    codex_version: str | None = None
-
-
 class CreateSession(Strict):
     """两种写法。新的：`kind`（聊天可不给 `project_id`）。旧的：机器、沙箱、完整目录。"""
 
@@ -259,7 +253,7 @@ def _actor(principal: Principal) -> str:
 
 
 # 不给浏览器的列。token_ref 是沙箱的令牌在哪（按需拉起的沙箱，它就是令牌本身）
-_NEVER_TO_THE_BROWSER = frozenset({"token_hash", "token_ref"})
+_NEVER_TO_THE_BROWSER = frozenset({"token_hash", "token_ref", "operator_registered"})
 
 
 def _plain(d: dict[str, Any]) -> dict[str, Any]:
@@ -593,23 +587,6 @@ async def list_sandboxes(
             for x in await repo.list_sandboxes(owner_actor_id=_actor(principal))
         ],
     }
-
-
-@router.post("/sandboxes", status_code=201)
-async def register_sandbox(
-    body: RegisterSandbox,
-    principal: Principal = Depends(get_web_current_user),
-    session: AsyncSession = Depends(get_db_session),
-):
-    repo = workbench_store(session)
-    async with repo.transaction():
-        sb_id = await repo.register_sandbox(
-            owner_actor_id=_actor(principal),
-            app_server_url=body.app_server_url,
-            token_ref=body.token_ref,
-            codex_version=body.codex_version,
-        )
-    return {"sandbox_id": sb_id}
 
 
 # ---------------- sessions ----------------
@@ -1279,7 +1256,9 @@ async def put_prefs(
     return {"contract_version": CONTRACT_VERSION, **_plain(_with_sources(prefs))}
 
 
-MemoryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
+MemoryText = Annotated[
+    str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)
+]
 
 
 class MemoryIn(Strict):

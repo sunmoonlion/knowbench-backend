@@ -182,7 +182,12 @@ class AppServerClient:
                     method, fut, on_result = pending
                     if not fut.done():
                         if "error" in msg:
-                            fut.set_exception(AppServerError(method, msg["error"]))
+                            error = msg["error"]
+                            if not isinstance(error, dict):
+                                error = {
+                                    "message": "Malformed app-server error response"
+                                }
+                            fut.set_exception(AppServerError(method, error))
                         else:
                             result = msg.get("result")
                             try:
@@ -289,6 +294,13 @@ class WsAppServerConnector:
         on_notification: NotificationHandler,
         on_server_request: ServerRequestHandler,
     ) -> AppServerClient:
+        if not (
+            sandbox.get("provisioned") is True
+            or sandbox.get("operator_registered") is True
+        ):
+            raise RuntimeError(
+                "sandbox requires platform provisioning or operator registration"
+            )
         return AppServerClient(
             sandbox["app_server_url"],
             resolve_token_ref(sandbox["token_ref"]),

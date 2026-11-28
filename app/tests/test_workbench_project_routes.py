@@ -23,13 +23,7 @@ async def machine(http, *, sandbox=True):
         )
     ).json()["environment_id"]
     if sandbox:
-        await http.post(
-            "/api/workbench/sandboxes",
-            json={
-                "app_server_url": "ws://sandbox:47800",
-                "token_ref": "env:APP_SERVER_TOKEN",
-            },
-        )
+        await http.seed_sandbox()
     return env
 
 

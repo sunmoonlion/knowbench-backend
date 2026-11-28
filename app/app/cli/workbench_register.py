@@ -25,9 +25,9 @@ from app.infrastructure.storage.postgres import get_postgres
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "--email", required=True, help="auth_user.email of a user who has logged in"
-    )
+    identity = parser.add_mutually_exclusive_group(required=True)
+    identity.add_argument("--email", help="unique email of a user who has logged in")
+    identity.add_argument("--subject", help="stable auth_user.subject")
     parser.add_argument("--environment-name", default="this-pc")
     parser.add_argument(
         "--root",
@@ -50,19 +50,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 async def register(session_factory, args: argparse.Namespace) -> dict:
     async with session_factory() as s:
-        row = (
+        by_subject = args.subject is not None
+        rows = (
             await s.execute(
                 text(
-                    "select id from auth_user where email = :e order by created_at limit 1"
+                    "select id from auth_user where subject = :identity"
+                    if by_subject
+                    else "select id from auth_user where email = :identity limit 2"
                 ),
-                {"e": args.email},
+                {"identity": args.subject if by_subject else args.email},
             )
-        ).first()
-        if row is None:
-            raise SystemExit(
-                f"no auth_user with email {args.email}: the user must log in once first"
-            )
-        owner = str(row[0])
+        ).all()
+        if not rows:
+            raise SystemExit("identity not found: the user must log in once first")
+        if len(rows) != 1:
+            raise SystemExit("email matches multiple accounts; use --subject")
+        owner = str(rows[0][0])
         repo = workbench_store(s)
         envs = await repo.list_environments(owner_actor_id=owner)
         sbs = await repo.list_sandboxes(owner_actor_id=owner)
@@ -80,7 +83,42 @@ async def register(session_factory, args: argparse.Namespace) -> dict:
                     ceiling={"sandbox": "workspace-write", "network": False},
                 )
             )
-            sb = next((x for x in sbs if x["app_server_url"] == args.sandbox_url), None)
+            sb = next(
+                (
+                    x
+                    for x in sbs
+                    if x["app_server_url"] == args.sandbox_url
+                    and x["status"] != "deleted"
+                    and (x["operator_registered"] or x["provisioned"])
+                ),
+                None,
+            )
+            if sb is None:
+                # Re-enrolling an older manual connection also reaffirms its credential source.
+                previous = next(
+                    (
+                        x
+                        for x in sbs
+                        if x["app_server_url"] == args.sandbox_url
+                        and x["status"] != "deleted"
+                        and not x["provisioned"]
+                    ),
+                    None,
+                )
+                if previous:
+                    await s.execute(
+                        text(
+                            "update workbench_sandboxes set operator_registered=true, "
+                            "token_ref=:ref, codex_version=:cv where id=:id and owner_actor_id=:owner"
+                        ),
+                        {
+                            "id": previous["id"],
+                            "owner": owner,
+                            "ref": args.token_ref,
+                            "cv": args.codex_version,
+                        },
+                    )
+                    sb = previous
             sb_id = (
                 str(sb["id"])
                 if sb

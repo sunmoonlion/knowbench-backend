@@ -158,10 +158,7 @@ async def test_what_is_refused(make_client, db):  # noqa: F811
         assert (got.status_code, got.json()["code"]) == (409, "no_sandbox")
 
     async with make_client(A) as http:
-        await http.post(
-            "/api/workbench/sandboxes",
-            json={"app_server_url": "ws://sandbox:47800", "token_ref": "env:T"},
-        )
+        await http.seed_sandbox()
         for body, status, code in (
             (ask(expert="SMOKE"), 404, "no_such_expert"),  # 只给我们自己用的
             (ask(expert="NOPE"), 404, "no_such_expert"),

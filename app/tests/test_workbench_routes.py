@@ -13,6 +13,7 @@ from test_workbench_ledger_db import db as db  # noqa: F401
 from app.bootstrap.api import create_app
 from app.domain.security import Principal
 from app.infrastructure.storage.postgres import get_db_session
+from app.infrastructure.workbench.repository import WorkbenchRepository
 from app.interfaces.endpoints.workbench_routes import require_workbench_enabled
 from app.interfaces.http.middleware.auth import (
     get_web_current_user,
@@ -62,9 +63,27 @@ def make_client(db, monkeypatch):  # noqa: F811
 
     def as_user(actor_id: str):
         app.dependency_overrides[get_web_current_user] = lambda: principal(actor_id)
-        return AsyncClient(
+        client = AsyncClient(
             transport=ASGITransport(app=app), base_url="http://testserver"
         )
+
+        async def seed_sandbox(
+            url="ws://sandbox:47800",
+            token_ref="env:APP_SERVER_TOKEN",
+            codex_version=None,
+        ):
+            async with db() as session:
+                repo = WorkbenchRepository(session)
+                async with repo.transaction():
+                    return await repo.register_sandbox(
+                        owner_actor_id=actor_id,
+                        app_server_url=url,
+                        token_ref=token_ref,
+                        codex_version=codex_version,
+                    )
+
+        client.seed_sandbox = seed_sandbox
+        return client
 
     as_user.app = app  # type: ignore[attr-defined]  # 要换别的依赖的测试用
     return as_user
@@ -85,15 +104,7 @@ async def bootstrap(http):
             },
         )
     ).json()["environment_id"]
-    sb = (
-        await http.post(
-            "/api/workbench/sandboxes",
-            json={
-                "app_server_url": "ws://sandbox:47800",
-                "token_ref": "env:APP_SERVER_TOKEN",
-            },
-        )
-    ).json()["sandbox_id"]
+    sb = await http.seed_sandbox()
     r = await http.post(
         "/api/workbench/sessions",
         json={
@@ -179,28 +190,14 @@ async def test_other_user_sees_nothing(make_client):
 
 async def test_validation_and_root_whitelist(make_client):
     async with make_client(A) as http:
-        r = await http.post(
-            "/api/workbench/sandboxes",
-            json={"app_server_url": "http://x", "token_ref": "env:T"},
-        )
-        assert r.status_code == 422
-        r = await http.post(
-            "/api/workbench/sandboxes",
-            json={"app_server_url": "ws://x", "token_ref": "vault:T"},
-        )
-        assert r.status_code == 422
+        assert (await http.post("/api/workbench/sandboxes", json={})).status_code == 405
         env = (
             await http.post(
                 "/api/workbench/environments",
                 json={"name": "pc", "roots": ["/home/u/research"]},
             )
         ).json()["environment_id"]
-        sb = (
-            await http.post(
-                "/api/workbench/sandboxes",
-                json={"app_server_url": "ws://x", "token_ref": "env:T"},
-            )
-        ).json()["sandbox_id"]
+        sb = await http.seed_sandbox()
         r = await http.post(
             "/api/workbench/sessions",
             json={"environment_id": env, "sandbox_id": sb, "project_root": "/etc"},

@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
 from app.application.workbench.tokens import TokenIssuer, generate_private_key_pem
 
@@ -37,6 +38,14 @@ def write_private(path: str, pem: str) -> None:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    private = args.from_private or args.private_out
+    if private:
+        source, target = Path(private), Path(args.public_out)
+        if source.resolve() == target.resolve() or (
+            source.exists() and target.exists() and source.samefile(target)
+        ):
+            print("private and public key paths must differ", file=sys.stderr)
+            return 2
     if args.from_private:
         with open(args.from_private) as f:
             private_pem = f.read()

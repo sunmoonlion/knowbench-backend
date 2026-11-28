@@ -20,3 +20,20 @@ def test_keygen_and_derive(tmp_path, capsys):
     assert main(["--from-private", str(priv), "--public-out", str(pub2)]) == 0
     assert pub2.read_text() == pub.read_text()
     assert main(["--public-out", str(tmp_path / "x.pem")]) == 2
+
+
+def test_output_alias_never_overwrites_private_key(tmp_path):
+    import os
+
+    private = tmp_path / "key.pem"
+    assert main(["--private-out", str(private), "--public-out", str(private)]) == 2
+    assert not private.exists()
+    assert (
+        main(["--private-out", str(private), "--public-out", str(tmp_path / "pub")])
+        == 0
+    )
+    alias = tmp_path / "linked"
+    os.link(private, alias)
+    before = private.read_bytes()
+    assert main(["--from-private", str(private), "--public-out", str(alias)]) == 2
+    assert private.read_bytes() == before

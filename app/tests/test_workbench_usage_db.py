@@ -88,13 +88,7 @@ async def desk(make_client, db, *, prices=None):  # noqa: F811
     )
     http = make_client(A)
     env = await machine(http, sandbox=False)
-    await http.post(
-        "/api/workbench/sandboxes",
-        json={
-            "app_server_url": f"ws://127.0.0.1:{fake.port}",
-            "token_ref": "inline:t",
-        },
-    )
+    await http.seed_sandbox(f"ws://127.0.0.1:{fake.port}", "inline:t")
     made = await project(http, env)
     return Desk(http, runner, fake, made.json()["id"])
 
@@ -330,6 +324,7 @@ async def test_stopping_the_expert_in_the_middle_of_a_step(make_client, db):  # 
             "by": "user",
             "running": True,
         }
+
         # 0034: cancellation is immediate; the interrupted sandbox reply settles
         # separately. Wait for its receipt, not merely the task's terminal state.
         async def interrupted_cost_settled() -> bool:

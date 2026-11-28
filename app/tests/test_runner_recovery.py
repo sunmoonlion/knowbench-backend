@@ -97,3 +97,26 @@ async def test_transient_mode_note_error_allows_retry():
     await link.announce("thread", plan)
     await link.announce("thread", plan)
     assert client.request.await_count == 2
+
+
+async def test_malformed_error_completes_pending_request():
+    from unittest.mock import MagicMock
+
+    import pytest
+
+    from app.infrastructure.workbench.app_server_client import (
+        AppServerClient,
+        AppServerError,
+    )
+
+    client = AppServerClient(
+        "ws://test", "test", on_notification=AsyncMock(), on_server_request=AsyncMock()
+    )
+    pending = asyncio.get_running_loop().create_future()
+    client._pending[1] = ("test", pending, None)
+    client._ws = MagicMock()
+    client._ws.__aiter__.return_value = ['{"id":1,"error":"invalid"}']
+    await client._read_loop()
+    assert pending.done()
+    with pytest.raises(AppServerError, match="Malformed"):
+        pending.result()

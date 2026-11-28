@@ -388,8 +388,8 @@ class WorkbenchRepository(
     ) -> str:
         sb_id = str(uuid.uuid4())
         await self.session.execute(
-            text("""insert into workbench_sandboxes (id, owner_actor_id, app_server_url, token_ref, codex_version, status)
-                    values (:id, :owner, :url, :ref, :cv, 'registered')"""),
+            text("""insert into workbench_sandboxes (id, owner_actor_id, app_server_url, token_ref, codex_version, status, operator_registered)
+                    values (:id, :owner, :url, :ref, :cv, 'registered', true)"""),
             {
                 "id": sb_id,
                 "owner": owner_actor_id,
@@ -426,7 +426,7 @@ class WorkbenchRepository(
         """这个人现在用的沙箱：按需拉起的优先，其次是最近登记的；回收了的不算。"""
         r = await self.session.execute(
             text(
-                """select * from workbench_sandboxes where owner_actor_id = :o and status <> 'deleted'
+                """select * from workbench_sandboxes where owner_actor_id = :o and status <> 'deleted' and (provisioned or operator_registered)
                    order by provisioned desc, updated_at desc, created_at desc limit 1"""
             ),
             {"o": owner_actor_id},
