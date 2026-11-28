@@ -389,7 +389,8 @@ async def agent_install_script(
         ) from None
 
 
-@public_router.api_route("/agent-install/{credential}/package", methods=["GET", "HEAD"])
+@public_router.get("/agent-install/{credential}/package")
+@public_router.head("/agent-install/{credential}/package")
 async def agent_install_package(
     credential: str,
     request: Request,

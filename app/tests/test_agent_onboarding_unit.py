@@ -322,6 +322,18 @@ def test_onboarding_routes_are_registered_and_config_defaults_to_no_proxy_trust(
     assert "/api/workbench/agent/install-command" in paths
     assert "/api/agent-install/{credential}/script" in paths
     assert "/api/agent-install/{credential}/package" in paths
+    schema = app.openapi()["paths"]
+    for path in (
+        "/api/workbench/agent/package",
+        "/api/agent-install/{credential}/package",
+    ):
+        assert schema[path]["get"]["operationId"] != schema[path]["head"]["operationId"]
+    for path, method in (
+        ("/api/workbench/sessions", "post"),
+        ("/api/workbench/sessions/{session_id}/turns", "post"),
+        ("/api/workbench/sessions/{session_id}/stream", "get"),
+    ):
+        assert method in schema[path]
     assert Settings().workbench_trusted_proxy_cidrs == ""
     with pytest.raises(ValidationError):
         Settings(WORKBENCH_TRUSTED_PROXY_CIDRS="not-a-network")

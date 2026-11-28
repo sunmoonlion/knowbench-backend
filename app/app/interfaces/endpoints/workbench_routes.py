@@ -1034,7 +1034,8 @@ async def agent_download(principal: Principal = Depends(get_web_current_user)):
     }
 
 
-@router.api_route("/agent/package", methods=["GET", "HEAD"])
+@router.get("/agent/package")
+@router.head("/agent/package")
 def agent_package(
     request: Request, principal: Principal = Depends(get_web_current_user)
 ):
