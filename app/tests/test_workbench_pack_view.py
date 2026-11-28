@@ -6,7 +6,7 @@ import json
 from decimal import Decimal
 
 import pytest
-from sample_packs import DATA_QUERY, FIN_FORECAST, FIN_REVIEW
+from sample_packs import DATA_QUERY, FIN_FORECAST, FIN_REVIEW, SAMPLE_PACKS
 
 from app.domain.workbench.pack_view import after_rejection, pack_view
 from app.domain.workbench.packs import BUILTIN_PACKS, SMOKE, listed_packs
@@ -21,9 +21,8 @@ def test_the_smoke_pack_is_ours_and_not_listed():
     assert LISTED == []
 
 
-@pytest.mark.parametrize("pack_id", LISTED)
-def test_every_listed_pack_can_be_explained_to_a_user(pack_id):
-    pack = BUILTIN_PACKS[pack_id]
+@pytest.mark.parametrize("pack", SAMPLE_PACKS, ids=lambda pack: pack.profile_id)
+def test_sample_pack_can_be_explained_to_a_user(pack):
     assert pack.name and pack.tagline
     for question in (
         "解决什么",
@@ -54,10 +53,10 @@ def test_the_method_never_leaves(pack_id):
     assert "output_schema" not in shown
 
 
-@pytest.mark.parametrize("pack_id", LISTED)
-def test_words_shown_to_users_carry_no_code_names(pack_id):
+@pytest.mark.parametrize("pack", SAMPLE_PACKS, ids=lambda pack: pack.profile_id)
+def test_words_shown_to_users_carry_no_code_names(pack):
     """AT-INV-17：任何地方都没有代号。编号只在 id 里，页面用它发请求，不显示。"""
-    view = pack_view(BUILTIN_PACKS[pack_id])
+    view = pack_view(pack)
     words = [
         view[k]
         for k in ("name", "tagline", "solves", "does_not_solve", "input", "output")
@@ -132,9 +131,8 @@ def test_what_happens_after_a_rejection():
     }
 
 
-@pytest.mark.parametrize("pack_id", LISTED)
-def test_the_dossier_layout_points_at_things_the_steps_return(pack_id):
-    pack = BUILTIN_PACKS[pack_id]
+@pytest.mark.parametrize("pack", SAMPLE_PACKS, ids=lambda pack: pack.profile_id)
+def test_the_dossier_layout_points_at_things_the_steps_return(pack):
     returned = {s.output_artifact: s for s in pack.workflow}
     assert pack.dossier
     keys = [b.key for b in pack.dossier]

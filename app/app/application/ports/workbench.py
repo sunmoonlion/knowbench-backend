@@ -816,6 +816,10 @@ class WorkbenchStore(Protocol):
         """「这个任务里都允许」记下的授权：有 Task 的按 Task；自驾的按对话，且只认最近一次交接之后的。"""
         ...
 
+    async def user_turn_receipt(
+        self, session_id: str, request_id: str
+    ) -> dict | None: ...
+
     async def enqueue_command(
         self, *, session_id: str, sandbox_id: str, kind: str, payload: dict
     ) -> str: ...

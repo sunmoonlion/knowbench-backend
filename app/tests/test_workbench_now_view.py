@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from sample_packs import DATA_QUERY, FIN_REVIEW
+from sample_packs import DATA_QUERY, FIN_REVIEW, SAMPLE_PACKS
 
 from app.domain.workbench.now_view import doing_of, now_view
 from app.domain.workbench.pack_view import pack_view
-from app.domain.workbench.packs import listed_packs
 
 STEPS = [{**s, "times": 0, "rejected": 0} for s in pack_view(FIN_REVIEW)["steps"]]
 
@@ -19,9 +18,9 @@ def task(state: str, step: int = 2, **more) -> dict:
     return {"state": state, "current_step": step, **more}
 
 
-def test_every_step_of_every_listed_expert_says_why():
+def test_every_step_of_every_sample_expert_says_why():
     """「为什么」是给用户看的。每一步都要有，而且不是把「做什么」再说一遍。"""
-    for pack in listed_packs():
+    for pack in SAMPLE_PACKS:
         for step in pack.workflow:
             assert len(step.why) >= 12, (pack.profile_id, step.step_id)
             assert step.why != step.summary
@@ -128,7 +127,7 @@ def test_every_field_an_expert_hands_back_has_a_word_for_the_user():
             return {k for v in value for k in keys(v)}
         return set()
 
-    for pack in listed_packs():
+    for pack in SAMPLE_PACKS:
         for step in pack.workflow:
             missing = keys(step.output_schema) - set(FIELD_WORDS)
             # inputs 里面是科目名，随指标变，不登记

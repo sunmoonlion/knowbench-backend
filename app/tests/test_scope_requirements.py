@@ -7,7 +7,7 @@ from pydantic import ValidationError
 
 from app.application.workbench.acceptance import out_of_scope
 from app.application.workbench.task_runtime import TaskRuntime, compose_data_plan
-from app.domain.workbench.expert_match import Requirement
+from app.domain.workbench.match_requirements import Requirement
 from app.domain.workbench.packs import SMOKE, Scope
 
 

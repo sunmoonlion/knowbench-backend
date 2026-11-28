@@ -15,7 +15,6 @@ from app.application.workbench.formal_expert_intake import (
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench import hierarchical_planning as htn
 from app.domain.workbench.errors import NotFound, StaleStateVersion
-from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_expert_match import frozen_scope
 from app.domain.workbench.formal_method_compiler_generated import FrozenMethod
 from app.domain.workbench.formal_method_generated import Digest, MethodRef, Strict
@@ -23,6 +22,7 @@ from app.domain.workbench.incubation_selection import (
     routing_alternatives,
     verify_selection_graph,
 )
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.method_search import PlanningQuery
 from app.domain.workbench.models import HandoverRequest
 from app.domain.workbench.planning_capabilities import (

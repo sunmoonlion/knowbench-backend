@@ -3279,6 +3279,25 @@ class WorkbenchRepository(
             )
         return [{**dict(m), "id": str(m["id"])} for m in r.mappings().all()]
 
+    async def user_turn_receipt(self, session_id: str, request_id: str) -> dict | None:
+        result = await self.session.execute(
+            text("""
+            SELECT e.cursor, e.payload->>'text' AS text,
+                   coalesce(e.payload->>'command_id', (
+                       SELECT c.id::text FROM workbench_commands c WHERE c.session_id=e.session_id
+                         AND c.kind='turn.start' AND c.payload->>'request_id'=:request_id
+                         AND c.payload->>'text'=e.payload->>'text'
+                       ORDER BY c.created_at, c.id LIMIT 1
+                   )) AS command_id
+            FROM workbench_session_events e WHERE e.session_id=:session AND e.event_type='turn/requested'
+                AND coalesce(e.payload->>'by','user')='user' AND e.payload->>'request_id'=:request_id
+            ORDER BY e.cursor LIMIT 1
+        """),
+            {"session": session_id, "request_id": request_id},
+        )
+        row = result.mappings().first()
+        return dict(row) if row is not None else None
+
     async def enqueue_command(
         self, *, session_id: str, sandbox_id: str, kind: str, payload: dict
     ) -> str:

@@ -3,10 +3,10 @@
 from app.application.workbench.formal_expert_intake import DIRECTORY
 from app.application.workbench.formal_handoff import INTENT, RECEIPT
 from app.domain.workbench.errors import NotFound, StaleStateVersion
-from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_execution import host_snapshot
 from app.domain.workbench.formal_expert_match import frozen_scope
 from app.domain.workbench.formal_method_generated import Digest, MethodRef, Strict
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.ordinary_expert import CONFIRMED, ConsumerPlan
 
 ADOPTED = "task/handoff_version_adopted"

@@ -16,7 +16,7 @@ from app.application.workbench.formal_expert_intake import (
 from app.application.workbench.method_access import check_requirement
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.errors import NotFound, StaleStateVersion
-from app.domain.workbench.expert_match import digest
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.ordinary_expert import CONFIRMED, MaterialPin
 from app.domain.workbench.tool_registry import ToolRegistration, connection_source
 

@@ -2,9 +2,9 @@
 
 import re
 
-from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_method_generated import Orchestration
 from app.domain.workbench.formal_method_plan_generated import review_group
+from app.domain.workbench.match_requirements import digest
 
 PATTERNS = {
     "sequence": r"串行接力|ordered handoff",

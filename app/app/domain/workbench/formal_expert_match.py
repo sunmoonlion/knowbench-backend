@@ -5,13 +5,13 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from app.domain.workbench.expert_match import Requirement, Text
 from app.domain.workbench.formal_method_generated import (
     FormalMethodDefinition,
     MethodRef,
     Orchestration,
     Strict,
 )
+from app.domain.workbench.match_requirements import Requirement, Text
 
 
 class PromiseCoverage(Strict):

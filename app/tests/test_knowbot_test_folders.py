@@ -51,12 +51,24 @@ def test_folder_name_starts_with_when_it_was_accepted():
         "created_at": datetime(2026, 10, 18, 1, 2, 3, tzinfo=UTC),
         "run_id": "knowlab-run/7",
     }
-    assert run_folder(run) == "runs/20261018010203-knowlab-run-7"
+    assert run_folder(run).startswith("runs/20261018010203-")
+    assert run_folder(run).endswith("-knowlab-run-7")
+    assert run_folder(dict(run, folder_scheme=1)) == "runs/20261018010203-knowlab-run-7"
+    for left, right in [
+        ("knowlab:a", "knowlab-a"),
+        ("a" * 80 + "1", "a" * 80 + "2"),
+        ("KNOWLAB-A", "knowlab-a"),
+    ]:
+        assert (
+            run_folder(dict(run, run_id=left)).casefold()
+            != run_folder(dict(run, run_id=right)).casefold()
+        )
 
 
-async def test_prepare_removes_other_runs_and_makes_this_one():
+async def test_prepare_only_creates_owned_directories():
     service = Service(
         entries=[
+            {"name": "archive", "type": "dir"},
             {"name": "20261017-old", "type": "dir"},
             {"name": "mine", "type": "dir"},
             {"name": "note.txt", "type": "file"},
@@ -65,10 +77,7 @@ async def test_prepare_removes_other_runs_and_makes_this_one():
     folders = AgentTestFolders(service, stores)
     assert await folders.prepare(owner="tester", root="/workspace", folder="runs/mine")
     assert service.calls == [
-        ("fs/readDirectory", {"path": "/workspace/runs"}),
-        ("fs/remove", {"path": "/workspace/runs/20261017-old"}),
         ("fs/createDirectory", {"path": "/workspace/runs/mine", "recursive": True}),
-        # 放临时文件的目录随别的清掉、再建空的（Fable 评审 P2-14）
         ("fs/createDirectory", {"path": "/workspace/runs/.tmp", "recursive": True}),
     ]
 
@@ -81,37 +90,15 @@ async def test_prepare_on_a_fresh_computer_just_makes_the_folder():
 
 
 async def test_prepare_fails_closed_when_the_computer_cannot_be_reached_or_cleaned():
-    for service in (Service(fail="fs/readDirectory"), Service(refuse="denied")):
-        assert not await AgentTestFolders(service, stores).prepare(
-            owner="tester", root="/workspace", folder="runs/a"
-        )
-    dirty = Service(
-        entries=[{"name": "other", "type": "dir"}],
-        fail="fs/remove",
-    )
-    assert not await AgentTestFolders(dirty, stores).prepare(
-        owner="tester", root="/workspace", folder="runs/a"
-    )
-    assert not any(m == "fs/createDirectory" for m, _ in dirty.calls)
+    assert not await AgentTestFolders(
+        Service(fail="fs/createDirectory"), stores
+    ).prepare(owner="tester", root="/workspace", folder="runs/a")
     assert not await AgentTestFolders(Service(), stores).prepare(
         owner="nobody", root="/workspace", folder="runs/a"
     )
 
 
-async def test_an_old_folder_that_cannot_be_removed_does_not_stop_the_next_test(caplog):
-    """上一次留下删不掉的（如只读目录）：记一行，照样建这一次的（Fable 评审 P1-3）；
-    建不了这一次的才立刻报错，写明是哪个目录（审读第 15 条）。"""
-    dirty = Service(
-        entries=[{"name": "other", "type": "dir"}],
-        deny="fs/remove",
-    )
-    assert await AgentTestFolders(dirty, stores).prepare(
-        owner="tester", root="/workspace", folder="runs/a"
-    )
-    assert ("fs/createDirectory", {"path": "/workspace/runs/a", "recursive": True}) in (
-        dirty.calls
-    )
-    assert "/workspace/runs/other" in caplog.text
+async def test_creation_refusal_identifies_the_folder():
     blocked = Service(deny="fs/createDirectory")
     try:
         await AgentTestFolders(blocked, stores).prepare(

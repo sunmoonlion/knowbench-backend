@@ -288,10 +288,9 @@ async def _stop_case_task(
 async def _remove_folder(
     repo: WorkbenchStore, folders: TestFolders | None, run: dict[str, Any]
 ) -> None:
-    """删这次测试的目录（账 129），在作者那台电脑上；删不掉的，那里下一个测试开跑前还会
-    再删。"""
+    """删这次测试的目录（账 129），在作者那台电脑上；按受理时的命名规则定位。"""
     owner, _, root = place(run)
-    if folders is None or not root:
+    if folders is None or not root or not run.get("started_at"):
         return
     actor = await repo.actor_for_subject(owner)
     if actor is not None:
@@ -1010,6 +1009,10 @@ class KnowbotTestConductor:
                     if not await repo.update_test_run_if_active(
                         run_id, status="running", started_at=now, blocked_reason=None
                     ):
+                        if self.folders is not None:
+                            await self.folders.remove(
+                                owner=account.actor_id, root=account.root, folder=folder
+                            )
                         return  # 刚被取消
                 run = await repo.get_test_run(run_id)
                 assert run is not None
@@ -1658,7 +1661,7 @@ class KnowbotTestConductor:
             status,
             error or "",
         )
-        # 测完就删这次的目录（账 129），在作者那台电脑上；删不掉的，那里下一个测试开跑前还会再删
+        # 测完就删这次的目录（账 129），在作者那台电脑上
         await _remove_folder(repo, self.folders, run)
 
     async def run_forever(self, stop: Any, interval_seconds: float) -> None:

@@ -10,7 +10,7 @@ from typing import Literal, Self
 
 from pydantic import Field, model_validator
 
-from app.domain.workbench.expert_match import (
+from app.domain.workbench.match_requirements import (
     Digest,
     Identifier,
     Requirement,

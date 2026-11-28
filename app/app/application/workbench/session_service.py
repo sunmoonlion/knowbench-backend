@@ -8,6 +8,7 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.project_service import ProjectService
 from app.domain.workbench.errors import (
     ConversationChangeRefused,
+    IdempotencyConflict,
     NoSandbox,
     ProjectBusy,
     ProjectHeldByExpert,
@@ -306,20 +307,70 @@ class SessionService:
             raise WheelHeldByOther("the user holds the wheel", session_id=session_id)
         return session
 
+    async def accept_user_turn(
+        self, session_id: str, owner: str, text: str, request_id: str
+    ) -> tuple[dict, dict]:
+        async with self.repo.transaction():
+            session = await self.repo.get_session(
+                session_id, owner_actor_id=owner, for_update=True
+            )
+            prior = await self.repo.user_turn_receipt(session_id, request_id)
+            if prior and prior["text"] != text:
+                raise IdempotencyConflict(
+                    "turn request already used for different text"
+                )
+            if prior and prior["command_id"]:
+                return session, {
+                    "request_id": request_id,
+                    "cursor": prior["cursor"],
+                    "command_id": prior["command_id"],
+                }
+            await self.assert_user_may_drive(session_id, owner_actor_id=owner)
+            command = await self.repo.enqueue_command(
+                session_id=session_id,
+                sandbox_id=str(session["sandbox_id"]),
+                kind="turn.start",
+                payload={"text": text, "request_id": request_id, "by": "user"},
+            )
+            if prior is None:
+                prior = await self._record_user_turn(
+                    session_id, text, request_id, command_id=command
+                )
+            return session, {
+                "request_id": request_id,
+                "cursor": prior["cursor"],
+                "command_id": command,
+            }
+
     async def record_user_turn_requested(
         self, session_id: str, *, owner_actor_id: str, text: str, request_id: str
     ) -> dict[str, Any]:
         """把用户的 turn 请求记成事件（runner 消费 Outbox 里的这条去发 turn/start）。"""
         async with self.repo.transaction():
             await self.assert_user_may_drive(session_id, owner_actor_id=owner_actor_id)
-            await self.repo.touch_session(session_id)
-            await self.repo.set_session_title_if_empty(session_id, default_title(text))
-            return await self.repo.append_event(
-                session_id=session_id,
-                kind="turn",
-                event_type="turn/requested",
-                payload={"request_id": request_id, "text": text, "by": "user"},
-            )
+            return await self._record_user_turn(session_id, text, request_id)
+
+    async def _record_user_turn(
+        self,
+        session_id: str,
+        text: str,
+        request_id: str,
+        *,
+        command_id: str | None = None,
+    ) -> dict:
+        await self.repo.touch_session(session_id)
+        await self.repo.set_session_title_if_empty(session_id, default_title(text))
+        return await self.repo.append_event(
+            session_id=session_id,
+            kind="turn",
+            event_type="turn/requested",
+            payload={
+                "request_id": request_id,
+                "text": text,
+                "by": "user",
+                **({"command_id": command_id} if command_id else {}),
+            },
+        )
 
     async def usage(
         self, session_id: str, *, owner_actor_id: str, prices: PriceList

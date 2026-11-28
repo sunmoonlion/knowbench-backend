@@ -17,7 +17,7 @@ from app.application.workbench.plan_receipts import read_plan
 from app.application.workbench.task_requirements import for_task
 from app.application.workbench.turn import TurnResult
 from app.domain.workbench.errors import IdempotencyConflict, MethodPlanInvalid
-from app.domain.workbench.expert_match import digest
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.method_catalog import parse_catalog
 from app.domain.workbench.states import TaskState
 from app.domain.workbench.task_requirements import TaskRequirements

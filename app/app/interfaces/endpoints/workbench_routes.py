@@ -714,31 +714,15 @@ async def start_turn(
 ):
     repo = workbench_store(session)
     try:
-        event = await SessionService(repo).record_user_turn_requested(
-            session_id,
-            owner_actor_id=_actor(principal),
-            text=body.text,
-            request_id=body.request_id,
+        s, receipt = await SessionService(repo).accept_user_turn(
+            session_id, _actor(principal), body.text, body.request_id
         )
-        s = await repo.get_session(session_id)
-        # 对话里读用户的数据（0048 第五节）：在 knowbase 登记一段会话；不成不挡聊天
         if s.get("kind") != "expert":
             await ensure_data_session(repo, knowbase_v2(), s, user_token)
-        async with repo.transaction():
-            cid = await repo.enqueue_command(
-                session_id=session_id,
-                sandbox_id=str(s["sandbox_id"]),
-                kind="turn.start",
-                payload={
-                    "text": body.text,
-                    "request_id": body.request_id,
-                    "by": "user",
-                },
-            )
     except WorkbenchError as exc:
         raise _http(exc) from exc
     await publish_commands_wakeup()
-    return {"request_id": body.request_id, "command_id": cid, "cursor": event["cursor"]}
+    return receipt
 
 
 @router.post("/sessions/{session_id}/interrupt", status_code=202)

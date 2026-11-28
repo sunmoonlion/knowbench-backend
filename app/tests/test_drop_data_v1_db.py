@@ -16,14 +16,13 @@ from alembic.operations import Operations
 from sqlalchemy import create_engine, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import create_async_engine
-from test_workbench_ledger_db import OWNER, ROOT, handover, seed
+from test_schema_readiness import migrate as migrate_schema
+from test_workbench_ledger_db import OWNER, ROOT
 
-from app.application.workbench.ledger import Ledger
 from app.infrastructure.storage.postgres import make_session_factory
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 TARGET = ROOT / "alembic/versions/20261028_0030_drop_data_v1.py"
-BEFORE = [p for p in sorted((ROOT / "alembic/versions").glob("20*.py")) if p != TARGET]
 KNOWBOT_OLD, KNOWBOT_NEW = str(uuid.UUID(int=1)), str(uuid.UUID(int=2))
 
 
@@ -48,7 +47,11 @@ async def at_0029():  # type: ignore[no-untyped-def]
     with sync.begin() as connection:
         connection.execute(text(f'CREATE SCHEMA "{schema}"'))
         connection.execute(text(f'SET LOCAL search_path TO "{schema}"'))
-        _run(connection, BEFORE)
+        migrate_schema(connection, "20261028_0029")
+        assert (
+            connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == "20261028_0029"
+        )
     engine = create_async_engine(
         url.replace("postgresql://", "postgresql+asyncpg://"),
         connect_args={"server_settings": {"search_path": schema}},
@@ -74,14 +77,26 @@ PIN = {"media_type": "application/pdf", "size_bytes": 1, "sha256": "a" * 64}
 async def _rows(factory) -> tuple[str, str]:  # type: ignore[no-untyped-def]
     """一件委托钉了三份（v1 云端、v1 本地、第四版 knowbase）；对话选了一份云端的；
     清单 v1 与 v2 的分身各钉一版；测试三次：v1、v2、v2 却带 v1 的测试运行授权。"""
-    _, _, sid = await seed(factory)
-    async with factory() as s:
-        task = (
-            await Ledger(WorkbenchRepository(s)).handover(
-                handover(sid), owner_actor_id=OWNER
-            )
-        )["task_id"]
+    env, sandbox, sid, task = (str(uuid.uuid4()) for _ in range(4))
     async with factory() as s, s.begin():
+        keys = {
+            "env": env,
+            "sandbox": sandbox,
+            "sid": sid,
+            "task": task,
+            "owner": OWNER,
+        }
+        for statement in (
+            "INSERT INTO workbench_environments(id,owner_actor_id,name) VALUES(:env,:owner,'fixture')",
+            "INSERT INTO workbench_sandboxes(id,owner_actor_id,app_server_url,token_ref) "
+            "VALUES(:sandbox,:owner,'ws://localhost','fixture')",
+            "INSERT INTO workbench_sessions(id,owner_actor_id,environment_id,sandbox_id,project_root,kind) "
+            "VALUES(:sid,:owner,:env,:sandbox,'/fixture','chat')",
+            "INSERT INTO workbench_tasks(id,session_id,owner_actor_id,idempotency_key,request_digest,"
+            "profile_id,profile_version,original_input,environment_id,project_root,state,budget) "
+            "VALUES(:task,:sid,:owner,'fixture','fixture','sample','1','{}',:env,'/fixture','RECEIVED','{}')",
+        ):
+            await s.execute(text(statement), keys)
         for position, (source, extra) in enumerate(
             (
                 ("cloud", {"item": "i-cloud", "grant": "g-1", "path": None}),

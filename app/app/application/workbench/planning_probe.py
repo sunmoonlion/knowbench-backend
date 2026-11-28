@@ -7,8 +7,8 @@ from pydantic import Field
 from app.application.workbench.external_claim import ExternalClaim
 from app.application.workbench.temporary_planning import ROUND, current, record
 from app.domain.workbench.errors import NotFound, StaleStateVersion
-from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_method_generated import Digest
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.ordinary_expert import MaterialPin
 from app.domain.workbench.temporary_plan import read_choice
 

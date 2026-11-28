@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 
 import pytest
-from sample_packs import FIN_FORECAST
+from sample_packs import FIN_FORECAST, SAMPLE_PACKS
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_task_runtime_db import (
@@ -212,9 +212,9 @@ def test_builtin_experts_are_withdrawn_from_users():
                 look(pid)
 
 
-def test_every_listed_expert_has_an_intake():
-    for pack in packs.listed_packs():
-        scope = pack.intake_scope()
+def test_each_published_sample_has_an_intake():
+    for pack in SAMPLE_PACKS:
+        scope = pack.model_copy(update={"internal": False}).intake_scope()
         assert scope is not None and scope.does.strip(), pack.profile_id
 
 

@@ -6,7 +6,6 @@ import pytest
 from test_temporary_plan_graph import QUESTION, directory, proposal
 
 from app.application.workbench.temporary_planning import compile_choice
-from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_method_plan_generated import (
     UnmatchedCandidate,
     select_plan,
@@ -15,6 +14,7 @@ from app.domain.workbench.hierarchical_planning import (
     HierarchicalPlanner,
     compact_schemas,
 )
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.planning_capabilities import host_capabilities, same_runtime
 from app.domain.workbench.temporary_plan import read_choice
 

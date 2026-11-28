@@ -72,6 +72,25 @@ async def test_approved_host_function_freezes_with_exact_provider_receipt(db):
     issuer = TokenIssuer(signer.as_pem(private=True).decode())
     await exercise_function(db, rev, issuer, ["row-1"])
 
+    from app.application.workbench.tool_registry import formal_registration
+    from app.domain.workbench.registry_views import FormalRegistration
+
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        inventory = await repo.registry_inventory(OWNER)
+        [summary] = [
+            FormalRegistration.model_validate(row)
+            for row in inventory["formal"]
+            if row["source_kind"] == "service_function"
+        ]
+        exact = await formal_registration(repo, OWNER, summary.reference)
+        assert (
+            exact.reference == summary.reference
+            and exact.source_digest == summary.source_digest
+        )
+        assert exact.source_revision == 1
+        assert summary.source_revision == exact.source_revision
+
 
 async def exercise_function(
     db,

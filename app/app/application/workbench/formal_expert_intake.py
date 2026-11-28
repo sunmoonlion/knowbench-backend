@@ -4,9 +4,9 @@ import json
 from uuid import uuid4
 
 from app.domain.workbench.errors import IdempotencyConflict, NotFound, StaleStateVersion
-from app.domain.workbench.expert_match import digest
 from app.domain.workbench.formal_expert_match import frozen_scope, verify_options
 from app.domain.workbench.formal_method_generated import MethodRef
+from app.domain.workbench.match_requirements import digest
 from app.domain.workbench.method_search import PlanningQuery
 from app.domain.workbench.models import Budget
 
