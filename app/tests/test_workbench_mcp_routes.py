@@ -123,6 +123,25 @@ async def test_the_handshake_and_the_list_of_tools(served):
         assert unknown.json()["error"]["code"] == -32601
 
 
+async def test_rpc_reports_invalid_messages_and_preserves_valid_batch_replies(served):
+    async with client(served) as http:
+        bad = rpc("initialize", {"protocolVersion": "2025-06-18"})
+        bad["params"] = []
+        request = [
+            1,
+            bad,
+            rpc("ping"),
+            {"jsonrpc": "2.0", "method": "notifications/initialized"},
+        ]
+        response = await http.post(URL, json=request, headers=bearer())
+        invalid, params, ping = response.json()
+        assert (invalid["id"], invalid["error"]["code"]) == (None, -32600)
+        assert (params["id"], params["error"]["code"]) == (bad["id"], -32602)
+        assert ping["result"] == {}
+        empty = await http.post(URL, json=[], headers=bearer())
+        assert empty.json()["error"]["code"] == -32600
+
+
 async def test_who_is_let_in(served):
     async with client(served) as http:
         for headers in (

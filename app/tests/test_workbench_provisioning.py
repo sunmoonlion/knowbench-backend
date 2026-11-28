@@ -260,7 +260,7 @@ async def test_jwt_identity_and_rotation(make_client, db):  # noqa: F811
         )
     ).status_code == 409
 
-    await http.post(
+    credential = await http.post(
         "/api/workbench/credentials",
         json={"provider": "kimi", "api_key": "sk-live-key-1234567890"},
     )
@@ -331,6 +331,19 @@ async def test_jwt_identity_and_rotation(make_client, db):  # noqa: F811
     # 再拉起：不再回代理令牌，登记的仍是撤换后的那对
     again = (await http.post("/api/workbench/sandboxes/provision")).json()
     assert again["relay"]["agent_token"] is None and relay.tokens[user][0] == new_agent
+
+    revoked = await http.post(
+        f"/api/workbench/credentials/{credential.json()['id']}/revoke"
+    )
+    assert revoked.is_success
+    before = len(fake_api.specs)
+    no_key = await http.post(
+        "/api/workbench/sandboxes/relay-identity/rotate",
+        json={"expected_revision": rotated["relay"]["identity_revision"]},
+    )
+    assert no_key.is_success, no_key.text
+    assert no_key.json()["sandbox_rolled"] is False
+    assert len(fake_api.specs) == before
 
 
 async def test_global_sandbox_cap(make_client, db):  # noqa: F811

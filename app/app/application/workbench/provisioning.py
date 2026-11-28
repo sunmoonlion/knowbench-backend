@@ -196,10 +196,12 @@ class SandboxProvisioning:
         async with self.repo.transaction():
             await self.repo.mark_relay_registered(owner)
         live = await self.provisioner.status(row["relay_user"])
+        sandbox_rolled = False
         if live.get("status") not in (None, "absent", "deleted"):
             credential = await self.repo.active_credential(owner)
             if credential is not None:
                 await self._upsert_sandbox(owner, row, sandbox_token, credential)
+                sandbox_rolled = True
         return {
             "relay": {
                 "url": self.relay_public_url,
@@ -208,7 +210,7 @@ class SandboxProvisioning:
                 **self.identity_metadata(row),
             },
             "revoked": len(jtis) or 2,
-            "sandbox_rolled": live.get("status") not in (None, "absent", "deleted"),
+            "sandbox_rolled": sandbox_rolled,
         }
 
     async def rotate_relay_identity_in_operation(

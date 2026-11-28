@@ -2,8 +2,9 @@
 
 import asyncio
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, create_autospec
 
+from app.application.ports.workbench import EventPublisher
 from app.application.workbench.runner import Runner, SandboxLink
 
 
@@ -60,7 +61,12 @@ async def test_usage_retry_after_failed_append():
 
     repo.transaction = stores
     link = SandboxLink(
-        Runner(stores, connector=None, publisher=AsyncMock(), runner_id="local"),
+        Runner(
+            stores,
+            connector=None,
+            publisher=create_autospec(EventPublisher, instance=True),
+            runner_id="local",
+        ),
         {"id": "sandbox"},
     )
     link.threads["thread"] = "session"

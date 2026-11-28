@@ -106,7 +106,11 @@ async def handle(
 ) -> dict[str, Any] | None:
     method = message.get("method")
     mid = message.get("id")
-    params = message.get("params") or {}
+    if message.get("jsonrpc") != "2.0" or not isinstance(method, str):
+        return _err(None, -32600, "invalid request")
+    params = message.get("params", {})
+    if not isinstance(params, dict):
+        return _err(mid, -32602, "params must be an object")
     if method == "initialize":
         requested = str(params.get("protocolVersion") or PROTOCOL_VERSIONS[0])
         version = requested if requested in PROTOCOL_VERSIONS else PROTOCOL_VERSIONS[0]
@@ -140,7 +144,7 @@ async def handle(
     if method != "tools/call":
         return None if mid is None else _err(mid, -32601, f"method not found: {method}")
     name = str(params.get("name") or "")
-    args = params.get("arguments") or {}
+    args = params.get("arguments", {})
     if name not in BINDINGS:
         return _err(mid, -32602, f"unknown tool: {name}")
     if not isinstance(args, dict):
@@ -342,6 +346,8 @@ async def rpc(
         body = json.loads(await request.body())
     except ValueError:
         return JSONResponse(_err(None, -32700, "parse error"), status_code=400)
+    if body == []:
+        return JSONResponse(_err(None, -32600, "invalid request"), status_code=400)
     records = ProjectRecords(workbench_store(session), owner_actor_id=owner)
     relay = ScopedDataFunctions(records, knowbase_v2(), issuer, sandbox=sandbox)
     guard = MethodToolGuard(
@@ -353,17 +359,19 @@ async def rpc(
     messages = body if isinstance(body, list) else [body]
     replies = []
     for message in messages:
-        if isinstance(message, dict):
-            reply = await handle(
-                records,
-                message,
-                owner=owner,
-                per_minute=per_minute,
-                relay=relay,
-                guard=guard,
-            )
-            if reply is not None:
-                replies.append(reply)
+        if not isinstance(message, dict):
+            replies.append(_err(None, -32600, "invalid request"))
+            continue
+        reply = await handle(
+            records,
+            message,
+            owner=owner,
+            per_minute=per_minute,
+            relay=relay,
+            guard=guard,
+        )
+        if reply is not None:
+            replies.append(reply)
     if not replies:
         return Response(status_code=202)
     payload: Any = replies if isinstance(body, list) else replies[0]
