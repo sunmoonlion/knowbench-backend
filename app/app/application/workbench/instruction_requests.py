@@ -69,9 +69,11 @@ class InstructionRequests:
         self.route, self.prices = route, prices
         self.default_base_url = default_base_url
         self.credential_id: str | None = None
+        self.account_candidates: list[tuple[InstructionRoute, str, str | None]] = []
 
     @classmethod
     async def for_account(cls, formal, owner, *, routes, model, prices, default_url):
+        candidates = []
         for credential in await formal.repo.list_credentials(owner):
             if credential["status"] != "active":
                 continue
@@ -86,9 +88,17 @@ class InstructionRequests:
                     model,
                     endpoint,
                 ):
-                    service = cls(formal, route, prices, default_base_url=default_url)
-                    service.credential_id = str(credential["id"])
-                    return service
+                    scope = credential.get("sandbox_id")
+                    candidates.append(
+                        (route, str(credential["id"]), str(scope) if scope else None)
+                    )
+                    break
+        if candidates:
+            service = cls(
+                formal, candidates[0][0], prices, default_base_url=default_url
+            )
+            service.account_candidates = candidates
+            return service
         raise CapabilityError("No authorized instruction model route")
 
     async def authority(self, owner, task, caller, *, grants=None):
@@ -150,25 +160,28 @@ class InstructionRequests:
         return {**quote, "caller": caller, "snapshot_digest": task["pack_digest"]}
 
     async def account_quote(self, owner, session, currency):
-        credential = await self.repo.model_request_credential(owner, self.credential_id)
-        quote = self.route.quote(self.prices)
-        base_url = (credential or {}).get("base_url") or self.default_base_url
-        if (
-            credential is None
-            or credential["provider"] != self.route.provider
-            or credential["sandbox_id"]
-            and str(credential["sandbox_id"]) != str(session["sandbox_id"])
-            or not base_url
-            or validate_provider_base_url(base_url) != quote["base_url"]
-            or currency != quote["currency"]
-        ):
-            raise CapabilityError(
-                "No active credential and tariff for this instruction route"
-            )
-        return {
-            **quote,
-            "credential_id": str(credential["id"]),
-        }
+        candidates = self.account_candidates or [(self.route, self.credential_id, None)]
+        for route, credential_id, scope in candidates:
+            if scope is not None and scope != str(session["sandbox_id"]):
+                continue
+            credential = await self.repo.model_request_credential(owner, credential_id)
+            if not credential or credential["provider"] != route.provider:
+                continue
+            if credential["sandbox_id"] and str(credential["sandbox_id"]) != str(
+                session["sandbox_id"]
+            ):
+                continue
+            base_url = credential.get("base_url") or self.default_base_url
+            quote = route.quote(self.prices)
+            if (
+                base_url
+                and validate_provider_base_url(base_url) == quote["base_url"]
+                and currency == quote["currency"]
+            ):
+                return {**quote, "credential_id": str(credential["id"])}
+        raise CapabilityError(
+            "No active credential and tariff for this instruction route"
+        )
 
     async def open(
         self, owner, task_id, *, caller, gateway_uid: UUID | None = None, managed=False

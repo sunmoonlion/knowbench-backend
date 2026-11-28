@@ -75,7 +75,14 @@ class WsAgentService:
                     if remaining <= 0:
                         raise AgentServiceFailed("agent did not answer in time")
                     frame = _as_dict(await asyncio.wait_for(ws.recv(), remaining))
-                    if frame.get("id") == 1:
+                    response_id = frame.get("id")
+                    if type(response_id) is int and response_id == request["id"]:
+                        if (
+                            frame.get("jsonrpc") != "2.0"
+                            or "method" in frame
+                            or ("result" in frame) == ("error" in frame)
+                        ):
+                            raise AgentServiceFailed("invalid agent response envelope")
                         break
         except WorkbenchError:
             raise

@@ -251,3 +251,78 @@ async def test_record_pairing_samples(monkeypatch, scenario, replaces):
         f"/api/workbench/agent-pairing/{PAIRING_ID}/approve",
         decision,
     )
+
+
+async def test_install_ticket_serves_issued_script_and_retries_after_storage_recovers(
+    monkeypatch,
+):
+    from app.application.workbench.agent_download import ReleaseUnavailable
+    from fastapi import HTTPException
+    from starlette.requests import Request
+
+    settings = _settings()
+    issued = settings.workbench_agent_download
+    template = " ".join(
+        "{{" + key + "}}"
+        for key in (
+            "PACKAGE_URL",
+            "VERSION",
+            "SIZE_BYTES",
+            "ZIP_SHA256",
+            "MANIFEST_SHA256",
+            "CODEX_VERSION",
+        )
+    )
+
+    class Tickets(Store):
+        uses = 0
+
+        async def agent_install_release(self, digest, *, now):
+            return {"release": issued.model_dump(mode="json"), "template": template}
+
+        async def consume_agent_install_credential(self, digest, *, now):
+            self.uses += 1
+            return {"use_count": self.uses}
+
+    class Objects:
+        available = False
+
+        def check(self, identity):
+            assert (
+                identity.key == issued.object_key
+                and identity.sha256 == issued.zip_sha256
+            )
+            if not self.available:
+                raise ReleaseUnavailable()
+            return "object-version"
+
+        def close(self):
+            pass
+
+    tickets, objects = Tickets(replaces=None), Objects()
+    updated = settings.model_copy(update={"workbench_agent_download": None})
+    monkeypatch.setattr(routes, "get_settings", lambda: updated)
+    monkeypatch.setattr(routes, "require_workbench_enabled", lambda: None)
+    monkeypatch.setattr(routes, "workbench_store", lambda _: tickets)
+    monkeypatch.setattr(
+        "app.bootstrap.workbench.agent_release_store", lambda _: objects
+    )
+    request = Request(
+        {"type": "http", "method": "HEAD", "headers": [], "query_string": b""}
+    )
+    script = await routes.agent_install_script(CREDENTIAL, request, session=None)
+    assert (
+        issued.version.encode() in script.body
+        and issued.zip_sha256.encode() in script.body
+    )
+    assert tickets.uses == 1
+    with pytest.raises(HTTPException) as unavailable:
+        await routes.agent_install_package(CREDENTIAL, request, session=None)
+    assert unavailable.value.status_code == 503 and tickets.uses == 1
+    objects.available = True
+    package = await routes.agent_install_package(CREDENTIAL, request, session=None)
+    assert (
+        package.status_code == 200
+        and package.headers["x-checksum-sha256"] == issued.zip_sha256
+    )
+    assert tickets.uses == 2

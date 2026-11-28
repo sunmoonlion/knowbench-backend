@@ -47,6 +47,11 @@ class InstructionPrepareNotSent(ProvisionerFailed):
     """Connection establishment failed before the reservation could reach the provisioner."""
 
 
+class SandboxChanged(WorkbenchError):
+    code = "sandbox_changed"
+    http_status = 409
+
+
 class SandboxCapacityFull(WorkbenchError):
     """F-SBX-08：全局沙箱数到上限。已有沙箱的用户不受影响（更新照常），新用户稍后再试。"""
 
@@ -322,12 +327,12 @@ class SandboxProvisioning:
         identity = await self.repo.get_relay_identity(owner)
         if identity is None:
             return {"status": "absent", "ready": False}
-        result = await self.provisioner.status(identity["relay_user"])
         sandboxes = [
             s
             for s in await self.repo.list_sandboxes(owner_actor_id=owner)
             if s.get("provisioned")
         ]
+        result = await self.provisioner.status(identity["relay_user"])
         if (
             sandboxes
             and result.get("status")
@@ -335,26 +340,41 @@ class SandboxProvisioning:
         ):
             async with self.repo.transaction():
                 await self.repo.set_sandbox_status(
-                    str(sandboxes[0]["id"]), result["status"]
+                    str(sandboxes[0]["id"]),
+                    result["status"],
+                    revision=str(sandboxes[0]["provision_revision"]),
+                    previous=sandboxes[0]["status"],
                 )
         return {
             **result,
             "sandbox_id": str(sandboxes[0]["id"]) if sandboxes else None,
+            "provision_revision": str(sandboxes[0]["provision_revision"])
+            if sandboxes
+            else None,
             "relay_user": identity["relay_user"],
             **self.identity_metadata(identity),
         }
 
-    async def deprovision(self, owner: str, purge: bool = False) -> dict[str, Any]:
+    async def deprovision(
+        self, owner: str, *, sandbox_id: str, revision: str, purge: bool = False
+    ) -> dict[str, Any]:
         async with self.repo.relay_identity_operation(owner):
-            return await self._deprovision(owner, purge)
-
-    async def _deprovision(self, owner: str, purge: bool = False) -> dict[str, Any]:
-        identity = await self.repo.get_relay_identity(owner)
-        if identity is None:
-            return {"status": "absent"}
-        result = await self.provisioner.delete(identity["relay_user"], purge=purge)
-        for s in await self.repo.list_sandboxes(owner_actor_id=owner):
-            if s.get("provisioned"):
-                async with self.repo.transaction():
-                    await self.repo.set_sandbox_status(str(s["id"]), "deleted")
-        return {"status": "deleted", **result}
+            sandboxes = await self.repo.list_sandboxes(owner_actor_id=owner)
+            current = next((row for row in sandboxes if row.get("provisioned")), None)
+            if (
+                current is None
+                or str(current["id"]) != sandbox_id
+                or str(current["provision_revision"]) != revision
+            ):
+                raise SandboxChanged("refresh the sandbox before confirming deletion")
+            if current["status"] == "deleted" and not purge:
+                return {"status": "deleted"}
+            identity = await self.repo.get_relay_identity(owner)
+            if identity is None or current["relay_user"] != identity["relay_user"]:
+                raise SandboxChanged("sandbox relay identity has changed")
+            result = await self.provisioner.delete(identity["relay_user"], purge=purge)
+            async with self.repo.transaction():
+                await self.repo.set_sandbox_status(
+                    sandbox_id, "deleted", revision=revision
+                )
+            return {"status": "deleted", **result}

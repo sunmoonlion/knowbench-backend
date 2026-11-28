@@ -80,18 +80,17 @@ async def record_agent_reports(
             ):
                 payload = report.model_dump()
                 # Same report ID must not silently acquire a different scope.
-                previous = await repo.list_record_events(
-                    session_id=str(session["id"]), types=("agent/localPermission",)
+                matches = await repo.permission_report_payloads(
+                    session_id=str(session["id"]), report_id=report.id
                 )
-                matches = [e for e in previous if e["payload"].get("id") == report.id]
-                if not matches or all(e["payload"] == payload for e in matches):
-                    await repo.append_event_once(
-                        session_id=str(session["id"]),
-                        kind="record",
-                        event_type="agent/localPermission",
-                        payload=payload,
-                        same={"id": report.id},
-                    )
+                if all(previous == payload for previous in matches):
+                    if not matches:
+                        await repo.append_event(
+                            session_id=str(session["id"]),
+                            kind="record",
+                            event_type="agent/localPermission",
+                            payload=payload,
+                        )
                     status = "recorded"
         receipts.append({"receipt": envelope.receipt, "status": status})
     return receipts

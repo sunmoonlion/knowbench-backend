@@ -62,6 +62,7 @@ from app.bootstrap.workbench import (
 from app.domain.security import Principal
 from app.domain.workbench.errors import MachineNotConnected, WorkbenchError
 from app.domain.workbench.models import HandoverRequest
+from app.domain.workbench.projects import approval_policy
 from app.domain.workbench.provider_url import (
     normalize_mcp_sources,
     validate_provider_base_url,
@@ -160,7 +161,7 @@ class RespondInteraction(Strict):
 class Prefs(Strict):
     model: str | None = Field(default=None, max_length=128)
     approval_policy: str = Field(
-        default="on-request", pattern=r"^(untrusted|on-request|on-failure|never)$"
+        default="on-request", pattern=r"^(untrusted|on-request|never)$"
     )
     # Codex 在云端能用哪些数据源（0021 §二之 2）；不给 = 不改/全开
     mcp_sources: dict[str, bool] | None = None
@@ -1156,6 +1157,8 @@ async def provisioned_sandbox_status(
 
 @router.delete("/sandboxes/provisioned")
 async def deprovision_sandbox(
+    expected_sandbox_id: uuid.UUID,
+    expected_revision: uuid.UUID,
     purge: bool = Query(default=False),
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
@@ -1164,7 +1167,10 @@ async def deprovision_sandbox(
 ):
     try:
         result = await _provisioning(session, principal, cipher, backends).deprovision(
-            _actor(principal), purge=purge
+            _actor(principal),
+            sandbox_id=str(expected_sandbox_id),
+            revision=str(expected_revision),
+            purge=purge,
         )
     except WorkbenchError as exc:
         raise _http(exc) from exc
@@ -1214,7 +1220,11 @@ async def get_prefs(
 
 
 def _with_sources(prefs: dict[str, Any]) -> dict[str, Any]:
-    return {**prefs, "mcp_sources": normalize_mcp_sources(prefs.get("mcp_sources"))}
+    return {
+        **prefs,
+        "approval_policy": approval_policy(prefs.get("approval_policy")),
+        "mcp_sources": normalize_mcp_sources(prefs.get("mcp_sources")),
+    }
 
 
 @router.put("/prefs")

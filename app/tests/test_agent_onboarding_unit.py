@@ -235,6 +235,32 @@ async def test_poll_interval_and_expiry_are_enforced():
     assert store.row["token_ciphertext"] is None
 
 
+@pytest.mark.asyncio
+async def test_cancel_after_expiry_persists_same_result_as_poll():
+    device_secret = "s" * 43
+    store = PairingStore(
+        {
+            "id": "request-id",
+            "status": "pending",
+            "expires_at": datetime.now(UTC) - timedelta(seconds=1),
+            "device_secret_hash": secret_digest(device_secret),
+        }
+    )
+    service = AgentOnboarding(
+        store,
+        cipher=Cipher(),
+        pairing_hmac_key=b"k" * 32,
+        provisioning=UnusedProvisioning(),
+    )
+    assert await service.cancel(
+        pairing_id="request-id", device_secret=device_secret
+    ) == {"status": "expired"}
+    assert store.row["status"] == "expired"
+    assert await service.poll(pairing_id="request-id", device_secret=device_secret) == {
+        "status": "expired"
+    }
+
+
 def test_install_credential_is_high_entropy_and_only_its_digest_is_persisted():
     credential = new_install_credential()
     assert len(credential) >= 40

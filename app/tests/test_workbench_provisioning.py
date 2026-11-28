@@ -190,6 +190,7 @@ async def test_provision_flow(make_client, db):  # noqa: F811
     assert stored == "inline:" + fake_api.token
 
     # 再拉一次：不再回代理令牌；沙箱行复用；会合点再次登记同一对令牌
+    old = (await http.get("/api/workbench/sandboxes/provisioned")).json()
     r2 = await http.post("/api/workbench/sandboxes/provision")
     assert (
         r2.json()["relay"]["agent_token"] is None
@@ -209,7 +210,26 @@ async def test_provision_flow(make_client, db):  # noqa: F811
     ] == ["ready"]
 
     # 回收
-    gone = (await http.delete("/api/workbench/sandboxes/provisioned")).json()
+    endpoint = "/api/workbench/sandboxes/provisioned"
+    assert old["provision_revision"] != st["provision_revision"]
+    stale = await http.delete(
+        endpoint,
+        params={
+            "expected_sandbox_id": old["sandbox_id"],
+            "expected_revision": old["provision_revision"],
+        },
+    )
+    assert stale.status_code == 409 and stale.json()["code"] == "sandbox_changed"
+    assert (await http.get(endpoint)).json()["status"] == "ready"
+    gone = (
+        await http.delete(
+            endpoint,
+            params={
+                "expected_sandbox_id": st["sandbox_id"],
+                "expected_revision": st["provision_revision"],
+            },
+        )
+    ).json()
     assert gone["status"] == "deleted" and gone["pvc_kept"] is True
     assert [
         s["status"]
@@ -415,9 +435,16 @@ async def test_global_sandbox_cap(make_client, db):  # noqa: F811
     assert (
         await a.post("/api/workbench/sandboxes/provision")
     ).status_code == 200  # 更新不受限
-    assert (await a.delete("/api/workbench/sandboxes/provisioned")).json()[
-        "status"
-    ] == "deleted"
+    st = (await a.get("/api/workbench/sandboxes/provisioned")).json()
+    assert (
+        await a.delete(
+            "/api/workbench/sandboxes/provisioned",
+            params={
+                "expected_sandbox_id": st["sandbox_id"],
+                "expected_revision": st["provision_revision"],
+            },
+        )
+    ).json()["status"] == "deleted"
 
     b = client_for(B)
     assert (await b.post("/api/workbench/sandboxes/provision")).status_code == 200

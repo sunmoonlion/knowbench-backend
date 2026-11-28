@@ -930,6 +930,19 @@ class WorkbenchRepository(
         )
         return [dict(m) for m in r.mappings().all()]
 
+    async def permission_report_payloads(
+        self, *, session_id: str, report_id: str
+    ) -> list[dict[str, Any]]:
+        result = await self.session.scalars(
+            text("""
+            SELECT payload FROM workbench_session_events
+            WHERE session_id=:session AND event_type='agent/localPermission'
+                AND payload->>'id'=:report
+        """),
+            {"session": session_id, "report": report_id},
+        )
+        return list(result)
+
     async def list_record_events(
         self, *, session_id: str, types: tuple[str, ...], visible_only: bool = False
     ) -> list[dict[str, Any]]:
@@ -2914,17 +2927,32 @@ class WorkbenchRepository(
         )
 
     async def create_agent_install_credential(
-        self, *, owner_actor_id: str, token_hash: str, expires_at
+        self,
+        *,
+        owner_actor_id: str,
+        token_hash: str,
+        expires_at,
+        release_snapshot: dict[str, Any],
     ) -> None:
         await self.session.execute(
-            text("""insert into workbench_agent_install_credentials (id,owner_actor_id,token_hash,expires_at)
-                   values (cast(:id as uuid),cast(:owner as uuid),:hash,:expires_at)"""),
+            text("""insert into workbench_agent_install_credentials (id,owner_actor_id,token_hash,expires_at,release_snapshot)
+                   values (cast(:id as uuid),cast(:owner as uuid),:hash,:expires_at,cast(:snapshot as jsonb))"""),
             {
                 "id": str(uuid.uuid4()),
                 "owner": owner_actor_id,
                 "hash": token_hash,
+                "snapshot": json.dumps(release_snapshot),
                 "expires_at": expires_at,
             },
+        )
+
+    async def agent_install_release(
+        self, token_hash: str, *, now
+    ) -> dict[str, Any] | None:
+        return await self.session.scalar(
+            text("""select release_snapshot from workbench_agent_install_credentials
+             where token_hash=:hash and expires_at>:now and use_count<5"""),
+            {"hash": token_hash, "now": now},
         )
 
     async def consume_agent_install_credential(
@@ -3034,7 +3062,7 @@ class WorkbenchRepository(
             await self.session.execute(
                 text(
                     """update workbench_sandboxes set app_server_url = :url, token_ref = :ref, codex_version = :cv,
-                       relay_user = :ru, status = :st, updated_at = now() where id = :id"""
+                       relay_user = :ru, status = :st, provision_revision = gen_random_uuid(), updated_at = now() where id = :id"""
                 ),
                 {
                     "url": app_server_url,
@@ -3064,12 +3092,20 @@ class WorkbenchRepository(
         )
         return sb_id
 
-    async def set_sandbox_status(self, sandbox_id: str, status: str) -> None:
+    async def set_sandbox_status(
+        self,
+        sandbox_id: str,
+        status: str,
+        *,
+        revision: str,
+        previous: str | None = None,
+    ) -> None:
         await self.session.execute(
             text(
-                "update workbench_sandboxes set status = :s, updated_at = now() where id = :id"
+                "update workbench_sandboxes set status = :s, updated_at = now() where id = :id "
+                "and provision_revision = :revision and (cast(:previous as text) is null or status=:previous)"
             ),
-            {"s": status, "id": sandbox_id},
+            {"s": status, "id": sandbox_id, "revision": revision, "previous": previous},
         )
 
     async def instruction_credential(self, owner, credential_id, sandbox_id):

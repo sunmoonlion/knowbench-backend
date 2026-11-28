@@ -272,8 +272,9 @@ async def test_prefs_flow_into_new_sessions(make_client):
         "/api/workbench/prefs", json={"model": "kimi-k3", "approval_policy": "never"}
     )
     assert r.status_code == 200 and r.json()["model"] == "kimi-k3"
-    r = await http.put("/api/workbench/prefs", json={"approval_policy": "yolo"})
-    assert r.status_code == 422
+    for policy in ("on-failure", "yolo"):
+        r = await http.put("/api/workbench/prefs", json={"approval_policy": policy})
+        assert r.status_code == 422
     env, sb, _first = await bootstrap(http)
     sid = (
         await http.post(

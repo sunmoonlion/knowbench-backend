@@ -475,6 +475,10 @@ class WorkbenchStore(Protocol):
         self, *, project_id: str, owner_actor_id: str
     ) -> list[dict[str, Any]]: ...
 
+    async def permission_report_payloads(
+        self, *, session_id: str, report_id: str
+    ) -> list[dict[str, Any]]: ...
+
     async def list_record_events(
         self, *, session_id: str, types: tuple[str, ...], visible_only: bool = False
     ) -> list[dict[str, Any]]: ...
@@ -712,8 +716,17 @@ class WorkbenchStore(Protocol):
     ) -> None: ...
 
     async def create_agent_install_credential(
-        self, *, owner_actor_id: str, token_hash: str, expires_at
+        self,
+        *,
+        owner_actor_id: str,
+        token_hash: str,
+        expires_at,
+        release_snapshot: dict[str, Any],
     ) -> None: ...
+
+    async def agent_install_release(
+        self, token_hash: str, *, now
+    ) -> dict[str, Any] | None: ...
 
     async def consume_agent_install_credential(
         self, token_hash: str, *, now
@@ -753,7 +766,14 @@ class WorkbenchStore(Protocol):
         status: str,
     ) -> str: ...
 
-    async def set_sandbox_status(self, sandbox_id: str, status: str) -> None: ...
+    async def set_sandbox_status(
+        self,
+        sandbox_id: str,
+        status: str,
+        *,
+        revision: str,
+        previous: str | None = None,
+    ) -> None: ...
 
     async def active_credential(self, owner_actor_id: str) -> dict[str, Any] | None: ...
 

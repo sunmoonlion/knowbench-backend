@@ -393,3 +393,38 @@ async def test_late_instruction_debit_matches_its_attempt_among_sibling_charges(
             )
             is None
         )
+
+
+async def test_quote_uses_credential_authorized_for_the_requested_sandbox(db):
+    from test_workbench_ledger_db import seed
+
+    host, task_id, original, _ = await setup(db)
+    _, second, _ = await seed(db, root="/home/u/research/second")
+    async with host() as base:
+        task = await base.repo.get_task(task_id)
+        session = await base.repo.get_session(
+            str(task["session_id"]), owner_actor_id=OWNER
+        )
+        async with base.repo.transaction():
+            newer = await base.repo.add_credential(
+                owner_actor_id=OWNER,
+                provider=ROUTE.provider,
+                sandbox_id=second,
+                ciphertext="fixture",
+                hint="test",
+                base_url=ROUTE.base_url,
+            )
+        service = await InstructionRequests.for_account(
+            base.formal,
+            OWNER,
+            routes=[ROUTE],
+            model=ROUTE.model,
+            prices=PRICES,
+            default_url="",
+        )
+        assert (await service.account_quote(OWNER, session, "CNY"))[
+            "credential_id"
+        ] == str(original["id"])
+        assert (await service.account_quote(OWNER, {"sandbox_id": second}, "CNY"))[
+            "credential_id"
+        ] == str(newer["id"])

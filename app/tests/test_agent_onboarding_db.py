@@ -101,13 +101,22 @@ async def test_install_credential_use_limit_and_cleanup(db):
             await repo.create_agent_install_credential(
                 owner_actor_id=owner,
                 token_hash=token_hash,
+                release_snapshot={"release": {"version": "1.0.0"}},
                 expires_at=now + timedelta(minutes=10),
             )
             await repo.create_agent_install_credential(
                 owner_actor_id=owner,
                 token_hash=expired_hash,
+                release_snapshot={"release": {"version": "1.0.0"}},
                 expires_at=now - timedelta(seconds=1),
             )
+
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        assert await repo.agent_install_release(token_hash, now=now) == {
+            "release": {"version": "1.0.0"}
+        }
+        assert await repo.agent_install_release(expired_hash, now=now) is None
 
     async def consume():
         async with db() as session:
@@ -115,10 +124,15 @@ async def test_install_credential_use_limit_and_cleanup(db):
             async with repo.transaction():
                 return await repo.consume_agent_install_credential(token_hash, now=now)
 
-    assert len([row for row in await asyncio.gather(*(consume() for _ in range(7))) if row]) == 5
+    assert (
+        len(
+            [row for row in await asyncio.gather(*(consume() for _ in range(7))) if row]
+        )
+        == 5
+    )
     async with db() as session:
         repo = WorkbenchRepository(session)
         async with repo.transaction():
+            assert await repo.agent_install_release(token_hash, now=now) is None
             result = await repo.cleanup_agent_onboarding(now=now)
     assert result == {"pairings": 0, "install_credentials": 1}
-

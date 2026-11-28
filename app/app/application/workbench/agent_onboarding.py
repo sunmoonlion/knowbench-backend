@@ -238,13 +238,7 @@ class AgentOnboarding:
             ):
                 raise AgentPairingRejected("pairing request not found")
             now = datetime.now(UTC)
-            if row["status"] in ("pending", "approved") and row["expires_at"] <= now:
-                await self.repo.update_agent_pairing(
-                    pairing_id,
-                    expected_status=str(row["status"]),
-                    status="expired",
-                    token_ciphertext=None,
-                )
+            if await self._expire_pairing(pairing_id, row, now):
                 return {"status": "expired"}
             if row["status"] in ("pending", "approved"):
                 previous = row["last_polled_at"]
@@ -284,6 +278,17 @@ class AgentOnboarding:
                 }
             return {"status": str(row["status"])}
 
+    async def _expire_pairing(self, pairing_id, row, now) -> bool:
+        if row["status"] in ("pending", "approved") and row["expires_at"] <= now:
+            await self.repo.update_agent_pairing(
+                pairing_id,
+                expected_status=str(row["status"]),
+                status="expired",
+                token_ciphertext=None,
+            )
+            return True
+        return False
+
     async def cancel(self, *, pairing_id: str, device_secret: str) -> dict[str, str]:
         expected = secret_digest(device_secret)
         async with self.repo.transaction():
@@ -292,7 +297,9 @@ class AgentOnboarding:
                 row["device_secret_hash"], expected
             ):
                 raise AgentPairingRejected("pairing request not found")
-            if row["status"] == "pending" and row["expires_at"] > datetime.now(UTC):
+            if await self._expire_pairing(pairing_id, row, datetime.now(UTC)):
+                return {"status": "expired"}
+            if row["status"] == "pending":
                 await self.repo.update_agent_pairing(
                     pairing_id,
                     expected_status="pending",

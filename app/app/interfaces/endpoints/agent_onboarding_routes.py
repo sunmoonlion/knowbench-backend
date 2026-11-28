@@ -98,6 +98,12 @@ class CreatePairing(StrictBody):
         return normalized
 
 
+class ExpectedInstallRelease(StrictBody):
+    version: str = Field(min_length=1, max_length=128)
+    zip_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 class DeviceSecret(StrictBody):
     model_config = ConfigDict(extra="forbid", strict=True)
     device_secret: str = Field(
@@ -147,6 +153,18 @@ def _download_ready(settings) -> AgentDownload:
         raise AgentInstallUnavailable("agent download is not available")
     assert release.object_key is not None
     return release
+
+
+async def _issued_release(repo, credential: str) -> tuple[AgentDownload, str]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{40,64}", credential):
+        raise AgentInstallUnavailable("agent download is not available")
+    async with repo.transaction():
+        snapshot = await repo.agent_install_release(
+            install_digest(credential), now=datetime.now(UTC)
+        )
+    if not snapshot:
+        raise AgentInstallUnavailable("agent download is not available")
+    return AgentDownload.model_validate(snapshot["release"]), snapshot["template"]
 
 
 async def _consume_install_credential(repo, credential: str) -> dict[str, Any]:
@@ -305,15 +323,21 @@ async def deny_pairing_request(
 
 @owner_router.post("/workbench/agent/install-command")
 async def issue_agent_install_command(
+    expected: ExpectedInstallRelease | None = None,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
     require_workbench_enabled()
     settings = get_settings()
     try:
-        _download_ready(settings)
+        release = _download_ready(settings)
     except WorkbenchError as exc:
         raise _http(exc) from exc
+    if expected and any(
+        getattr(release, field) != value
+        for field, value in expected.model_dump().items()
+    ):
+        raise HTTPException(409, detail="agent_release_changed")
     owner = _actor(principal)
     if not await allow_install_issue(get_redis().client, owner):
         raise HTTPException(status_code=429, detail="slow_down")
@@ -325,6 +349,10 @@ async def issue_agent_install_command(
             owner_actor_id=owner,
             token_hash=install_digest(credential),
             expires_at=expires,
+            release_snapshot={
+                "release": release.model_dump(mode="json"),
+                "template": settings.workbench_agent_install_script_template,
+            },
         )
     script_url = (
         settings.web_frontend_base_url.rstrip("/")
@@ -351,10 +379,7 @@ async def agent_install_script(
     try:
         if request.query_params:
             raise AgentInstallUnavailable("query parameters are not supported")
-        release = _download_ready(settings)
-        template = settings.workbench_agent_install_script_template
-        if template is None:
-            raise AgentInstallUnavailable("agent installer template is invalid")
+        release, template = await _issued_release(workbench_store(session), credential)
         package_url = (
             settings.web_frontend_base_url.rstrip("/")
             + "/api/agent-install/"
@@ -403,7 +428,7 @@ async def agent_install_package(
             status_code=400, detail="agent_download_parameters_not_supported"
         )
     try:
-        release = _download_ready(settings)
+        release, _ = await _issued_release(workbench_store(session), credential)
     except WorkbenchError:
         raise HTTPException(
             status_code=404, detail="agent_download_unavailable"
@@ -426,12 +451,6 @@ async def agent_install_package(
     except InvalidRange:
         headers["Content-Range"] = f"bytes */{release.size_bytes}"
         return Response(status_code=416, headers=headers)
-    try:
-        await _consume_install_credential(workbench_store(session), credential)
-    except WorkbenchError:
-        raise HTTPException(
-            status_code=404, detail="agent_download_unavailable"
-        ) from None
     assert release.object_key is not None
     identity = ReleaseIdentity(
         release.object_key,
@@ -441,24 +460,32 @@ async def agent_install_package(
     )
     from app.bootstrap.workbench import agent_release_store
 
+    if not settings.workbench_agent_release_storage:
+        raise HTTPException(503, detail="agent_download_unavailable")
     store = agent_release_store(settings)
+    transfer = None
     try:
         object_etag = await run_in_threadpool(store.check, identity)
         length = span[1] - span[0] + 1 if span else release.size_bytes
         headers["Content-Length"] = str(length)
         if span:
             headers["Content-Range"] = f"bytes {span[0]}-{span[1]}/{release.size_bytes}"
-        if request.method == "HEAD":
+        if request.method != "HEAD":
+            transfer = await run_in_threadpool(store.open, identity, object_etag, span)
+        await _consume_install_credential(workbench_store(session), credential)
+        if transfer is None:
             await run_in_threadpool(store.close)
             return Response(headers=headers, media_type="application/zip")
-        transfer = await run_in_threadpool(store.open, identity, object_etag, span)
+    except WorkbenchError as exc:
+        await run_in_threadpool(transfer.close if transfer is not None else store.close)
+        raise HTTPException(404, detail="agent_download_unavailable") from exc
     except ReleaseUnavailable as exc:
         await run_in_threadpool(store.close)
         raise HTTPException(
             status_code=503, detail="agent_download_unavailable"
         ) from exc
-    except Exception:
-        await run_in_threadpool(store.close)
+    except BaseException:
+        await run_in_threadpool(transfer.close if transfer is not None else store.close)
         raise
     request_id = getattr(
         request.state, "agent_onboarding_log_id", "request-id-unavailable"

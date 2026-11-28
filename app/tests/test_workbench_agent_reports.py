@@ -45,12 +45,11 @@ class AuditStore(Store):
         assert owner_actor_id == self.row["owner_actor_id"] and for_update
         return self.row
 
-    async def list_record_events(self, **kwargs):
-        return self.events
+    async def permission_report_payloads(self, *, session_id, report_id):
+        return [e["payload"] for e in self.events if e["payload"]["id"] == report_id]
 
-    async def append_event_once(self, **event):
-        if not any(e["payload"]["id"] == event["payload"]["id"] for e in self.events):
-            self.events.append(event)
+    async def append_event(self, **event):
+        self.events.append(event)
 
 
 class AuditRelay(Relay):
@@ -126,7 +125,7 @@ async def test_a_database_error_never_sends_receipt():
     async def fail(**kwargs):
         raise RuntimeError("fixture rollback")
 
-    store.append_event_once = fail
+    store.append_event = fail
     with pytest.raises(RuntimeError):
         await MachineSync(Stores(store), relay).sync_once()
     assert relay.receipts == []
@@ -136,9 +135,15 @@ async def test_unsandboxed_request_can_only_record_a_denial():
     item = envelope()
     item["report"]["scope"]["sandbox"] = "danger-full-access"
     store = AuditStore(item)
-    assert await record_agent_reports(
-        store, owner=OWNER_A, environment_id=store.row["environment_id"], reports=[item]
-    ) == []
+    assert (
+        await record_agent_reports(
+            store,
+            owner=OWNER_A,
+            environment_id=store.row["environment_id"],
+            reports=[item],
+        )
+        == []
+    )
     item["report"]["decision"] = "denied"
     assert await record_agent_reports(
         store, owner=OWNER_A, environment_id=store.row["environment_id"], reports=[item]
