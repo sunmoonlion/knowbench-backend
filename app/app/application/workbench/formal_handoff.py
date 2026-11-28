@@ -20,7 +20,7 @@ RECEIPT = "task/formal_handoff_received"
 
 class Handoff(Strict):
     review_digest: Digest
-    gap: str = Field(min_length=1, max_length=2000)
+    gap: str = Field(min_length=1, max_length=2000, pattern=r"\S")
     reference: MethodRef | None = None
     plan_digest: Digest | None = None
     htn_tree: dict[str, Any] | None = Field(

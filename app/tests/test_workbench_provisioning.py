@@ -379,13 +379,34 @@ async def test_global_sandbox_cap(make_client, db):  # noqa: F811
         "/api/workbench/credentials",
         json={"provider": "kimi", "api_key": "sk-live-key-aaaa1111"},
     )
-    assert (await a.post("/api/workbench/sandboxes/provision")).status_code == 200
+    # Pause A after capacity approval but before its sandbox row exists.
+    entered, resume = asyncio.Event(), asyncio.Event()
+    original_upsert = provisioner.upsert
 
-    b = client_for(B)
-    await b.post(
-        "/api/workbench/credentials",
-        json={"provider": "kimi", "api_key": "sk-live-key-bbbb2222"},
-    )
+    async def paused_upsert(user, spec):
+        entered.set()
+        await resume.wait()
+        return await original_upsert(user, spec)
+
+    provisioner.upsert = paused_upsert
+    allocating = asyncio.create_task(a.post("/api/workbench/sandboxes/provision"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        b = client_for(B)
+        await b.post(
+            "/api/workbench/credentials",
+            json={"provider": "kimi", "api_key": "sk-live-key-bbbb2222"},
+        )
+        blocked = await b.post("/api/workbench/sandboxes/provision")
+        assert (
+            blocked.status_code == 409
+            and blocked.json()["code"] == "relay_identity_busy"
+        )
+    finally:
+        resume.set()
+        provisioner.upsert = original_upsert
+        first = await allocating
+    assert first.status_code == 200, first.text
     r = await b.post("/api/workbench/sandboxes/provision")
     assert r.status_code == 503 and r.json()["code"] == "sandbox_capacity_full"
     assert "sk-live" not in r.text

@@ -343,7 +343,8 @@ async def test_selected_http_call_still_uses_the_existing_data_grant(
     async with client(served) as http:
         allowed = await http.post(URL, headers=bearer(), json=message)
     assert allowed.json()["result"]["isError"] is False
-    claims, forwarded = kb.function_call
+    assert len(kb.seen) == 1
+    claims, forwarded = kb.seen[0]
     assert claims["call_id"] == forwarded["call_id"]
     assert forwarded["arguments"] == {
         "scope": "run",
@@ -362,7 +363,7 @@ async def test_selected_http_call_still_uses_the_existing_data_grant(
             "do not match the registered schema"
             in refused.json()["result"]["content"][0]["text"]
         )
-    assert not kb.seen
+    assert kb.seen == [(claims, forwarded)]
 
 
 @pytest.mark.parametrize(

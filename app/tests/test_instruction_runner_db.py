@@ -300,6 +300,21 @@ async def test_runner_resumes_prepared_worker_and_reclaims_settled_attempt(db):
         """),
             {"id": attempt["id"]},
         )
+    async with s.host() as svc, svc.repo.transaction():
+        await svc.repo.session.execute(
+            text("delete from workbench_commands where sandbox_id=:id"),
+            {"id": s.sandbox},
+        )
+        await svc.repo.session.execute(
+            text("""insert into workbench_sandbox_leases
+            (sandbox_id, runner_id, expires_at, acquired_at, updated_at)
+            values (:id, 'previous-runner', now()-interval '1 minute', now(), now())
+            on conflict (sandbox_id) do update set runner_id=excluded.runner_id, expires_at=excluded.expires_at"""),
+            {"id": s.sandbox},
+        )
+        assert s.sandbox in await svc.repo.acquire_leases(
+            runner_id="fresh-runner", ttl_seconds=30
+        )
     await s.driver.reconcile([s.sandbox])
     assert s.units.deleted and not s.units.reclaimed
     async with s.host() as svc:

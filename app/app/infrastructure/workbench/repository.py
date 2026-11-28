@@ -2629,7 +2629,9 @@ class WorkbenchRepository(
 
     # ---------- relay identity (0004 动态登记) ----------
     @asynccontextmanager
-    async def relay_identity_operation(self, owner_actor_id: str):
+    async def relay_identity_operation(
+        self, owner_actor_id: str, *, limit_new_sandboxes: bool = False
+    ):
         # Separate connection: identity records must commit before external side effects,
         # while the operation lock survives those commits. Transaction end releases the
         # advisory lock even on cancellation; no session lock can leak into the pool.
@@ -2645,6 +2647,22 @@ class WorkbenchRepository(
                 raise RelayIdentityBusy(
                     "An identity operation is in progress; refresh status"
                 )
+            if limit_new_sandboxes:
+                # Existing owners can update independently. New allocations hold the
+                # shared guard until the provisioned row commits, including the
+                # external request. Avoid blocking other pool users while waiting.
+                admitted = await guard.scalar(
+                    text("""SELECT CASE WHEN EXISTS (
+                        SELECT 1 FROM workbench_sandboxes
+                        WHERE owner_actor_id = :owner AND provisioned AND status <> 'deleted'
+                    ) THEN true ELSE pg_try_advisory_xact_lock(
+                        hashtextextended('workbench-sandbox-capacity', 0)) END"""),
+                    {"owner": owner_actor_id},
+                )
+                if not admitted:
+                    raise RelayIdentityBusy(
+                        "A sandbox allocation is in progress; retry"
+                    )
             yield
 
     async def create_agent_pairing(
@@ -3172,12 +3190,18 @@ class WorkbenchRepository(
         """给有待办命令、或有委托要人推（排队、在跑、等审批）的沙箱拿租约：没有租约、租约已过期、或本来就是这个名字的才拿得到；返回拿到的沙箱 id。哪些是本进程新拿到的，由 runner 自己记（0034）。"""
         r = await self.session.execute(
             text(
-                """with wanted as (
+                f"""with wanted as (
                      select sandbox_id from workbench_commands where status = 'pending'
                      union
                      -- 有委托要人推的沙箱：上一任 runner 死了或同名重启了，没有待办命令也要拿下来对账（0034）
                      select s.sandbox_id from workbench_tasks t join workbench_sessions s on s.id = t.session_id
                      where t.state in ('RECEIVED', 'VALIDATING', 'QUEUED', 'RUNNING', 'WAITING')
+                     union
+                     select s.sandbox_id from workbench_attempts a
+                     join workbench_tasks t on t.id=a.task_id
+                     join workbench_sessions s on s.id=t.session_id
+                     where {INSTRUCTION_CLEANUP}
+                       and coalesce((a.refs->'instruction_unit'->>'retry_after')::bigint, 0) <= extract(epoch from now())
                    ), taken as (
                      insert into workbench_sandbox_leases (sandbox_id, runner_id, expires_at, acquired_at, updated_at)
                      select sandbox_id, :r, now() + make_interval(secs => :ttl), now(), now() from wanted

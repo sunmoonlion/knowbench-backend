@@ -48,6 +48,7 @@ from app.domain.workbench.errors import (
     UserDataUnavailable,
     WorkbenchError,
 )
+from app.domain.workbench.platform_tools import DOCUMENT_NEED_FIELDS, FACT_NEED_OPTIONS
 from app.domain.workbench.states import TASK_TERMINAL
 from app.domain.workbench.supply_prematch import (
     CONDITIONS,
@@ -865,8 +866,14 @@ async def _ask_the_tester(
 def _asked_need(asked: dict[str, Any], number: int, n: int) -> AnyDataRequest:
     if not isinstance(asked, dict):
         raise DataChoiceInvalid("each item is an object")
-    if asked.get("metrics"):
+    if "metrics" in asked:
+        if any(key in asked for key in DOCUMENT_NEED_FIELDS):
+            raise DataChoiceInvalid(
+                "Request figures and document evidence in separate needs"
+            )
         return _asked_facts(asked, number, n)
+    if any(key in asked for key in FACT_NEED_OPTIONS):
+        raise DataChoiceInvalid("Financial figure options require a metrics need")
     period = asked.get("period") or {"kind": "none"}
     reason = str(asked.get("reason") or "").strip()
     source_query = asked.get("source_query")

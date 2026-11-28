@@ -957,11 +957,23 @@ async def test_a_claimed_task_left_unchecked_is_picked_up_by_the_sweep_later(
 
 
 async def test_find_subject_looks_up_the_directory() -> None:
+    from jsonschema import Draft202012Validator
+
+    from app.domain.workbench.native_functions import find_subject_revision
+
+    contract = find_subject_revision().contract
+    validator = Draft202012Validator(contract.output_schema)
+    assert "found" in contract.description
     supply = FakeSupply()
-    assert await find_subject(supply, "茅台") == {
-        "found": [{"subject": "600519.SH", "name": "贵州茅台"}]
-    }
+    found = await find_subject(supply, "茅台")
+    validator.validate(found)
+    assert found == {"found": [{"subject": "600519.SH", "name": "贵州茅台"}]}
     assert supply.looked_up == ["茅台"]
+
+    supply.configured = lambda: False
+    unavailable = await find_subject(supply, "茅台")
+    validator.validate(unavailable)
+    assert unavailable["found"] == [] and unavailable["message"]
 
 
 async def test_the_list_shows_the_prematch_and_the_confirmation_keeps_it(

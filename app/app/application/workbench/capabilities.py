@@ -49,6 +49,7 @@ from app.domain.workbench.method_capabilities import (
     matches_tool,
 )
 from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.platform_tools import DATA_PLANNING_TOOLS
 from app.domain.workbench.projects import ExecutionScene
 from app.domain.workbench.skill_dependencies import (
     missing_skill_dependencies,
@@ -630,7 +631,7 @@ class Capabilities:
                 "step_id": attempt["step_id"]
                 if attempt and special
                 else (step.step_id if step else None),
-                "declared_tools": ["describe_items"]
+                "declared_tools": sorted(DATA_PLANNING_TOOLS)
                 if special and attempt_step == "data-plan"
                 else ([] if special or not step else list(step.tools)),
                 "managed_bindings_supported": True,

@@ -689,3 +689,29 @@ async def test_the_data_tools_are_relayed_to_knowbase(
     finally:
         await close(runner)
         await fake.close()
+
+
+def test_request_data_preserves_documents_and_figures_as_independent_needs():
+    from jsonschema import Draft202012Validator
+
+    from app.application.workbench.expert_data import _asked_need
+    from app.domain.workbench.errors import DataChoiceInvalid
+    from app.domain.workbench.native_functions import BINDINGS
+    from app.domain.workbench.platform_tools import TOOLS
+
+    schema = Draft202012Validator(TOOLS["request_data"]["inputSchema"])
+    common = {
+        "subject": "600519.SH",
+        "period": {"kind": "fixed", "start": "2025-01-01", "end": "2025-12-31"},
+        "reason": "核对原数和页码",
+    }
+    document = common | {"doc_type": "annual_report", "reading": "pages"}
+    figures = common | {"metrics": ["IS.REVENUE"]}
+    assert schema.is_valid({"task": "review", "needs": [document, figures]})
+    assert not schema.is_valid({"task": "review", "needs": [document | figures]})
+    assert _asked_need(document, 1, 1).reading == "pages"
+    assert list(_asked_need(figures, 1, 2).codes) == ["IS.REVENUE"]
+    with pytest.raises(DataChoiceInvalid, match="separate needs"):
+        _asked_need(document | figures, 1, 1)
+    for name in ("request_data", "find_subject"):
+        assert BINDINGS[name] == ("knowbench", LOCAL_REVISIONS[name]().version)

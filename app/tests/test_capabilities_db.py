@@ -687,6 +687,27 @@ async def test_method_panel_projects_frozen_tools_without_chat_authority(db):
         assert key not in projection["method"]["declared_tools"]
 
 
+async def test_data_plan_panel_lists_the_tools_available_in_that_step(db):
+    from test_method_tools_db import context
+
+    _, sid, _, _, attempt = await context(db, planning=True)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await session.execute(
+                text("UPDATE workbench_attempts SET step_id='data-plan' WHERE id=:id"),
+                {"id": attempt},
+            )
+        method = (await service(repo).selection(OWNER, sid))["method"]
+        assert method["step_id"] == "data-plan"
+        assert method["declared_tools"] == [
+            "describe_items",
+            "discover_source_tools",
+            "find_subject",
+            "request_data",
+        ]
+
+
 async def test_stable_gateway_does_not_renew_pending_approval_or_cancelled_turn(db):
     from tool_invocation_support import observe_capability_call
 

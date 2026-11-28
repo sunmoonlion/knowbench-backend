@@ -153,3 +153,15 @@ def test_package_version_matches_the_formal_release() -> None:
     api = (ROOT / "app/bootstrap/api.py").read_text()
     assert 'version="2.0.0"' not in api
     assert f'version("{name}")' in api
+
+
+def test_market_retirement_precheck_uses_every_terminal_task_state() -> None:
+    from app.domain.workbench.states import TASK_TERMINAL
+
+    sql = (ROOT / "scripts/retire_legacy_finance_pins.sql").read_text()
+    predicate = re.search(r"t\.state NOT IN \(([^)]+)\)", sql)
+    assert predicate
+    assert set(re.findall(r"'([A-Z]+)'", predicate[1])) == {
+        state.value for state in TASK_TERMINAL
+    }
+    assert "AND t.pack_digest = v.digest" in sql

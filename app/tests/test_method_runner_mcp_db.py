@@ -160,8 +160,8 @@ async def test_runner_observation_authorizes_only_the_current_method_data_grant(
         await drive(runner)
         assert len(responses) == 1
         assert responses[0]["result"]["isError"] is False, responses
-        assert not kb.seen
-        claims, request = kb.function_call
+        assert len(kb.seen) == 1
+        claims, request = kb.seen[0]
         assert (
             claims["aud"] == "knowbase-function"
             and claims["call_id"] == request["call_id"]

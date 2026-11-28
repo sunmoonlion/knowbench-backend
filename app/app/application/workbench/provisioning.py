@@ -283,7 +283,9 @@ class SandboxProvisioning:
         return sb_id, result
 
     async def provision(self, owner: str) -> dict[str, Any]:
-        async with self.repo.relay_identity_operation(owner):
+        async with self.repo.relay_identity_operation(
+            owner, limit_new_sandboxes=bool(self.global_limit)
+        ):
             return await self._provision(owner)
 
     async def _provision(self, owner: str) -> dict[str, Any]:

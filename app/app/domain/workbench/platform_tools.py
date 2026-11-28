@@ -6,6 +6,19 @@ from typing import Any
 from app.domain.workbench.compute import NAME as COMPUTE_NAME
 from app.domain.workbench.data_request import DataRequest
 
+DATA_PLANNING_TOOLS = frozenset(
+    {"find_subject", "describe_items", "request_data", "discover_source_tools"}
+)
+DOCUMENT_NEED_FIELDS = (
+    "doc_type",
+    "source_query",
+    "reading",
+    "topics",
+    "edition",
+    "max_count",
+)
+FACT_NEED_OPTIONS = ("consolidation", "duration", "disclosure")
+
 _TASK = {
     "type": "string",
     "description": "The task id given in the step instructions.",
@@ -119,7 +132,7 @@ TOOLS: dict[str, dict[str, Any]] = {
         "description": (
             "Look up the code of a listed company by its name, short name, pinyin "
             "initials or code (A shares on the Shanghai, Shenzhen and Beijing "
-            "exchanges). Returns [{subject, name}], best match first. Use the "
+            "exchanges). Returns an object with a found array of {subject, name}, best match first. The array may be empty, with an optional message. Use the "
             "subject as the code in request_data; never write a code from memory."
         ),
         "inputSchema": {
@@ -183,6 +196,26 @@ TOOLS: dict[str, dict[str, Any]] = {
                             "essential": {"type": "boolean"},
                             "reason": {"type": "string", "maxLength": 500},
                         },
+                        "oneOf": [
+                            {
+                                "required": ["metrics"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": [key]}
+                                        for key in DOCUMENT_NEED_FIELDS
+                                    ]
+                                },
+                            },
+                            {
+                                "required": ["doc_type"],
+                                "not": {
+                                    "anyOf": [
+                                        {"required": [key]}
+                                        for key in ("metrics", *FACT_NEED_OPTIONS)
+                                    ]
+                                },
+                            },
+                        ],
                         "required": ["reason"],
                     },
                 },

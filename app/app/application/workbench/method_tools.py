@@ -23,13 +23,10 @@ from app.application.workbench.tool_invocation import (
     verify_tool_invocation,
 )
 from app.domain.workbench.errors import RecordsRefused
+from app.domain.workbench.platform_tools import DATA_PLANNING_TOOLS
 from app.domain.workbench.states import AttemptState, TaskState, Wheel
 
 SERVER = "sunmoon_workbench"
-# Data planning may discover requirements, but cannot execute author methods.
-DATA_PLANNING_TOOLS = frozenset(
-    {"find_subject", "describe_items", "request_data", "discover_source_tools"}
-)
 
 
 async def capture_attempt(repo: WorkbenchStore, thread_id: str):

@@ -655,7 +655,7 @@ class WorkbenchStore(Protocol):
     ) -> bool: ...
 
     def relay_identity_operation(
-        self, owner_actor_id: str
+        self, owner_actor_id: str, *, limit_new_sandboxes: bool = False
     ) -> AbstractAsyncContextManager[None]:
         """Reject concurrent identity mutations; hold through external registration and commits."""
         ...

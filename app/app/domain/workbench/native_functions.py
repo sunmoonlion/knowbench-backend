@@ -172,12 +172,15 @@ def _array(items):
     return {"type": "array", "items": items}
 
 
+_LOCAL_VERSIONS = {"find_subject": 2, "request_data": 2}
+
+
 def _task_revision(name, permission, output):
     spec = TOOLS[name]
     return FunctionRevision.build(
         "knowbench",
         name,
-        1,
+        _LOCAL_VERSIONS.get(name, 1),
         ServiceFunction(
             operation=name,
             description=spec["description"],
@@ -243,7 +246,7 @@ LOCAL_REVISIONS = {
     PROJECT_READ: project_read_revision,
 }
 BINDINGS = {
-    **{name: ("knowbench", 1) for name in LOCAL_REVISIONS},
+    **{name: ("knowbench", _LOCAL_VERSIONS.get(name, 1)) for name in LOCAL_REVISIONS},
     **{name: ("knowbase", 1) for name in DATA_QUERIES if name != "read_method_input"},
 }
 

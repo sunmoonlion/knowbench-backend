@@ -33,7 +33,7 @@ BEGIN
         SELECT FROM workbench_tasks t
         WHERE t.pack_source = 'knowmart'
           AND split_part(t.profile_id, '@', 1) = 'knowbot:' || market_id::text
-          AND (t.state NOT IN ('SUCCEEDED', 'CANCELLED', 'FAILED') OR NOT EXISTS (
+          AND (t.state NOT IN ('SUCCEEDED', 'CANCELLED', 'FAILED', 'REJECTED') OR NOT EXISTS (
               SELECT FROM retired_finance_versions v
               WHERE t.profile_id = 'knowbot:' || market_id::text || '@' || v.version
                 AND t.pack_digest = v.digest
