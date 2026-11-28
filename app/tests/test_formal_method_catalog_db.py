@@ -289,3 +289,34 @@ async def test_history_includes_only_owned_session_roots_and_applies_limit(db):
         assert await repo.list_formal_session_calls(OTHER, sid) == []
         with pytest.raises(ValueError):
             await repo.list_formal_session_calls(OWNER, sid, limit=51)
+
+
+def test_connection_preview_checks_depth_on_both_paths():
+    from types import SimpleNamespace as Node
+
+    from app.application.workbench.formal_method_catalog import connection_preview
+
+    def reference(name):
+        return Node(method_id=name, version=1, digest=name)
+
+    def group(*children):
+        steps = [
+            Node(inputs={}, always_required=True, candidates=[reference(child)])
+            for child in children
+        ]
+        return Node(
+            procedure=Node(kind="orchestration", steps=steps), access_requirements=[]
+        )
+
+    definitions = {"leaf": Node(procedure=Node(kind="tool"), access_requirements=[])}
+    definitions["shared"] = group("leaf")
+    for level in range(15):
+        definitions[str(level)] = group(str(level + 1) if level < 14 else "shared")
+
+    def complete(order):
+        definitions["root"] = group(*order)
+        versions = {(name, 1, name): value for name, value in definitions.items()}
+        return connection_preview(reference("root"), versions)["complete"]
+
+    assert complete(["shared", "0"]) is False
+    assert complete(["0", "shared"]) is False

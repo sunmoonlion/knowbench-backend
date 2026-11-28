@@ -585,6 +585,10 @@ class WorkbenchStore(Protocol):
         self, *, session_id: str, status: str | None = "pending"
     ) -> list[dict[str, Any]]: ...
 
+    async def expire_session_wait(
+        self, *, session_id: str, interaction_id: str, token: str
+    ) -> bool: ...
+
     async def consume_interaction(
         self, interaction_id: str, *, response: dict, responded_by: str
     ) -> bool:
@@ -889,8 +893,13 @@ class WorkbenchStore(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def finish_command(
-        self, command_id: str, *, error: str | None = None
-    ) -> None: ...
+        self,
+        command_id: str,
+        *,
+        claimed_by: str,
+        claimed_at: datetime,
+        error: str | None = None,
+    ) -> bool: ...
 
     async def requeue_stale_commands(self, *, older_than_seconds: int = 300) -> int: ...
 
@@ -1095,7 +1104,9 @@ class WorkbenchStore(Protocol):
         """Refresh recorded-case costs from task budgets, including late charges."""
         ...
 
-    async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
+    async def list_test_cases(
+        self, run_id: str, *, case_id: str | None = None
+    ) -> list[dict[str, Any]]:
         """按顺序。不带 outputs（大，要的用 get_test_case_outputs）。"""
         ...
 

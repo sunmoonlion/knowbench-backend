@@ -13,7 +13,6 @@ from app.domain.workbench.formal_execution import (
 )
 from app.domain.workbench.formal_method_execution_generated import (
     FormalMethodExecutionRequest,
-    bounded_json,
 )
 from app.domain.workbench.formal_model import PROBE_TOOL, validate_model_call
 from app.domain.workbench.states import (
@@ -226,7 +225,6 @@ class FormalModelExecution:
                                 snapshot_for_task(task).draft,
                                 call["detail"].get("result") or {},
                             )
-                            bounded_json(outputs)
                             outcome, detail = "succeeded", ""
                         except ValueError as exc:
                             detail = str(exc)

@@ -205,7 +205,7 @@ class SandboxLink:
             str, asyncio.Future
         ] = {}  # request_id -> future(response dict: decision / answer / answers)
         # 等人答的那一问属于哪条线：专家被取消时，只放掉这条线上的（同一台机器上别的对话不动）
-        self.pending_threads: dict[str, str] = {}
+        self.pending_threads: dict[str, tuple[str, str | None]] = {}
         # 被「取消委托」放掉的那几问：它们不再等人，也不再去关待办（待办已随委托关掉）
         self.released: set[str] = set()
         # 那一轮已经结束、还挂着的审批与提问：放掉，不当成用户停下，也不再去中断那条线（新的一轮）
@@ -465,17 +465,12 @@ class SandboxLink:
 
     def require_idle(self, thread_id: str, state: Any) -> None:
         thread = (state or {}).get("thread")
-        if not isinstance(thread, dict):
-            raise RuntimeError("cannot verify idle thread for capabilities")
-        status = (thread.get("status") or {}).get("type")
-        # 0.155.1 paginated threads reject includeTurns. Metadata status is the
-        # live authority; legacy test/older peers can provide a complete turn list.
-        legacy_idle = (
-            status is None
-            and isinstance(thread.get("turns"), list)
-            and all(t.get("status") != "inProgress" for t in thread["turns"])
-        )
-        if thread_id in self.active_turns or not (status == "idle" or legacy_idle):
+        if (
+            not isinstance(thread, dict)
+            or thread.get("id") != thread_id
+            or (thread.get("status") or {}).get("type") != "idle"
+            or thread_id in self.active_turns
+        ):
             raise RuntimeError(
                 "cannot change stage tools during an active or unknown turn"
             )
@@ -617,13 +612,13 @@ class SandboxLink:
                 waiter["reported"] = True
             return None
         turn_id = params.get("turnId") or self.active_turns.get(thread_id or "")
-        so_far = usage
-        if turn_id:
-            so_far = self.turn_usage.get(turn_id, Usage()) + usage
+        previous = self.turn_usage.get(turn_id, Usage()) if turn_id else Usage()
+        so_far = previous + usage
         prices = self.runner.prices
         model = self.models.get(thread_id or "") or None
         price = prices.of(model)
-        call, turn = cost_of(usage, price), cost_of(so_far, price)
+        turn, prior = cost_of(so_far, price), cost_of(previous, price)
+        call = turn - prior if turn is not None and prior is not None else None
         return {
             **params,
             "cost": {
@@ -831,7 +826,7 @@ class SandboxLink:
                 if "planning_messages" in w:
                     messages = w["planning_messages"]
                     messages[item.get("id") or len(messages)] = item
-                else:
+                elif item.get("phase") != "commentary":
                     w["text"] = item["text"]
             # 这一轮用补丁改到的文件：成稿有没有写出来就看它（0015 §3.3）
             w["files"].extend(changed_paths(item))
@@ -847,20 +842,16 @@ class SandboxLink:
                 guard.usage((params.get("cost") or {}).get("turn"))
         elif method == "turn/completed":
             turn = params.get("turn") or {}
+            from app.application.workbench.turn import merge_turn_messages
+
+            items = turn.get("items") or []
             if "planning_messages" in w:
-                messages = w["planning_messages"]
-                completed = {
-                    item.get("id") or ("receipt", index): item
-                    for index, item in enumerate(turn.get("items") or [])
-                    if item.get("type") == "agentMessage" and item.get("text")
-                }
-                # A full completion may arrive without intermediate notifications.
-                # Some completions carry only the last item. Preserve prior fragments.
-                if messages.keys() <= completed.keys():
-                    messages = completed
-                else:
-                    messages.update(completed)
-                w["text"] = htn.turn_answer(messages.values())
+                messages = merge_turn_messages(w["planning_messages"].values(), items)
+                w["text"] = htn.turn_answer(messages)
+            else:
+                for item in merge_turn_messages([], items):
+                    if item.get("phase") != "commentary":
+                        w["text"] = item["text"]
             w["interrupted"] = turn.get("status") == "interrupted"
             if turn.get("status") not in (None, "completed"):
                 error = turn.get("error") or {}
@@ -882,7 +873,7 @@ class SandboxLink:
             binding.set_result(False)
         if self.active_turns.get(thread_id) == turn_id:
             self.active_turns.pop(thread_id, None)
-        self._end_turn_waits(thread_id)
+        self._end_turn_waits(thread_id, turn_id)
 
     async def run_turn(
         self,
@@ -1471,10 +1462,7 @@ class SandboxLink:
 
     # ---- MCP 询问（elicitation）：Codex 在调 MCP 工具前向客户端要一次确认（user verification）----
     async def _on_elicitation(self, rid: Any, params: dict[str, Any]) -> None:
-        """表单式询问按 requestedSchema 用默认值答"accept"；url 式（OAuth）拒绝。
-
-        我们只挂自己的知识 MCP（0006），令牌在沙箱配置里已经把它限定为可信；用户的第三方 MCP 第一期不接。
-        """
+        """Bound forms require an explicit response to each business choice."""
         client = self.client
         assert client is not None
         mode = params.get("mode")
@@ -1495,35 +1483,17 @@ class SandboxLink:
                         waiter["probe_guard"].failure = "unexpected_elicitation"
                 await client.respond(rid, {"action": "decline"})
                 return
-        log.info(
-            "mcp elicitation sandbox=%s mode=%s message=%s meta=%s",
-            self.sandbox_id,
-            mode,
-            str(params.get("message"))[:200],
-            json.dumps(params.get("_meta"), ensure_ascii=False, default=str)[:300],
-        )
-        if mode == "url":
+        log.info("MCP elicitation received sandbox=%s", self.sandbox_id)
+        from app.domain.workbench.elicitation import form_questions, form_reply
+
+        schema = params.get("requestedSchema")
+        questions = form_questions(schema) if mode == "form" and session else []
+        if not questions:
             await client.respond(rid, {"action": "decline"})
             return
-        schema = params.get("requestedSchema") or {}
-        content: dict[str, Any] = {}
-        props = schema.get("properties") if isinstance(schema, dict) else None
-        for name, spec in (props or {}).items():
-            if not isinstance(spec, dict):
-                continue
-            if "default" in spec and spec["default"] is not None:
-                content[name] = spec["default"]
-            elif spec.get("type") == "boolean":
-                content[name] = True
-            elif spec.get("enum"):
-                content[name] = spec["enum"][0]
-            elif spec.get("oneOf"):
-                content[name] = spec["oneOf"][0].get("const")
-            elif spec.get("type") in ("number", "integer"):
-                content[name] = spec.get("minimum", 0)
-            else:
-                content[name] = ""
-        await client.respond(rid, {"action": "accept", "content": content})
+        answers = await self._user_answers(rid, {**params, "questions": questions})
+        if answers is not None:
+            await client.respond(rid, form_reply(schema, answers))
 
     # ---- 服务端请求：审批与提问，按方向盘和策略路由（approval.md 工具级）----
     async def on_server_request(
@@ -1797,15 +1767,15 @@ class SandboxLink:
             subject=subject,
         )
         where = {"task": None, "wheel": session["wheel"], "pack": None, "step": None}
-        opened = await self._open_ask(
+        opened, (answer, source) = await self._ask_and_wait(
+            request_id,
+            params["threadId"],
+            params.get("turnId"),
             session=session,
             where=where,
             kind="tool_approval",
             prompt=prompt,
             waiting_reason=WaitingReason.APPROVAL,
-        )
-        answer, source = await self._wait_answer(
-            request_id, thread_id=params["threadId"]
         )
         if source == "timeout":
             await self._settle_timeout(session=session, where=where, opened=opened)
@@ -1885,6 +1855,24 @@ class SandboxLink:
         attempt = await repo.get_attempt(str(active))
         return (attempt.get("refs") or {}).get("runtime_turn_id") == params["turnId"]
 
+    async def _ask_and_wait(self, request_id, thread_id, turn_id, **question):
+        if request_id in self.pending_approvals:
+            raise RuntimeError("A native request with this identity is already pending")
+        self.pending_approvals[request_id] = asyncio.get_running_loop().create_future()
+        if thread_id:
+            self.pending_threads[request_id] = (
+                thread_id,
+                turn_id or self.active_turns.get(thread_id),
+            )
+        try:
+            opened = await self._open_ask(**question)
+            return opened, await self._wait_answer(request_id, thread_id=thread_id)
+        finally:
+            self.pending_approvals.pop(request_id, None)
+            self.pending_threads.pop(request_id, None)
+            self.released.discard(request_id)
+            self.turn_over.discard(request_id)
+
     async def _open_ask(
         self,
         *,
@@ -1948,10 +1936,14 @@ class SandboxLink:
     ) -> tuple[dict[str, Any] | None, str]:
         """等网页上的答复。等不到按「停下」处理，不按拒绝（approval.md「问人怎么问」第 5 条）。
         委托被取消时这一问被放掉：回 (None, "cancelled")，按「停下」收尾。"""
-        fut: asyncio.Future = asyncio.get_running_loop().create_future()
-        self.pending_approvals[request_id] = fut
+        fut = self.pending_approvals.get(request_id)
+        if fut is None:
+            fut = asyncio.get_running_loop().create_future()
+            self.pending_approvals[request_id] = fut
         if thread_id:
-            self.pending_threads[request_id] = thread_id
+            self.pending_threads.setdefault(
+                request_id, (thread_id, self.active_turns.get(thread_id))
+            )
             self._wait_started(thread_id)
         try:
             answer = await asyncio.wait_for(fut, timeout=timeout)
@@ -2031,11 +2023,11 @@ class SandboxLink:
             total += asyncio.get_running_loop().time() - since
         return total
 
-    def _end_turn_waits(self, thread_id: str) -> None:
+    def _end_turn_waits(self, thread_id: str, turn_id: str) -> None:
         """那一轮结束了：它里面还挂着的审批与提问放掉（Codex 那边已经不等了）。"""
         for request_id, owner in list(self.pending_threads.items()):
             fut = self.pending_approvals.get(request_id)
-            if owner == thread_id and fut is not None and not fut.done():
+            if owner == (thread_id, turn_id) and fut is not None and not fut.done():
                 self.turn_over.add(request_id)
                 fut.set_result(None)
 
@@ -2046,7 +2038,7 @@ class SandboxLink:
         n = 0
         for request_id, owner in list(self.pending_threads.items()):
             fut = self.pending_approvals.get(request_id)
-            if owner == thread_id and fut is not None and not fut.done():
+            if owner[0] == thread_id and fut is not None and not fut.done():
                 self.released.add(request_id)
                 fut.set_result(None)
                 n += 1
@@ -2057,6 +2049,28 @@ class SandboxLink:
     ) -> None:
         """超时：把待办关掉、Task 从 WAITING 放回，再由停下的那一支收尾。"""
         async with self.runner.stores() as repo:
+            if where["task"] is None:
+                session_id = str(session["id"])
+                async with repo.transaction():
+                    if not await repo.expire_session_wait(
+                        session_id=session_id,
+                        interaction_id=opened["interaction_id"],
+                        token=opened["token"],
+                    ):
+                        return
+                    event = await repo.append_event(
+                        session_id=session_id,
+                        kind="interaction",
+                        event_type="interaction/expired",
+                        payload={
+                            "interaction_id": opened["interaction_id"],
+                            "reason": "timeout",
+                        },
+                    )
+                await self.runner.publisher.publish(
+                    self.runner.publisher.session_channel(session_id), event
+                )
+                return
             try:
                 await Ledger(repo).respond_interaction(
                     opened["interaction_id"],
@@ -2126,15 +2140,15 @@ class SandboxLink:
             options=options,
             subject=subject,
         )
-        opened = await self._open_ask(
+        opened, (response, source) = await self._ask_and_wait(
+            request_id,
+            thread_id_of(params),
+            params.get("turnId"),
             session=session,
             where=where,
             kind="tool_approval",
             prompt=prompt,
             waiting_reason=WaitingReason.APPROVAL,
-        )
-        response, source = await self._wait_answer(
-            request_id, thread_id=thread_id_of(params)
         )
         if source == "turn_over":
             await self._answer_dead_request(rid, {"decision": "decline"})
@@ -2211,6 +2225,11 @@ class SandboxLink:
     async def _on_user_input(self, rid: Any, params: dict[str, Any]) -> None:
         client = self.client
         assert client is not None
+        result = await self._user_answers(rid, params)
+        if result is not None:
+            await client.respond(rid, result)
+
+    async def _user_answers(self, rid: Any, params: dict[str, Any]):
         request_id = f"{self.sandbox_id}:{rid}"
         questions = [
             {
@@ -2235,8 +2254,7 @@ class SandboxLink:
         async with self.runner.stores() as repo:
             session_id = await self.session_for_thread(thread_id_of(params), repo)
             if session_id is None or not questions:
-                await client.respond(rid, empty)
-                return
+                return empty
             session = await repo.get_session(session_id)
             from app.domain.workbench.formal_execution import is_formal_model
 
@@ -2248,8 +2266,7 @@ class SandboxLink:
                         "probe_guard"
                     ):
                         waiter["probe_guard"].failure = "unexpected_question"
-                await client.respond(rid, empty)
-                return
+                return empty
             where = await self._where(repo, session)
             wheel, task, pack, step = (
                 where["wheel"],
@@ -2260,10 +2277,10 @@ class SandboxLink:
             task_id = str(task["id"]) if task else None
             step_id = step.step_id if step else None
             refuse = None
-            if wheel == Wheel.runtime:
-                if any(q["is_secret"] for q in questions):
-                    refuse = "secret"  # 任务运行时不能向用户收口令
-                elif pack is not None and step is not None:
+            if any(q["is_secret"] for q in questions):
+                refuse = "secret"
+            elif wheel == Wheel.runtime:
+                if pack is not None and step is not None:
                     policy = pack.policy_for(step)
                     if policy.questions == "deny":
                         refuse = "policy"
@@ -2301,8 +2318,7 @@ class SandboxLink:
                 await self.runner.publisher.publish(
                     self.runner.publisher.session_channel(session_id), ev
                 )
-                await client.respond(rid, empty)
-                return
+                return empty
         prompt = InteractionPrompt(
             title="Codex 想问你",
             question=questions[0]["question"]
@@ -2323,20 +2339,21 @@ class SandboxLink:
                 },
             },
         )
-        opened = await self._open_ask(
+        thread_id = thread_id_of(params)
+        opened, (response, source) = await self._ask_and_wait(
+            request_id,
+            thread_id,
+            params.get("turnId"),
             session=session,
             where=where,
             kind="question",
             prompt=prompt,
             waiting_reason=WaitingReason.INPUT,
         )
-        thread_id = thread_id_of(params)
-        response, source = await self._wait_answer(request_id, thread_id=thread_id)
         if source == "connection_lost":
             return
         if source == "turn_over":
-            await self._answer_dead_request(rid, empty)
-            return
+            return empty
         if response is None:
             if source != "cancelled":
                 await self._settle_timeout(session=session, where=where, opened=opened)
@@ -2346,13 +2363,12 @@ class SandboxLink:
                     "source": "timeout",
                     "step_id": step_id,
                 }
-            await client.respond(rid, empty)
             if thread_id:
                 try:
                     await self.interrupt(thread_id)
                 except Exception:  # noqa: BLE001
                     log.exception("interrupt after question timeout failed")
-            return
+            return empty
         answers_in = (
             response.get("answers")
             or (response.get("answer") or {}).get("answers")
@@ -2366,7 +2382,6 @@ class SandboxLink:
             }
             for q in questions
         }
-        # 秘密答案只透传：不落账
         async with self.runner.stores() as repo:
             async with repo.transaction():
                 ev = await repo.append_event(
@@ -2390,7 +2405,7 @@ class SandboxLink:
         await self.runner.publisher.publish(
             self.runner.publisher.session_channel(str(session["id"])), ev
         )
-        await client.respond(rid, {"answers": answers})
+        return {"answers": answers}
 
     def resolve_approval(self, request_id: str, response: dict[str, Any] | str) -> bool:
         fut = self.pending_approvals.get(request_id)
@@ -2532,17 +2547,19 @@ class Runner:
     async def expire_approvals(self, sandbox_id: str, reason: str) -> None:
         async with self.stores() as repo:
             async with repo.transaction():
-                await self._expire_approvals(repo, sandbox_id, reason)
+                events = await self._expire_approvals(repo, sandbox_id, reason)
+        await self._publish_expirations(events)
 
     async def _expire_approvals(
         self, repo: WorkbenchStore, sandbox_id: str, reason: str
-    ) -> int:
+    ) -> list:
         """这个沙箱上没答的工具审批作废（app-server 那边的请求已随连接消失，Codex 会重问）。"""
         if self.capabilities is not None:
             await repo.capability_revoke_sandbox(sandbox_id)
         expired = await repo.expire_pending_tool_approvals(
             sandbox_id=sandbox_id, reason=reason
         )
+        events = []
         for it in expired:
             ev = await repo.append_event(
                 session_id=it["session_id"],
@@ -2555,18 +2572,23 @@ class Runner:
                 },
                 task_id=it["task_id"],
             )
-            await self.publisher.publish(
-                self.publisher.session_channel(it["session_id"]), ev
-            )
-        return len(expired)
+            events.append((it["session_id"], ev))
+        return events
 
-    async def _take_over(self, repo: WorkbenchStore, sandbox_id: str) -> None:
+    async def _publish_expirations(self, events):
+        for session_id, event in events:
+            await self.publisher.publish(
+                self.publisher.session_channel(session_id), event
+            )
+
+    async def _take_over(self, repo: WorkbenchStore, sandbox_id: str) -> list:
         """本进程新拿到一个沙箱（首次、接管、或同名的上一任留下的）：作废它上面没答的工具审批。
         委托有没有人推，由每轮对账管（`_reconcile`）。"""
         expired = await self._expire_approvals(
             repo, sandbox_id, "runner restarted; Codex will ask again"
         )
-        log.info("took over sandbox=%s expired_approvals=%d", sandbox_id, expired)
+        log.info("took over sandbox=%s expired_approvals=%d", sandbox_id, len(expired))
+        return expired
 
     def _busy(self, task_id: str) -> bool:
         running = self.driving.get(task_id)
@@ -2769,8 +2791,9 @@ class Runner:
                 )
                 # 本进程新拿到的都要接管，含同名上一任留下的：runner 名字是固定配置，重启后同名，
                 # 只看库里的租约会把上一任的当成自己的（2026-10-19 K19 第 1 稿卡死，0034）
+                expirations = []
                 for sandbox_id in sorted(held - self.leased):
-                    await self._take_over(repo, sandbox_id)
+                    expirations.extend(await self._take_over(repo, sandbox_id))
                 lost = self.leased - held
                 source_tasks = (
                     await repo.active_source_tasks(held)
@@ -2779,6 +2802,7 @@ class Runner:
                 )
                 commands = await repo.claim_commands(claimed_by=self.runner_id)
             self.leased = held
+        await self._publish_expirations(expirations)
         for task_id in source_tasks:
             if not self._busy(task_id):
                 self.driving[task_id] = asyncio.create_task(
@@ -2809,8 +2833,13 @@ class Runner:
                 error = f"{type(exc).__name__}: {exc}"[:2000]
             async with self.stores() as repo:
                 async with repo.transaction():
-                    await repo.finish_command(cmd["id"], error=error)
-                    if error:
+                    accepted = await repo.finish_command(
+                        cmd["id"],
+                        claimed_by=cmd["claimed_by"],
+                        claimed_at=cmd["claimed_at"],
+                        error=error,
+                    )
+                    if accepted and error:
                         ev = await repo.append_event(
                             session_id=cmd["session_id"],
                             kind="error",
@@ -2821,9 +2850,10 @@ class Runner:
                                 "error": error,
                             },
                         )
-                        await self.publisher.publish(
-                            self.publisher.session_channel(cmd["session_id"]), ev
-                        )
+                if accepted and error:
+                    await self.publisher.publish(
+                        self.publisher.session_channel(cmd["session_id"]), ev
+                    )
             self.handled += 1
         return len(commands)
 

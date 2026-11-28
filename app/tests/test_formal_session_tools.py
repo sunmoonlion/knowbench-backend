@@ -1,6 +1,5 @@
 """Formal selection identity and composite tool schemas, without model calls."""
 
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -9,10 +8,10 @@ from pydantic import ValidationError
 
 from app.application.workbench.formal_session_tools import (
     formal_tool_key,
-    method_input_schema,
 )
 from app.domain.workbench.capabilities import SelectionPut
 from app.domain.workbench.formal_method_generated import MethodRef, ValueSlot
+from app.domain.workbench.formal_slot_schema import slot_object_schema
 
 
 def ref(**update):
@@ -55,7 +54,7 @@ def test_nested_slot_local_references_keep_their_meaning_when_exposed_as_object(
             "on_missing": "fail",
         }
     )
-    schema = method_input_schema(SimpleNamespace(inputs={"message": slot}))
+    schema = slot_object_schema({"message": slot})
     Draft202012Validator.check_schema(schema)
     validator = Draft202012Validator(schema)
     assert validator.is_valid({"message": "ok"})
@@ -81,6 +80,35 @@ def test_schema_reference_relocation_does_not_rewrite_literal_values():
             "on_missing": "fail",
         }
     )
-    schema = method_input_schema(SimpleNamespace(inputs={"value": slot}))
+    schema = slot_object_schema({"value": slot})
     assert Draft202012Validator(schema).is_valid({"value": literal})
     assert schema["properties"]["value"] == slot.schema_
+
+
+def test_instruction_model_and_host_accept_same_slot_reference():
+    from types import SimpleNamespace
+
+    from app.domain.workbench.formal_execution import validate_values
+    from app.domain.workbench.instruction_requests import (
+        instruction_job,
+        leaf_responses_body,
+    )
+
+    slot = ValueSlot.model_validate(
+        {
+            "description": "核验状态",
+            "required": True,
+            "meaning": {},
+            "on_missing": "fail",
+            "schema": {"$defs": {"state": {"type": "string"}}, "$ref": "#/$defs/state"},
+        }
+    )
+    step = SimpleNamespace(instructions="返回状态", outputs={"status": slot})
+    request = SimpleNamespace(
+        draft=SimpleNamespace(definition=SimpleNamespace(procedure=step))
+    )
+    job = instruction_job(request, "核对", {})
+    wire = leaf_responses_body(job, "example", 100)
+    output = {"status": "通过"}
+    assert validate_values(step.outputs, output) == output
+    Draft202012Validator(wire["text"]["format"]["schema"]).validate(output)

@@ -256,9 +256,10 @@ async def test_record_pairing_samples(monkeypatch, scenario, replaces):
 async def test_install_ticket_serves_issued_script_and_retries_after_storage_recovers(
     monkeypatch,
 ):
-    from app.application.workbench.agent_download import ReleaseUnavailable
     from fastapi import HTTPException
     from starlette.requests import Request
+
+    from app.application.workbench.agent_download import ReleaseUnavailable
 
     settings = _settings()
     issued = settings.workbench_agent_download

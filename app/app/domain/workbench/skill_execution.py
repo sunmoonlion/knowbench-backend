@@ -9,11 +9,20 @@ from pathlib import PurePosixPath
 from app.domain.workbench.script_contract_generated import ScriptArguments, ScriptResult
 
 
+def unique_output_object(pairs):
+    obj = dict(pairs)
+    if len(obj) != len(pairs):
+        raise ValueError("Ambiguous duplicate output field")
+    return obj
+
+
+def is_script_path(path: str) -> bool:
+    return PurePosixPath(path).suffix in (".py", ".sh", ".js", ".mjs", ".cjs")
+
+
 def script_tool(asset: dict) -> dict | None:
     paths = [
-        f["path"]
-        for f in asset["detail"].get("files", [])
-        if PurePosixPath(f["path"]).suffix in (".py", ".sh", ".js", ".mjs", ".cjs")
+        f["path"] for f in asset["detail"].get("files", []) if is_script_path(f["path"])
     ]
     if not paths:
         return None
@@ -191,14 +200,8 @@ def method_script_outputs(receipt: dict) -> dict:
     if len(raw) > 64000:
         raise ValueError("Script result exceeds the formal output limit")
 
-    def unique_object(pairs):
-        obj = dict(pairs)
-        if len(obj) != len(pairs):
-            raise ValueError("Ambiguous duplicate script output field")
-        return obj
-
     try:
-        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_object)
+        value = json.loads(raw.decode("utf-8"), object_pairs_hook=unique_output_object)
         bounded_json(value)
     except RecursionError as exc:
         raise ValueError("Script output exceeds the JSON nesting limit") from exc

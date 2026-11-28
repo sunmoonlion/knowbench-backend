@@ -733,35 +733,35 @@ class FormalOrchestrationExecution:
                     _, step, frozen, step_inputs = await step_context(
                         repo, task, attempt
                     )
-                    try:
-                        outputs = validate_step_outputs(
-                            step,
-                            fixed_step_outputs(
-                                frozen.draft, call["detail"].get("result") or {}
-                            ),
-                        )
-                        bounded_json(outputs)
-                        leaf_v0 = evaluate_v0_checks(
-                            frozen.draft.definition, step_inputs, outputs
-                        )
-                        failed_leaf_v0 = [r for r in leaf_v0 if not r.passed]
-                        if failed_leaf_v0:
-                            raise ValueError(
-                                "v0_validation_failed: "
-                                + "; ".join(
-                                    f"{r.promise_id}:{r.detail}" for r in failed_leaf_v0
-                                )
+            outputs = None
+            if status == "succeeded":
+                try:
+                    outputs = validate_step_outputs(
+                        step,
+                        fixed_step_outputs(
+                            frozen.draft, call["detail"].get("result") or {}
+                        ),
+                    )
+                    bounded_json(outputs)
+                    leaf_v0 = evaluate_v0_checks(
+                        frozen.draft.definition, step_inputs, outputs
+                    )
+                    failed_leaf_v0 = [r for r in leaf_v0 if not r.passed]
+                    if failed_leaf_v0:
+                        raise ValueError(
+                            "v0_validation_failed: "
+                            + "; ".join(
+                                f"{r.promise_id}:{r.detail}" for r in failed_leaf_v0
                             )
-                    except (ValueError, TypeError, RecursionError) as exc:
-                        return await self.finish(
-                            task_id,
-                            str(active),
-                            "failed",
-                            detail=str(exc),
-                            observed=call,
                         )
-                else:
-                    outputs = None
+                except (ValueError, TypeError, RecursionError) as exc:
+                    return await self.finish(
+                        task_id,
+                        str(active),
+                        "failed",
+                        detail=str(exc),
+                        observed=call,
+                    )
             if status == "awaiting_approval":
                 denial = await self.pending_denial(task_id, str(active), call_id)
                 if denial is not None:

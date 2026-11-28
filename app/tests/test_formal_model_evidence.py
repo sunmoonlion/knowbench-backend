@@ -540,3 +540,29 @@ async def test_approval_denial_can_finish_the_model_turn_without_successful_tool
     proof = await collect(world)
     assert proof["validated"], proof["errors"]
     # Approval truth is verified by collect_case_evidence, not this provenance helper.
+
+
+async def test_usage_after_completion_matches_catalog_and_collector():
+    from app.application.workbench.formal_method_catalog import _verify_model_case
+    from app.domain.workbench.formal_execution import snapshot_for_task
+
+    world = facts()
+    usage = next(
+        event for event in world.events if event["type"] == "thread/tokenUsage/updated"
+    )
+    usage["cursor"] = max(event["cursor"] for event in world.events) + 1
+    world.events.sort(key=lambda event: event["cursor"])
+    proof = await collect(world)
+    assert proof["validated"], proof["errors"]
+    item = {
+        "model_provenance": proof,
+        "model_turn_ids": ["turn"],
+        "snapshot_digest": world.task["pack_digest"],
+    }
+    result = SimpleNamespace(
+        attempt_id=world.attempt["id"],
+        model_trace=SimpleNamespace(**world.result["model_trace"]),
+    )
+    _verify_model_case(
+        world.request, snapshot_for_task(world.task), item, result, set()
+    )

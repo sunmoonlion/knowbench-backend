@@ -166,3 +166,53 @@ async def test_planner_readback_reassembles_fragments_in_turn_order(receipt):
         },
     )
     assert json.loads(w["text"]) == {"action": "inspect", "methods": ["m2"]}
+
+
+async def test_turn_completion_merges_unidentified_stream_fragments():
+    from app.application.workbench.turn import merge_turn_messages
+
+    part = {"type": "agentMessage", "text": "A"}
+    last = {"type": "agentMessage", "text": "B"}
+    assert merge_turn_messages([part, part], [part, part, last]) == [part, part, last]
+    for planning in (True, False):
+        link = SandboxLink(SimpleNamespace(), {"id": "sandbox"})
+        w = waiter("thread")
+        if planning:
+            w["planning_messages"] = {}
+        link.turn_waiters = {"turn": w}
+        item = {"type": "agentMessage", "text": '{"decision":"gap"}'}
+        if planning:
+            link._feed_turn_waiters(
+                "item/completed", {"threadId": "thread", "turnId": "turn", "item": item}
+            )
+        link._feed_turn_waiters(
+            "turn/completed",
+            {
+                "threadId": "thread",
+                "turn": {"id": "turn", "status": "completed", "items": [item]},
+            },
+        )
+        import json
+
+        assert json.loads(w["text"]) == json.loads(item["text"])
+
+
+def test_mcp_form_uses_the_selected_values():
+    from app.domain.workbench.elicitation import form_questions, form_reply
+
+    schema = {
+        "type": "object",
+        "required": ["publish"],
+        "properties": {"publish": {"type": "boolean", "default": True}},
+    }
+    assert [o["label"] for o in form_questions(schema)[0]["options"]] == [
+        "true",
+        "false",
+    ]
+    assert form_reply(schema, {"answers": {"publish": {"answers": ["false"]}}}) == {
+        "action": "accept",
+        "content": {"publish": False},
+    }
+    assert form_reply(schema, {"answers": {"publish": {"answers": []}}}) == {
+        "action": "decline"
+    }

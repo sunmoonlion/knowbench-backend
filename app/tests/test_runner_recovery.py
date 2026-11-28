@@ -29,16 +29,25 @@ async def test_rolled_back_takeover_is_repeated_on_retry():
 
     repo.transaction = transaction
     runner = Runner(stores, connector=None, publisher=None, runner_id="local")
-    runner._take_over = AsyncMock()
+    observed = []
+    runner._take_over = AsyncMock(return_value=[("session", {"kind": "expired"})])
+
+    async def publish(events):
+        assert commits == [True]
+        observed.extend(events)
+
+    runner._publish_expirations = publish
     runner._reconcile = AsyncMock(return_value=[])
     try:
         await runner.run_once()
     except RuntimeError as exc:
         assert str(exc) == "queue temporarily unavailable"
-    assert commits == []
+    assert commits == [] and observed == []
     await runner.run_once()
     assert commits == [True]
-    assert runner._take_over.await_count == 2
+    assert runner._take_over.await_count == 2 and observed == [
+        ("session", {"kind": "expired"})
+    ]
 
 
 async def test_lost_link_records_disconnect():
@@ -126,3 +135,22 @@ async def test_malformed_error_completes_pending_request():
     assert pending.done()
     with pytest.raises(AppServerError, match="Malformed"):
         pending.result()
+
+
+async def test_native_answer_can_arrive_before_opened_notification_returns():
+    runner = Runner(None, connector=None, publisher=None, runner_id="r")
+    link = SandboxLink(runner, {"id": "sandbox"})
+    link.active_turns["thread"] = "new"
+
+    async def open_question(**kwargs):
+        link._forget_turn("thread", "old")
+        assert link.resolve_approval("request", {"decision": "accept"})
+        return {"interaction_id": "question"}
+
+    link._open_ask = open_question
+    opened, answer = await link._ask_and_wait("request", "thread", "new")
+    assert opened["interaction_id"] == "question" and answer == (
+        {"decision": "accept"},
+        "user",
+    )
+    assert not link.pending_approvals and not link.pending_threads

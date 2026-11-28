@@ -96,6 +96,10 @@ class StepProgressGuard:
             or (isinstance(result, dict) and result.get("isError") is True)
             or (kind == "commandExecution" and item.get("exitCode") != 0)
         )
+        if kind == "webSearch" and not (
+            item.get("query") or item.get("action") or result
+        ):
+            return
         signature = fingerprint(
             {
                 "type": kind,
@@ -108,6 +112,9 @@ class StepProgressGuard:
                 "failed": failed,
                 "output": item.get("aggregatedOutput"),
                 "changes": item.get("changes"),
+                "web_search": [item.get("query"), item.get("action")]
+                if kind == "webSearch"
+                else None,
             }
         )
         count = self.results.get(signature, 0) + 1

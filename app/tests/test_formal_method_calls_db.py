@@ -420,3 +420,23 @@ async def test_incubation_needs_no_listing_but_normal_use_requires_live_listing(
         monkeypatch.setattr(caps, "_check_before_send", withdraw_then_check)
         failed = await svc.decide(OWNER, child["id"], approval(child))
         assert failed["status"] == "failed" and not remote.calls
+
+
+async def test_self_review_samples_for_registered_versions_outlive_temporary_case_files(
+    db,
+):
+    from datetime import UTC, datetime, timedelta
+
+    from formal_method_use_support import admitted
+
+    from app.application.workbench.test_runs import KnowbotTestConductor
+    from app.bootstrap.workbench import workbench_stores
+
+    frozen, _, _, factory, _ = await admitted(db)
+    async with db() as session:
+        service = factory(WorkbenchRepository(session)).formal_sources
+        before = await service.self_review_outputs("author", frozen.reference)
+        assert before["samples"]
+        future = datetime.now(UTC) + timedelta(days=31)
+        await KnowbotTestConductor(workbench_stores(db), now=lambda: future).cleanup()
+        assert await service.self_review_outputs("author", frozen.reference) == before

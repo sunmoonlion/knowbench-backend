@@ -329,6 +329,19 @@ def conversation_usage(
         )
         turn["calls"] += 1
         turn["usage"] = turn["usage"] + usage
+        recorded_total = _recorded(noted.get("turn"))
+        if (
+            turn_id
+            and spent is not None
+            and recorded_total is not None
+            and turn["currency"] == currency
+            and turn["cost"] is not None
+            and Usage.from_json(noted.get("turn_tokens")) == turn["usage"]
+            and recorded_total >= turn["cost"]
+            and abs(recorded_total - turn["cost"] - spent) <= CENT
+        ):
+            # Older producers rounded each notification independently.
+            spent = recorded_total - turn["cost"]
         turn["at"] = event.get("created_at")
         everything = everything + usage
         if turn["currency"] != currency:

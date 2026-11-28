@@ -32,6 +32,7 @@ from app.domain.workbench.formal_method_execution_generated import (
 )
 from app.domain.workbench.formal_method_generated import Orchestration
 from app.domain.workbench.formal_method_plan_generated import review_group
+from app.domain.workbench.skill_execution import is_script_path
 from app.domain.workbench.skill_package import (
     delivery_files,
     skill_manifest_digest,
@@ -160,7 +161,7 @@ class FormalMethods:
             )
         ]
         for file in detail.get("files", []):
-            if file["path"].endswith((".py", ".sh", ".js", ".mjs", ".cjs")):
+            if is_script_path(file["path"]):
                 entries.append(
                     FormalMethodSource(
                         **common,

@@ -138,3 +138,17 @@ def test_image_bytes_round_trip_and_opaque_binary_only_returns_metadata():
     assert raw["media_type"] == "application/octet-stream"
     assert raw["size"] == len(binary) and "message" in raw
     assert {"text", "image_base64"}.isdisjoint(raw)
+
+
+def test_script_and_resource_paths_share_one_directory_tree():
+    from app.domain.workbench.skill_execution import is_script_path
+
+    assert is_script_path("jobs/run.py")
+    assert not is_script_path("jobs/.py")
+    assert unpack_skill(
+        archive({"SKILL.md": "entry", "assets/data": "rows", "jobs/run.py": "pass"})
+    )
+    with pytest.raises(CapabilityError, match="also a directory: assets"):
+        unpack_skill(
+            archive({"SKILL.md": "entry", "assets/data": "rows", "assets": "table"})
+        )

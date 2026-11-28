@@ -7,6 +7,7 @@ from decimal import Decimal
 from pydantic import ConfigDict, StrictInt
 
 from app.domain.workbench.capabilities import CapabilityError, digest
+from app.domain.workbench.formal_slot_schema import slot_object_schema
 from app.domain.workbench.pricing import Price, PriceList, Usage, cost_of
 from app.domain.workbench.provider_url import validate_provider_base_url
 
@@ -79,12 +80,7 @@ def instruction_job(request, entry, arguments):
             "instructions": step.instructions,
             "arguments": arguments,
         },
-        "output_schema": {
-            "type": "object",
-            "properties": {k: v.schema_ for k, v in step.outputs.items()},
-            "required": [k for k, v in step.outputs.items() if v.required],
-            "additionalProperties": False,
-        },
+        "output_schema": slot_object_schema(step.outputs),
     }
 
 

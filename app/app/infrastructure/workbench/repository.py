@@ -1395,6 +1395,11 @@ class WorkbenchRepository(
             "select * from workbench_interactions i where session_id = :s"
             + (" and " + _visible_session_entry("i") if self.browser_view else "")
             + (" and status = :st" if status else "")
+            + (
+                " and (i.expires_at is null or i.expires_at > now())"
+                if status == "pending"
+                else ""
+            )
             + " order by created_at"
         )
         r = await self.session.execute(text(sql), {"s": session_id, "st": status})
@@ -1434,6 +1439,19 @@ class WorkbenchRepository(
         )
         found = r.scalar_one_or_none()
         return None if found is None else int(found)
+
+    async def expire_session_wait(
+        self, *, session_id: str, interaction_id: str, token: str
+    ) -> bool:
+        row = await self.session.scalar(
+            text("""
+            update workbench_interactions set status='expired', consumed_at=now()
+            where id=:id and session_id=:session and task_id is null
+                and status='pending' and token_hash=:digest returning id
+        """),
+            {"id": interaction_id, "session": session_id, "digest": token_hash(token)},
+        )
+        return row is not None
 
     async def consume_interaction(
         self, interaction_id: str, *, response: dict, responded_by: str
@@ -2234,16 +2252,21 @@ class WorkbenchRepository(
             {"s": session_id, "k": knowbase_session_id, "e": expires_at},
         )
 
-    async def list_test_cases(self, run_id: str) -> list[dict[str, Any]]:
+    async def list_test_cases(
+        self, run_id: str, *, case_id: str | None = None
+    ) -> list[dict[str, Any]]:
+        predicate = " AND case_id=:case_id" if case_id is not None else ""
         # 不带 outputs：每条最多 2 MB，推进器每 5 秒、knowlab 每次刷新都走这里（审读 10-19）
         r = await self.session.execute(
             text(
                 """select run_id, case_id, position, project_id, session_id, task_id,
                           result, waiting_since, waited_seconds,
                           partial_delivery->'report' as branch_report
-                   from workbench_test_cases where run_id = :r order by position"""
+                   from workbench_test_cases where run_id = :r"""
+                + predicate
+                + " order by position"
             ),
-            {"r": run_id},
+            {"r": run_id, "case_id": case_id},
         )
         return [dict(m) for m in r.mappings().all()]
 
@@ -2443,7 +2466,16 @@ class WorkbenchRepository(
                 """update workbench_test_cases set outputs = null
                    where outputs is not null and run_id in (
                      select run_id from workbench_test_runs
-                     where finished_at is not null and finished_at < :b)"""
+                     where finished_at is not null and finished_at < :b)
+                   and not exists (
+                     select 1 from workbench_formal_methods m
+                     join workbench_formal_validations v on v.run_id=m.run_id
+                       and v.owner_actor_id=m.owner_actor_id
+                     cross join lateral jsonb_array_elements(v.execution_evidence->'cases') c
+                     where m.run_id::text=workbench_test_cases.run_id and c->>'validated'='true'
+                       and c->>'outputs_digest' is not null and c->>'outputs' is null
+                       and c->'result'->>'case_id' || ':' || (c->'result'->>'repetition')=workbench_test_cases.case_id
+                   )"""
             ),
             {"b": finished_before},
         )
@@ -3557,14 +3589,27 @@ class WorkbenchRepository(
         return out
 
     async def finish_command(
-        self, command_id: str, *, error: str | None = None
-    ) -> None:
-        await self.session.execute(
+        self,
+        command_id: str,
+        *,
+        claimed_by: str,
+        claimed_at: datetime,
+        error: str | None = None,
+    ) -> bool:
+        row = await self.session.scalar(
             text(
-                """update workbench_commands set status = :st, finished_at = now(), error = :e where id = :id"""
+                """update workbench_commands set status = :st, finished_at = now(), error = :e
+                   where id = :id and status='claimed' and claimed_by=:by and claimed_at=:at returning id"""
             ),
-            {"st": "failed" if error else "done", "e": error, "id": command_id},
+            {
+                "st": "failed" if error else "done",
+                "e": error,
+                "id": command_id,
+                "by": claimed_by,
+                "at": claimed_at,
+            },
         )
+        return row is not None
 
     async def requeue_stale_commands(self, *, older_than_seconds: int = 300) -> int:
         r = await self.session.execute(

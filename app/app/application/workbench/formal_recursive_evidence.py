@@ -742,10 +742,9 @@ async def collect_recursive_evidence(repo, request, case, repetition, result) ->
                 "dependency_registration_mismatch",
             )
         run = await repo.get_test_run(str(request.run_id))
-        rows = await repo.list_test_cases(str(request.run_id))
-        cases = [
-            row for row in rows if row["case_id"] == case_key(case.case_id, repetition)
-        ]
+        cases = await repo.list_test_cases(
+            str(request.run_id), case_id=case_key(case.case_id, repetition)
+        )
         _require(
             run is not None
             and run["request"] == request.model_dump(mode="json", by_alias=True)

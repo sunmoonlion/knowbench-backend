@@ -541,3 +541,37 @@ async def test_market_candidate_uses_real_execution_and_current_review(db):
         service.business_reviews = ()
         with pytest.raises(Forbidden, match="coverage"):
             await service.delivery("author", version.reference, market=True)
+
+
+class LargeReceipt(StructuredRemote):
+    async def call(self, *args):
+        result = await super().call(*args)
+        result["structuredContent"]["receipt"] = "a" * 64001
+        return result
+
+
+@pytest.mark.asyncio
+async def test_host_size_checked_before_success(db):
+    case = {
+        "case_id": "large",
+        "input": {"values": {"to": "test@example.test"}},
+        "repetitions": 1,
+        "minimum_passes": 1,
+        "expected": {
+            "outcome": "succeeded",
+            "assertions": [{"kind": "contains", "pointer": "/receipt", "value": "aaa"}],
+        },
+    }
+    req, _, _, factory, conductor = await setup(db, remote=LargeReceipt(), cases=[case])
+    await conductor.advance(str(req.run_id))
+    await approve(db, req, factory, await status(db, req, factory))
+    await settle(conductor, req)
+    final = await status(db, req, factory)
+    result = final["cases"][0]
+    assert result["status"] == "failed" and result["outcome"] == "failed"
+    assert final["status"] == "failed"
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        assert (await repo.get_task(result["task_id"]))["state"] == "FAILED"
+        attempt = await repo.get_attempt(result["attempt_id"])
+        assert not attempt["refs"]["formal_result"].get("outputs")

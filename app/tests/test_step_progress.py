@@ -93,3 +93,20 @@ def test_stalled_seconds_counts_quiet_time_and_a_running_tool(monkeypatch):
     g.observe("item/completed", tool(), 501)
     assert g.stalled_seconds(501) == 0  # 拿到新结果：重新算
     assert g.failure is None
+
+
+def test_distinct_web_searches_make_visible_progress():
+    guard = StepProgressGuard(0)
+    for index, term in enumerate(("apples", "pears", "plums")):
+        guard.observe(
+            "item/completed",
+            {
+                "type": "webSearch",
+                "id": str(index),
+                "query": term,
+                "action": {"type": "search", "query": term},
+                "status": "completed",
+            },
+            index,
+        )
+    assert not guard.failure

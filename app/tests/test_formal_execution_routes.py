@@ -121,7 +121,9 @@ class ExecutionRepository(MemoryRepository):
         self.reads += 1
         return self.run if run_id == RUN else None
 
-    async def list_test_cases(self, run_id):
+    async def list_test_cases(self, run_id, *, case_id=None):
+        if case_id is not None and case_id != case_key("positive", 1):
+            return []
         return [{"case_id": case_key("positive", 1), "result": None}]
 
     async def test_run_spent(self, run_id):

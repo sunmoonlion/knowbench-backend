@@ -10,6 +10,7 @@ import posixpath
 import stat
 import zipfile
 import zlib
+from pathlib import PurePosixPath
 
 from pydantic import Field
 
@@ -73,6 +74,7 @@ def unpack_skill(encoded: str) -> dict:
     if len(raw) > MAX_ARCHIVE:
         raise CapabilityError("Skill ZIP exceeds 2 MiB")
     resources, files = {}, []
+    directories = set()
     total = 0
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -94,7 +96,11 @@ def unpack_skill(encoded: str) -> dict:
                     )
                 if entry.flag_bits & 1:
                     raise CapabilityError("Encrypted Skill archives are not supported")
+                directories.update(
+                    str(parent) for parent in PurePosixPath(path).parents
+                )
                 if entry.is_dir():
+                    directories.add(path)
                     continue
                 if path in resources:
                     raise CapabilityError("Duplicate Skill resource path")
@@ -140,6 +146,9 @@ def unpack_skill(encoded: str) -> dict:
         zlib.error,
     ) as exc:
         raise CapabilityError("Invalid or unsupported Skill ZIP") from exc
+    conflicts = directories.intersection(resources)
+    if conflicts:
+        raise CapabilityError(f"Skill resource is also a directory: {min(conflicts)}")
     if "SKILL.md" not in resources:
         raise CapabilityError("Skill ZIP must contain SKILL.md at its root")
     try:

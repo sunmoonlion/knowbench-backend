@@ -1649,8 +1649,7 @@ def test_token_ref(ref, expected):
         resolve_token_ref("vault:nope")
 
 
-async def test_mcp_elicitation_is_accepted_with_schema_defaults(db):
-    """Codex 调 MCP 工具前的 user-verification 询问：表单式按 schema 默认值答 accept，工具调用得以完成。"""
+async def test_unbound_mcp_form_cannot_choose_business_values(db):
     fake = FakeAppServer()
     await fake.start()
     try:
@@ -1685,9 +1684,7 @@ async def test_mcp_elicitation_is_accepted_with_schema_defaults(db):
                 )
 
         assert await wait_for(turn_done)
-        assert fake.elicitations == [
-            {"action": "accept", "content": {"confirm": True, "note": "ok"}}
-        ]
+        assert fake.elicitations == [{"action": "decline"}]
         async with db() as s:
             events = await WorkbenchRepository(s).list_events(session_id=sid)
         tool = next(
@@ -1696,7 +1693,7 @@ async def test_mcp_elicitation_is_accepted_with_schema_defaults(db):
             if e["type"] == "item/completed"
             and e["payload"]["item"].get("type") == "mcpToolCall"
         )
-        assert tool["payload"]["item"]["status"] == "completed"
+        assert tool["payload"]["item"]["status"] == "failed"
         for link in runner.links.values():
             await link.client.close()
     finally:
@@ -2335,3 +2332,31 @@ async def test_shutdown_joins_active_writers_before_releasing_lease(db, monkeypa
         await runner.run_forever()
     finally:
         await server.close()
+
+
+async def test_command_acknowledgement_belongs_to_its_claim(db):
+    fake = FakeAppServer()
+    await fake.start()
+    try:
+        await seed(db, fake)
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            async with repo.transaction():
+                await repo.acquire_leases(runner_id="r1", ttl_seconds=30)
+                (old,) = await repo.claim_commands(claimed_by="r1")
+            async with repo.transaction():
+                assert await repo.requeue_stale_commands(older_than_seconds=0) == 1
+            async with repo.transaction():
+                (fresh,) = await repo.claim_commands(claimed_by="r1")
+                assert fresh["id"] == old["id"]
+                assert not await repo.finish_command(
+                    old["id"],
+                    claimed_by="r1",
+                    claimed_at=old["claimed_at"],
+                    error="late",
+                )
+                assert await repo.finish_command(
+                    fresh["id"], claimed_by="r1", claimed_at=fresh["claimed_at"]
+                )
+    finally:
+        await fake.close()

@@ -639,10 +639,9 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             "plan_snapshot_identity_mismatch",
         )
         run = await repo.get_test_run(str(request.run_id))
-        rows = await repo.list_test_cases(str(request.run_id))
-        matches = [
-            row for row in rows if row["case_id"] == case_key(case.case_id, repetition)
-        ]
+        matches = await repo.list_test_cases(
+            str(request.run_id), case_id=case_key(case.case_id, repetition)
+        )
         _require(
             run["request"] == request.model_dump(mode="json", by_alias=True)
             and run["digest"] == request.fingerprint().removeprefix("sha256:")
@@ -661,9 +660,7 @@ async def collect_plan_evidence(repo, request, case, repetition, result) -> dict
             or ()
         )
         executed_plan = [
-            (idx, step)
-            for idx, step in enumerate(plan)
-            if step.id not in skipped_steps
+            (idx, step) for idx, step in enumerate(plan) if step.id not in skipped_steps
         ]
         _require(
             task["state"] == TaskState.SUCCEEDED

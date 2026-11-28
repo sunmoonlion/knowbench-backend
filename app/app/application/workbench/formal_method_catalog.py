@@ -40,6 +40,7 @@ from app.domain.workbench.formal_model import (
     PROBE_TOOL,
     verified_probe_profile,
 )
+from app.domain.workbench.formal_slot_schema import slot_object_schema
 from app.domain.workbench.instruction_requests import instruction_usage_cost
 from app.domain.workbench.method_authorization import MethodAuthorization
 from app.domain.workbench.pricing import Usage
@@ -60,8 +61,9 @@ def connection_preview(reference, definitions):
     def visit(key, ancestors):
         if key in ancestors or len(ancestors) > 16 or key not in definitions:
             return set(), set(), False
-        if key in memo:
-            return memo[key]
+        cache_key = (key, len(ancestors))
+        if cache_key in memo:
+            return memo[cache_key]
         nonlocal remaining
         if remaining <= 0:
             return set(), set(), False
@@ -74,8 +76,8 @@ def connection_preview(reference, definitions):
         procedure = definition.procedure
         if procedure.kind != "orchestration":
             services = set(requirements.values())
-            memo[key] = {url for url, _, _ in services}, services, True
-            return memo[key]
+            memo[cache_key] = {url for url, _, _ in services}, services, True
+            return memo[cache_key]
         required = set()
         possible = set()
         complete = True
@@ -100,7 +102,7 @@ def connection_preview(reference, definitions):
                 required.update(set.intersection(*choices))
         result = required, possible, complete
         if complete:
-            memo[key] = result
+            memo[cache_key] = result
         return result
 
     needed, possible, complete = visit(_version_key(reference), set())
@@ -299,16 +301,7 @@ def _verify_model_case(request, snapshot, item, result, identities):
         "Model execution isolation is not the reviewed probe scope",
     )
     procedure = direct_procedure(snapshot.draft, caller="model")
-    schema = {
-        "type": "object",
-        "properties": {name: slot.schema_ for name, slot in procedure.inputs.items()},
-        "required": [
-            name
-            for name, slot in procedure.inputs.items()
-            if slot.required or slot.on_missing != "omit"
-        ],
-        "additionalProperties": False,
-    }
+    schema = slot_object_schema(procedure.inputs)
     inventory = isolation["inventory"]
     _require(
         isinstance(inventory, list) and bool(inventory),
@@ -384,7 +377,7 @@ def _verify_model_case(request, snapshot, item, result, identities):
         price = event["cost"]
         _require(
             event["type"] == "thread/tokenUsage/updated"
-            and previous < event["cursor"] < end
+            and previous < event["cursor"]
             and price["priced"] is True
             and price["currency"] == request.execution.budget.currency
             and isinstance(price["model"], str)

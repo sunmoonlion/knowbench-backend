@@ -232,3 +232,39 @@ def test_totals_keep_call_currency_and_count_unpriced_old_token_events():
     ]
     old = conversation_usage([*events, event(3, None)], DEFAULT_PRICES)
     assert (old["calls"], old["tokens"]["total"], old["cost"]) == (3, 36, None)
+
+
+def test_small_usage_rounds_once_per_turn_and_session():
+    from app.application.workbench.runner import Runner, SandboxLink
+    from app.domain.workbench.pricing import conversation_usage
+
+    prices = parse_prices(
+        '{"models":{"example":{"input":"0.1","output":"4","cached_input":"0.1","cache_write":"1.25"}}}'
+    )
+    link = SandboxLink(
+        Runner(None, connector=None, runner_id="r", publisher=None, prices=prices),
+        {"id": "sandbox"},
+    )
+    link.models["thread"] = "example"
+    events = []
+    for count in range(1, 11):
+        event = link.priced(
+            "thread/tokenUsage/updated",
+            {
+                "threadId": "thread",
+                "turnId": "round",
+                "tokenUsage": {
+                    "total": {"inputTokens": count},
+                    "last": {"inputTokens": 1},
+                },
+            },
+        )
+        events.append({"payload": event})
+        link.turn_usage["round"] = Usage(input=count)
+        link.totals["thread"] = Usage(input=count)
+    expected = Decimal("0.000001")
+    assert sum(Decimal(e["payload"]["cost"]["call"]) for e in events) == expected
+    assert Decimal(conversation_usage(events, prices)["cost"]) == expected
+    for e in events:
+        e["payload"]["cost"]["call"] = "0.000000"
+    assert Decimal(conversation_usage(events, prices)["cost"]) == expected

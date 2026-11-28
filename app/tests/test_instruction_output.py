@@ -17,6 +17,7 @@ def test_parts_make_one_complete_object():
     [
         ([], "instruction_final_missing"),
         (["null"], "instruction_output_not_object"),
+        (['{"row":{"status":1,', '"status":2}}'], "instruction_final_invalid_json"),
         (["{}", "{}"], "instruction_final_invalid_json"),
         (["作者私有资料", "{}"], "instruction_final_invalid_json"),
         (["{}", None], "instruction_final_invalid"),

@@ -18,6 +18,7 @@ from app.domain.workbench.formal_model import (
     validate_model_call,
     verified_probe_profile,
 )
+from app.domain.workbench.formal_slot_schema import slot_object_schema
 from app.domain.workbench.pricing import cumulative_of, fresh_usage
 from app.domain.workbench.skill_execution import public_result
 
@@ -90,16 +91,7 @@ def _event_ref(event):
 
 def _isolation(value, task, attempt, call, snapshot):
     procedure = direct_procedure(snapshot.draft, caller="model")
-    schema = {
-        "type": "object",
-        "properties": {name: slot.schema_ for name, slot in procedure.inputs.items()},
-        "required": [
-            name
-            for name, slot in procedure.inputs.items()
-            if slot.required or slot.on_missing != "omit"
-        ],
-        "additionalProperties": False,
-    }
+    schema = slot_object_schema(procedure.inputs)
     if (
         not isinstance(value, dict)
         or not verified_probe_profile(value)
@@ -355,7 +347,10 @@ async def collect_model_provenance(
             [],
         )
         previous_usage = None
+        previous_cursor = started
         for event in usage:
+            require(event["cursor"] > previous_cursor, "model_usage_event_order")
+            previous_cursor = event["cursor"]
             price = event["payload"].get("cost") or {}
             require(
                 price.get("priced") is True

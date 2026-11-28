@@ -16,7 +16,10 @@ from app.domain.workbench.formal_method_admission_generated import (
     FormalMethodSource,
     FrozenFormalMethod,
 )
-from app.domain.workbench.formal_method_execution_generated import ModelProbeLimits
+from app.domain.workbench.formal_method_execution_generated import (
+    ModelProbeLimits,
+    bounded_json,
+)
 from app.domain.workbench.formal_method_generated import (
     MethodRef,
     Orchestration,
@@ -403,8 +406,14 @@ def structured_outputs(draft: FormalMethodDraft, result: dict) -> dict:
     if procedure.implementation.kind in ("skill_script", "registered_script"):
         from app.domain.workbench.skill_execution import method_script_outputs
 
-        return validate_values(procedure.outputs, method_script_outputs(result))
-    return validate_values(procedure.outputs, result.get("structuredContent"))
+        values = method_script_outputs(result)
+    else:
+        values = result.get("structuredContent")
+    try:
+        bounded_json(values)
+    except RecursionError as exc:
+        raise ValueError("Formal output exceeds JSON nesting limits") from exc
+    return validate_values(procedure.outputs, values)
 
 
 def fixed_step_outputs(draft: FormalMethodDraft, result: dict) -> dict:

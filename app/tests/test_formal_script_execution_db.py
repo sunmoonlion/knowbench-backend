@@ -970,3 +970,38 @@ async def test_stop_waits_for_usage_and_recovers_job_cleanup(db, missing):
         ]
         assert len(completed) == 1
         assert len(executor.calls) == 1 and executor.cancel.await_count == 2
+
+
+async def test_successful_script_with_delayed_cleanup(db):
+    from unittest.mock import AsyncMock
+
+    executor = Executor()
+    executor.cancel = AsyncMock(side_effect=[TimeoutError(), None])
+    req, factory, conductor, _ = await script_setup(db, executor)
+    await conductor.advance(str(req.run_id))
+    pending = await status(db, req, factory)
+    cid = pending["actions"][0]["call_id"]
+    await approve(db, req, factory, pending)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        await factory(repo).reconcile_scripts()
+        call = await repo.capability_call(OWNER, cid)
+        assert (
+            call["status"] == "succeeded" and call["detail"]["script_cleanup_pending"]
+        )
+        assert (await repo.script_budget_entries(cid))["consume"]["amount"] == Decimal(
+            "0.04"
+        )
+    await settle(conductor, req)
+    result = await status(db, req, factory)
+    assert result["cases"][0]["status"] == "passed"
+    assert result["status"] == "passed"
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        evidence = (await repo.formal_validation(OWNER, str(req.run_id)))[
+            "execution_evidence"
+        ]
+        assert evidence["cases"][0]["validated"]
+        await factory(repo).reconcile_scripts()
+        assert not await repo.pending_metered_scripts()
+    assert (await status(db, req, factory))["status"] == "passed"

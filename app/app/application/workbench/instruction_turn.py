@@ -4,9 +4,11 @@ import asyncio
 import json
 
 from app.application.ports.workbench import AppServerConnection
+from app.application.workbench.turn import merge_turn_messages
 from app.domain.workbench.capabilities import CapabilityError
 from app.domain.workbench.formal_model import PROBE_PASSIVE_ITEMS
 from app.domain.workbench.instruction_requests import INSTRUCTION_GUIDANCE
+from app.domain.workbench.skill_execution import unique_output_object
 
 
 class InstructionOutputError(CapabilityError):
@@ -19,7 +21,7 @@ def instruction_output(parts):
     if any(not isinstance(part, str) for part in parts):
         raise InstructionOutputError("instruction_final_invalid")
     try:
-        result = json.loads("".join(parts))
+        result = json.loads("".join(parts), object_pairs_hook=unique_output_object)
     except (ValueError, RecursionError):
         raise InstructionOutputError("instruction_final_invalid_json") from None
     if not isinstance(result, dict):
@@ -32,7 +34,7 @@ async def run_instruction_turn(
 ):
     completed = asyncio.Event()
     thread_id = turn_id = None
-    parts = []
+    messages = []
     failed = False
 
     def observe_turn(reply):
@@ -47,6 +49,14 @@ async def run_instruction_turn(
             return
         if method == "turn/completed" and params.get("turn", {}).get("id") == turn_id:
             failed |= params["turn"].get("status") != "completed"
+            items = params["turn"].get("items") or []
+            if any(
+                not isinstance(item, dict)
+                or item.get("type") not in PROBE_PASSIVE_ITEMS
+                for item in items
+            ):
+                failed = True
+            messages[:] = merge_turn_messages(messages, items)
             completed.set()
         if (
             method in ("item/started", "item/completed")
@@ -61,7 +71,7 @@ async def run_instruction_turn(
                 and item.get("type") == "agentMessage"
                 and item.get("phase") != "commentary"
             ):
-                parts.append(item.get("text"))
+                messages.append(item)
 
     async def deny(rid, method, params) -> None:
         nonlocal failed
@@ -133,7 +143,9 @@ async def run_instruction_turn(
         await asyncio.wait_for(completed.wait(), timeout=180)
         if failed:
             raise InstructionOutputError("instruction_turn_rejected")
-        return instruction_output(parts)
+        return instruction_output(
+            [item.get("text") for item in messages if item.get("phase") != "commentary"]
+        )
     finally:
         await client.close()
 

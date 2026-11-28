@@ -1579,6 +1579,16 @@ class Ledger:
             if it["task_id"] is not None:
                 task = await self.repo.get_task(str(it["task_id"]), for_update=True)
             it = await self.repo.get_interaction(interaction_id, for_update=True)
+            questions = ((it.get("prompt") or {}).get("subject") or {}).get(
+                "questions"
+            ) or []
+            if it["kind"] == "question" and any(
+                q.get("is_secret") or q.get("isSecret") for q in questions
+            ):
+                raise InteractionRejected(
+                    "private answers cannot use a stored question",
+                    interaction_id=interaction_id,
+                )
             if token_hash(token) != it["token_hash"]:
                 raise InteractionRejected(
                     "token mismatch", interaction_id=interaction_id

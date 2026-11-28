@@ -13,6 +13,7 @@ from app.domain.workbench.formal_model import (
     PROBE_TOOL,
     validate_model_call,
 )
+from app.domain.workbench.formal_slot_schema import slot_object_schema
 from app.domain.workbench.states import ATTEMPT_TERMINAL, TaskState
 
 
@@ -97,18 +98,7 @@ class FormalModelCalls:
             tool = {
                 "name": PROBE_TOOL,
                 "description": "Call this exact candidate method once using the supplied test inputs. User approval is required. Its result, not model prose, is the method output.",
-                "inputSchema": {
-                    "type": "object",
-                    "properties": {
-                        k: slot.schema_ for k, slot in procedure.inputs.items()
-                    },
-                    "required": [
-                        k
-                        for k, slot in procedure.inputs.items()
-                        if slot.required or slot.on_missing != "omit"
-                    ],
-                    "additionalProperties": False,
-                },
+                "inputSchema": slot_object_schema(procedure.inputs),
             }
             selected = await self.repo.capability_selection(
                 owner, session_id, lock=True

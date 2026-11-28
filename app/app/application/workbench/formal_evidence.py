@@ -20,7 +20,7 @@ from app.domain.workbench.formal_execution import (
     structured_outputs,
     validate_values,
 )
-from app.domain.workbench.formal_host import host_call_key
+from app.domain.workbench.formal_host import host_call_key, host_intent_digest
 from app.domain.workbench.formal_method_execution_generated import (
     bounded_json,
     evaluate_assertions,
@@ -143,7 +143,9 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
             and run["caller"] == "knowlab",
             "run_request_mismatch",
         )
-        rows = await repo.list_test_cases(str(request.run_id))
+        rows = await repo.list_test_cases(
+            str(request.run_id), case_id=case_key(case.case_id, repetition)
+        )
         matches = [
             r
             for r in rows
@@ -253,16 +255,17 @@ async def collect_case_evidence(repo, request, case, repetition, result) -> dict
         call = await repo.capability_call(owner, call_id)
         context_key = "formal_probe" if model else "formal_host"
         intent, host = call["detail"], call["detail"].get(context_key) or {}
-        original_intent = {
-            k: v
-            for k, v in intent.items()
-            if k not in {"approval_token", "authorization", "result"}
-        }
-        if not model:
-            original_intent["formal_host"] = {
-                k: v for k, v in host.items() if k != "attempt_id"
-            }
-        require(call["digest"] == digest(original_intent), "call_digest_mismatch")
+        if model:
+            approved_digest = digest(
+                {
+                    k: v
+                    for k, v in intent.items()
+                    if k not in {"approval_token", "authorization", "result"}
+                }
+            )
+        else:
+            approved_digest = host_intent_digest(intent)
+        require(call["digest"] == approved_digest, "call_digest_mismatch")
         source = request.draft.source
         require(source is not None, "source_missing")
         if source is None:

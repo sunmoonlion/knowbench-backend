@@ -59,3 +59,30 @@ class TurnDriver(Protocol):
         *,
         timeout: float | None = STEP_TIMEOUT_SECONDS,  # noqa: ASYNC109
     ) -> TurnResult: ...
+
+
+def merge_turn_messages(observed, completed):
+    """Merge streamed and completion receipts, including repeated ID-less fragments."""
+
+    def indexed(items):
+        entries, counts = {}, {}
+        for item in items:
+            if not isinstance(item, dict) or item.get("type") != "agentMessage":
+                continue
+            text = item.get("text")
+            if not isinstance(text, str) or not text:
+                continue
+            if isinstance(item.get("id"), str) and item["id"]:
+                key = item["id"]
+            else:
+                signature = (item.get("phase"), text)
+                counts[signature] = counts.get(signature, 0) + 1
+                key = (*signature, counts[signature])
+            entries[key] = item
+        return entries
+
+    stream, receipt = indexed(observed), indexed(completed)
+    if stream.keys() <= receipt.keys():
+        return list(receipt.values())
+    stream.update(receipt)
+    return list(stream.values())
