@@ -212,3 +212,23 @@ def test_complete_responses_usage_accounts_for_cache_and_reasoning_once():
             Usage.from_responses(meter | changes)
     with pytest.raises(ValueError):
         Usage.from_responses({})
+
+
+def test_totals_keep_call_currency_and_count_unpriced_old_token_events():
+    from app.domain.workbench.pricing import conversation_usage
+
+    def event(i, currency):
+        payload = {"turnId": str(i), "tokenUsage": {"last": {"inputTokens": 12}}}
+        if currency:
+            payload["cost"] = {"currency": currency, "priced": True, "call": "1.00"}
+        return {"payload": payload}
+
+    events = [event(1, "USD"), event(2, "CNY")]
+    mixed = conversation_usage(events, DEFAULT_PRICES)
+    assert mixed["cost"] is None
+    assert [(t["currency"], t["cost"]) for t in mixed["turns"]] == [
+        ("USD", "1.00"),
+        ("CNY", "1.00"),
+    ]
+    old = conversation_usage([*events, event(3, None)], DEFAULT_PRICES)
+    assert (old["calls"], old["tokens"]["total"], old["cost"]) == (3, 36, None)

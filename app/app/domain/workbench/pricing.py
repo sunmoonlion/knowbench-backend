@@ -303,6 +303,7 @@ def conversation_usage(
     turns: dict[str, dict[str, Any]] = {}
     everything = Usage()
     total: Decimal | None = Decimal("0")
+    currencies: set[str] = set()
     model = None
     for event in events:
         payload = event.get("payload") or {}
@@ -313,6 +314,8 @@ def conversation_usage(
             payload.get("tokenUsage") or payload.get("usage")
         )
         spent = _recorded(noted.get("call")) if noted.get("priced") else None
+        currency = noted.get("currency") or prices.currency
+        currencies.add(currency)
         turn_id = str(payload.get("turnId") or "")
         turn = turns.setdefault(
             turn_id,
@@ -321,12 +324,18 @@ def conversation_usage(
                 "calls": 0,
                 "usage": Usage(),
                 "cost": Decimal("0"),
+                "currency": currency,
             },
         )
         turn["calls"] += 1
         turn["usage"] = turn["usage"] + usage
         turn["at"] = event.get("created_at")
         everything = everything + usage
+        if turn["currency"] != currency:
+            turn["currency"] = None
+            turn["cost"] = None
+        if len(currencies) > 1:
+            total = None
         if spent is None:
             turn["cost"] = None
             total = None
@@ -336,6 +345,7 @@ def conversation_usage(
             if total is not None:
                 total += spent
     return {
+        "currency": next(iter(currencies)) if len(currencies) == 1 else None,
         "price": price_view(prices, model),
         "cost": None if total is None else str(total),
         "tokens": everything.as_json(),
@@ -343,6 +353,7 @@ def conversation_usage(
         "turns": [
             {
                 "turn_id": t["turn_id"],
+                "currency": t["currency"],
                 "calls": t["calls"],
                 "cost": None if t["cost"] is None else str(t["cost"]),
                 "tokens": t["usage"].as_json(),
