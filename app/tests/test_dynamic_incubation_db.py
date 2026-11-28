@@ -160,3 +160,31 @@ async def test_controlled_intake_still_rejects_tampered_catalog_before_persisten
             assert await WorkbenchRepository(session).get_test_run(req.run_id) is None
     finally:
         await fake.close()
+
+
+async def test_small_trial_budget_remains_bounded_across_cases(db):
+    from decimal import Decimal
+
+    fake = ScriptedAppServer([])
+    await fake.start()
+    try:
+        await setup_test_computer(db, fake)
+        req = dynamic_request("fractional-budget")
+        raw = req.model_dump(mode="json")
+        raw["cases"] = [dict(raw["cases"][0], case_id=f"case{i}") for i in range(3)]
+        raw["budget"]["limit"] = "0"
+        with pytest.raises(KnowbotInvalid, match="budget"):
+            await admit(db, RunRequest.model_validate(raw))
+        raw["budget"]["limit"] = "0.01"
+        await admit(db, RunRequest.model_validate(raw))
+        await KnowbotTestConductor(workbench_stores(db)).tick()
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            cases = await repo.list_test_cases(req.run_id)
+            started = [c for c in cases if c.get("task_id")]
+            assert len(started) == 1
+            task = await repo.get_task(str(started[0]["task_id"]))
+            limit = Decimal(str(task["budget"]["limit"]))
+            assert limit == Decimal("0.003333") and 3 * limit <= Decimal("0.01")
+    finally:
+        await fake.close()

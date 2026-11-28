@@ -291,6 +291,10 @@ def retired_trial(run: dict) -> bool:
     ) == knowbots.MANIFEST_SCHEMA_V2
 
 
+def _case_budget(limit: str, cases: int) -> Decimal:
+    return (Decimal(limit) / cases).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+
+
 class KnowbotTestService:
     """契约的三个接口：受理、查状态、回答。真正往前推的是 KnowbotTestConductor。"""
 
@@ -391,6 +395,8 @@ class KnowbotTestService:
         _test_snapshot(request)  # Strict catalog, tools, policy and binding checks.
         # 作者自己出钱，上限是这次请求里的（SDD 0046 第三节，decisions ⑯）
         limit = Decimal(request.budget.limit)
+        if _case_budget(request.budget.limit, len(request.cases)) <= 0:
+            raise KnowbotInvalid("budget is too small for the number of cases")
         async with self.repo.transaction():
             await self.repo.insert_test_run(
                 {
@@ -1027,9 +1033,15 @@ class KnowbotTestConductor:
             if locked is None or locked["status"] not in ACTIVE:
                 return  # 刚被取消：不再开新用例
         snapshot = _test_snapshot(request)
-        per_case = (Decimal(request.budget.limit) / total).quantize(
-            Decimal("0.01"), rounding=ROUND_DOWN
-        )
+        per_case = _case_budget(request.budget.limit, total)
+        if per_case <= 0:
+            await self._finish(
+                repo,
+                run,
+                status="error",
+                error="budget is too small for the number of cases",
+            )
+            return
         started = await SessionService(repo).start(
             owner_actor_id=account.actor_id,
             kind="expert",
@@ -1046,7 +1058,7 @@ class KnowbotTestConductor:
                 session_id=session_id,
                 profile_id=trial_profile_id(request.run_id),
                 original_input={"text": case.input.question},
-                budget_limit=per_case if per_case > 0 else None,
+                budget_limit=per_case,
                 client_context={"entry": "knowbot-test", "run_id": request.run_id},
             ),
             owner_actor_id=account.actor_id,
