@@ -1,10 +1,11 @@
 """Record the actual HTTP steps/data contract with nonempty knowbase pins.
 
-Only generated IDs, wall-clock timestamps and elapsed seconds are normalized;
+Generated IDs, their view digest, timestamps and elapsed seconds are normalized;
 the response shape and data-source values remain exactly what the API returns.
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -44,9 +45,18 @@ def record(payload):
     result = json.loads(
         recorder.steady(json.dumps(normalize(payload), ensure_ascii=False))
     )
+    # This opaque review token includes the random resolution identity. Record a
+    # digest of the normalized fixture after checking the live token below.
+    data = result["data"]
+    data.pop("view_digest")
+    data["view_digest"] = hashlib.sha256(
+        json.dumps(data, sort_keys=True).encode()
+    ).hexdigest()
     encoded = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if os.environ.get("UPDATE_RUN_CONTRACT_FIXTURE") == "1":
         FIXTURE.write_text(encoded)
+        if CONSUMER.exists():
+            CONSUMER.write_text(encoded)
     assert FIXTURE.read_text() == encoded
     if CONSUMER.exists():
         assert CONSUMER.read_text() == encoded
@@ -66,4 +76,8 @@ async def test_actual_http_response_matches_nonempty_data_contract(
         assert payload["task"]["state"] == "WAITING"
         assert payload["task"]["chosen_data"]
         assert {d["source"] for d in payload["task"]["chosen_data"]} == {"knowbase"}
+        url = f"/api/workbench/tasks/{task}/data"
+        token = data.json()["view_digest"]
+        assert re.fullmatch(r"[a-f0-9]{64}", token)
+        assert (await http.get(url)).json()["view_digest"] == token
         await asyncio.to_thread(record, {"steps": payload, "data": data.json()})

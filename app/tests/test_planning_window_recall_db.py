@@ -237,6 +237,7 @@ async def test_late_tool_in_ten_thousand_and_unauthorized_exact_title(db):
 
         class Market:
             windows = 0
+            removed = None
 
             async def planning_window(self, subject, offset, limit):
                 self.windows += 1
@@ -249,6 +250,7 @@ async def test_late_tool_in_ten_thousand_and_unauthorized_exact_title(db):
                         ],
                     )
                     for n in range(1 + offset, 1 + min(count, offset + limit))
+                    if n != self.removed
                 ], offset + limit < count
 
             async def directory_labels(self, subject, refs):
@@ -288,6 +290,7 @@ async def test_late_tool_in_ten_thousand_and_unauthorized_exact_title(db):
                     r
                     for v in refs
                     if (r := MethodRef.model_validate(v)).method_id.int <= count
+                    and r.method_id.int != self.removed
                 }
 
         market = Market()
@@ -323,8 +326,17 @@ async def test_late_tool_in_ten_thousand_and_unauthorized_exact_title(db):
             )
             if scene == "planning":
                 assert market.windows == before
+                cached_id = last["items"][0]["method_id"].int
             assert len(last["items"]) == 1 and last["next"] is None
             assert len({r["method_id"] for r in first["items"] + last["items"]}) == 31
+        # The ranking snapshot does not give continuing permission after withdrawal.
+        market.removed = cached_id
+        before = market.windows
+        refreshed = await browse(
+            registry, "author", "planning", query.model_copy(update={"offset": 30})
+        )
+        assert refreshed["total"] == 30 and refreshed["items"] == []
+        assert market.windows > before
         # Equal lexical scores alternate two class hits and one cross-class candidate.
         async with repo.transaction():
             pins, _ = await market.planning_window("author", 0, 10)

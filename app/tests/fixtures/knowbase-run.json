@@ -189,6 +189,8 @@
           "最近一年的年报",
           "上一年比较"
         ],
+        "review_dropped": [],
+        "review_picks": {},
         "status": "pending",
         "requested_at": "2026-01-01T00:00:00+00:00",
         "needs": [
@@ -337,6 +339,7 @@
         "version_no": 3,
         "basis": "frozen_binding"
       }
-    ]
+    ],
+    "view_digest": "a7979279e17d4c8d2f259e5a97801c1cbd3239d7b599f9fbb562851aac2be361"
   }
 }

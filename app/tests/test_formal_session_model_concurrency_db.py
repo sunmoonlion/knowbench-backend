@@ -61,10 +61,10 @@ async def test_deselect_waits_for_approval_then_blocks_a_dispatch_still_negotiat
             selected = await factory(WorkbenchRepository(session)).selection(OWNER, sid)
         original = FormalSessionTools.resolve
 
-        async def pause_resolve(self, owner, reference):
+        async def pause_resolve(self, owner, reference, *, eligible=None):
             entered.set()
             await release.wait()
-            return await original(self, owner, reference)
+            return await original(self, owner, reference, eligible=eligible)
 
         monkeypatch.setattr(FormalSessionTools, "resolve", pause_resolve)
 

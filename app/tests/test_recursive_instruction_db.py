@@ -214,13 +214,10 @@ async def test_nested_instruction_graph(db, scenario):
                 )
         bad = deepcopy(evidence)
         case = bad["cases"][0]
-        for record in (
-            case["steps"][2],
-            next(n for n in case["nodes"] if n["path"] == ["second", "first"]),
-        ):
-            record["governance"]["artifact_read"]["binding"]["fields"]["status"][
-                "version"
-            ] = 42
+        node = next(n for n in case["nodes"] if n["path"] == ["second", "first"])
+        step = case["steps"][node["step_index"]]
+        assert step["path"] == node["path"]
+        step["governance"]["artifact_read"]["binding"]["fields"]["status"]["version"] = 42
         with pytest.raises(CapabilityError, match="input versions"):
             verify_sealed_plan(
                 OWNER, version, req, bad, deps, operations=caps.operations
