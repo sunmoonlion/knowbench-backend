@@ -62,8 +62,8 @@ mongo_admin_uri() {
   if bool_true "${DB_TLS_ENABLED:-false}"; then
     tls_qs="&tls=true"
   fi
-  printf 'mongodb://%s:%s@%s:%s/%s?authSource=%s%s' \
-    "${MONGO_ADMIN_USER}" "${MONGO_ADMIN_PASSWORD}" "${DB_HOST}" "${DB_PORT}" "${auth_db}" "${auth_db}" "${tls_qs}"
+  db_uri mongodb "$MONGO_ADMIN_USER" "$MONGO_ADMIN_PASSWORD" "$DB_HOST" "$DB_PORT" "$auth_db" ""
+  printf '%s' "$tls_qs"
 }
 
 mongo_provision() {
@@ -123,12 +123,12 @@ try {
 mongo_script=\$(printf '%s' '${mongo_script_b64}' | base64 -d)
 mongosh '${admin_uri}' --quiet --eval "\${mongo_script}"
 EOF
-    APP_DB_URI="mongodb://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}?authSource=${APP_DB_NAME}"
+    APP_DB_URI="$(db_uri mongodb "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" "")"
   else
     require_cmd "mongosh"
     mongo_precheck "${admin_uri}"
     mongosh "${admin_uri}" --quiet --eval "${mongo_script}"
-    APP_DB_URI="mongodb://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}?authSource=${APP_DB_NAME}"
+    APP_DB_URI="$(db_uri mongodb "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" "")"
   fi
 
   require_non_empty "APP_DB_URI(mongo)" "${APP_DB_URI}"

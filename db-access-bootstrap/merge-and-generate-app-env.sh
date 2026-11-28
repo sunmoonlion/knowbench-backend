@@ -29,36 +29,45 @@ case "${MODE}" in
 esac
 [[ -f "${OUT}" ]] || { echo "[merge-and-generate-app-env] missing OUT: ${OUT}" >&2; exit 1; }
 [[ -f "${APP}" ]] || { echo "[merge-and-generate-app-env] missing ${APP}" >&2; exit 1; }
-get_val() {
-  local k="$1" line
-  line="$(grep -E "^${k}=" "${OUT}" | tail -n1)" || true
-  [[ -n "${line}" ]] || return 1
-  printf '%s\n' "${line#*=}"
-}
-set_kv_in_app() {
-  local k="$1" v="$2" esc
-  esc="$(printf '%s\n' "$v" | sed -e 's/[\/&|]/\\&/g')"
-  if grep -qE "^${k}=" "${APP}"; then
-    sed -i.bak "s#^${k}=.*#${k}=${esc}#" "${APP}" && rm -f "${APP}.bak"
-  else
-    printf '\n%s=%s\n' "$k" "$v" >> "${APP}"
-  fi
-}
-for key in DATABASE_URL REDIS_HOST REDIS_PORT REDIS_DB REDIS_PASSWORD REDIS_USER; do
-  val="$(get_val "${key}" 2>/dev/null)" || continue
-  [[ -z "${val}" ]] && continue
-  if [[ "${key}" == REDIS_USER ]] && [[ "${val}" =~ ^[[:space:]]*$ ]]; then
-    continue
-  fi
-  set_kv_in_app "${key}" "${val}"
-done
-if ! grep -qE '^REDIS_USER=' "${OUT}"; then
-  sed -i.bak '/^REDIS_USER=/d' "${APP}" && rm -f "${APP}.bak" || true
-fi
-{
-  printf '# merge-and-generate-app-env.sh mode=%s\n' "${MODE}"
-  printf '# Source: %s UTC: %s\n' "${OUT}" "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  printf '# May contain secrets.\n\n'
-  grep -E '^(APP_ENV|DATABASE_URL|REDIS_)' "${OUT}" || true
-} > "${REF}"
+umask 077
+python3 - "${OUT}" "${APP}" "${REF}" "${MODE}" <<'PYTHON'
+import os
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from tempfile import NamedTemporaryFile
+
+source, app, reference = map(Path, sys.argv[1:4])
+keys = {"DATABASE_URL", "MONGODB_URI", "REDIS_HOST", "REDIS_PORT", "REDIS_DB", "REDIS_PASSWORD", "REDIS_USER", "REDIS_URI"}
+incoming = {}
+for line in source.read_text().splitlines():
+    key, equal, value = line.partition("=")
+    if equal and key in keys | {"APP_ENV"}:
+        incoming[key] = value
+
+def write_private(path, lines):
+    with NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as temp:
+        try:
+            temp.write("\n".join(lines) + "\n")
+            temp.flush()
+            os.replace(temp.name, path)
+        finally:
+            Path(temp.name).unlink(missing_ok=True)
+
+merged = []
+written = set()
+for line in app.read_text().splitlines():
+    key, equal, _ = line.partition("=")
+    if equal and key in keys and key in incoming:
+        if key not in written:
+            merged.append(f"{key}={incoming[key]}")
+            written.add(key)
+    elif not (equal and key == "REDIS_USER"):
+        merged.append(line)
+merged.extend(f"{k}={v}" for k,v in incoming.items() if k in keys and k not in written)
+header = [f"# merge-and-generate-app-env.sh mode={sys.argv[4]}",
+          f"# Source: {source} UTC: {datetime.now(timezone.utc).isoformat()}", "# May contain secrets.", ""]
+write_private(reference, header + [f"{k}={v}" for k,v in incoming.items()])
+write_private(app, merged)
+PYTHON
 printf '[merge-and-generate-app-env] merged -> %s; wrote %s\n' "${APP}" "${REF}"

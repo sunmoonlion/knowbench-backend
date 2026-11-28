@@ -20,12 +20,15 @@ run_enabled() {
   local dry_run="${2:-false}"
   local args=()
   [[ "$dry_run" == "true" ]] && args+=(--dry-run)
-  bool_true "${ENABLE_POSTGRESQL:-false}" &&
+  if bool_true "${ENABLE_POSTGRESQL:-false}"; then
     "$DBCTL_BIN" --config "$PG_K8S_CONFIG" --target k8s --action "$action" "${args[@]}"
-  bool_true "${ENABLE_MONGODB:-false}" &&
+  fi
+  if bool_true "${ENABLE_MONGODB:-false}"; then
     "$DBCTL_BIN" --config "$MONGO_K8S_CONFIG" --target k8s --action "$action" "${args[@]}"
-  bool_true "${ENABLE_REDIS:-false}" &&
+  fi
+  if bool_true "${ENABLE_REDIS:-false}"; then
     "$DBCTL_BIN" --config "$REDIS_K8S_CONFIG" --target k8s --action "$action" "${args[@]}"
+  fi
 }
 
 check_secret() {
@@ -41,9 +44,9 @@ case "${1:-}" in
   provision) setup_cluster; "$BOOTSTRAP_DIR/setup-k8s-db-access.sh" ;;
   status)
     setup_cluster
-    bool_true "${ENABLE_POSTGRESQL:-false}" && check_secret "$PG_K8S_CONFIG"
-    bool_true "${ENABLE_MONGODB:-false}" && check_secret "$MONGO_K8S_CONFIG"
-    bool_true "${ENABLE_REDIS:-false}" && check_secret "$REDIS_K8S_CONFIG"
+    if bool_true "${ENABLE_POSTGRESQL:-false}"; then check_secret "$PG_K8S_CONFIG"; fi
+    if bool_true "${ENABLE_MONGODB:-false}"; then check_secret "$MONGO_K8S_CONFIG"; fi
+    if bool_true "${ENABLE_REDIS:-false}"; then check_secret "$REDIS_K8S_CONFIG"; fi
     ;;
   *) echo "Usage: $0 <validate|provision|status>" >&2; exit 1 ;;
 esac

@@ -22,14 +22,7 @@ bool_true() {
 
 require_file() { [[ -f "$1" ]] || die "Missing file: $1"; }
 
-replace_env_value() {
-  local file="$1" key="$2" value="$3"
-  if grep -q "^${key}=" "$file"; then
-    sed -i "s#^${key}=.*#${key}=${value}#g" "$file"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
-  fi
-}
+source "${BOOTSTRAP_DIR}/env-values.sh"
 
 write_k8s_out() {
   printf '# k8s 场景连接串（内部 Service DNS），由 setup-k8s-db-access.sh 生成。\n' > "${OUT}"
@@ -40,7 +33,7 @@ write_k8s_out() {
     # shellcheck disable=SC1090
     source "${PG_CONFIG}"
     replace_env_value "${OUT}" "DATABASE_URL" \
-      "postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}"
+      "$(db_uri postgresql "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" '')"
   fi
 
   if bool_true "${ENABLE_REDIS:-false}" && [[ -f "${REDIS_CONFIG}" ]]; then
@@ -57,10 +50,10 @@ write_k8s_out() {
     # shellcheck disable=SC1090
     source "${MONGO_CONFIG}"
     replace_env_value "${OUT}" "MONGODB_URI" \
-      "mongodb://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}?authSource=${APP_DB_NAME}"
+      "$(db_uri mongodb "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" '')"
   fi
 
-  log "k8s env written: ${OUT}"
+
 }
 
 main() {
@@ -71,8 +64,15 @@ main() {
   bool_true "${ENABLE_MONGODB:-false}" && require_file "${MONGO_CONFIG}" && "${DBCTL_BIN}" --config "${MONGO_CONFIG}" --target k8s --action provision
   bool_true "${ENABLE_REDIS:-false}" && require_file "${REDIS_CONFIG}" && "${DBCTL_BIN}" --config "${REDIS_CONFIG}" --target k8s --action provision
 
+  local destination="$OUT"
+  umask 077
+  OUT="$(mktemp -- "${destination}.tmp.XXXXXX")"
+  trap 'rm -f -- "$OUT"' EXIT
   write_k8s_out
+  mv -fT -- "$OUT" "$destination"
+  trap - EXIT
 
+  log "k8s env written: $destination"
   log "Done. k8s secrets applied in namespace: ${NAMESPACE}"
 }
 

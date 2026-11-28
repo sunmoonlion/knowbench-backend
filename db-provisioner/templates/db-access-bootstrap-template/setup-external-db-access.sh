@@ -31,14 +31,7 @@ require_file() {
   [[ -f "$1" ]] || die "Missing file: $1"
 }
 
-replace_env_value() {
-  local file="$1" key="$2" value="$3"
-  if grep -q "^${key}=" "$file"; then
-    sed -i "s#^${key}=.*#${key}=${value}#g" "$file"
-  else
-    printf '%s=%s\n' "$key" "$value" >> "$file"
-  fi
-}
+source "${BOOTSTRAP_DIR}/env-values.sh"
 
 run_postgresql() {
   require_file "${PG_CONFIG}"
@@ -48,7 +41,7 @@ run_postgresql() {
   source "${PG_CONFIG}"
   export PGPASSWORD="${APP_DB_PASSWORD}"
   psql -h "${DB_HOST}" -p "${DB_PORT}" -U "${APP_DB_USER}" -d "${APP_DB_NAME}" -c "select current_user, current_database();" >/dev/null
-  replace_env_value "${OUT_ENV}" "DATABASE_URL" "postgresql://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}"
+  replace_env_value "${OUT_ENV}" "DATABASE_URL" "$(db_uri postgresql "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" '')"
 }
 
 run_mongodb() {
@@ -58,25 +51,26 @@ run_mongodb() {
   # shellcheck disable=SC1090
   source "${MONGO_CONFIG}"
   if command -v mongosh >/dev/null 2>&1; then
-    mongosh "mongodb://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}?authSource=${APP_DB_NAME}" --quiet --eval "db.adminCommand({ ping: 1 }).ok" >/dev/null
+    mongosh "$(db_uri mongodb "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" '')" --quiet --eval "db.adminCommand({ ping: 1 }).ok" >/dev/null
   fi
-  replace_env_value "${OUT_ENV}" "MONGODB_URI" "mongodb://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${APP_DB_NAME}?authSource=${APP_DB_NAME}"
+  replace_env_value "${OUT_ENV}" "MONGODB_URI" "$(db_uri mongodb "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$APP_DB_NAME" '')"
 }
 
 run_redis() {
   require_file "${REDIS_CONFIG}"
   # shellcheck disable=SC1090
   source "${REDIS_CONFIG}"
-  python3 - <<PY
+  REDIS_HOST="$REDIS_HOST" REDIS_PORT="$REDIS_PORT" REDIS_PASSWORD="$REDIS_PASSWORD" python3 - <<'PY'
+import os
 import socket
-host='${REDIS_HOST}'
-port=int('${REDIS_PORT}')
-pwd='${REDIS_PASSWORD}'
+host=os.environ['REDIS_HOST']
+port=int(os.environ['REDIS_PORT'])
+pwd=os.environ['REDIS_PASSWORD']
 def resp(*parts):
-    s='*%d\\r\\n'%len(parts)
+    s='*%d\r\n'%len(parts)
     for p in parts:
         p=str(p)
-        s += '$%d\\r\\n%s\\r\\n'%(len(p.encode()),p)
+        s += '$%d\r\n%s\r\n'%(len(p.encode()),p)
     return s.encode()
 with socket.create_connection((host,port),timeout=5) as c:
     c.sendall(resp('AUTH',pwd)); c.recv(256)
@@ -94,14 +88,19 @@ main() {
   [[ -x "${DBCTL_BIN}" ]] || die "DBCTL_BIN not executable: ${DBCTL_BIN}"
   bool_true "${STRICT_FILE_CHECK:-true}" && require_file "${BASE_ENV_TEMPLATE}"
 
-  cp "${BASE_ENV_TEMPLATE}" "${OUT_ENV}"
-  log "Base env copied: ${OUT_ENV}"
+  local destination="${OUT_ENV}"
+  umask 077
+  OUT_ENV="$(mktemp -- "${destination}.tmp.XXXXXX")"
+  trap 'rm -f -- "${OUT_ENV}"' EXIT
+  cat -- "${BASE_ENV_TEMPLATE}" > "${OUT_ENV}"
 
-  bool_true "${ENABLE_POSTGRESQL:-false}" && run_postgresql
-  bool_true "${ENABLE_MONGODB:-false}" && run_mongodb
-  bool_true "${ENABLE_REDIS:-false}" && run_redis
+  if bool_true "${ENABLE_POSTGRESQL:-false}"; then run_postgresql; fi
+  if bool_true "${ENABLE_MONGODB:-false}"; then run_mongodb; fi
+  if bool_true "${ENABLE_REDIS:-false}"; then run_redis; fi
 
-  log "Provision complete. env ready: ${OUT_ENV}"
+  mv -fT -- "${OUT_ENV}" "${destination}"
+  trap - EXIT
+  log "Provision complete. env ready: ${destination}"
 }
 
 main "$@"

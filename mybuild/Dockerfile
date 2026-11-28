@@ -5,7 +5,7 @@ ARG REGISTRY=harbor.sunmoonai.com:30443/k8s-images
 # ============================================================================
 # Stage 1: Type-check — 安装所有依赖（含 dev），运行 pyright 类型检查
 # ============================================================================
-FROM ${REGISTRY}/python:${PYTHON_VERSION}-slim AS type-check
+FROM ${REGISTRY:-docker.io/library}/python:${PYTHON_VERSION}-slim AS type-check
 
 ARG PYPI_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG UV_VERSION=0.11.32
@@ -53,7 +53,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # ============================================================================
 ARG PYTHON_VERSION=3.12
 ARG REGISTRY=harbor.sunmoonai.com:30443/k8s-images
-FROM ${REGISTRY}/python:${PYTHON_VERSION}-slim AS run
+FROM ${REGISTRY:-docker.io/library}/python:${PYTHON_VERSION}-slim AS run
 
 RUN groupadd --system --gid 1001 appgroup \
     && useradd --system --uid 1001 --gid appgroup \

@@ -79,7 +79,7 @@ EOF
       require_cmd "redis-cli"
       redis_precheck
     fi
-    APP_DB_URI="redis://:${REDIS_PASSWORD}@${DB_HOST}:${DB_PORT}/${REDIS_DB_INDEX}"
+    APP_DB_URI="$(db_uri redis "" "$REDIS_PASSWORD" "$DB_HOST" "$DB_PORT" "$REDIS_DB_INDEX" "")"
     require_non_empty "APP_DB_URI(redis)" "${APP_DB_URI}"
     return 0
   fi
@@ -146,7 +146,7 @@ REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}
 REDISCLI_AUTH='${REDIS_ADMIN_PASSWORD}' redis-cli -h '${DB_HOST}' -p '${DB_PORT}' --user '${REDIS_ADMIN_USER}' ACL SAVE >/dev/null
 echo '[redis-client] ACL user upserted: ${APP_DB_USER}'
 EOF
-    APP_DB_URI="redis://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${REDIS_DB_INDEX}"
+    APP_DB_URI="$(db_uri redis "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$REDIS_DB_INDEX" "")"
     require_non_empty "APP_DB_URI(redis)" "${APP_DB_URI}"
     return 0
   fi
@@ -194,7 +194,7 @@ EOF
   redis-cli -h "${DB_HOST}" -p "${DB_PORT}" ${auth_args} ACL SAVE >/dev/null
   log "[redis] ACL user upserted: ${APP_DB_USER}"
 
-  APP_DB_URI="redis://${APP_DB_USER}:${APP_DB_PASSWORD}@${DB_HOST}:${DB_PORT}/${REDIS_DB_INDEX}"
+  APP_DB_URI="$(db_uri redis "$APP_DB_USER" "$APP_DB_PASSWORD" "$DB_HOST" "$DB_PORT" "$REDIS_DB_INDEX" "")"
   require_non_empty "APP_DB_URI(redis)" "${APP_DB_URI}"
 }
 

@@ -24,9 +24,18 @@ main() {
   [[ -x "${DBCTL_BIN}" ]] || die "DBCTL_BIN not executable: ${DBCTL_BIN}"
   command -v kubectl >/dev/null 2>&1 || die "Missing kubectl"
 
-  bool_true "${ENABLE_POSTGRESQL:-false}" && [[ -f "${PG_CONFIG}" ]] && "${DBCTL_BIN}" --config "${PG_CONFIG}" --target k8s --action deprovision
-  bool_true "${ENABLE_MONGODB:-false}" && [[ -f "${MONGO_CONFIG}" ]] && "${DBCTL_BIN}" --config "${MONGO_CONFIG}" --target k8s --action deprovision
-  bool_true "${ENABLE_REDIS:-false}" && [[ -f "${REDIS_CONFIG}" ]] && "${DBCTL_BIN}" --config "${REDIS_CONFIG}" --target k8s --action deprovision
+  if bool_true "${ENABLE_POSTGRESQL:-false}"; then
+    [[ -f "${PG_CONFIG}" ]] || die "Missing config: ${PG_CONFIG}"
+    "${DBCTL_BIN}" --config "${PG_CONFIG}" --target k8s --action deprovision
+  fi
+  if bool_true "${ENABLE_MONGODB:-false}"; then
+    [[ -f "${MONGO_CONFIG}" ]] || die "Missing config: ${MONGO_CONFIG}"
+    "${DBCTL_BIN}" --config "${MONGO_CONFIG}" --target k8s --action deprovision
+  fi
+  if bool_true "${ENABLE_REDIS:-false}"; then
+    [[ -f "${REDIS_CONFIG}" ]] || die "Missing config: ${REDIS_CONFIG}"
+    "${DBCTL_BIN}" --config "${REDIS_CONFIG}" --target k8s --action deprovision
+  fi
 
   log "Done. k8s secrets removed (and users deprovisioned where supported)."
 }

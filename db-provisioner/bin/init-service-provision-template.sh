@@ -61,16 +61,30 @@ parse_args() {
 }
 
 replace_tokens() {
-  local f="$1"
-  sed -i "s#__SERVICE_NAME__#${SERVICE_NAME}#g" "$f"
-  sed -i "s#__SERVICE_DIR__#${TARGET_DIR}#g" "$f"
-  sed -i "s#__NAMESPACE__#${NAMESPACE:-default}#g" "$f"
-  sed -i "s#__PG_DB_NAME__#${PG_DB_NAME}#g" "$f"
-  sed -i "s#__PG_DB_USER__#${PG_DB_USER}#g" "$f"
-  sed -i "s#__PG_DB_PASSWORD__#${PG_DB_PASSWORD}#g" "$f"
-  sed -i "s#__MONGO_DB_NAME__#${MONGO_DB_NAME:-${SERVICE_NAME}_db}#g" "$f"
-  sed -i "s#__MONGO_DB_USER__#${MONGO_DB_USER:-${SERVICE_NAME}}#g" "$f"
-  sed -i "s#__MONGO_DB_PASSWORD__#${MONGO_DB_PASSWORD:-change_me}#g" "$f"
+  SERVICE_DIR="$TARGET_DIR" SERVICE_NAME="$SERVICE_NAME" NAMESPACE="${NAMESPACE:-default}" \
+    PG_DB_NAME="$PG_DB_NAME" PG_DB_USER="$PG_DB_USER" PG_DB_PASSWORD="$PG_DB_PASSWORD" \
+    MONGO_DB_NAME="${MONGO_DB_NAME:-${SERVICE_NAME}_db}" MONGO_DB_USER="${MONGO_DB_USER:-${SERVICE_NAME}}" \
+    MONGO_DB_PASSWORD="${MONGO_DB_PASSWORD:-change_me}" python3 - "$1" <<'PYTHON'
+import os
+import re
+import shlex
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+keys = "SERVICE_DIR SERVICE_NAME NAMESPACE PG_DB_NAME PG_DB_USER PG_DB_PASSWORD MONGO_DB_NAME MONGO_DB_USER MONGO_DB_PASSWORD".split()
+values = {f"__{key}__": os.environ[key] for key in keys}
+pattern = re.compile("|".join(values))
+lines = []
+for line in path.read_text().splitlines(keepends=True):
+    if path.suffix == ".env" and "=" in line and pattern.search(line):
+        key, original = line.rstrip("\n").split("=", 1)
+        if original in values:
+            lines.append(key + "=" + shlex.quote(values[original]) + "\n")
+            continue
+    lines.append(pattern.sub(lambda match: values[match.group()], line))
+path.write_text("".join(lines))
+PYTHON
 }
 
 main() {
@@ -85,15 +99,20 @@ main() {
   [[ -d "${TEMPLATE_DIR}" ]] || die "Template dir not found: ${TEMPLATE_DIR}"
 
   local out="${TARGET_DIR}/db-access-bootstrap"
-  rm -rf "${out}"
-  mkdir -p "${out}"
-  cp -r "${TEMPLATE_DIR}/." "${out}/"
+  [[ ! -e "$out" && ! -L "$out" ]] || die "Bootstrap already exists: $out"
+  umask 077
+  stage="$(mktemp -d -- "${TARGET_DIR}/.db-access-bootstrap.XXXXXX")"
+  trap 'rm -rf -- "$stage"' EXIT
+  cp -R -- "${TEMPLATE_DIR}/." "$stage/"
 
   while IFS= read -r -d '' file; do
     replace_tokens "$file"
-  done < <(find "${out}" -type f -print0)
+  done < <(find "${stage}" -type f -print0)
 
-  chmod +x "${out}/setup-external-db-access.sh" "${out}/teardown-external-db-access.sh" "${out}/setup-k8s-db-access.sh" "${out}/teardown-k8s-db-access.sh"
+  chmod +x "$stage"/{setup,teardown}-{external,k8s}-db-access.sh
+  mv -Tn -- "$stage" "$out"
+  [[ ! -d "$stage" ]] || die "Bootstrap already exists: $out"
+  trap - EXIT
 
   printf '[init-template] created: %s\n' "${out}"
   printf '[init-template] next step: cd "%s" && ./db-access-bootstrap/setup-external-db-access.sh\n' "${TARGET_DIR}"

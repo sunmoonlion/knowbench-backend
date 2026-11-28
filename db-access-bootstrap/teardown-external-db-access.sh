@@ -24,13 +24,16 @@ bool_true() {
 main() {
   [[ -x "${DBCTL_BIN}" ]] || die "DBCTL_BIN not executable: ${DBCTL_BIN}"
 
-  if bool_true "${ENABLE_POSTGRESQL:-false}" && [[ -f "${PG_CONFIG}" ]]; then
+  if bool_true "${ENABLE_POSTGRESQL:-false}"; then
+    [[ -f "${PG_CONFIG}" ]] || die "Missing config: ${PG_CONFIG}"
     "${DBCTL_BIN}" --config "${PG_CONFIG}" --target external --action deprovision
   fi
-  if bool_true "${ENABLE_MONGODB:-false}" && [[ -f "${MONGO_CONFIG}" ]]; then
+  if bool_true "${ENABLE_MONGODB:-false}"; then
+    [[ -f "${MONGO_CONFIG}" ]] || die "Missing config: ${MONGO_CONFIG}"
     "${DBCTL_BIN}" --config "${MONGO_CONFIG}" --target external --action deprovision
   fi
-  if bool_true "${ENABLE_REDIS:-false}" && [[ -f "${REDIS_CONFIG}" ]]; then
+  if bool_true "${ENABLE_REDIS:-false}"; then
+    [[ -f "${REDIS_CONFIG}" ]] || die "Missing config: ${REDIS_CONFIG}"
     "${DBCTL_BIN}" --config "${REDIS_CONFIG}" --target external --action deprovision
   fi
 

@@ -21,7 +21,7 @@ main() {
   esac
   [[ -f "$ELASTICSEARCH_DECLARATION" ]] || die "Missing declaration"
   [[ -x "$ELASTICSEARCH_PROVISIONER_BIN" ]] || die "Provisioner is not executable"
-  if [[ "$action" != "validate" && "${ENABLE_SEARCH_ACCESS:-false}" != "true" ]]; then
+  if [[ "$action" != "validate" && "$action" != "revoke" && "${ENABLE_SEARCH_ACCESS:-false}" != "true" ]]; then
     die "Search access is disabled until this Backend owns a search dataset"
   fi
   "$ELASTICSEARCH_PROVISIONER_BIN" --cluster "$ELASTICSEARCH_CLUSTER" \

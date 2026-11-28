@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+source "$(dirname "${BASH_SOURCE[0]}")/env-values.sh"
+
 set -euo pipefail
 
 readonly DBP_VERSION="0.1.0"
