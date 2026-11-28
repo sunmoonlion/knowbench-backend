@@ -117,6 +117,55 @@ async def bootstrap(http):
     return env, sb, r.json()["session_id"]
 
 
+async def test_expert_intake_can_select_latest_user_question_beyond_event_page(
+    make_client, db
+):
+    async with make_client(A) as http:
+        _, _, sid = await bootstrap(http)
+        async with db() as s:
+            repo = WorkbenchRepository(s)
+            async with repo.transaction():
+                await repo.append_event(
+                    session_id=sid,
+                    kind="turn",
+                    event_type="turn/requested",
+                    payload={"text": "original"},
+                )
+                await s.execute(
+                    text("""insert into workbench_session_events
+                    (id, session_id, cursor, kind, event_type, payload)
+                    select gen_random_uuid(), :sid, n, 'turn', 'turn/completed', '{}'::jsonb
+                    from generate_series(3, 1000) n"""),
+                    {"sid": sid},
+                )
+                latest = await repo.append_event(
+                    session_id=sid,
+                    kind="turn",
+                    event_type="turn/requested",
+                    payload={"by": "user", "text": "updated"},
+                )
+                await repo.append_event(
+                    session_id=sid,
+                    kind="turn",
+                    event_type="turn/requested",
+                    payload={"by": "expert", "text": "other"},
+                )
+            activity = await repo.latest_activity_events(session_id=sid, after_cursor=2)
+            assert [(e["cursor"], e["type"]) for e in activity] == [
+                (1000, "turn/completed"),
+                (1002, "turn/requested"),
+            ]
+        result = await http.get(
+            f"/api/workbench/sessions/{sid}/events",
+            params={"latest_user_prompt": "true"},
+        )
+        assert result.status_code == 200
+        events = result.json()["events"]
+        assert [(event["id"], event["payload"]["text"]) for event in events] == [
+            (str(latest["id"]), "updated")
+        ]
+
+
 async def test_session_turn_handover_and_events(make_client, db):  # noqa: F811
     async with make_client(A) as http:
         env, sb, sid = await bootstrap(http)

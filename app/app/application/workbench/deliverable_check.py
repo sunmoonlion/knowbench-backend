@@ -51,6 +51,7 @@ class DeliverableCheck(Protocol):
 class ReadFile:
     text: str
     mtime_ms: int | None  # 代理报的修改时间（毫秒）；没报就是不知道
+    sha256: str | None = None  # 同一次读取的原始字节摘要
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,7 @@ class AgentDeliverableCheck:
         return ReadFile(
             text=found.content.decode("utf-8", errors="replace"),
             mtime_ms=found.mtime_ms,
+            sha256=hashlib.sha256(found.content).hexdigest(),
         )
 
     async def digest(

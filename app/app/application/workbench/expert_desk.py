@@ -182,7 +182,7 @@ class ExpertDesk:
     async def _running_cost(self, task: dict[str, Any]) -> str | None:
         """正在做的这一步到现在花了多少。做完才记进 `used`，在那之前从用量事件里看。"""
         active = task.get("active_attempt_id")
-        if task["state"] != TaskState.RUNNING or not active:
+        if task["state"] not in (TaskState.RUNNING, TaskState.WAITING) or not active:
             return None
         events = await self.repo.list_record_events(
             session_id=str(task["session_id"]),
@@ -218,10 +218,9 @@ class ExpertDesk:
         since = task.get("updated_at")
         if started:
             since = started[-1]["created_at"]
-            events = await self.repo.list_events(
+            events = await self.repo.latest_activity_events(
                 session_id=str(task["session_id"]),
                 after_cursor=int(started[-1]["cursor"]),
-                limit=1000,
             )
         session = await self.repo.get_session(str(task["session_id"]))
         held = await self.repo.sandbox_held(str(session["sandbox_id"]))

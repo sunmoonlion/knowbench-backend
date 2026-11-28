@@ -832,15 +832,52 @@ class WorkbenchRepository(
         )
 
     async def list_events(
-        self, *, session_id: str, after_cursor: int = 0, limit: int = 500
+        self,
+        *,
+        session_id: str,
+        after_cursor: int = 0,
+        limit: int = 500,
+        latest_user_prompt: bool = False,
     ) -> list[dict[str, Any]]:
+        prompt_filter = (
+            "AND e.event_type = 'turn/requested' AND coalesce(e.payload->>'by', 'user') = 'user'"
+            if latest_user_prompt
+            else ""
+        )
+        order = "desc" if latest_user_prompt else "asc"
         r = await self.session.execute(
             text(f"""select id, session_id, cursor, kind, event_type as type, payload, task_id, attempt_id, created_at
-                    from workbench_session_events e where session_id = :s and cursor > :c
-                    {("and " + _visible_session_entry("e")) if self.browser_view else ""} order by cursor asc limit :l"""),
-            {"s": session_id, "c": after_cursor, "l": limit},
+                    from workbench_session_events e where session_id = :s and cursor > :c {prompt_filter}
+                    {("and " + _visible_session_entry("e")) if self.browser_view else ""} order by cursor {order} limit :l"""),
+            {
+                "s": session_id,
+                "c": after_cursor,
+                "l": 1 if latest_user_prompt else limit,
+            },
         )
         return [_event(m) for m in r.mappings().all()]
+
+    async def latest_activity_events(
+        self, *, session_id: str, after_cursor: int
+    ) -> list[dict[str, Any]]:
+        """Last activity signal and last timestamp since the current attempt started."""
+        visible = "and " + _visible_session_entry("e") if self.browser_view else ""
+        result = await self.session.execute(
+            text(f"""with recent as not materialized (
+                select id, cursor, kind, event_type as type, payload, created_at
+                from workbench_session_events e
+                where session_id = :s and cursor > :c {visible}
+            ), selected as (
+                (select * from recent order by cursor desc limit 1)
+                union all
+                (select * from recent where type in ('turn/started','turn/completed','item/completed')
+                   or (type = 'item/started' and payload->'item'->>'type' in
+                       ('mcpToolCall','commandExecution','agentMessage','reasoning'))
+                 order by cursor desc limit 1)
+            ) select distinct on (cursor) * from selected order by cursor"""),
+            {"s": session_id, "c": after_cursor},
+        )
+        return [dict(row) for row in result.mappings()]
 
     async def conversation_digests(
         self, *, project_id: str, owner_actor_id: str
@@ -1384,6 +1421,7 @@ class WorkbenchRepository(
         kind: str,
         content: Any,
         workspace_path: str | None = None,
+        workspace_sha256: str | None = None,
     ) -> dict[str, Any]:
         body = _j(content)
         digest = hashlib.sha256(body.encode()).hexdigest()
@@ -1400,8 +1438,8 @@ class WorkbenchRepository(
         version = int(r.scalar_one())
         aid = str(uuid.uuid4())
         await self.session.execute(
-            text("""insert into workbench_artifacts (id, task_id, attempt_id, name, version, kind, content, digest, workspace_path)
-                    values (:id, :t, :a, :n, :v, :k, cast(:c as jsonb), :d, :w)"""),
+            text("""insert into workbench_artifacts (id, task_id, attempt_id, name, version, kind, content, digest, workspace_path, workspace_sha256)
+                    values (:id, :t, :a, :n, :v, :k, cast(:c as jsonb), :d, :w, :sha)"""),
             {
                 "id": aid,
                 "t": task_id,
@@ -1412,6 +1450,7 @@ class WorkbenchRepository(
                 "c": body,
                 "d": digest,
                 "w": workspace_path,
+                "sha": workspace_sha256,
             },
         )
         return {
@@ -1456,7 +1495,7 @@ class WorkbenchRepository(
         """底稿页用：每个名字取最新版本，带内容。"""
         r = await self.session.execute(
             text(
-                """select distinct on (name) id, task_id, attempt_id, name, version, kind, content, digest, workspace_path, created_at
+                """select distinct on (name) id, task_id, attempt_id, name, version, kind, content, digest, workspace_path, workspace_sha256, created_at
                    from workbench_artifacts where task_id = :t order by name, version desc"""
             ),
             {"t": task_id},

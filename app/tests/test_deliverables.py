@@ -95,3 +95,20 @@ def test_the_files_of_one_request_sit_together_with_its_handback():
         f"{folder}/交回.md",
     ]
     assert f"`{folder}/交回.md`" in handback_rules(f"{folder}/交回.md")
+
+
+def test_generating_a_translation_respects_the_authors_requested_format():
+    from app.application.workbench.task_runtime import TaskRuntime
+    from app.domain.workbench.packs import StepContract
+
+    step = StepContract(
+        step_id="translate",
+        title="翻译参观须知",
+        method_text="只交付面向游客的一段英文译文，保留原段落。",
+        output_artifact="translation",
+        output_file="notice.md",
+    )
+    prompt = TaskRuntime.compose(step, {"text": "请翻译参观须知"}, {}, 0)
+    assert step.method_text in prompt
+    assert "Sections, in this order" not in prompt
+    assert "buy/sell recommendation" not in prompt

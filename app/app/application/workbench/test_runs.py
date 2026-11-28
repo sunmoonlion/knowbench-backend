@@ -28,6 +28,7 @@ runner 照常驱动。同一台电脑、同一个根目录一次只跑一个测�
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
@@ -1540,6 +1541,12 @@ class KnowbotTestConductor:
             and found.mtime_ms < started.timestamp() * 1000 - 1000
         ):
             return None, "成稿文件早于这条用例开始，不是这次写的"
+        expected = artifact.get("workspace_sha256")
+        if not expected:
+            return None, "验收时没有取得文件摘要，无法核对这份成稿"
+        actual = found.sha256 or hashlib.sha256(found.text.encode("utf-8")).hexdigest()
+        if actual != expected:
+            return None, "文件内容与验收时的摘要不符，未附入成稿"
         return {
             "path": path,
             "text": found.text,

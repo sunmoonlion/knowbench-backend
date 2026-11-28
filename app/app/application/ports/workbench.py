@@ -455,7 +455,16 @@ class WorkbenchStore(Protocol):
     ) -> dict[str, Any] | None: ...
 
     async def list_events(
-        self, *, session_id: str, after_cursor: int = 0, limit: int = 500
+        self,
+        *,
+        session_id: str,
+        after_cursor: int = 0,
+        limit: int = 500,
+        latest_user_prompt: bool = False,
+    ) -> list[dict[str, Any]]: ...
+
+    async def latest_activity_events(
+        self, *, session_id: str, after_cursor: int
     ) -> list[dict[str, Any]]: ...
 
     async def conversation_digests(
@@ -587,6 +596,7 @@ class WorkbenchStore(Protocol):
         kind: str,
         content: Any,
         workspace_path: str | None = None,
+        workspace_sha256: str | None = None,
     ) -> dict[str, Any]: ...
 
     async def get_artifact(

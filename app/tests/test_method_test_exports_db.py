@@ -1,6 +1,7 @@
 """Author assertions and multi-final evidence follow accepted plan identities."""
 
 import copy
+import hashlib
 import json
 
 import jsonschema
@@ -202,7 +203,7 @@ async def test_each_final_file_is_read_in_the_owner_workspace_and_timeout_is_exp
             return True
 
         async def digest(self, **kwargs):
-            return "a" * 64
+            return hashlib.sha256(kwargs["path"].encode()).hexdigest()
 
     class Reader:
         def __init__(self):
@@ -318,3 +319,41 @@ async def test_v2_collector_checks_current_intermediate_output_without_promoting
         assert result["status"] == "failed"
         saved = await repo.get_test_case_outputs(run["run_id"], "c1")
         assert [x["method_id"] for x in saved["final_outputs"]] == ["report"]
+
+
+async def test_changed_report_is_excluded_after_delivery(db, tmp_path):
+    tid, _ = await task(db)
+
+    def add_file(catalog):
+        for method in catalog["method_units"]:
+            if method["contract"]["step_id"] == "report":
+                method["contract"]["output_file"] = "report.md"
+
+    await patch_catalog(db, tid, add_file)
+    file = tmp_path / "report.md"
+    file.write_text("交付时的报告")
+
+    class Files:
+        async def exists(self, **kwargs):
+            return file.exists()
+
+        async def digest(self, **kwargs):
+            return hashlib.sha256(file.read_bytes()).hexdigest()
+
+        async def read(self, **kwargs):
+            return ReadFile(file.read_text(), file.stat().st_mtime_ns // 1_000_000)
+
+    files = Files()
+    runtime = TaskRuntime(
+        SqlWorkbenchStores(db),
+        Driver([json.dumps(proposal().model_dump(mode="json")), ROWS, ROWS]),
+        deliverables=files,
+    )
+    assert await runtime.drive(tid) == TaskState.SUCCEEDED
+    file.write_text("交付后改写的报告")
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        out, _ = await exported(db, repo, await repo.get_task(tid), reader=files)
+        final = next(x for x in out["final_outputs"] if x["method_id"] == "report")
+        assert final.get("deliverable") is None
+        assert final["result"]["digest"] and "与验收时的摘要不符" in final["note"]

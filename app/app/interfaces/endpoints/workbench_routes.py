@@ -782,6 +782,7 @@ async def list_events(
     session_id: str,
     after: int = Query(default=0, ge=0),
     limit: int = Query(default=200, ge=1, le=1000),
+    latest_user_prompt: bool = False,
     principal: Principal = Depends(get_web_current_user),
     session: AsyncSession = Depends(get_db_session),
 ):
@@ -791,7 +792,10 @@ async def list_events(
     except WorkbenchError as exc:
         raise _http(exc) from exc
     events = await repo.list_events(
-        session_id=session_id, after_cursor=after, limit=limit
+        session_id=session_id,
+        after_cursor=after,
+        limit=limit,
+        latest_user_prompt=latest_user_prompt,
     )
     return {
         "contract_version": CONTRACT_VERSION,

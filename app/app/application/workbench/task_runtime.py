@@ -41,7 +41,6 @@ from app.domain.workbench import hierarchical_planning as htn
 from app.domain.workbench import knowbots
 from app.domain.workbench.data_planning import STOP_REASONS
 from app.domain.workbench.deliverables import (
-    DELIVERABLE_RULES,
     HANDBACK_FILE,
     WRITE_FILE_RULES,
     deliverable_seen,
@@ -104,6 +103,7 @@ class StepAssessment:
     checked: str | None = None
     error: str | None = None
     planning: dict | None = None
+    workspace_sha256: str | None = None
 
 
 class TaskRuntime:
@@ -849,8 +849,17 @@ class TaskRuntime:
                 verdict, written, checked = harden(
                     verdict, written=seen, found=found, output_file=output_file
                 )
+            workspace_sha256 = None
+            if verdict.ok and written and output_file:
+                fingerprints = await self._fingerprints(repo, task, [output_file])
+                workspace_sha256 = fingerprints[output_file]
             return StepAssessment(
-                verdict, output_file, written, checked, planning=planning
+                verdict,
+                output_file,
+                written,
+                checked,
+                planning=planning,
+                workspace_sha256=workspace_sha256,
             )
 
     async def _settle_step(
@@ -1293,6 +1302,7 @@ class TaskRuntime:
                     kind="step",
                     content=verdict.parsed,
                     workspace_path=output_file if written else None,
+                    workspace_sha256=assessment.workspace_sha256,
                 )
                 await led.attempt_transition(
                     attempt_id,
@@ -2164,8 +2174,7 @@ class TaskRuntime:
                 "to the project directory; create the folders if needed; the folder is "
                 "for this request only, so files of earlier requests stay as they are). "
                 + WRITE_FILE_RULES
-                + " "
-                + DELIVERABLE_RULES,
+                + " Follow the author’s deliverable instructions for its format, language and content.",
             ]
             if last_step:
                 handback = f"{folder}/{HANDBACK_FILE}" if folder else HANDBACK_FILE

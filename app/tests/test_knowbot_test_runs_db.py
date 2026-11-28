@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import uuid
@@ -321,9 +322,10 @@ async def mark_written(db) -> None:
     async with db() as s:
         await s.execute(
             text(
-                """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
+                """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md', workspace_sha256 = :sha
                    where name = '__method_output__:answer'"""
-            )
+            ),
+            {"sha": hashlib.sha256(FakeReader().text.encode()).hexdigest()},
         )
         await s.commit()
 
