@@ -897,8 +897,8 @@ async def script_artifact(
         artifacts = result.get("artifacts", [])
         kind = call["detail"].get("execution_kind")
         if (
-            kind not in ("skill_script", "registry_script")
-            or kind == "registry_script"
+            kind not in ("skill_script", "formal_script", "registry_script")
+            or kind in ("formal_script", "registry_script")
             and call["status"] != "succeeded"
             or not 0 <= index < len(artifacts)
         ):

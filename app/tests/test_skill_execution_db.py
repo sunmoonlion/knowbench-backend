@@ -356,3 +356,37 @@ async def test_input_connect_failure_closes_prepared_job_without_a_second_delive
         assert attempts == [call["id"]]
         assert executor.cancelled == [(OWNER, call["id"])]
         assert call["status"] == "failed"
+
+
+@pytest.mark.parametrize("kind", ["formal_script", "registry_script"])
+async def test_successful_script_download_uses_owners_call_and_requires_completion(
+    kind,
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from test_workbench_routes import principal
+
+    from app.interfaces.endpoints.capability_routes import script_artifact
+
+    call_id = uuid4()
+    recorded = {
+        "status": "succeeded",
+        "detail": {
+            "execution_kind": kind,
+            "result": {"artifacts": [{"path": "report.txt", "data_base64": "NDI="}]},
+        },
+    }
+    repo = SimpleNamespace(capability_call=AsyncMock(return_value=recorded))
+    response = await script_artifact(
+        call_id, 0, principal(OWNER), SimpleNamespace(repo=repo)
+    )
+    assert response.body == b"42"
+    assert response.headers["content-disposition"].endswith("report.txt")
+    repo.capability_call.assert_awaited_once_with(OWNER, str(call_id))
+    recorded["status"] = "failed"
+    refused = await script_artifact(
+        call_id, 0, principal(OWNER), SimpleNamespace(repo=repo)
+    )
+    assert refused.status_code == 404
