@@ -64,6 +64,7 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
         ctx.factory,
         planning_choice=choice,
         incubations=desk,
+        question="Please return a receipt，不要无限重试",
     ) as match:
         client, path, selection, runner, factory, model = match
         review = {"review_digest": selection["review_digest"]}
@@ -78,6 +79,8 @@ async def test_empty_intake_temporary_plan_runs_only_after_confirmation(
         assert sketch["outcome"] == "plan" and len(sketch["scope"]["steps"]) == 1, (
             sketch
         )
+        assert "不要无限重试" in str(model.turn_inputs[0])
+        assert sketch["required_capabilities"] == []
         assert len(model.turn_inputs) == 1 and not ctx.remote.calls
         decision = {**review, "sketch_digest": sketch["sketch_digest"]}
         assert (await client.put(p + "/adoption", json=decision)).status_code == 409
@@ -362,21 +365,15 @@ async def test_model_requests_contract_search_and_runner_change_blocks_adoption(
         ).status_code == 409
 
 
-def test_untagged_hard_requirements_and_superfluous_steps():
+def test_superfluous_steps_without_a_binding_are_rejected():
     import pytest
     from test_formal_expert_intake_db import Registry
 
     from app.domain.workbench.formal_method_generated import (
         MethodRef,
     )
-    from app.domain.workbench.planning_capabilities import requirements
     from app.domain.workbench.temporary_plan import Choice, root_for
 
-    assert requirements("务必独立复核，然后按对象逐项计算") == [
-        "independent_review",
-        "object_batch",
-    ]
-    assert requirements("必须并行执行两份工作") == ["parallel_dispatch"]
     registry = Registry()
     docs = list(registry.entries.values())
     refs = [MethodRef.model_validate(row["reference"]) for row in docs]

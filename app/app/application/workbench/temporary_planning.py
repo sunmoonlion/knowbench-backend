@@ -30,7 +30,6 @@ from app.domain.workbench.planning_capabilities import (
     CATALOG_SNAPSHOT_BYTES,
     capabilities,
     check_structure,
-    requirements,
     same_runtime,
 )
 from app.domain.workbench.temporary_plan import (
@@ -288,9 +287,9 @@ async def start(service, owner, task_id, command, *, library=None, token=None):
             directory = prior["original_input"]["input"]["catalog"]
         question = review["question"]
         runtime = capabilities(service)
-        needed = requirements(
-            question + " " + command.clarification, command.required_capabilities
-        )
+        # The question and clarification reach the model verbatim. Only an
+        # explicitly requested capability can stop planning before discovery.
+        needed = sorted(set(command.required_capabilities))
         if events and prior:
             needed = sorted(
                 set(needed)
@@ -693,9 +692,7 @@ async def adopt(service, owner, task_id, command):
     choice = reviewed_choice(original, command.review)
     try:
         runtime = capabilities(service)
-        required = set(picked.get("required_capabilities", [])) | set(
-            requirements(review["question"])
-        )
+        required = set(picked.get("required_capabilities", []))
         ref, root = await compile_choice(
             service,
             owner,

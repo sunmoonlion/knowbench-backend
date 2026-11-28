@@ -650,5 +650,8 @@ async def test_method_outputs_keep_declared_scalar_types_and_procurement_languag
     shape = {"rows": [{"id": "string"}]}
     assert judge('{"rows":[{"id":"123"}]}', rules, output_shape=shape).ok
     assert not judge('{"rows":[{"id":123}]}', rules, output_shape=shape).ok
+    assert judge('{"amount":"0.00000000000000000001"}', rules, output_shape={"amount": "number"}).ok
+    for invalid in ('true', '"NaN"', '"absent"'):
+        assert not judge('{"amount":' + invalid + '}', rules, output_shape={"amount": "number"}).ok
     assert judge('{"summary":"会议用纸采购目标价为每包二十元。"}', rules).ok
     assert not judge('{"summary":"该股目标价为二十元。"}', rules).ok

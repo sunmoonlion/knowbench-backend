@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Any
 
+from app.domain.workbench.compute import decimal_of
 from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
 
 # F-POS-04：对具体证券的评级、目标价、买卖建议措辞，云端确定性拦截并留痕
@@ -314,9 +315,7 @@ def _output_type_error(value: Any, shape: Any, path: str = "$") -> str | None:
                     return error
     elif shape == "string" and not isinstance(value, str):
         return path
-    elif shape == "number" and (
-        isinstance(value, bool) or not isinstance(value, (int, float, Decimal))
-    ):
+    elif shape == "number" and decimal_of(value) is None:
         return path
     elif shape == "boolean" and not isinstance(value, bool):
         return path

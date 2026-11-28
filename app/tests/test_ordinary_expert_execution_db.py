@@ -281,6 +281,7 @@ async def selected_match(
     token=None,
     library=None,
     from_work=False,
+    question="Please return a receipt",
     planning_choice=None,
     incubations=None,
 ):
@@ -409,7 +410,7 @@ async def selected_match(
                         if planning_choice
                         else {"reference": ref}
                     ),
-                    "question": "Please return a receipt",
+                    "question": question,
                     "idempotency_key": "normal-expert-match",
                     **origin,
                     "match_contract": "knowbench/expert-match/v5",

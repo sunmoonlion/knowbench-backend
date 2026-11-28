@@ -1,28 +1,8 @@
 """Deployment evidence and structural requirements for consumer-side sketches."""
 
-import re
-
 from app.domain.workbench.formal_method_generated import Orchestration
 from app.domain.workbench.formal_method_plan_generated import review_group
 from app.domain.workbench.match_requirements import digest
-
-PATTERNS = {
-    "sequence": r"串行接力|ordered handoff",
-    "join": r"固定分支汇合|合并两份独立结果|merge both branch results",
-    "independent_review": r"独立.{0,4}(复核|审查)|交叉复核|independent review|cross.review",
-    "object_batch": r"按.{0,4}(对象|清单).{0,5}(展开|逐项)|逐对象|for each object",
-    "parallel_dispatch": r"必须.{0,5}(并行|同时)执行|must run (in parallel|simultaneously)",
-    "unbounded": r"无限(返工|重试)|unlimited retr(y|ies)",
-    "conditional": r"按输入.{0,5}(选路|选法)|条件选路|choose by input",
-}
-
-
-def requirements(question, explicit=()):
-    return sorted(
-        set(explicit)
-        | {k for k, expr in PATTERNS.items() if re.search(expr, question, re.I)}
-    )
-
 
 CAPABILITY_HINTS = {
     "sequence": "Pass a verified named output to the next method.",
