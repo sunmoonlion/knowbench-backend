@@ -314,7 +314,9 @@ async def prepare(
                     materials=invalid_materials,
                     accounts=invalid_accounts,
                 )
-            same = current is not None and current["bindings"] == bindings
+            same = current is not None and digest(current["bindings"]) == digest(
+                bindings
+            )
             if body.expected_revision != revision and not (
                 same and body.expected_revision == revision - 1
             ):

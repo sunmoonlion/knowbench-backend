@@ -263,11 +263,19 @@ class ValueSlot(Strict):
                         target = self.schema_
                         for segment in item[2:].split("/"):
                             segment = segment.replace("~1", "/").replace("~0", "~")
-                            if not isinstance(target, dict) or segment not in target:
+                            if isinstance(target, dict) and segment in target:
+                                target = target[segment]
+                            elif (
+                                isinstance(target, list)
+                                and re.fullmatch(r"0|[1-9][0-9]*", segment)
+                                and len(segment) <= len(str(len(target)))
+                                and int(segment) < len(target)
+                            ):
+                                target = target[int(segment)]
+                            else:
                                 raise ValueError(
                                     "Method schema reference does not exist"
                                 )
-                            target = target[segment]
                     local(item, depth + 1)
             elif isinstance(value, list):
                 for item in value:

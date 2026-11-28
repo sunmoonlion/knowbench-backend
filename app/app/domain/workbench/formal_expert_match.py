@@ -138,6 +138,7 @@ def frozen_scope(definition: FormalMethodDefinition):
                 "name": name,
                 "description": value["slot"]["description"],
                 "step": graph.exports[name].step,
+                "always_present": value["always_present"],
             }
             for name, value in interfaces["outputs"].items()
         ],
