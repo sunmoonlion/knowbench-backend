@@ -4,15 +4,47 @@ import asyncio
 from unittest.mock import AsyncMock
 
 import pytest
+import pytest_asyncio
 from sqlalchemy import text
+from test_formal_expert_intake_db import Registry
 from test_workbench_ledger_db import db as db  # noqa: F401
 from test_workbench_project_routes import machine, project
 from test_workbench_routes import A, B
 from test_workbench_routes import make_client as make_client  # noqa: F401
 
+from app.application.workbench.find_expert import FindExpertService
 from app.infrastructure.workbench.repository import WorkbenchRepository
+from app.interfaces.http.web import workbench_expert
 
-BODY = {"question": "核对这份文件里的条款", "idempotency_key": "find-retry-001"}
+BODY = {
+    "match_contract": "knowbench/expert-match/v5",
+    "question": "核对这份文件里的条款",
+    "idempotency_key": "find-retry-001",
+}
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def formal_intake(db, monkeypatch):
+    registry = Registry(owner=A)
+    async with db() as session:
+        await session.execute(
+            text(
+                "INSERT INTO auth_user (id, issuer, subject, roles, scopes) "
+                "VALUES (:id, 'test', :subject, '[]', '[]')"
+            ),
+            [{"id": actor, "subject": f"sub-{actor}"} for actor in (A, B)],
+        )
+        await session.commit()
+    monkeypatch.setattr(
+        workbench_expert,
+        "find_expert_service",
+        lambda session: FindExpertService(
+            WorkbenchRepository(session),
+            unified_entry_enabled=True,
+            formal_registry=registry,
+        ),
+    )
+    monkeypatch.setattr(workbench_expert, "publish_commands_wakeup", AsyncMock())
 
 
 async def counts(db):

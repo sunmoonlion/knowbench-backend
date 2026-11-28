@@ -10,12 +10,12 @@ import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
 from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Annotated, Any
 
 import anyio
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -1279,14 +1279,17 @@ async def put_prefs(
     return {"contract_version": CONTRACT_VERSION, **_plain(_with_sources(prefs))}
 
 
+MemoryText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1, max_length=400)]
+
+
 class MemoryIn(Strict):
-    text: str = Field(min_length=1, max_length=400)
+    text: MemoryText
     kind: str = Field(default="fact", pattern=r"^(fact|judgement)$")
     source: dict[str, Any] | None = None
 
 
 class MemoryPatch(Strict):
-    text: str | None = Field(default=None, min_length=1, max_length=400)
+    text: MemoryText | None = None
     enabled: bool | None = None
 
 

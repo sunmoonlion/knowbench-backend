@@ -410,7 +410,18 @@ async def test_dedupe_is_not_limited_to_latest_100_and_expiry(db):
                 ),
                 {"s": sid},
             )
-        assert all(c["status"] == "expired" for c in await svc.calls(OWNER, sid))
+        await svc.calls(OWNER, sid)
+        assert (await repo.capability_call(OWNER, first["call_id"]))[
+            "status"
+        ] == "expired"
+        statuses = await s.execute(
+            text(
+                "SELECT status, count(*) FROM workbench_calls "
+                "WHERE session_id=:sid AND origin='managed' GROUP BY status"
+            ),
+            {"sid": sid},
+        )
+        assert statuses.all() == [("expired", 102)]
         assert not remote.calls
 
 

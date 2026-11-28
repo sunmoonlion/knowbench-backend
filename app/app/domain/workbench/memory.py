@@ -21,21 +21,24 @@ def memory_note(
         for m in memories
         if m.get("enabled", True) and str(m.get("text", "")).strip()
     ]
-    if not facts:
+    if not facts or limit <= 0:
         return None
-    lines: list[str] = []
-    used = 0
-    for fact in facts[:MAX_ITEMS]:
-        line = f"- {fact}"
-        if used + len(line) + 1 > limit and lines:
+    heading = "[workbench] About this user (facts they confirmed; use them, do not restate them):"
+    lines = [heading]
+    for index, fact in enumerate(facts[:MAX_ITEMS]):
+        remaining = len(facts) - index - 1
+        suffix = f"\n- ({remaining} more facts not shown)" if remaining else ""
+        prefix = "\n".join(lines) + "\n- "
+        if len(prefix) + len(fact) + len(suffix) > limit:
+            if index == 0:
+                available = limit - len(prefix) - len(suffix) - 1
+                if available < 1:
+                    return None
+                return prefix + fact[:available] + "…" + suffix
+            lines.append(f"- ({remaining + 1} more facts not shown)")
             break
-        lines.append(line)
-        used += len(line) + 1
-    left = len(facts) - len(lines)
-    body = "\n".join(lines)
-    if left > 0:
-        body += f"\n- ({left} more facts not shown)"
-    return (
-        "[workbench] About this user (facts they confirmed; use them, do not restate them):\n"
-        + body
-    )
+        lines.append("- " + fact)
+    else:
+        if len(facts) > MAX_ITEMS:
+            lines.append(f"- ({len(facts) - MAX_ITEMS} more facts not shown)")
+    return "\n".join(lines)

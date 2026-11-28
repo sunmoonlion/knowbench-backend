@@ -10,6 +10,10 @@ def test_provider_contract_lock():
     lock = json.loads((root / "contracts/relay-permissions.lock.json").read_text())
     canonical = json.dumps(lock["contract"], sort_keys=True, separators=(",", ":"))
     assert hashlib.sha256(canonical.encode()).hexdigest() == lock["canonical_sha256"]
-    provider = root.parents[2] / "k8s/infrastructure/applications/component-images/relay/local-permission-v1.json"
-    if provider.exists():
+    platform = root.parents[2] / "sunmoonun"
+    if platform.is_dir():
+        provider = (
+            platform
+            / "infrastructure/applications/component-images/relay/local-permission-v1.json"
+        )
         assert json.loads(provider.read_text()) == lock["contract"]

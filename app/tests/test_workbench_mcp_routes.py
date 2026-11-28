@@ -334,6 +334,7 @@ class FakeDataMcp:
 
         claims = jwt.decode(token, ISSUER.key).claims
         self.function_call = (claims, body)
+        self.seen.append(self.function_call)
         output = {"facts": []}
         if name == "list_inputs":
             output = {"run": body["arguments"]["run"], "inputs": []}
@@ -517,6 +518,7 @@ async def test_the_data_tools_are_relayed_to_knowbase(
                 assert fake_kb.function_call[1]["call_id"] == body["call_id"]
 
             relayed_count = len(fake_kb.seen)
+            assert relayed_count > 0
             chat = await http.post(
                 URL,
                 json=tool(

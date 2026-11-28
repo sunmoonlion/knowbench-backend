@@ -24,7 +24,8 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
 class Registry:
-    def __init__(self):
+    def __init__(self, owner=OWNER):
+        self.owner = owner
         self.entries = {}
         self.definitions = {}
         root, _, _, deps = shape()
@@ -47,7 +48,7 @@ class Registry:
     public_declaration = staticmethod(SceneRegistry.public_declaration)
 
     async def planning_definitions(self, owner, references):
-        assert owner == OWNER
+        assert owner == self.owner
         return {r: self.dependencies[r] for r in references if r in self.dependencies}
 
     async def planning_definition(self, owner, reference, *, experts_only):
@@ -55,14 +56,14 @@ class Registry:
         return self.definitions[reference]
 
     async def planning_versions(self, owner, limit, offset, *, query):
-        assert owner == OWNER and query.stage == "expert"
+        assert owner == self.owner and query.stage == "expert"
         return {"items": [v["reference"] for v in self.entries.values()], "next": None}
 
     def reference(self, row):
         return row
 
     async def planning_declaration(self, owner, reference, *, experts_only):
-        assert owner == OWNER and experts_only
+        assert owner == self.owner and experts_only
         if reference not in self.entries:
             raise NotFound("access revoked")
         return self.entries[reference]

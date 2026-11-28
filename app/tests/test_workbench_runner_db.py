@@ -1954,11 +1954,7 @@ async def test_task_runtime_policy_lets_in_project_file_changes_through_without_
         assert await wait_for(decided)
         assert await _pending(db, sid, "tool_approval") == []
         rows = await _approval_rows(db, sid)
-        assert rows[0] == ("accept", "policy", "runtime", "smoke-1") or rows[0][:3] == (
-            "accept",
-            "policy",
-            "runtime",
-        )
+        assert rows[0] == ("accept", "policy", "runtime", "plan")
         async with db() as s:
             events = await WorkbenchRepository(s).list_events(session_id=sid)
         assert any(e["type"] == "approval/policy" for e in events)
