@@ -1429,11 +1429,14 @@ FIN_FORECAST = ExpertPack(
                     label="至少两条假设",
                 ),
                 AcceptanceRule(
-                    kind="list_min",
+                    kind="assertion",
                     path="rows",
-                    min_items=1,
-                    message="没有预测值",
-                    label="有预测值",
+                    expression='nonblank_items("assumptions") and ('
+                    '(0 <= whole("window.count") < 3 and size("rows") == 0 '
+                    'and nonblank("method") and not exists("backtest")) or '
+                    '(3 <= whole("window.count") <= 6 and size("rows") > 0))',
+                    message="不足三期需说明并交空表；足三期须有预测",
+                    label="预测与可用窗口一致",
                 ),
                 AcceptanceRule(
                     kind="list_min",

@@ -14,6 +14,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.domain.workbench.compute import decimal_of
+from app.domain.workbench.delivery_assertion import matches_assertion
 from app.domain.workbench.packs import NUMERIC_RULES, AcceptanceRule
 
 # F-POS-04：对具体证券的评级、目标价、买卖建议措辞，云端确定性拦截并留痕
@@ -387,6 +388,9 @@ def judge(
         ok, detail = True, ""
         if r.kind == "json_object":
             ok = isinstance(parsed, dict)
+        elif r.kind == "assertion":
+            ok = matches_assertion(r.expression, parsed)
+            detail = "" if ok else r.label or "delivery assertion failed"
         elif r.kind == "required_keys":
             missing = [k for k in r.keys if k not in parsed]
             ok, detail = not missing, f"missing {missing}" if missing else ""

@@ -20,6 +20,7 @@ from pydantic import (
     model_validator,
 )
 
+from app.domain.workbench.delivery_assertion_contract import parse_assertion
 from app.domain.workbench.method_capabilities import MethodAccess
 from app.domain.workbench.tool_policy import (
     ToolPolicy,
@@ -36,6 +37,7 @@ class AcceptanceRule(Strict):
     """确定性检查。kind 决定怎么判；judge 全是纯函数（application/workbench/acceptance.py）。"""
 
     kind: Literal[
+        "assertion",
         "json_object",
         "required_keys",
         "non_empty",
@@ -82,7 +84,9 @@ class AcceptanceRule(Strict):
     def _numeric_rules_name_a_path(self) -> AcceptanceRule:
         if self.kind in NUMERIC_RULES and not self.path:
             raise ValueError(f"acceptance {self.kind} needs a path")
-        if self.expression is not None and self.kind != "computed":
+        if self.kind == "assertion":
+            parse_assertion(self.expression or "")
+        if self.expression is not None and self.kind not in ("computed", "assertion"):
             raise ValueError("only a computed acceptance can require an expression")
         if self.kind == "each_has" and not self.path:
             raise ValueError("acceptance each_has needs a path")
