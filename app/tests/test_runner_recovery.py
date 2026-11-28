@@ -1,0 +1,99 @@
+"""Check lease bookkeeping on rollback and answer provenance on link loss."""
+
+import asyncio
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
+
+from app.application.workbench.runner import Runner, SandboxLink
+
+
+async def test_rolled_back_takeover_is_repeated_on_retry():
+    repo = AsyncMock()
+    repo.renew_leases.return_value = []
+    repo.acquire_leases.return_value = ["sandbox"]
+    repo.claim_commands.side_effect = [
+        RuntimeError("queue temporarily unavailable"),
+        [],
+    ]
+    commits = []
+
+    @asynccontextmanager
+    async def transaction():
+        yield
+        commits.append(True)
+
+    @asynccontextmanager
+    async def stores():
+        yield repo
+
+    repo.transaction = transaction
+    runner = Runner(stores, connector=None, publisher=None, runner_id="local")
+    runner._take_over = AsyncMock()
+    runner._reconcile = AsyncMock(return_value=[])
+    try:
+        await runner.run_once()
+    except RuntimeError as exc:
+        assert str(exc) == "queue temporarily unavailable"
+    assert commits == []
+    await runner.run_once()
+    assert commits == [True]
+    assert runner._take_over.await_count == 2
+
+
+async def test_lost_link_records_disconnect():
+    runner = Runner(None, connector=None, publisher=None, runner_id="local")
+    link = SandboxLink(runner, {"id": "sandbox"})
+    runner.links["sandbox"] = link
+    waiting = asyncio.create_task(link._wait_answer("question", timeout=1))
+    await asyncio.sleep(0)
+    await runner._drop_link("sandbox", "lease changed")
+    assert await waiting == ({"decision": "decline"}, "connection_lost")
+
+
+async def test_usage_retry_after_failed_append():
+    repo = AsyncMock()
+    repo.append_event.side_effect = [RuntimeError("write failed"), {}]
+
+    @asynccontextmanager
+    async def stores():
+        yield repo
+
+    repo.transaction = stores
+    link = SandboxLink(
+        Runner(stores, connector=None, publisher=AsyncMock(), runner_id="local"),
+        {"id": "sandbox"},
+    )
+    link.threads["thread"] = "session"
+    link.models["thread"] = "kimi-k3"
+    link.totals["thread"] = None
+    report = {
+        "threadId": "thread",
+        "turnId": "turn",
+        "tokenUsage": {"last": {"inputTokens": 41}, "total": {"inputTokens": 41}},
+    }
+    try:
+        await link.on_notification("thread/tokenUsage/updated", report)
+    except RuntimeError as exc:
+        assert str(exc) == "write failed"
+    await link.on_notification("thread/tokenUsage/updated", report)
+    assert repo.append_event.await_count == 2
+    await link.on_notification("thread/tokenUsage/updated", report)
+    assert repo.append_event.await_count == 2
+    assert link.turn_usage["turn"].input == 41
+
+
+async def test_transient_mode_note_error_allows_retry():
+    from app.application.ports.workbench import AppServerError
+    from app.application.workbench.runner import TurnPlan
+
+    link = SandboxLink(None, {"id": "sandbox"})
+    client = AsyncMock()
+    client.request.side_effect = [
+        AppServerError("thread/inject_items", {"message": "transient"}),
+        {},
+    ]
+    link.ensure_connected = AsyncMock(return_value=client)
+    plan = TurnPlan(mode="chat", facts="fixture")
+    await link.announce("thread", plan)
+    await link.announce("thread", plan)
+    assert client.request.await_count == 2

@@ -103,6 +103,7 @@ from app.domain.workbench.tool_policy import (
 )
 
 log = logging.getLogger(__name__)
+_CONNECTION_LOST = object()
 
 # 收尾没人推的委托：停下残留那一轮后，最多等它确认停下这么久；确认不了先占着项目（0034 §三.1）
 STOP_CONFIRM_SECONDS = 60
@@ -236,7 +237,7 @@ class SandboxLink:
             # 每次真的建一条新连接都作废一次，同一进程里断了再连也算（0034 §三.2）
             for fut in list(self.pending_approvals.values()):
                 if not fut.done():
-                    fut.set_result({"decision": "decline"})
+                    fut.set_result(_CONNECTION_LOST)
             await self.runner.expire_approvals(
                 self.sandbox_id, "connection to the sandbox re-established"
             )
@@ -579,16 +580,16 @@ class SandboxLink:
         """进程重启过的时候：从账里找这条线上一次报的累计。"""
         if not thread_id or thread_id in self.totals:
             return
-        self.totals[thread_id] = None
         reported = await repo.list_record_events(
             session_id=session_id, types=("thread/tokenUsage/updated",)
         )
         for event in reversed(reported):
             if thread_id_of(event["payload"]) == thread_id:
                 self.totals[thread_id] = cumulative_of(
-                    event["payload"].get("tokenUsage")
+                    event["payload"].get("tokenUsage") or event["payload"].get("usage")
                 )
                 return
+        self.totals[thread_id] = None
 
     def priced(self, method: str, params: dict[str, Any]) -> dict[str, Any] | None:
         """用量通知进账之前，带上按价目表算好的金额。页面照着显示，不自己算价。
@@ -601,8 +602,6 @@ class SandboxLink:
         reported = params.get("tokenUsage") or params.get("usage")
         thread_id = thread_id_of(params)
         usage = fresh_usage(reported, self.totals.get(thread_id or ""))
-        if thread_id and cumulative_of(reported) is not None:
-            self.totals[thread_id] = cumulative_of(reported)
         if usage.total == 0:
             # A well-formed, explicitly zero last call is evidence, unlike an
             # absent report or a duplicate nonzero cumulative notification.
@@ -621,7 +620,6 @@ class SandboxLink:
         so_far = usage
         if turn_id:
             so_far = self.turn_usage.get(turn_id, Usage()) + usage
-            self.turn_usage[turn_id] = so_far
         prices = self.runner.prices
         model = self.models.get(thread_id or "") or None
         price = prices.of(model)
@@ -667,6 +665,7 @@ class SandboxLink:
             note = f"{note}\n\n{plan.facts}"
         client = await self.ensure_connected()
         injected = True
+        unsupported = False
         try:
             await client.request(
                 "thread/inject_items",
@@ -684,13 +683,15 @@ class SandboxLink:
             )
         except AppServerError as exc:
             injected = False
+            unsupported = exc.error.get("code") == -32601
             log.warning(
                 "mode note not injected sandbox=%s thread=%s: %s",
                 self.sandbox_id,
                 thread_id,
                 exc,
             )
-        self.announced[thread_id] = signature
+        if injected or unsupported:
+            self.announced[thread_id] = signature
         if plan.session_id is None:
             return
         async with self.runner.stores() as repo:
@@ -768,6 +769,16 @@ class SandboxLink:
                     event_type=method,
                     payload=native_event_payload(method, params),
                 )
+            if method.startswith("thread/tokenUsage"):
+                thread_id = thread_id_of(params)
+                turn_id = params.get("turnId") or self.active_turns.get(thread_id or "")
+                total = cumulative_of(params.get("tokenUsage") or params.get("usage"))
+                if thread_id and total is not None:
+                    self.totals[thread_id] = total
+                if turn_id:
+                    so_far = Usage.from_json(params["cost"]["turn_tokens"])
+                    assert so_far is not None
+                    self.turn_usage[turn_id] = so_far
             await self.runner.publisher.publish(
                 self.runner.publisher.session_channel(session_id), event
             )
@@ -1833,7 +1844,7 @@ class SandboxLink:
                     wheel=session["wheel"],
                     step_id=None,
                 )
-        if client is self.client:
+        if source != "connection_lost" and client is self.client:
             await client.respond(
                 rid, {"permissions": profile, "scope": "turn"} if allowed else denied
             )
@@ -1948,6 +1959,8 @@ class SandboxLink:
                 return None, "turn_over"
             if request_id in self.released:
                 return None, "cancelled"
+            if answer is _CONNECTION_LOST:
+                return {"decision": "decline"}, "connection_lost"
             return answer, "user"
         except TimeoutError:
             return None, "timeout"
@@ -2174,6 +2187,8 @@ class SandboxLink:
                 "source": source,
                 "step_id": step_id,
             }
+        if source == "connection_lost":
+            return
         await client.respond(rid, {"decision": codex})
         if codex == "decline" and note and thread_id:
             # 「拒绝，并告诉它怎么改」= decline + turn/steer（approval.md「改得不对」）
@@ -2317,6 +2332,8 @@ class SandboxLink:
         )
         thread_id = thread_id_of(params)
         response, source = await self._wait_answer(request_id, thread_id=thread_id)
+        if source == "connection_lost":
+            return
         if source == "turn_over":
             await self._answer_dead_request(rid, empty)
             return
@@ -2505,7 +2522,7 @@ class Runner:
         log.warning("dropping sandbox link sandbox=%s: %s", sandbox_id, why)
         for fut in list(link.pending_approvals.values()):
             if not fut.done():
-                fut.set_result({"decision": "decline"})
+                fut.set_result(_CONNECTION_LOST)
         if link.client:
             try:
                 await link.client.close()
@@ -2755,13 +2772,13 @@ class Runner:
                 for sandbox_id in sorted(held - self.leased):
                     await self._take_over(repo, sandbox_id)
                 lost = self.leased - held
-                self.leased = held
                 source_tasks = (
                     await repo.active_source_tasks(held)
                     if self.capabilities and held
                     else []
                 )
                 commands = await repo.claim_commands(claimed_by=self.runner_id)
+            self.leased = held
         for task_id in source_tasks:
             if not self._busy(task_id):
                 self.driving[task_id] = asyncio.create_task(
