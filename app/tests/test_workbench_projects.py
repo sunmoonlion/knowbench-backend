@@ -401,3 +401,21 @@ def test_windows_work_notes_say_how_to_write_files_and_run_scripts() -> None:
     assert "apply_patch is not a program" not in mode_note(
         "work", directory="/home/zym/proj"
     )
+
+
+@pytest.mark.parametrize("stage", ["migration", "runtime"])
+def test_directory_identity(stage):
+    from pathlib import Path
+    from runpy import run_path
+
+    from app.domain.workbench.projects import project_dir, split_under_roots
+
+    split = split_under_roots
+    if stage == "migration":
+        migration = next(Path("alembic/versions").glob("*0012_workbench_projects.py"))
+        split = run_path(str(migration))["_split"]
+    assert split("/sub/project", ["/"]) == ("/", "sub/project")
+    first, second = r"/work/Q1\summary", "/work/Q1/summary"
+    a, b = (split(path, ["/work"]) for path in (first, second))
+    assert a != b, (split.__name__, a, b)
+    assert [project_dir(*item) for item in (a, b)] == [first, second]

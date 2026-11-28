@@ -36,6 +36,7 @@ from app.domain.workbench.errors import (
     TestCleanupPending,
     TestManagedInKnowlab,
 )
+from app.domain.workbench.projects import is_windows_root, project_dir
 from app.domain.workbench.scheduling import LOOKUP_PROFILE, ProjectLane
 from app.domain.workbench.states import TURN_HOLD_SECONDS
 from app.domain.workbench.tokens import token_hash
@@ -220,11 +221,19 @@ class WorkbenchRepository(
         return [dict(m) for m in r.mappings().all()]
 
     async def get_environment(
-        self, environment_id: str, *, owner_actor_id: str | None = None
+        self,
+        environment_id: str,
+        *,
+        owner_actor_id: str | None = None,
+        for_update: bool = False,
     ) -> dict[str, Any]:
         r = await self.session.execute(
-            text("select * from workbench_environments where id = :id"),
-            {"id": environment_id},
+            text(
+                "select * from workbench_environments where id = :id"
+                + (" and owner_actor_id = :actor" if owner_actor_id else "")
+                + (" for update" if for_update else "")
+            ),
+            {"id": environment_id, "actor": owner_actor_id},
         )
         row = r.mappings().first()
         if row is None or (
@@ -238,7 +247,9 @@ class WorkbenchRepository(
     ) -> None:
         """移除没连着的电脑（账 179）：不删行（会话、项目还引用它），记成 removed、列表里不再出现；
         同一台电脑再连上来会按名字或设备编号认领回去。连着的不许移除。"""
-        env = await self.get_environment(environment_id, owner_actor_id=owner_actor_id)
+        env = await self.get_environment(
+            environment_id, owner_actor_id=owner_actor_id, for_update=True
+        )
         if env.get("status") == "removed":
             raise NotFound("environment not found", environment_id=environment_id)
         if env.get("status") == "online":
@@ -503,12 +514,30 @@ class WorkbenchRepository(
         workspace_root: str,
         path: str,
     ) -> dict[str, Any] | None:
+        # Use the full directory so overlapping authorised roots identify the same project.
+        # POSIX treats a backslash as a name character; Windows folds separators and case.
         r = await self.session.execute(
-            text(
-                """select * from workbench_projects where owner_actor_id = :o and environment_id = :e
-                   and workspace_root = :r and path = :p and archived_at is null"""
-            ),
-            {"o": owner_actor_id, "e": environment_id, "r": workspace_root, "p": path},
+            text("""
+            select p.* from workbench_projects p
+            cross join lateral (select workspace_root ~ '^[A-Za-z]:[/\\\\]'
+                or left(workspace_root, 2) = repeat(chr(92), 2) as win) os
+            cross join lateral (select case when win then translate(workspace_root, chr(92), '/')
+                else workspace_root end as root) normalized
+            cross join lateral (select rtrim(root, '/') ||
+                case when path = '' then '' else '/' || path end as directory) full_path
+            where owner_actor_id=:o and environment_id=:e and archived_at is null
+              and (case when win then lower(directory) else directory end)=:directory
+            order by created_at, id limit 1
+        """),
+            {
+                "o": owner_actor_id,
+                "e": environment_id,
+                "directory": (
+                    project_dir(workspace_root, path).replace(chr(92), "/").lower()
+                    if is_windows_root(workspace_root)
+                    else project_dir(workspace_root, path)
+                ).rstrip("/"),
+            },
         )
         row = r.mappings().first()
         return dict(row) if row else None

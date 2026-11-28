@@ -260,7 +260,11 @@ class WorkbenchStore(Protocol):
     ) -> list[dict[str, Any]]: ...
 
     async def get_environment(
-        self, environment_id: str, *, owner_actor_id: str | None = None
+        self,
+        environment_id: str,
+        *,
+        owner_actor_id: str | None = None,
+        for_update: bool = False,
     ) -> dict[str, Any]: ...
 
     async def remove_environment(

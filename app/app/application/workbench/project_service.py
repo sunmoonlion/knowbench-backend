@@ -9,9 +9,11 @@ from app.application.ports.workbench import WorkbenchStore
 from app.application.workbench.agent_service import AgentRefused, AgentService
 from app.application.workbench.catalog import expert_name
 from app.domain.workbench.errors import (
+    NotFound,
     ProjectArchived,
     ProjectBusy,
     ProjectDirectoryMissing,
+    ProjectExists,
     RootOutsideWhitelist,
     WorkbenchError,
 )
@@ -102,6 +104,8 @@ class ProjectService:
         env = await self.repo.get_environment(
             environment_id, owner_actor_id=owner_actor_id
         )
+        if env.get("status") == "removed":
+            raise NotFound("environment not found", environment_id=environment_id)
         if workspace_root not in list(env.get("roots") or []):
             raise RootOutsideWhitelist(
                 "this workspace is not one of the machine's whitelisted roots",
@@ -120,13 +124,22 @@ class ProjectService:
             )
         async with self.repo.transaction():
             env = await self.repo.get_environment(
-                environment_id, owner_actor_id=owner_actor_id
+                environment_id, owner_actor_id=owner_actor_id, for_update=True
             )
+            if env.get("status") == "removed":
+                raise NotFound("environment not found", environment_id=environment_id)
             if workspace_root not in list(env.get("roots") or []):
                 raise RootOutsideWhitelist(
                     "this workspace is not one of the machine's whitelisted roots",
                     workspace_root=workspace_root,
                 )
+            if await self.repo.find_project(
+                owner_actor_id=owner_actor_id,
+                environment_id=environment_id,
+                workspace_root=workspace_root,
+                path=relative,
+            ):
+                raise ProjectExists("a project already exists for this directory")
             project_id = await self.repo.create_project(
                 owner_actor_id=owner_actor_id,
                 environment_id=environment_id,
@@ -142,8 +155,10 @@ class ProjectService:
     ) -> dict[str, Any]:
         """按完整目录找项目，没有就建。给仍按完整目录建会话的旧入口用。"""
         env = await self.repo.get_environment(
-            environment_id, owner_actor_id=owner_actor_id
+            environment_id, owner_actor_id=owner_actor_id, for_update=True
         )
+        if env.get("status") == "removed":
+            raise NotFound("environment not found", environment_id=environment_id)
         roots: list[str] = list(env.get("roots") or [])
         found = split_under_roots(directory, roots)
         if found is None:
@@ -246,28 +261,47 @@ class ProjectService:
     async def rename(
         self, project_id: str, *, owner_actor_id: str, title: str
     ) -> dict[str, Any]:
-        cleaned = clean_title(title)
-        if cleaned is None:
-            raise ValueError("title must not be empty")
-        async with self.repo.transaction():
-            await self.repo.get_project(
-                project_id, owner_actor_id=owner_actor_id, for_update=True
-            )
-            await self.repo.update_project(project_id, title=cleaned)
-        return (await self.view(project_id, owner_actor_id=owner_actor_id))["project"]
+        return await self.patch(project_id, owner_actor_id=owner_actor_id, title=title)
 
     async def archive(
         self, project_id: str, *, owner_actor_id: str, archived: bool
     ) -> dict[str, Any]:
+        return await self.patch(
+            project_id, owner_actor_id=owner_actor_id, archived=archived
+        )
+
+    async def patch(
+        self,
+        project_id: str,
+        *,
+        owner_actor_id: str,
+        title: str | None = None,
+        archived: bool | None = None,
+    ) -> dict[str, Any]:
+        cleaned = clean_title(title) if title is not None else None
+        if title is not None and cleaned is None:
+            raise ValueError("title must not be empty")
         async with self.repo.transaction():
-            await self.repo.get_project(
+            project = await self.repo.get_project(
                 project_id, owner_actor_id=owner_actor_id, for_update=True
             )
+            if archived is False and project["archived_at"] is not None:
+                env_id = str(project["environment_id"])
+                await self.repo.get_environment(
+                    env_id, owner_actor_id=owner_actor_id, for_update=True
+                )
+                if await self.repo.find_project(
+                    owner_actor_id=owner_actor_id,
+                    environment_id=env_id,
+                    workspace_root=project["workspace_root"],
+                    path=project["path"],
+                ):
+                    raise ProjectExists("another project already uses this directory")
             if archived and await self.repo.active_task_of_project(project_id):
                 raise ProjectBusy(
                     "the expert is still working in this project; it cannot be archived now"
                 )
-            await self.repo.update_project(project_id, archived=archived)
+            await self.repo.update_project(project_id, title=cleaned, archived=archived)
         return (await self.view(project_id, owner_actor_id=owner_actor_id))["project"]
 
     async def usable(self, project_id: str, *, owner_actor_id: str) -> dict[str, Any]:

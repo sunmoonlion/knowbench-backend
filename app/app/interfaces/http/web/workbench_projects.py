@@ -134,14 +134,9 @@ async def change_project(
         raise HTTPException(status_code=422, detail="nothing to change")
     service, actor = ProjectService(workbench_store(session)), _actor(principal)
     try:
-        if body.title is not None:
-            project = await service.rename(
-                project_id, owner_actor_id=actor, title=body.title
-            )
-        if body.archived is not None:
-            project = await service.archive(
-                project_id, owner_actor_id=actor, archived=body.archived
-            )
+        project = await service.patch(
+            project_id, owner_actor_id=actor, title=body.title, archived=body.archived
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
     except WorkbenchError as exc:

@@ -27,18 +27,19 @@ def _split(directory: str, roots: list[str]) -> tuple[str, str]:
         if not isinstance(root, str) or not root:
             continue
         windows = bool(_WINDOWS.match(root))
+        # Compare Windows separators case-insensitively while preserving POSIX names.
         trimmed = root.rstrip("\\/" if windows else "/") or root
-        left, right = (
-            (directory.lower(), trimmed.lower()) if windows else (directory, trimmed)
-        )
-        if left == right:
+        left = directory.replace("\\", "/").lower() if windows else directory
+        right = trimmed.replace("\\", "/").lower() if windows else trimmed
+        prefix = right.rstrip("/") + "/"
+        if left.rstrip("/") == right.rstrip("/"):
             relative = ""
-        elif (
-            left.startswith(right)
-            and len(directory) > len(trimmed)
-            and directory[len(trimmed)] in ("\\/" if windows else "/")
-        ):
-            relative = directory[len(trimmed) + 1 :].replace("\\", "/").strip("/")
+        elif left.startswith(prefix):
+            separators = "\\/" if windows else "/"
+            relative = directory[len(trimmed.rstrip(separators)) + 1:]
+            if windows:
+                relative = relative.replace("\\", "/")
+            relative = relative.rstrip("/")
         else:
             continue
         if best is None or len(trimmed) > len(best[0].rstrip("\\/")):

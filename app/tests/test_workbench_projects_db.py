@@ -22,6 +22,7 @@ from app.application.workbench.project_service import ProjectService
 from app.application.workbench.session_service import SessionService
 from app.domain.workbench.errors import (
     ConversationChangeRefused,
+    MachineStillConnected,
     NoSandbox,
     NotFound,
     ProjectArchived,
@@ -699,3 +700,73 @@ async def test_the_next_expert_starts_when_the_first_one_ends(db):
             {"s": second["session_id"]},
         )
         assert [row[0]["task_id"] for row in r.all()] == [b["task_id"]]
+
+
+async def test_same_directory_has_one_live_project(db):
+    env, _ = await machine(db, roots=("/research", "/research/2026"))
+    async with db() as session:
+        projects = ProjectService(WorkbenchRepository(session))
+        args = {"owner_actor_id": OWNER, "environment_id": env}
+        first = await projects.create(
+            **args, workspace_root="/research", path="2026/Q1"
+        )
+        try:
+            second = await projects.create(
+                **args, workspace_root="/research/2026", path="Q1"
+            )
+        except ProjectExists:
+            return
+        assert first["directory"] == second["directory"]
+        assert first["id"] == second["id"], "same directory has two live project IDs"
+
+
+async def test_removed_machine_cannot_register_project_even_when_directory_probe_unavailable(
+    db,
+):
+    env, _ = await machine(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await session.execute(
+                text("update workbench_environments set status='offline' where id=:id"),
+                {"id": env},
+            )
+            await repo.remove_environment(env, owner_actor_id=OWNER)
+        with pytest.raises(NotFound):
+            await ProjectService(repo).create(
+                owner_actor_id=OWNER,
+                environment_id=env,
+                workspace_root=WORKSPACE,
+                path="new",
+            )
+
+
+async def test_heartbeat_while_removing_a_disconnected_machine(db):
+    env, _ = await machine(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await repo.set_environment_status(env, "offline")
+
+    started = asyncio.Event()
+
+    async def remove():
+        async with db() as session:
+            repo = WorkbenchRepository(session)
+            async with repo.transaction():
+                started.set()
+                await repo.remove_environment(env, owner_actor_id=OWNER)
+
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        async with repo.transaction():
+            await repo.set_environment_status(env, "online")
+            task = asyncio.create_task(remove())
+            await started.wait()
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(asyncio.shield(task), timeout=0.1)
+    with pytest.raises(MachineStillConnected):
+        await asyncio.wait_for(task, timeout=5)
+    async with db() as session:
+        current = await WorkbenchRepository(session).get_environment(env)
+        assert current["status"] == "online"
