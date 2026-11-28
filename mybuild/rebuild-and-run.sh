@@ -1,25 +1,27 @@
-#!/bin/bash
-# 删除旧容器和镜像，重新构建并运行
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$script_dir/build.conf"
+source "$script_dir/release-tag.sh"
+tag="${BACKEND_TAG:-architecture-v2-dev}"
+if (( $# )); then
+    if [[ $# != 2 || $1 != --tag || -z $2 ]]; then
+        echo "Usage: $0 [--tag TAG]" >&2
+        exit 2
+    fi
+    tag=$2
+fi
+require_development_tag "$tag"
+if [[ ! $tag =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$ ]]; then
+    echo "Invalid image tag: $tag" >&2
+    exit 2
+fi
 
-IMAGE_NAME="knowbench-backend:architecture-v2-dev"
-CONTAINER_NAME="knowbench-backend"
-
-echo "停止并删除旧容器..."
-docker stop $CONTAINER_NAME 2>/dev/null || true
-docker rm $CONTAINER_NAME 2>/dev/null || true
-
-echo "删除旧镜像..."
-docker rmi $IMAGE_NAME 2>/dev/null || true
-
-echo "构建新镜像..."
-cd "$(dirname "$0")/.."
-docker build -t $IMAGE_NAME -f mybuild/Dockerfile .
-
-echo "运行新容器..."
-docker run --rm -d -p 8000:8000 --name $CONTAINER_NAME $IMAGE_NAME
-
-echo "完成！容器正在运行，访问 http://localhost:8000"
-echo "查看日志: docker logs -f $CONTAINER_NAME"
-echo "停止容器: docker stop $CONTAINER_NAME"
+container=knowbench-backend
+image="$container:$tag"
+cd "$script_dir/.."
+docker build -t "$image" -f mybuild/Dockerfile .
+docker stop "$container" >/dev/null 2>&1 || true
+docker rm "$container" >/dev/null 2>&1 || true
+docker run --rm -d -p 8000:8000 --name "$container" "$image"
