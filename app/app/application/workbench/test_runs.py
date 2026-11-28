@@ -185,6 +185,16 @@ def _test_planning(request: RunRequest, case: RunCase) -> dict[str, Any] | None:
     }
 
 
+def _bounded_id(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return "h:" + hashlib.sha256(value.encode()).hexdigest()[: limit - 2]
+
+
+def _option_id(option: dict[str, Any]) -> str:
+    return _bounded_id(str(option.get("id") or option.get("label") or ""), 64)
+
+
 def _questions_of(
     interaction: dict[str, Any], answered: set[str]
 ) -> list[dict[str, Any]]:
@@ -220,12 +230,12 @@ def _questions_of(
     ask_before = bool(subject.get("ask_before"))
     out = []
     for q in subject.get("questions") or []:
-        qid = f"{iid}:{q.get('id')}"
+        qid = _bounded_id(f"{iid}:{q.get('id')}", 128)
         if qid in answered:
             continue
         options = [
             {
-                "id": str(o.get("id") or o.get("label") or "")[:64],
+                "id": _option_id(o),
                 "label": str(o.get("label") or o.get("id") or "")[:200],
             }
             for o in q.get("options") or []
@@ -233,7 +243,7 @@ def _questions_of(
         ]
         out.append(
             {
-                "question_id": qid[:128],
+                "question_id": qid,
                 "step_id": step_id,
                 "kind": "ask_before" if ask_before else "question",
                 "key": str(q.get("id")) if ask_before else None,
@@ -254,7 +264,9 @@ async def _stop_case_task(
     """测试取消了：这条用例的委托照停委托的做法停下（作者电脑上那一轮也中断），钉的数据
     凭的授权（测试集的测试授权）交还；knowlab 那头也会撤，这里交不成不挡（到期也自己失效）。"""
     task = await repo.get_task(task_id)
-    if TaskState(task["state"]) not in TASK_TERMINAL:
+    if TaskState(task["state"]) not in TASK_TERMINAL and not task.get(
+        "cancel_requested_at"
+    ):
         await cancel_task(repo, task_id, owner_actor_id=str(task["owner_actor_id"]))
     if release_grant is None:
         return
@@ -334,7 +346,7 @@ class KnowbotTestService:
                 raise NotFound("no such test run", run_id=run_id)
             if retired_trial(run) and not retired_expert:
                 raise NotFound("no such test run", run_id=run_id)
-            if run["status"] in FINAL:
+            if run["status"] in FINAL and run["status"] != "cancelled":
                 return {} if retired_expert else await self.status(run_id)
             cases = await self.repo.list_test_cases(run_id)
             requested = (
@@ -362,14 +374,15 @@ class KnowbotTestService:
                         error="cancelled by knowlab",
                     )
                 await self.repo.update_test_case(run_id, case_id, result=result)
-            now = self.now()
-            await self.repo.update_test_run(
-                run_id,
-                status="cancelled",
-                finished_at=now,
-                cleanup_after=now + KEEP,
-            )
-            await self.repo.reconcile_test_run_spent(run_id)
+            if run["status"] != "cancelled":
+                now = self.now()
+                await self.repo.update_test_run(
+                    run_id,
+                    status="cancelled",
+                    finished_at=now,
+                    cleanup_after=now + KEEP,
+                )
+                await self.repo.reconcile_test_run_spent(run_id)
         tasks = [str(c["task_id"]) for c in cases if c.get("task_id")]
         for task_id in tasks:
             await _stop_case_task(self.repo, task_id, self.release_grant)
@@ -381,7 +394,7 @@ class KnowbotTestService:
         await self._users_computer(request)
         prior = await self.repo.get_test_run(request.run_id)
         if prior is not None:
-            if prior["digest"] != request.digest():
+            if prior["digest"] != request.digest() or prior["caller"] != caller:
                 raise KnowbotTestConflict(
                     "this run id was submitted with other content",
                     run_id=request.run_id,
@@ -1288,10 +1301,12 @@ class KnowbotTestConductor:
             for q in subject.get("questions") or []:
                 qid = str(q.get("id"))
                 labels = {
-                    str(o.get("id") or o.get("label")): str(o.get("label") or "")
+                    _option_id(o): str(o.get("label") or o.get("id") or "")
                     for o in q.get("options") or []
                 }
-                given = await repo.get_test_answer(run["run_id"], f"{iid}:{qid}")
+                given = await repo.get_test_answer(
+                    run["run_id"], _bounded_id(f"{iid}:{qid}", 128)
+                )
                 if given is not None:
                     chosen = given["answer"].get("option_id")
                     text = given["answer"].get("text")

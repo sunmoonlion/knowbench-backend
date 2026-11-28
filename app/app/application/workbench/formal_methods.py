@@ -571,10 +571,13 @@ class FormalMethods:
             if complete and evidence is not None:
                 for case in evidence["cases"]:
                     result = case["result"]
-                    if not case["validated"] or result["status"] != "passed":
+                    if not case["validated"]:
                         complete = False
                         break
-                    if result["outcome"] == "rejected":
+                    if (
+                        result["outcome"] != "succeeded"
+                        and case.get("outputs_digest") is None
+                    ):
                         continue
                     key = f"{result['case_id']}:{result['repetition']}"
                     outputs = case.get("outputs")
@@ -592,7 +595,12 @@ class FormalMethods:
                         artifacts.extend(
                             step[k] for k in ("outputs", "method_outputs") if k in step
                         )
-                    sample = {"steps": [{"artifact": v} for v in artifacts]}
+                    sample = {
+                        "case_id": result["case_id"],
+                        "repetition": result["repetition"],
+                        "status": result["status"],
+                        "steps": [{"artifact": v} for v in artifacts],
+                    }
                     size += len(json.dumps(sample, ensure_ascii=False).encode())
                     if size > 1024 * 1024:
                         complete = False

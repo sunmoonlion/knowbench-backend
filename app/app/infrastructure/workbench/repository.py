@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 from app.application.dto.outbox import OutboxEvent
 from app.domain.workbench.errors import (
     KnowbotInvalid,
+    KnowbotTestConflict,
     MachineStillConnected,
     NotFound,
     ProjectBusy,
@@ -1640,16 +1641,26 @@ class WorkbenchRepository(
         self, run: dict[str, Any], cases: list[dict[str, Any]]
     ) -> None:
         cols = list(run)
-        await self.session.execute(
+        inserted = await self.session.execute(
             text(
                 f"insert into workbench_test_runs ({', '.join(cols)}) values ("
                 + ", ".join(
                     f"cast(:{c} as jsonb)" if c == "request" else f":{c}" for c in cols
                 )
-                + ")"
+                + ") on conflict (run_id) do nothing returning run_id"
             ),
             {c: (_j(run[c]) if c == "request" else run[c]) for c in cols},
         )
+        if inserted.scalar_one_or_none() is None:
+            prior = await self.get_test_run(run["run_id"])
+            if prior is None or (prior["caller"], prior["digest"]) != (
+                run["caller"],
+                run["digest"],
+            ):
+                raise KnowbotTestConflict(
+                    "this run id was submitted with other content", run_id=run["run_id"]
+                )
+            return
         for case in cases:
             await self.session.execute(
                 text(
