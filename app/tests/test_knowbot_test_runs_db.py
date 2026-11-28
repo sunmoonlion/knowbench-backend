@@ -14,8 +14,8 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
-from knowbot_fixtures import manifest
 from sqlalchemy import text
+from test_dynamic_method_catalog import manifest as catalog_manifest
 from test_workbench_ledger_db import OWNER
 from test_workbench_ledger_db import db as db
 from test_workbench_task_runtime_db import ANSWER, PLAN, ScriptedAppServer, close, drive
@@ -35,6 +35,7 @@ from app.domain.workbench.errors import (
     NotFound,
     QuestionNotOpen,
 )
+from app.domain.workbench.packs import SMOKE
 from app.domain.workbench.test_runs import Answers, RunRequest
 from app.infrastructure.workbench.publisher import RedisPublisher
 from app.infrastructure.workbench.repository import WorkbenchRepository
@@ -59,16 +60,110 @@ class Clock:
         return self.at
 
 
+def trial_manifest():
+    """Two author methods whose JSON outputs are exercised by the trial assertions."""
+    doc = catalog_manifest()
+    pack = doc["pack"]
+    pack["planning"].update(
+        method_text="Prepare a plan for the README question, then answer it.",
+        final_units=["answer"],
+    )
+    units = []
+    for step in SMOKE.workflow:
+        contract = step.model_dump(mode="json")
+        for rule in contract["acceptance"]:
+            if rule["kind"] == "required_keys":
+                rule["keys"] = list(contract["output_schema"])
+        if not any(
+            rule["kind"] == "no_positioning_advice" for rule in contract["acceptance"]
+        ):
+            contract["acceptance"].append(
+                {
+                    "kind": "no_positioning_advice",
+                    "label": "No advice",
+                    "message": "Unexpected positioning advice",
+                }
+            )
+        units.append(
+            {
+                "selection": {
+                    "applies_when": step.summary,
+                    "required": True,
+                    "max_calls": 1,
+                },
+                "contract": contract,
+            }
+        )
+    pack["method_units"] = units
+    return doc
+
+
+class TrialAppServer(ScriptedAppServer):
+    """Return the synthetic planner turn separately from the scripted business outputs."""
+
+    def __init__(self, replies=None, *, tools=()):
+        super().__init__(replies)
+        self.planned_tools = list(tools)
+
+    async def handle(self, ws, msg):
+        if msg.get("method") == "turn/start":
+            prompt = msg["params"]["input"][0]["text"]
+            if prompt.startswith("Plan this task") and "README question" in prompt:
+                self.replies.insert(
+                    0,
+                    json.dumps(
+                        {
+                            "contract": "knowbench/method-plan/v1",
+                            "parent_version": 0,
+                            "reason": "Read the question, then prepare the answer.",
+                            "steps": [
+                                {
+                                    "instance_id": "plan",
+                                    "method_id": "plan",
+                                    "inputs": [],
+                                    "tools": self.planned_tools,
+                                    "reason": "Prepare",
+                                },
+                                {
+                                    "instance_id": "answer",
+                                    "method_id": "answer",
+                                    "inputs": [{"slot": "plan", "instance_id": "plan"}],
+                                    "tools": self.planned_tools,
+                                    "reason": "Answer",
+                                },
+                            ],
+                            "final_outputs": {"answer": "answer"},
+                        }
+                    ),
+                )
+        await super().handle(ws, msg)
+
+
+def approval_server():
+    from test_workbench_runner_db import FakeAppServer
+
+    class ApprovalServer(FakeAppServer):
+        async def handle(self, ws, msg):
+            if msg.get("method") == "turn/start" and msg["params"]["input"][0][
+                "text"
+            ].startswith("Plan this task"):
+                return await TrialAppServer().handle(ws, msg)
+            return await super().handle(ws, msg)
+
+    return ApprovalServer()
+
+
 def request(run_id: str, *, doc=None, answers=None, expect="README", budget="10"):
     return RunRequest.model_validate(
         {
             "contract": "knowbot-test-run/v1",
             "run_id": run_id,
             "owner_subject": "user-123",
-            "manifest": doc or manifest(),
+            "manifest": doc or trial_manifest(),
             "cases": [
                 {
                     "case_id": "c1",
+                    "data": {},
                     "input": {
                         "question": "这个项目里有什么？",
                         "answers": answers or {},
@@ -96,8 +191,8 @@ def request(run_id: str, *, doc=None, answers=None, expect="README", budget="10"
 
 
 def asking() -> dict:
-    doc = manifest()
-    doc["pack"]["workflow"][0]["ask_before"] = ASK
+    doc = trial_manifest()
+    doc["pack"]["method_units"][0]["contract"]["ask_before"] = ASK
     return doc
 
 
@@ -146,9 +241,9 @@ def runner_for(db, records=False):
 
 async def accept(db, req):
     async with db() as s:
-        return await KnowbotTestService(WorkbenchRepository(s)).accept(
-            req, caller="knowlab"
-        )
+        return await KnowbotTestService(
+            WorkbenchRepository(s), dynamic_method_owners=frozenset({req.owner_subject})
+        ).accept(req, caller="knowlab")
 
 
 async def status(db, run_id):
@@ -164,7 +259,7 @@ async def answer(db, run_id, body):
 
 
 async def test_a_draft_runs_on_the_real_engine_and_passes(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -227,7 +322,7 @@ async def mark_written(db) -> None:
         await s.execute(
             text(
                 """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
-                   where name = 'answer'"""
+                   where name = '__method_output__:answer'"""
             )
         )
         await s.commit()
@@ -240,7 +335,7 @@ async def outputs(db, run_id, case_id="c1"):
 
 async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
     """SDD 0037：用例记结果时取成稿（只取这次写了的）与各步交回物；结果本身照旧不带内容。"""
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     reader = FakeReader()
@@ -258,7 +353,7 @@ async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
         assert "The project has one README" not in json.dumps(done, ensure_ascii=False)
         got = await outputs(db, "knowlab-run-out1")
         assert got["contract"] == "knowbot-test-run/v1" and got["case_id"] == "c1"
-        assert got["deliverable"] == {
+        assert got["final_outputs"][0]["deliverable"] == {
             "path": "底稿/烟测-回答.md",
             "text": "# 成稿\n\n回答在这里",
             "truncated": False,
@@ -282,7 +377,7 @@ async def test_each_case_keeps_its_deliverable_and_step_outputs(db):
 
 async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_noted(db):
     """没记下写了成稿就不读（工作区共用，碰巧在那儿的可能是上一条的）；读失败照实写、结论不变。"""
-    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER, PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER, PLAN, ANSWER, PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -296,7 +391,9 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
         await conductor.tick()
         got = await outputs(db, "knowlab-run-out2")
         assert reader.calls == [] and got["deliverable"] is None
-        assert "没有写成稿" in got["deliverable_note"]
+        assert got["final_outputs"][0]["result"] and not got["final_outputs"][0].get(
+            "deliverable"
+        )
         assert [s["outcome"] for s in got["steps"]] == ["accepted", "accepted"]
 
         offline = FakeReader(error=AgentOffline("no agent online"))
@@ -308,7 +405,7 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
             await s.execute(
                 text(
                     """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
-                       where name = 'answer' and workspace_path is null"""
+                       where name = '__method_output__:answer' and workspace_path is null"""
                 )
             )
             await s.commit()
@@ -317,7 +414,7 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
         assert (await status(db, "knowlab-run-out3"))["status"] == "passed"
         got = await outputs(db, "knowlab-run-out3")
         assert got["deliverable"] is None
-        assert got["deliverable_note"] == "成稿没读到：agent_offline"
+        assert got["final_outputs"][0]["note"] == "成稿没读到：agent_offline"
         unwired = await outputs(db, "knowlab-run-out2")
         assert unwired["case_id"] == "c1"
 
@@ -331,7 +428,7 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
             await s.execute(
                 text(
                     """update workbench_artifacts set workspace_path = '底稿/烟测-回答.md'
-                       where name = 'answer' and workspace_path is null"""
+                       where name = '__method_output__:answer' and workspace_path is null"""
                 )
             )
             await s.commit()
@@ -339,7 +436,9 @@ async def test_a_case_that_wrote_nothing_reads_nothing_and_a_failed_read_is_note
         await conductor.tick()
         got = await outputs(db, "knowlab-run-out4")
         assert got["deliverable"] is None
-        assert got["deliverable_note"] == "成稿文件早于这条用例开始，不是这次写的"
+        assert (
+            got["final_outputs"][0]["note"] == "成稿文件早于这条用例开始，不是这次写的"
+        )
     finally:
         await close(runner)
         await fake.close()
@@ -356,7 +455,7 @@ async def test_a_crash_while_judging_ends_the_case_as_an_error(db, monkeypatch):
         raise InvalidOperation
 
     monkeypatch.setattr(task_runtime_module, "judge_numbers", crash)
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -380,7 +479,9 @@ async def test_a_crash_while_judging_ends_the_case_as_an_error(db, monkeypatch):
             ).one()
             attempt = (
                 await s.execute(
-                    text("select status, failure_code from workbench_attempts")
+                    text(
+                        "select status, failure_code from workbench_attempts where step_id='plan'"
+                    )
                 )
             ).one()
         assert task.state == "FAILED" and task.active_attempt_id is None
@@ -391,7 +492,7 @@ async def test_a_crash_while_judging_ends_the_case_as_an_error(db, monkeypatch):
 
 
 async def test_unmet_expectations_fail_the_case(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -417,7 +518,7 @@ async def test_row_expectation_survives_storage_and_real_runner(duplicate, db):
     if duplicate:
         rows.append({"year": "2024", "revenue": 100})
     reply = json.loads(ANSWER) | {"annual_metrics": rows}
-    fake = ScriptedAppServer([PLAN, json.dumps(reply)])
+    fake = TrialAppServer([PLAN, json.dumps(reply)])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -453,7 +554,7 @@ async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
         {"out_of_scope": True, "reason": "这是在问天气", "suggestion": "直接问"},
         ensure_ascii=False,
     )
-    fake = ScriptedAppServer([decline])
+    fake = TrialAppServer([decline])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -477,7 +578,7 @@ async def test_a_question_the_expert_declines_fails_the_case_and_says_why(db):
 async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
     """账 129：同一台电脑、同一个根目录同时只跑一个测试；后受理的排队，不开对话、不计时，
     前一个结束才开始。"""
-    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER, PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -512,7 +613,7 @@ async def test_one_test_runs_at_a_time_and_the_next_waits_its_turn(db):
 async def test_tests_elsewhere_do_not_wait(db):
     """排队只在同一台电脑、同一个根目录上（账 129）：作者另一台电脑上的测试不用等，
     同一处的后来者照样排队。"""
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)
@@ -555,7 +656,7 @@ async def test_tests_elsewhere_do_not_wait(db):
 async def test_a_case_queued_behind_another_task_says_so_and_is_capped(db):
     """用例的委托排在作者别的委托后面（同一项目一次一位）：进度里带挡路的委托编号；排队不算进
     超时，但排到这次测试的时限还没轮到，按超时收、原因写清排在谁后面（0034 §三.3）。"""
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     clock = Clock()
     try:
@@ -613,7 +714,7 @@ class Folders:
 
 async def test_each_test_gets_its_own_folder_made_before_and_removed_after(db):
     """账 129：每次测试一个项目、一个目录；开跑前建好，测完删掉，下一个才开跑。"""
-    fake = ScriptedAppServer([PLAN, ANSWER, PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER, PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     folders = Folders()
@@ -655,7 +756,7 @@ async def test_each_test_gets_its_own_folder_made_before_and_removed_after(db):
 async def test_without_isolation_the_test_runs_in_the_workspace_and_says_so(db):
     """测试电脑的代理还不支持建目录（0.5.0 服务流只读）：隔离没打开，就在工作区本身里跑，
     每条用例写明没有隔离（账 129，所有者 2026-10-18 选甲）。"""
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -682,7 +783,7 @@ async def test_without_isolation_the_test_runs_in_the_workspace_and_says_so(db):
 
 async def test_no_clean_folder_means_no_start_and_then_an_error(db):
     """测试电脑给不出干净的目录：不开跑；过了这次测试的时限还不行，报错结束。"""
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     clock = Clock()
     folders = Folders(ready=False)
@@ -701,7 +802,8 @@ async def test_no_clean_folder_means_no_start_and_then_an_error(db):
         assert got["status"] == "accepted" and got["blocked"] == "folder_not_ready"
         clock.at += timedelta(seconds=3601)
         await conductor.tick()
-        assert (await status(db, "knowlab-run-0014"))["status"] == "error"
+        receipt = await status(db, "knowlab-run-0014")
+        assert receipt["status"] == "error" and "clean folder" in receipt["error"]
         async with db() as s:
             run = await WorkbenchRepository(s).get_test_run("knowlab-run-0014")
             assert "clean folder" in run["error"]
@@ -711,7 +813,7 @@ async def test_no_clean_folder_means_no_start_and_then_an_error(db):
 
 async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db, caplog):
     """账 133：测试电脑不在线不开跑；测试账号下在线的是别的电脑时，报错里写出来。"""
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     clock = Clock()
     try:
@@ -769,7 +871,7 @@ async def test_an_offline_test_computer_never_starts_and_says_who_is_online(db, 
 
 
 async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -792,7 +894,7 @@ async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
             2,
             1,
         )
-        assert progress["step_title"] and progress["spent"] == "0.000000"
+        assert progress["step_title"] and progress["spent"] == "0.010000"
         [q] = waiting["questions"]
         assert q["kind"] == "ask_before" and q["key"] == "period"
         assert q["case_id"] == "c1" and q["options"] == [
@@ -846,7 +948,7 @@ async def test_an_unanswered_ask_before_waits_for_knowlab_then_continues(db):
 
 
 async def test_preset_answers_are_used_without_asking(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     try:
@@ -870,7 +972,7 @@ async def test_preset_answers_are_used_without_asking(db):
 
 
 async def test_a_question_nobody_answers_ends_as_needs_human(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     clock = Clock()
@@ -894,15 +996,17 @@ async def test_a_question_nobody_answers_ends_as_needs_human(db):
 
 
 async def test_acceptance_refusals_and_conflicts(db):
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         # 作者没登录过工作台、没接入那台电脑：没处跑（decisions ⑯，没有平台的测试账号兜底）
         with pytest.raises(KnowbotTestNoComputer):
             await accept(db, request("knowlab-run-0010"))
         await setup_test_computer(db, fake)
-        bad = manifest()
-        bad["pack"]["workflow"][0]["tools"] = ["run_sql"]  # 数据线工具（C-L2）
+        bad = trial_manifest()
+        bad["pack"]["method_units"][0]["contract"]["tools"] = [
+            "run_sql"
+        ]  # 数据线工具（C-L2）
         with pytest.raises(KnowbotInvalid):
             await accept(db, request("knowlab-run-0011", doc=bad))
         await accept(db, request("knowlab-run-0012"))
@@ -918,7 +1022,7 @@ async def test_acceptance_refusals_and_conflicts(db):
 
 
 async def test_timeouts_and_seven_day_cleanup(db):
-    fake = ScriptedAppServer([PLAN])  # 第二步一直没有合格回复
+    fake = TrialAppServer([PLAN])  # 第二步一直没有合格回复
     await fake.start()
     runner = runner_for(db)
     clock = Clock()
@@ -934,8 +1038,8 @@ async def test_timeouts_and_seven_day_cleanup(db):
         assert done["cases"][0]["status"] == "error"
         # 超时的也留下做到哪（SDD 0037）：这里 runner 没开动，两步都没走到
         kept = await outputs(db, "knowlab-run-0020")
-        assert [x["outcome"] for x in kept["steps"]] == ["not_reached", "not_reached"]
-        assert "没有写成稿" in kept["deliverable_note"]
+        assert kept["steps"] == [] and not kept.get("final_outputs")
+        assert kept["deliverable"] is None
         async with db() as s:
             sessions = (
                 await s.execute(text("select count(*) from workbench_sessions"))
@@ -952,7 +1056,9 @@ async def test_timeouts_and_seven_day_cleanup(db):
             ).scalar_one()
         assert (left, tasks) == (0, 0)
         assert (await status(db, "knowlab-run-0020"))["status"] == "timeout"  # 结果留着
-        assert (await outputs(db, "knowlab-run-0020"))["steps"]  # 产出 30 天内还在
+        assert (
+            await outputs(db, "knowlab-run-0020") == kept
+        )  # 30 天内仍能读到同一份回执
         clock.at += timedelta(days=23)
         await conductor.cleanup()
         with pytest.raises(NotFound):
@@ -972,9 +1078,9 @@ async def test_a_mid_step_approval_is_answered_through_knowlab(db):
     """中途的工具审批（runner 级的等待）：报成 tool_approval 问题，运营批准后答复送到 app-server。"""
     import asyncio
 
-    from test_workbench_runner_db import FakeAppServer, wait_for
+    from test_workbench_runner_db import wait_for
 
-    fake = FakeAppServer()
+    fake = approval_server()
     await fake.start()
     runner = runner_for(db)
     running = asyncio.create_task(runner.run_forever())
@@ -1041,9 +1147,9 @@ async def test_an_answer_that_cannot_go_in_is_noted_once_not_every_tick(db, capl
     import asyncio
     import logging
 
-    from test_workbench_runner_db import FakeAppServer, wait_for
+    from test_workbench_runner_db import wait_for
 
-    fake = FakeAppServer()
+    fake = approval_server()
     await fake.start()
     runner = runner_for(db)
     running = asyncio.create_task(runner.run_forever())
@@ -1053,7 +1159,8 @@ async def test_an_answer_that_cannot_go_in_is_noted_once_not_every_tick(db, capl
         body = req.model_dump(mode="json")
         body["cases"][0]["input"]["question"] = "NEED_APPROVAL 看看项目"
         await accept(db, RunRequest.model_validate(body))
-        conductor = KnowbotTestConductor(workbench_stores(db))
+        clock = Clock()
+        conductor = KnowbotTestConductor(workbench_stores(db), now=clock)
 
         async def asked():
             await conductor.tick()
@@ -1089,6 +1196,12 @@ async def test_an_answer_that_cannot_go_in_is_noted_once_not_every_tick(db, capl
         assert not [r for r in caplog.records if "advance failed" in r.getMessage()]
         noted = [r for r in caplog.records if "could not answer" in r.getMessage()]
         assert len(noted) == 1
+        clock.at += timedelta(seconds=601)
+        await conductor.tick()
+        await conductor.tick()
+        result = await status(db, "knowlab-run-0040")
+        assert result["cases"][0]["status"] == "needs_human"
+
     finally:
         runner.stop()
         await asyncio.wait_for(running, 10)
@@ -1115,9 +1228,9 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
             return dict.fromkeys(refs, Decimal("100"))
 
     doc = {**asking(), "bindings": []}
-    for step in doc["pack"]["workflow"]:
-        step["tools"] = ["query_facts", "compute"]
-    last = doc["pack"]["workflow"][-1]
+    for unit in doc["pack"]["method_units"]:
+        unit["contract"]["tools"] = ["query_facts", "compute"]
+    last = doc["pack"]["method_units"][-1]["contract"]
     last["acceptance"] = [
         *last["acceptance"],
         {
@@ -1132,7 +1245,7 @@ async def test_computed_numbers_are_recorded_and_checked_on_the_real_store(db):
     body = request("knowlab-run-0050", doc=doc).model_dump(mode="json")
     # 带了测试集：钉上、不跑第 0 步（SDD 0046 第三节）
     body["cases"][0]["data"] = {"grant_id": "g-case-50", "items": [PIN]}
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([], tools=("query_facts", "compute"))
     await fake.start()
     runner = runner_for(db, records=True)
     try:
@@ -1258,8 +1371,8 @@ PIN = {
 }
 
 
-def v2_doc() -> dict:
-    return {**manifest(), "schema": "knowbot-manifest/v2", "bindings": []}
+def bound_catalog() -> dict:
+    return {**trial_manifest(), "bindings": []}
 
 
 async def users_computer(db, fake) -> str:
@@ -1308,7 +1421,7 @@ async def one_task(db) -> dict:
 
 async def test_the_user_runs_his_own_test_on_his_own_computer(db):
     """用户本人作运行方：跑在他选的电脑与根目录、他的账号下。"""
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         env = await users_computer(db, fake)
@@ -1336,11 +1449,13 @@ async def test_the_user_runs_his_own_test_on_his_own_computer(db):
 
 
 async def test_a_v2_case_with_its_test_set_is_pinned_and_skips_step_zero(db):
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)
-        body = request("knowlab-run-v2-set1", doc=v2_doc()).model_dump(mode="json")
+        body = request("knowlab-run-v2-set1", doc=bound_catalog()).model_dump(
+            mode="json"
+        )
         body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
         await accept(db, RunRequest.model_validate(body))
         await KnowbotTestConductor(workbench_stores(db)).tick()
@@ -1379,12 +1494,14 @@ async def test_step_zero_in_a_test_asks_knowlab_and_the_answer_pins_the_test_set
     钉上、委托接着跑。"""
     from app.application.workbench.expert_data import request_data
 
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)
         run_id = "knowlab-run-v2-zero1"
-        await accept(db, request(run_id, doc=v2_doc()))
+        raw = request(run_id, doc=bound_catalog()).model_dump(mode="json")
+        raw["cases"][0]["data"] = None
+        await accept(db, RunRequest.model_validate(raw))
         await KnowbotTestConductor(workbench_stores(db)).tick()
         task = await one_task(db)
         async with db() as s:
@@ -1464,11 +1581,13 @@ async def test_step_zero_in_a_test_asks_knowlab_and_the_answer_pins_the_test_set
 async def test_knowlab_cancels_a_running_test(db):
     """knowbot-test-run/v1 的 cancel（10-30 加：作者撤回交付、平台审成不过时停平台重跑）：
     在跑的用例委托停下、凭的测试授权交还、测试记成取消；重复调回原状态、不再交还。"""
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)
-        body = request("knowlab-run-cancel1", doc=v2_doc()).model_dump(mode="json")
+        body = request("knowlab-run-cancel1", doc=bound_catalog()).model_dump(
+            mode="json"
+        )
         body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
         await accept(db, RunRequest.model_validate(body))
         await KnowbotTestConductor(workbench_stores(db)).tick()
@@ -1545,11 +1664,13 @@ async def test_a_case_lists_pinned_inputs_with_its_test_set_grant(db):
     revision = input_listing_revision()
     async with db() as session:
         await register_revision(session, revision)
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)
-        body = request("knowlab-run-relay1", doc=v2_doc()).model_dump(mode="json")
+        body = request("knowlab-run-relay1", doc=bound_catalog()).model_dump(
+            mode="json"
+        )
         body["cases"][0]["data"] = {"grant_id": "g-case-1", "items": [PIN]}
         await accept(db, RunRequest.model_validate(body))
         await KnowbotTestConductor(workbench_stores(db)).tick()
@@ -1587,11 +1708,13 @@ async def test_a_case_lists_pinned_inputs_with_its_test_set_grant(db):
 
 async def test_a_cancelled_test_is_not_restarted_or_overwritten(db):
     """第三轮第 2 条：取消了的测试推进器不再开新用例、收尾也不改回别的状态。"""
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)
-        body = request("knowlab-run-cancel2", doc=v2_doc()).model_dump(mode="json")
+        body = request("knowlab-run-cancel2", doc=bound_catalog()).model_dump(
+            mode="json"
+        )
         await accept(db, RunRequest.model_validate(body))
         async with db() as s:
             await KnowbotTestService(WorkbenchRepository(s)).cancel(
@@ -1615,7 +1738,7 @@ async def test_a_cancel_while_a_case_is_starting_stops_that_case(db, monkeypatch
     推进器锁住测试记录再看一次，刚开的委托马上停下、交还它凭的测试授权，不记进用例。"""
     import app.application.workbench.test_runs as runs_module
 
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     real = runs_module.Ledger.handover
 
@@ -1638,7 +1761,9 @@ async def test_a_cancel_while_a_case_is_starting_stops_that_case(db, monkeypatch
 
     try:
         await setup_test_computer(db, fake)
-        body = request("knowlab-run-cancel3", doc=v2_doc()).model_dump(mode="json")
+        body = request("knowlab-run-cancel3", doc=bound_catalog()).model_dump(
+            mode="json"
+        )
         body["cases"][0]["data"] = {"grant_id": "g-case-3", "items": [PIN]}
         await accept(db, RunRequest.model_validate(body))
         await KnowbotTestConductor(workbench_stores(db), release_grant=release).tick()

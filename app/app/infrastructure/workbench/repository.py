@@ -1147,6 +1147,34 @@ class WorkbenchRepository(
             await self.project_method_attempt(str(fields["active_attempt_id"]))
         return int(v)
 
+    async def settle_task_budget(
+        self, task_id: str, *, expected_version: int, budget: dict[str, Any]
+    ) -> None:
+        """Settle a bill without changing the time or subject of the last workflow action."""
+        result = await self.session.execute(
+            text("""UPDATE workbench_tasks
+                    SET budget = CAST(:budget AS jsonb), state_version = state_version + 1
+                    WHERE id = :task AND state_version = :version
+                    RETURNING active_interaction_id"""),
+            {"task": task_id, "budget": _j(budget), "version": expected_version},
+        )
+        row = result.one_or_none()
+        if row is None:
+            raise StaleStateVersion("task changed concurrently", task_id=task_id)
+        if row.active_interaction_id is not None:
+            await self.session.execute(
+                text("""UPDATE workbench_interactions
+                        SET target_state_version = :next_version
+                        WHERE id = :question AND task_id = :task AND status = 'pending'
+                          AND target_state_version = :previous_version"""),
+                {
+                    "task": task_id,
+                    "question": row.active_interaction_id,
+                    "previous_version": expected_version,
+                    "next_version": expected_version + 1,
+                },
+            )
+
     # ---------- attempts ----------
     async def insert_attempt(self, attempt: dict[str, Any]) -> None:
         json_cols = {

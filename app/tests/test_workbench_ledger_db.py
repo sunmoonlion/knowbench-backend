@@ -342,6 +342,24 @@ async def test_budget_hard_stop_enters_waiting_resource_and_topup_resumes(db):
             for e in await repo.list_events(session_id=sid)
             if e["type"] == "interaction/opened"
         )
+        for invalid in (
+            {},
+            {"decision": "topup"},
+            {"decision": "topup", "amount": "0"},
+            {"decision": "topup", "amount": "abc"},
+            {"decision": "topup", "amount": "1000000000000"},
+        ):
+            with pytest.raises(InteractionRejected):
+                await led.respond_interaction(
+                    str(pending[0]["id"]),
+                    token=token,
+                    response=invalid,
+                    owner_actor_id=OWNER,
+                )
+            assert (await repo.get_task(t))["state"] == TaskState.WAITING
+            assert (await repo.get_interaction(str(pending[0]["id"])))[
+                "status"
+            ] == "pending"
         r = await led.respond_interaction(
             str(pending[0]["id"]),
             token=token,

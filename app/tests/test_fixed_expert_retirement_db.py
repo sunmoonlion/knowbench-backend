@@ -3,6 +3,7 @@
 from decimal import Decimal
 
 import pytest
+from knowbot_fixtures import manifest as retired_manifest
 from sqlalchemy import text
 from test_dynamic_incubation_db import ScriptedAppServer, admit
 from test_knowbot_test_runs_db import request, runner_for, setup_test_computer
@@ -83,7 +84,7 @@ async def test_fixed_author_trial_is_refused_even_for_admitted_owner(db):
     await fake.start()
     try:
         await setup_test_computer(db, fake)
-        req = request("retired-fixed-trial")
+        req = request("retired-fixed-trial", doc=retired_manifest())
         with pytest.raises(KnowbotInvalid, match="retired"):
             await admit(db, req)
         async with db() as session:
@@ -102,7 +103,7 @@ async def test_previously_accepted_fixed_trial_is_closed_before_work_starts(db):
     await fake.start()
     try:
         await setup_test_computer(db, fake)
-        old = request("previous-fixed-trial")
+        old = request("previous-fixed-trial", doc=retired_manifest())
         await admit(db, dynamic_request(old.run_id))
         async with db() as session:
             await session.execute(

@@ -559,6 +559,11 @@ class KnowbotTestService:
                     )
                 )
             },
+            **(
+                {"error": run["error"][:1000]}
+                if status in FINAL and run.get("error")
+                else {}
+            ),
             "started_at": _iso(run.get("started_at")),
             "finished_at": _iso(run.get("finished_at")),
             "questions": questions,
@@ -1173,6 +1178,11 @@ class KnowbotTestConductor:
                     interaction["id"],
                     exc.message,
                 )
+            current = await repo.get_task(str(row["task_id"]))
+            if current["state"] == TaskState.WAITING and str(
+                current.get("active_interaction_id")
+            ) == str(interaction["id"]):
+                await self._wait_or_give_up(repo, run, case, row, current, account, now)
             return
         if answered:
             await self._stop_waiting(repo, run, row, now)
@@ -1236,10 +1246,14 @@ class KnowbotTestConductor:
             {**r, "status": "done"} if str(r.get("id")) in ids else r
             for r in detail.get("requests") or []
         ]
-        if not pins:
-            detail["incomplete"] = list(detail.get("incomplete") or []) + [
-                f"{label}：你没要" for r in asked for label in r.get("labels") or []
-            ]
+        declined = [
+            f"{label}：你没要"
+            for request, answer in zip(asked, given, strict=True)
+            if not answer.items
+            for label in request.get("labels") or []
+        ]
+        if declined:
+            detail["incomplete"] = list(detail.get("incomplete") or []) + declined
         async with repo.transaction():
             if pins:
                 await repo.pin_task_data(task_id, pins)

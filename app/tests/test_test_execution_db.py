@@ -7,13 +7,14 @@ import pytest
 from fastapi.encoders import jsonable_encoder
 from test_knowbot_test_runs_db import (
     AUTHOR,
+    TrialAppServer,
     accept,
     request,
     runner_for,
     setup_test_computer,
 )
 from test_workbench_ledger_db import db as db
-from test_workbench_task_runtime_db import ANSWER, PLAN, ScriptedAppServer, close, drive
+from test_workbench_task_runtime_db import ANSWER, PLAN, close, drive
 
 from app.application.workbench.test_execution import execution_view
 from app.application.workbench.test_runs import KnowbotTestConductor
@@ -33,7 +34,7 @@ def validate(view):
 
 
 async def test_process_is_bound_to_owner_run_and_case_and_reuses_archived_outputs(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     run_id = "knowlab-live-view-0001"
@@ -58,7 +59,7 @@ async def test_process_is_bound_to_owner_run_and_case_and_reuses_archived_output
                 WorkbenchRepository(session), run_id, owner_subject=AUTHOR, case_id="c1"
             )
             validate(live)
-            assert len(live["cases"][0]["steps"]) == 2
+            assert live["cases"][0]["steps"] == []  # the planner has not run yet
             assert live["cases"][0]["outputs"]["deliverable"] is None
         await drive(runner)
         await conductor.tick()
@@ -69,6 +70,7 @@ async def test_process_is_bound_to_owner_run_and_case_and_reuses_archived_output
             )
             validate(final)
             assert final["cases"][0]["state"] == "SUCCEEDED"
+            assert len(final["cases"][0]["steps"]) == 2
             assert final["cases"][0]["outputs"] == await repo.get_test_case_outputs(
                 run_id, "c1"
             )

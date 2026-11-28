@@ -528,6 +528,10 @@ class WorkbenchStore(Protocol):
         """比较交换更新 Task 的若干列；返回新 state_version。"""
         ...
 
+    async def settle_task_budget(
+        self, task_id: str, *, expected_version: int, budget: dict[str, Any]
+    ) -> None: ...
+
     async def insert_attempt(self, attempt: dict[str, Any]) -> None: ...
 
     async def get_attempt(

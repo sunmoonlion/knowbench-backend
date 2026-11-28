@@ -6,13 +6,13 @@ from test_knowbot_test_runs_db import (
     AUTHOR,
     ENV,
     WORKSPACE,
+    TrialAppServer,
     accept,
     request,
     setup_test_computer,
 )
 from test_workbench_ledger_db import OTHER, OWNER
 from test_workbench_ledger_db import db as db
-from test_workbench_task_runtime_db import ScriptedAppServer
 
 from app.application.workbench.session_service import SessionService
 from app.application.workbench.test_execution import execution_view
@@ -27,7 +27,7 @@ from app.infrastructure.workbench.repository import WorkbenchRepository
 async def test_test_history_hidden_from_browser_but_available_to_author_runtime(
     db, mismatched
 ):
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     run = "knowlab-surface-0001"
     try:
@@ -135,7 +135,7 @@ async def test_migration_replay_keeps_shared_project_and_test_history(db):
         with Operations.context(MigrationContext.configure(connection)):
             getattr(migration, direction)()
 
-    fake = ScriptedAppServer([])
+    fake = TrialAppServer([])
     await fake.start()
     try:
         await setup_test_computer(db, fake)

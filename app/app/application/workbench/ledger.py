@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 import uuid
 from datetime import UTC, datetime, timedelta
@@ -1131,7 +1132,7 @@ class Ledger:
                     amount=held,
                     note="pending usage reconciled",
                 )
-            await self.repo.cas_task(
+            await self.repo.settle_task_budget(
                 task_id,
                 expected_version=int(task["state_version"]),
                 budget=budget.as_json(),
@@ -1569,10 +1570,15 @@ class Ledger:
     ) -> dict[str, Any]:
         """原子消费（AT-07）：重复、过期、异键、跨 Task、摘要不符一律拒绝；成功后 Task 回 QUEUED（或 VALIDATING）。"""
         async with self.repo.transaction():
-            it = await self.repo.get_interaction(interaction_id, for_update=True)
+            it = await self.repo.get_interaction(interaction_id)
+            task = None
             session = await self.repo.get_session(
                 str(it["session_id"]), owner_actor_id=owner_actor_id
             )
+            # Task mutations (including late billing and cancellation) lock the task first.
+            if it["task_id"] is not None:
+                task = await self.repo.get_task(str(it["task_id"]), for_update=True)
+            it = await self.repo.get_interaction(interaction_id, for_update=True)
             if token_hash(token) != it["token_hash"]:
                 raise InteractionRejected(
                     "token mismatch", interaction_id=interaction_id
@@ -1596,8 +1602,7 @@ class Ledger:
                 "session_id": str(session["id"]),
                 "consumed": True,
             }
-            if it["task_id"] is not None:
-                task = await self.repo.get_task(str(it["task_id"]), for_update=True)
+            if task is not None:
                 if (
                     task["active_interaction_id"] is None
                     or str(task["active_interaction_id"]) != interaction_id
@@ -1634,11 +1639,23 @@ class Ledger:
                     result.update(await resolve_decision(self, task, it, response))
                     return result
                 if it["kind"] == "resource":
-                    if response.get("decision") == "topup" and response.get("amount"):
-                        budget = _budget(task)
-                        budget.limit = (budget.limit or Decimal("0")) + Decimal(
-                            str(response["amount"])
+                    if response.get("decision") not in ("topup", "stop"):
+                        raise InteractionRejected(
+                            "choose whether to top up or stop",
+                            interaction_id=interaction_id,
                         )
+                    if response["decision"] == "topup":
+                        amount = str(response.get("amount", ""))
+                        if (
+                            not re.fullmatch(r"[0-9]{1,12}(?:\.[0-9]{1,6})?", amount)
+                            or Decimal(amount) <= 0
+                        ):
+                            raise InteractionRejected(
+                                "a positive top-up amount is required",
+                                interaction_id=interaction_id,
+                            )
+                        budget = _budget(task)
+                        budget.limit = (budget.limit or Decimal("0")) + Decimal(amount)
                         await self.repo.cas_task(
                             str(task["id"]),
                             expected_version=int(task["state_version"]),

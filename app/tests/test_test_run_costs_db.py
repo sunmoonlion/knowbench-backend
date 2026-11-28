@@ -12,7 +12,7 @@ from test_knowbot_test_runs_db import (
     KnowbotTestConductor,
     KnowbotTestService,
     RunRequest,
-    ScriptedAppServer,
+    TrialAppServer,
     WorkbenchRepository,
     accept,
     close,
@@ -32,7 +32,7 @@ from app.application.workbench.ledger import Ledger
 
 @pytest.mark.parametrize("ending", ["timeout", "cancelled"])
 async def test_finished_and_interrupted_case_costs_include_late_settlement(db, ending):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     clock = Clock()
@@ -112,7 +112,7 @@ async def test_finished_and_interrupted_case_costs_include_late_settlement(db, e
 
 
 async def test_recorded_success_is_not_overwritten_by_a_late_conductor_tick(db):
-    fake = ScriptedAppServer([PLAN, ANSWER])
+    fake = TrialAppServer([PLAN, ANSWER])
     await fake.start()
     runner = runner_for(db)
     clock = Clock()

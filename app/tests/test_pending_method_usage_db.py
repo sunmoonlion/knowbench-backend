@@ -9,7 +9,8 @@ from test_workbench_ledger_db import db as db
 
 from app.application.workbench.ledger import Ledger
 from app.domain.workbench.errors import BudgetExhausted, IdempotencyConflict
-from app.domain.workbench.states import AttemptState, TaskState
+from app.domain.workbench.models import InteractionPrompt
+from app.domain.workbench.states import AttemptState, TaskState, WaitingReason
 from app.infrastructure.workbench.repository import WorkbenchRepository
 
 
@@ -263,3 +264,102 @@ async def test_only_explicit_not_started_evidence_releases_an_unbound_hold(db):
         assert (await repo.get_attempt(second))["refs"]["usage_reconciled"][
             "not_started"
         ] is True
+
+
+async def test_failed_answer_dispatch_rolls_back_the_question_and_allows_retry(
+    db, monkeypatch
+):
+    from unittest.mock import AsyncMock
+
+    from test_workbench_ledger_db import handover, seed
+
+    from app.application.workbench.interactions import answer_interaction
+    from app.domain.workbench.models import InteractionPrompt
+    from app.domain.workbench.states import TaskState, WaitingReason
+
+    _, _, sid = await seed(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        led = Ledger(repo)
+        task_id = (await led.handover(handover(sid), owner_actor_id=OWNER))["task_id"]
+        await led.transition(task_id, TaskState.VALIDATING)
+        question = await led.open_interaction(
+            task_id,
+            kind="input",
+            waiting_reason=WaitingReason.INPUT,
+            prompt=InteractionPrompt(title="资料", question="年度？"),
+        )
+        arguments = dict(
+            token=question["token"], response={"answer": "2025"}, owner_actor_id=OWNER
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                repo,
+                "enqueue_command",
+                AsyncMock(side_effect=RuntimeError("queue unavailable")),
+            )
+            with pytest.raises(RuntimeError, match="queue unavailable"):
+                await answer_interaction(repo, question["interaction_id"], **arguments)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        assert (await repo.get_interaction(question["interaction_id"]))[
+            "status"
+        ] == "pending"
+        assert (await repo.get_task(task_id))["state"] == TaskState.WAITING
+        assert (
+            await answer_interaction(repo, question["interaction_id"], **arguments)
+        )["state"] == TaskState.QUEUED
+
+
+async def test_final_bill_preserves_unrelated_open_question(db):
+    _, task, prior = await pending(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        ledger = Ledger(repo)
+        question = await ledger.open_interaction(
+            task,
+            kind="input",
+            waiting_reason=WaitingReason.INPUT,
+            prompt=InteractionPrompt(title="核对年度", question="哪一年度？"),
+        )
+        await ledger.record_late_cost(
+            task,
+            attempt_id=prior,
+            consumed=Decimal("1.25"),
+            tokens={},
+            turn_id="pending-turn",
+        )
+        result = await ledger.respond_interaction(
+            question["interaction_id"],
+            token=question["token"],
+            response={"answer": "2025"},
+            owner_actor_id=OWNER,
+        )
+        assert result["state"] == TaskState.QUEUED
+        assert (await repo.get_interaction(question["interaction_id"]))[
+            "status"
+        ] == "consumed"
+        assert Decimal((await repo.get_task(task))["budget"]["used"]) == Decimal("1.25")
+
+
+async def test_charge_after_cancellation_preserves_the_reported_finish_time(db):
+    from app.application.workbench.expert_desk import ExpertDesk
+
+    _, task, prior = await pending(db)
+    async with db() as session:
+        repo = WorkbenchRepository(session)
+        ledger = Ledger(repo)
+        await ledger.request_cancel(task, owner_actor_id=OWNER)
+        desk = ExpertDesk(repo)
+        first = (await desk.steps(task, owner_actor_id=OWNER))["task"]
+        await ledger.record_late_cost(
+            task,
+            attempt_id=prior,
+            consumed=Decimal("1.25"),
+            tokens={},
+            turn_id="pending-turn",
+        )
+        final = (await desk.steps(task, owner_actor_id=OWNER))["task"]
+        assert first["state"] == final["state"] == "CANCELLED"
+        assert final["budget"]["spent"] == "1.25"
+        assert final["ended_at"] == first["ended_at"]

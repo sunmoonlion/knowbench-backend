@@ -23,27 +23,26 @@ async def answer_interaction(
     subject_digest: str | None = None,
     decision: str | None = None,
 ) -> dict[str, Any]:
-    it = await repo.get_interaction(interaction_id)
-    result = await Ledger(repo).respond_interaction(
-        interaction_id,
-        token=token,
-        response=response,
-        owner_actor_id=owner_actor_id,
-        subject_digest=subject_digest,
-    )
-    if it["task_id"] is not None and result.get("state") == "QUEUED":
-        session = await repo.get_session(str(it["session_id"]))
-        async with repo.transaction():
+    async with repo.transaction():
+        it = await repo.get_interaction(interaction_id)
+        result = await Ledger(repo).respond_interaction(
+            interaction_id,
+            token=token,
+            response=response,
+            owner_actor_id=owner_actor_id,
+            subject_digest=subject_digest,
+        )
+        if it["task_id"] is not None and result.get("state") == "QUEUED":
+            session = await repo.get_session(str(it["session_id"]))
             await repo.enqueue_command(
                 session_id=str(it["session_id"]),
                 sandbox_id=str(session["sandbox_id"]),
                 kind="task.drive",
                 payload={"task_id": str(it["task_id"])},
             )
-    request_id = ((it.get("prompt") or {}).get("subject") or {}).get("request_id")
-    if it["kind"] in ("tool_approval", "question") and request_id:
-        session = await repo.get_session(str(it["session_id"]))
-        async with repo.transaction():
+        request_id = ((it.get("prompt") or {}).get("subject") or {}).get("request_id")
+        if it["kind"] in ("tool_approval", "question") and request_id:
+            session = await repo.get_session(str(it["session_id"]))
             await repo.enqueue_command(
                 session_id=str(it["session_id"]),
                 sandbox_id=str(session["sandbox_id"]),
