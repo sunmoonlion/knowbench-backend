@@ -1,7 +1,5 @@
 """Additional operation-bound checks for a pinned formal host action."""
 
-import json
-
 from app.domain.workbench.capabilities import CapabilityError, digest
 from app.domain.workbench.formal_adapter import host_kind
 from app.domain.workbench.formal_execution import (
@@ -14,6 +12,7 @@ from app.domain.workbench.formal_execution import (
     recursive_plan,
     validate_values,
 )
+from app.domain.workbench.formal_method_execution_generated import bounded_json
 
 
 def check_host_inputs(snapshot: FormalTaskSnapshot) -> None:
@@ -25,9 +24,7 @@ def check_host_inputs(snapshot: FormalTaskSnapshot) -> None:
             raise ValueError(
                 "Host execution requires one complete operation permission"
             )
-        encoded = json.dumps(snapshot.arguments, allow_nan=False).encode()
-        if len(encoded) > 64000:
-            raise ValueError("Oversized formal arguments")
+        bounded_json(snapshot.arguments)
         validate_values(procedure.inputs, snapshot.arguments)
     except (ValueError, TypeError, RecursionError) as exc:
         raise CapabilityError(

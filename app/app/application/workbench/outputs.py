@@ -122,7 +122,9 @@ def output_name(path: str) -> str:
     （knowbase 按任务、运行、名字幂等）。名字里不许有斜杠，段与段之间用全角「／」；超过
     knowbase 的上限就截掉后面、加一段路径的短哈希，扩展名留着（knowbase 按它认类型）。"""
     parts = [p for p in path.replace("\\", "/").split("/") if p]
-    full = "／".join(parts)
+    full = "／".join(
+        part.replace("%", "%25").replace("／", "%EF%BC%8F") for part in parts
+    )
     if len(full) <= MAX_NAME:
         return full
     stem, dot, ext = full.rpartition(".")
@@ -264,7 +266,7 @@ class OutputWriter:
         if not _basis_echoed(written, grant_ref, started, finished):
             # 老的 knowbase 不认出处依据、缺省不设上限：不能当写成了
             raise Retry("knowbase 没回显认下的出处依据")
-        return written
+        return _receipt(written, hashlib.sha256(found.content).hexdigest())
 
     async def _already_written(
         self, row: dict[str, Any], where: dict[str, Any], accepted: str | None
@@ -275,7 +277,7 @@ class OutputWriter:
         found = await self.area.find_output(**where)
         sha = str(found.get("sha256") or "")
         if accepted and sha == accepted:
-            return found
+            return _receipt(found, accepted)
         async with self.stores() as repo:
             others = await repo.list_task_outputs(str(row["task_id"]))
         if any(
@@ -310,6 +312,18 @@ class OutputWriter:
         async with self.stores() as repo:
             async with repo.transaction():
                 await repo.update_task_output(str(row["id"]), **fields)
+
+
+def _receipt(value: dict, digest: str) -> dict:
+    if not isinstance(value, dict) or (
+        not isinstance(value.get("material_id"), str)
+        or not value["material_id"].strip()
+        or type(value.get("version_no")) is not int
+        or value["version_no"] < 1
+        or value.get("sha256") != digest
+    ):
+        raise Retry("knowbase 的材料编号、版本或内容摘要与本次交付对不上")
+    return value
 
 
 def _check_delivered(

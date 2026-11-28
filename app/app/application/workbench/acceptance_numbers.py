@@ -121,6 +121,9 @@ def _identity(
         if not isinstance(item, dict):
             bad.append(f"#{i} is not an object")
             continue
+        if item.get("left_id") == item.get("right_id"):
+            bad.append(f"#{i} requires two distinct computation records")
+            continue
         left = records.get(str(item.get("left_id") or ""))
         right = records.get(str(item.get("right_id") or ""))
         if left is None or right is None:
@@ -189,7 +192,7 @@ def _quote_refs(
         if not isinstance(item, dict):
             bad.append(f"#{i} is not an object")
             continue
-        quotes = item.get("quotes") or []
+        quotes = item.get("quotes", [])
         if not isinstance(quotes, list):
             bad.append(f"#{i} quotes is not a list")
             continue
@@ -265,21 +268,44 @@ def _covers(
     source = value_at(upstream[name], where)
     if not isinstance(source, list):
         return [f"upstream {rule.source} is not a list"]
-    wanted = [
-        s.get(rule.source_field) if rule.source_field and isinstance(s, dict) else s
-        for s in source
-    ]
-    got: list[Any] = []
+    bad = []
+
+    def indexed(items: list, field: str | None, label: str) -> dict:
+        found = {}
+        for i, item in enumerate(items):
+            value = (
+                item.get(field)
+                if field and isinstance(item, dict)
+                else None
+                if field
+                else item
+            )
+            if type(value) not in (bool, str, int, float):
+                bad.append(f"{label} #{i} has no scalar identity")
+                continue
+            key = (
+                "boolean"
+                if type(value) is bool
+                else "number"
+                if isinstance(value, (int, float))
+                else "string",
+                value,
+            )
+            if key in found:
+                bad.append(f"{label} twice {value!r}")
+            found[key] = value
+        return found
+
+    wanted = indexed(source, rule.source_field, "upstream")
+    delivered = []
     for path in (rule.path or "", *rule.also):
         items = _items(value_at(parsed, path))
         if items is None:
             return [f"{path} is not a list"]
-        got += [i.get(rule.field or "") if isinstance(i, dict) else None for i in items]
-    bad = [f"missing {w!r}" for w in wanted if w not in got]
-    bad += [f"not upstream {g!r}" for g in got if g not in wanted]
-    bad += [
-        f"twice {g!r}" for g in {repr(x): x for x in got}.values() if got.count(g) > 1
-    ]
+        delivered.extend(items)
+    got = indexed(delivered, rule.field, "output")
+    bad.extend(f"missing {v!r}" for k, v in wanted.items() if k not in got)
+    bad.extend(f"not upstream {v!r}" for k, v in got.items() if k not in wanted)
     return bad
 
 

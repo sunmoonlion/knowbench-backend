@@ -11,7 +11,7 @@ import asyncio
 import base64
 import contextlib
 import hashlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -88,7 +88,11 @@ class Area:
         if self.error is not None:
             raise self.error
         self.written.append(kw)
-        out = {"material_id": "m-out-1", "version_no": 1, "sha256": "a" * 64}
+        out = {
+            "material_id": "m-out-1",
+            "version_no": 1,
+            "sha256": hashlib.sha256(kw["content"]).hexdigest(),
+        }
         if self.echo:
             out["provenance_basis"] = {
                 **({"grant_ref": kw["grant_ref"]} if kw.get("grant_ref") else {}),
@@ -618,3 +622,54 @@ def test_writing_waits_for_the_switch() -> None:
 
     assert Settings().workbench_output_write_enabled is False
     assert build_output_writer(None, Settings()) is None  # type: ignore[arg-type]
+
+
+def test_two_supported_paths_have_distinct_storage_keys():
+    paths = ("分析/年报.md", "分析／年报.md")
+    from app.domain.workbench.packs import safe_relative_path
+
+    assert all(map(safe_relative_path, paths))
+    assert len({output_name(path) for path in paths}) == 2
+
+
+async def test_written_receipt_matches_delivered_content(db):
+    await delivered(db)
+
+    class WrongHash(Area):
+        async def write_output(self, **kw):
+            return {**await super().write_output(**kw), "sha256": "0" * 64}
+
+    writer = OutputWriter(workbench_stores(db), Reader(), WrongHash())
+    assert await writer.sweep() == 0
+    [output] = await rows(db)
+    assert output["status"] == "pending" and output["attempts"] == 1
+
+
+async def test_one_partial_reply_does_not_block_next_file(db):
+    task = await delivered(db)
+    async with db() as session, session.begin():
+        await session.execute(
+            text("""
+            INSERT INTO workbench_task_outputs(task_id,run_ref,path,accepted_sha256,next_try_at)
+            SELECT task_id,run_ref,'second.md',accepted_sha256,next_try_at+interval '1 second'
+            FROM workbench_task_outputs WHERE task_id=:task
+        """),
+            {"task": task},
+        )
+
+    class PartialFirstReply(Area):
+        async def write_output(self, **args):
+            result = await super().write_output(**args)
+            if args["name"] != "second.md":
+                result.pop("version_no")
+            return result
+
+    writer = OutputWriter(
+        workbench_stores(db),
+        Reader(),
+        PartialFirstReply(),
+        now=lambda: datetime.now(UTC) + timedelta(minutes=1),
+    )
+    assert await writer.sweep() == 1
+    results = {row["path"]: row for row in await rows(db)}
+    assert results["second.md"]["status"] == "written"
