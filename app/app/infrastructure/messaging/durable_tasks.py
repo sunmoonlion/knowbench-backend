@@ -95,6 +95,7 @@ class DurableTasks(DurableDelivery):
                         WHERE i.consumer=m.topic AND i.message_id=m.id)
                     AND NOT EXISTS(SELECT 1 FROM outbox_dead_letter d
                         WHERE d.message_id=m.id AND d.replayed_at IS NULL)
+                FOR UPDATE OF m
             """),
                         {"id": message_id, "topics": list(self.handlers)},
                     )
@@ -127,6 +128,20 @@ class DurableTasks(DurableDelivery):
                 )
             ).scalar_one_or_none()
             if epoch is None:
+                # A different message owns the business resource. Refund this
+                # delivery once; changing status also fences a late publisher.
+                await s.execute(
+                    text("""
+                    UPDATE outbox_message m SET status='pending',
+                        attempt_count=GREATEST(0,attempt_count-1),
+                        lease_owner=NULL, lease_expires_at=NULL, last_error=NULL,
+                        available_at=clock_timestamp(), updated_at=clock_timestamp()
+                    WHERE m.id=:id AND m.status IN ('delivering','published')
+                      AND EXISTS(SELECT 1 FROM outbox_execution l
+                        WHERE l.resource_key=:key AND l.message_id<>m.id)
+                """),
+                    {"id": message_id, "key": resource},
+                )
                 return None
             # Previous execution could have committed while we waited on its row lock.
             done = (

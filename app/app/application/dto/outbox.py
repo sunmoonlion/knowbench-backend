@@ -69,6 +69,7 @@ class OutboxEvent(BaseModel):
             {"payload": self.payload, "headers": headers},
             separators=(",", ":"),
             ensure_ascii=False,
+            allow_nan=False,
         ).encode()
         if len(encoded) > 262_144:
             raise ValueError("outbox event exceeds 256 KiB")

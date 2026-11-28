@@ -52,6 +52,9 @@ class DurableDelivery:
                       AND {NOT_BEFORE_DUE_SQL}
                       AND (m.status='pending' OR (m.status='delivering'
                            AND m.lease_expires_at<=clock_timestamp()))
+                      AND NOT EXISTS(SELECT 1 FROM outbox_execution l
+                          WHERE l.resource_key=m.topic || ':' || m.aggregate_key
+                            AND l.message_id<>m.id AND l.expires_at>clock_timestamp())
                       AND NOT EXISTS(SELECT 1 FROM outbox_dead_letter d
                           WHERE d.message_id=m.id AND d.replayed_at IS NULL)
                     ORDER BY m.created_at,m.id FOR UPDATE OF m SKIP LOCKED LIMIT 1
@@ -100,8 +103,30 @@ class DurableDelivery:
             if error and message["attempt_count"] >= self.max_attempts:
                 await self._dead_letter(s, message["id"], error)
 
-    @staticmethod
-    async def _dead_letter(s, message_id, error):
+    async def _dead_letter(self, s, message_id, error):
+        # The caller holds the message lock. A matching business receipt also
+        # counts if the publisher crashed before it recorded broker success.
+        topic = await s.scalar(
+            text("SELECT topic FROM outbox_message WHERE id=:id"), {"id": message_id}
+        )
+        consumer = self.topics.get(topic)
+        if consumer and await s.scalar(
+            text(
+                "SELECT 1 FROM inbox_message "
+                "WHERE message_id=:id AND consumer=:consumer"
+            ),
+            {"id": message_id, "consumer": consumer},
+        ):
+            await s.execute(
+                text("""
+                UPDATE outbox_message SET status='published',
+                    published_at=COALESCE(published_at, clock_timestamp()),
+                    lease_owner=NULL, lease_expires_at=NULL, last_error=NULL,
+                    updated_at=clock_timestamp() WHERE id=:id
+            """),
+                {"id": message_id},
+            )
+            return
         await s.execute(
             text("""
             INSERT INTO outbox_dead_letter(message_id,error_code) VALUES (:id,:error)
@@ -122,6 +147,8 @@ class DurableDelivery:
                 WHERE m.topic=ANY(:topics) AND m.attempt_count>=:attempts
                     AND (m.status='pending' OR (m.status='delivering'
                          AND m.lease_expires_at<=clock_timestamp()))
+                    AND NOT EXISTS(SELECT 1 FROM outbox_execution l
+                        WHERE l.message_id=m.id AND l.expires_at>clock_timestamp())
                     AND NOT EXISTS(SELECT 1 FROM outbox_dead_letter d
                         WHERE d.message_id=m.id AND d.replayed_at IS NULL)
                 FOR UPDATE OF m SKIP LOCKED
